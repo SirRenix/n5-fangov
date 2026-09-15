@@ -30,6 +30,16 @@ allowed_hosts = []      # extra Host header names to serve, e.g. the name a reve
                         # through: ["fans.example.internal"]. IP literals, "localhost" and the
                         # listen host always pass; anything else gets 421 (DNS-rebinding guard).
                         # "*" disables the check. Changes need a restart, like all of [web].
+tls = "off"             # auto | off | file. Default: "off" on a loopback listen, "auto" elsewhere.
+                        # auto = self-signed certificate in /etc/n5-fangov/tls (trust it: n5-fangov cert export).
+                        # A non-loopback listen with "off" is forced to "auto": LAN traffic is never plain HTTP.
+cert_file = ""          # tls = "file": PEM certificate (chain)
+key_file = ""           # tls = "file": PEM private key
+
+[log]
+file = "/var/log/n5-fangov/n5-fangov.log"   # rotating log file in addition to the journal; "" = journal only
+max_size_mb = 5         # rotate above this size (1..100); rotated files: .1 .. .N
+max_files = 5           # rotated files to keep (1..20)
 
 # CPU fan (pwm1) <- k10temp Tctl. EC idle duty was 85.
 [[channel]]

@@ -80,6 +80,66 @@ func writeAtomic(path string, data []byte, perm os.FileMode) error {
 	return nil
 }
 
+// SetKey returns raw with `key = value` set in the top-level table
+// [section], leaving everything else (comments, order, other tables)
+// untouched. An existing assignment of key inside that section is replaced
+// in place (a trailing comment on that line is dropped); otherwise the line
+// is appended at the end of the section, before its trailing blank lines. A
+// missing section is appended at the end of the file. value must already
+// be a TOML literal (`"text"`, `5`, `["a"]`). Only used for the few
+// single-key edits of the CLI (passwd); everything else goes through
+// Marshal.
+func SetKey(raw []byte, section, key, value string) []byte {
+	text := string(raw)
+	lines := strings.Split(strings.TrimSuffix(text, "\n"), "\n")
+	if text == "" {
+		lines = nil
+	}
+	header := "[" + section + "]"
+	start, end := -1, len(lines) // section body is lines[start+1:end]
+	for i, ln := range lines {
+		t := strings.TrimSpace(ln)
+		if !strings.HasPrefix(t, "[") {
+			continue
+		}
+		if start >= 0 {
+			end = i
+			break
+		}
+		if strings.HasPrefix(t, header) && (len(t) == len(header) || t[len(header)] == ' ' || t[len(header)] == '#') {
+			start = i
+		}
+	}
+	newLine := key + " = " + value
+	if start < 0 {
+		out := lines
+		if len(out) > 0 && strings.TrimSpace(out[len(out)-1]) != "" {
+			out = append(out, "")
+		}
+		out = append(out, header, newLine)
+		return []byte(strings.Join(out, "\n") + "\n")
+	}
+	for i := start + 1; i < end; i++ {
+		t := strings.TrimSpace(lines[i])
+		if strings.HasPrefix(t, key) {
+			rest := strings.TrimSpace(t[len(key):])
+			if strings.HasPrefix(rest, "=") {
+				lines[i] = newLine
+				return []byte(strings.Join(lines, "\n") + "\n")
+			}
+		}
+	}
+	ins := end
+	for ins > start+1 && strings.TrimSpace(lines[ins-1]) == "" {
+		ins--
+	}
+	out := make([]string, 0, len(lines)+1)
+	out = append(out, lines[:ins]...)
+	out = append(out, newLine)
+	out = append(out, lines[ins:]...)
+	return []byte(strings.Join(out, "\n") + "\n")
+}
+
 // ValidPresetName reports whether name is usable as a preset file stem
 // ([a-z0-9_-], 1..64 characters; the web layer applies the same rule).
 func ValidPresetName(name string) bool { return presetRe.MatchString(name) }
@@ -136,6 +196,15 @@ func SavePreset(dir, name string, chans []Channel) error {
 		return fmt.Errorf("preset: invalid name %q (use [a-z0-9_-], 1..64 characters)", name)
 	}
 	return writeAtomic(filepath.Join(dir, name+".toml"), MarshalChannels(chans), 0o644)
+}
+
+// SavePresetRaw writes raw preset text as <dir>/<name>.toml atomically. It
+// does not validate the content; callers run ParseChannels first.
+func SavePresetRaw(dir, name string, raw []byte) error {
+	if !ValidPresetName(name) {
+		return fmt.Errorf("preset: invalid name %q (use [a-z0-9_-], 1..64 characters)", name)
+	}
+	return writeAtomic(filepath.Join(dir, name+".toml"), raw, 0o644)
 }
 
 // DeletePreset removes <dir>/<name>.toml.

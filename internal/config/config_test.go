@@ -658,3 +658,141 @@ func TestPresetNameTraversal(t *testing.T) {
 		}
 	}
 }
+
+// v0.2: [web].tls — default depends on listen, "file" needs both paths,
+// a non-loopback listener is never plain HTTP.
+func TestWebTLS(t *testing.T) {
+	h := strings.Repeat("ab", 32)
+	basic := "auth = \"basic\"\nuser = \"admin\"\npassword_hash = \"" + h + "\"\n"
+	cases := []struct {
+		name     string
+		src      string
+		wantTLS  string
+		wantWarn bool
+	}{
+		{"loopback default", "[web]\nlisten = \"127.0.0.1:8010\"\n", "off", false},
+		{"lan default", "[web]\nlisten = \"0.0.0.0:8010\"\n", "auto", false},
+		{"lan explicit auto", "[web]\nlisten = \"[::]:8010\"\ntls = \"auto\"\n", "auto", false},
+		{"lan off forced", "[web]\nlisten = \"0.0.0.0:8010\"\ntls = \"off\"\n", "auto", true},
+		{"loopback auto ok", "[web]\ntls = \"auto\"\n", "auto", false},
+		{"loopback off", "[web]\ntls = \"off\"\n", "off", false},
+		{"unknown loopback", "[web]\ntls = \"tls13\"\n", "off", true},
+		{"unknown lan", "[web]\nlisten = \"0.0.0.0:8010\"\ntls = \"nope\"\n", "auto", true},
+		{"file complete", "[web]\ntls = \"file\"\ncert_file = \"/etc/x/c.pem\"\nkey_file = \"/etc/x/k.pem\"\n", "file", false},
+		{"file missing key loopback", "[web]\ntls = \"file\"\ncert_file = \"/etc/x/c.pem\"\n", "off", true},
+		{"file missing both lan", "[web]\nlisten = \"0.0.0.0:8010\"\ntls = \"file\"\n", "auto", true},
+		{"file with basic lan", "[web]\nlisten = \"0.0.0.0:8010\"\n" + basic + "tls = \"file\"\ncert_file = \"/c\"\nkey_file = \"/k\"\n", "file", false},
+		// auth misconfigured forces loopback first; tls "off" is then fine
+		{"auth broken forces loopback", "[web]\nlisten = \"0.0.0.0:8010\"\nauth = \"basic\"\ntls = \"off\"\n", "off", true},
+	}
+	for _, c := range cases {
+		cfg, warns, err := Parse([]byte(c.src))
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if cfg.Web.TLS != c.wantTLS {
+			t.Errorf("%s: tls = %q, want %q (warns %v)", c.name, cfg.Web.TLS, c.wantTLS, warns)
+		}
+		tlsWarn := false
+		for _, w := range warns {
+			if w.Field == "web.tls" {
+				tlsWarn = true
+			}
+		}
+		if c.name == "auth broken forces loopback" {
+			continue // warnings come from web.auth/web.listen, tls itself is legal on loopback
+		}
+		if tlsWarn != c.wantWarn {
+			t.Errorf("%s: tls warning %v, want %v: %v", c.name, tlsWarn, c.wantWarn, warns)
+		}
+	}
+	cfg, _, _ := Parse([]byte("[web]\ntls = \"file\"\ncert_file = \" /c.pem \"\nkey_file = \"/k.pem\"\n"))
+	if cfg.Web.CertFile != "/c.pem" || cfg.Web.KeyFile != "/k.pem" {
+		t.Errorf("paths not trimmed: %+v", cfg.Web)
+	}
+	if DefaultTLS("127.0.0.1:1") != "off" || DefaultTLS("0.0.0.0:1") != "auto" || DefaultTLS("bad") != "auto" {
+		t.Errorf("DefaultTLS")
+	}
+	// round trip with file mode
+	cfg = Default()
+	cfg.Web.Listen = "192.0.2.10:8010"
+	cfg.Web.Auth, cfg.Web.User, cfg.Web.PasswordHash = "basic", "admin", h
+	cfg.Web.TLS, cfg.Web.CertFile, cfg.Web.KeyFile = "file", "/c.pem", "/k.pem"
+	back, warns, err := Parse(Marshal(cfg))
+	if err != nil || len(warns) != 0 || !reflect.DeepEqual(cfg, back) {
+		t.Errorf("tls round trip: %v %v\n%+v", err, warns, back)
+	}
+}
+
+// v0.2: [log] file/max_size_mb/max_files.
+func TestLogSection(t *testing.T) {
+	cfg, warns, err := Parse(nil)
+	if err != nil || len(warns) != 0 {
+		t.Fatal(warns, err)
+	}
+	if cfg.Log.File != DefaultLogFile || cfg.Log.MaxSizeMB != 5 || cfg.Log.MaxFiles != 5 {
+		t.Errorf("defaults: %+v", cfg.Log)
+	}
+	cfg, warns, _ = Parse([]byte("[log]\nfile = \"\"\nmax_size_mb = 100\nmax_files = 1\n"))
+	if len(warns) != 0 || cfg.Log.File != "" || cfg.Log.MaxSizeMB != 100 || cfg.Log.MaxFiles != 1 {
+		t.Errorf("explicit: %+v %v", cfg.Log, warns)
+	}
+	cfg, warns, _ = Parse([]byte("[log]\nfile = \"relative.log\"\nmax_size_mb = 0\nmax_files = 21\nextra = 1\n"))
+	hasWarn(t, warns, "log.file")
+	hasWarn(t, warns, "log.max_size_mb")
+	hasWarn(t, warns, "log.max_files")
+	hasWarn(t, warns, "log.extra")
+	if !reflect.DeepEqual(cfg.Log, Default().Log) {
+		t.Errorf("all-invalid log must equal defaults: %+v", cfg.Log)
+	}
+	_, warns, _ = Parse([]byte("log = 5\n"))
+	hasWarn(t, warns, "log")
+	cfg, warns, _ = Parse([]byte("[log]\nfile = \"/var/log/x/y.log\"\nmax_size_mb = 101\n"))
+	hasWarn(t, warns, "log.max_size_mb")
+	if cfg.Log.File != "/var/log/x/y.log" || cfg.Log.MaxSizeMB != 5 {
+		t.Errorf("partial: %+v", cfg.Log)
+	}
+	// round trip incl. disabled file
+	cfg = Default()
+	cfg.Log = Log{File: "", MaxSizeMB: 7, MaxFiles: 3}
+	back, warns, err := Parse(Marshal(cfg))
+	if err != nil || len(warns) != 0 || !reflect.DeepEqual(cfg, back) {
+		t.Errorf("log round trip: %v %v\n%+v\n%s", err, warns, back, Marshal(cfg))
+	}
+}
+
+// SetKey edits one key in place and keeps everything else.
+func TestSetKey(t *testing.T) {
+	const tail = "\n[[channel]]\nname = \"cpu\"\npwm = 1\nsensor = \"k10temp\"\ncurve = [[45, 85], [80, 255]]\ncritical = 88\n"
+	src := "# header\n[daemon]\ninterval = \"10s\"\n\n[web]\nlisten = \"127.0.0.1:8010\"   # keep local\nauth = \"none\"\n" + tail
+	out := string(SetKey([]byte(src), "web", "auth", `"basic"`))
+	want := "# header\n[daemon]\ninterval = \"10s\"\n\n[web]\nlisten = \"127.0.0.1:8010\"   # keep local\nauth = \"basic\"\n" + tail
+	if out != want {
+		t.Errorf("replace:\n%s", out)
+	}
+	out = string(SetKey([]byte(out), "web", "user", `"admin"`))
+	want = "# header\n[daemon]\ninterval = \"10s\"\n\n[web]\nlisten = \"127.0.0.1:8010\"   # keep local\nauth = \"basic\"\nuser = \"admin\"\n" + tail
+	if out != want {
+		t.Errorf("append in section:\n%s", out)
+	}
+	// missing section is appended; a [[channel]] table named like the key
+	// prefix must not be touched
+	out = string(SetKey([]byte("[daemon]\ninterval = \"10s\"\n"), "web", "tls", `"auto"`))
+	if out != "[daemon]\ninterval = \"10s\"\n\n[web]\ntls = \"auto\"\n" {
+		t.Errorf("missing section:\n%s", out)
+	}
+	out = string(SetKey(nil, "web", "tls", `"auto"`))
+	if out != "[web]\ntls = \"auto\"\n" {
+		t.Errorf("empty file:\n%s", out)
+	}
+	// key with a common prefix (user vs user_x) is not confused
+	out = string(SetKey([]byte("[web]\nuser_x = 1\n"), "web", "user", `"a"`))
+	if out != "[web]\nuser_x = 1\nuser = \"a\"\n" {
+		t.Errorf("prefix:\n%s", out)
+	}
+	// the result parses and carries the value
+	cfg, warns, err := Parse(SetKey(SetKey(SetKey([]byte(src), "web", "auth", `"basic"`), "web", "user", `"admin"`), "web", "password_hash", `"`+strings.Repeat("0", 64)+`"`))
+	if err != nil || len(warns) != 0 || cfg.Web.Auth != "basic" || cfg.Web.User != "admin" || len(cfg.Channels) != 1 {
+		t.Errorf("parse after SetKey: %v %v %+v", err, warns, cfg.Web)
+	}
+}

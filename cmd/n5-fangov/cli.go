@@ -3,7 +3,9 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strconv"
@@ -224,21 +226,104 @@ func currentConfigRaw(dir string) ([]byte, string, error) {
 // ---------------------------------------------------------------------------
 // log
 
+// cmdLog shows, exports or clears the daemon's log file ([log].file);
+// without a file the journal is the source and --clear is refused. The
+// journal is never touched.
+//
+//	n5-fangov log [-n N] [N]        newest N lines (default 50)
+//	n5-fangov log --export FILE     whole current file ("-" = stdout)
+//	n5-fangov log --clear           truncate the current file (rotated files stay)
 func cmdLog(args []string) int {
-	n := 50
-	if len(args) > 1 {
-		fmt.Fprintln(os.Stderr, "usage: n5-fangov log [n]")
+	fs := flag.NewFlagSet("log", flag.ContinueOnError)
+	n := fs.Int("n", 50, "number of lines")
+	export := fs.String("export", "", "write the whole current log file to FILE (\"-\" = stdout)")
+	clear := fs.Bool("clear", false, "truncate the current log file (journal untouched)")
+	cfgPath := fs.String("config", defaultConfigPath, "config file")
+	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
-	if len(args) == 1 {
-		v, err := strconv.Atoi(args[0])
+	if fs.NArg() > 1 || (fs.NArg() == 1 && (*export != "" || *clear)) {
+		fmt.Fprintln(os.Stderr, "usage: n5-fangov log [-n N] [N] | --export FILE | --clear")
+		return exitUsage
+	}
+	if fs.NArg() == 1 {
+		v, err := strconv.Atoi(fs.Arg(0))
 		if err != nil || v < 1 {
 			fmt.Fprintln(os.Stderr, "log: n must be a positive integer")
 			return exitUsage
 		}
-		n = v
+		*n = v
 	}
-	lines, err := journalLines(unitName, n)
+	cfg, _, _ := loadConfig(*cfgPath)
+	file := logOf(cfg).File
+	dir := runDir()
+
+	switch {
+	case *clear:
+		if file == "" {
+			fmt.Fprintln(os.Stderr, "log: no log file configured ([log].file is empty); the journal is not cleared")
+			return exitFail
+		}
+		// Prefer the daemon (its size bookkeeping is reset in the same
+		// step); without it truncate in place, which its O_APPEND writer
+		// tolerates.
+		if daemonRunning(dir) {
+			if _, err := newAPI(dir).doRaw("DELETE", "/api/log", "", nil, nil); err == nil {
+				fmt.Printf("%s cleared by the daemon (rotated files and the journal untouched)\n", file)
+				return exitOK
+			}
+		}
+		if err := truncateLogFile(file); err != nil {
+			fmt.Fprintln(os.Stderr, "log: clear:", err)
+			return exitFail
+		}
+		fmt.Printf("%s cleared (rotated files and the journal untouched)\n", file)
+		return exitOK
+
+	case *export != "":
+		var out io.Writer = os.Stdout
+		if *export != "-" {
+			f, err := os.OpenFile(*export, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "log: export:", err)
+				return exitFail
+			}
+			defer f.Close()
+			out = f
+		}
+		var err error
+		if file != "" {
+			err = exportLogFile(file, out)
+		} else {
+			err = journalLogStore{}.Export(out)
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "log: export:", err)
+			return exitFail
+		}
+		if *export != "-" {
+			src := file
+			if src == "" {
+				src = "journal"
+			}
+			fmt.Printf("%s exported to %s\n", src, *export)
+		}
+		return exitOK
+	}
+
+	if file != "" {
+		if _, err := os.Stat(file); err == nil {
+			lines, err := readLogLines(file, *n)
+			if err == nil {
+				for _, l := range lines {
+					fmt.Println(l)
+				}
+				return exitOK
+			}
+			fmt.Fprintf(os.Stderr, "log: %s: %v; falling back to the journal\n", file, err)
+		}
+	}
+	lines, err := journalLines(unitName, *n)
 	if err == nil {
 		for _, l := range lines {
 			fmt.Println(l)
@@ -250,7 +335,7 @@ func cmdLog(args []string) int {
 	var resp struct {
 		Lines []string `json:"lines"`
 	}
-	if aerr := newAPI(runDir()).get("/api/log?lines="+strconv.Itoa(n), &resp); aerr != nil {
+	if aerr := newAPI(dir).get("/api/log?lines="+strconv.Itoa(*n), &resp); aerr != nil {
 		fmt.Fprintf(os.Stderr, "log: journalctl: %v; api: %v\n", err, aerr)
 		return exitFail
 	}

@@ -1,15 +1,18 @@
 #!/bin/sh
-# n5-fangov postrm: reload systemd after the units are gone; purge removes the
-# config directory and the PVE templates.
+# n5-fangov postrm: remove the apt hook, reload systemd after the units are
+# gone; purge removes the config directory (incl. presets and the TLS
+# certificate), the log directory and the PVE templates.
 set -e
 
 case "$1" in
     remove)
+        rm -f /etc/apt/apt.conf.d/90n5-fangov
         systemctl daemon-reload 2>/dev/null || true
         rm -rf /run/n5-fangov
         ;;
     purge)
-        rm -rf /etc/n5-fangov /run/n5-fangov
+        rm -f /etc/apt/apt.conf.d/90n5-fangov
+        rm -rf /etc/n5-fangov /run/n5-fangov /var/log/n5-fangov
         rm -f /etc/pve/notification-templates/default/n5-fangov-subject.txt.hbs \
               /etc/pve/notification-templates/default/n5-fangov-body.txt.hbs 2>/dev/null || true
         systemctl daemon-reload 2>/dev/null || true

@@ -2,7 +2,8 @@
 # inside the golang:1.25-alpine container via tools/remote-go.ps1).
 #
 #   make build   -> dist/n5-fangov (linux/amd64, static, stripped)
-#   make deb     -> dist/n5-fangov_<version>_amd64.deb
+#   make deb     -> dist/n5-fangov_<version>_amd64.deb (no conffile: the config is
+#                   written by `n5-fangov setup`; the example goes to /usr/share/doc)
 #   make check   -> go vet + go test
 #   make clean
 
@@ -42,17 +43,18 @@ deb: build
 	    $(PKGDIR)/etc/n5-fangov/presets \
 	    $(PKGDIR)/usr/share/n5-fangov/pve-notification \
 	    $(PKGDIR)/usr/share/doc/n5-fangov
+	install -d -m 0750 $(PKGDIR)/var/log/n5-fangov
 	install -m 0755 $(DIST)/n5-fangov                  $(PKGDIR)/usr/bin/n5-fangov
 	install -m 0755 deploy/n5-fangov-onfailure         $(PKGDIR)/usr/libexec/n5-fangov/n5-fangov-onfailure
 	install -m 0644 deploy/n5-fangov.service           $(PKGDIR)/lib/systemd/system/n5-fangov.service
 	install -m 0644 deploy/n5-fangov-onfailure.service $(PKGDIR)/lib/systemd/system/n5-fangov-onfailure.service
-	install -m 0644 deploy/config.example.toml         $(PKGDIR)/etc/n5-fangov/config.toml
+	install -m 0644 deploy/config.example.toml         $(PKGDIR)/usr/share/doc/n5-fangov/config.example.toml
+	install -m 0644 deploy/apt-90n5-fangov.conf        $(PKGDIR)/usr/share/n5-fangov/apt-90n5-fangov.conf
 	install -m 0644 deploy/pve-notification/*.hbs      $(PKGDIR)/usr/share/n5-fangov/pve-notification/
 	install -m 0644 deploy/README-DEPLOY.md DESIGN.md  $(PKGDIR)/usr/share/doc/n5-fangov/
 	install -m 0644 LICENSE                            $(PKGDIR)/usr/share/doc/n5-fangov/copyright
 	sed -e 's/@VERSION@/$(DEBVER)/' -e 's/^Architecture: .*/Architecture: $(ARCH)/' \
 	    deploy/debian/control.in > $(PKGDIR)/DEBIAN/control
-	install -m 0644 deploy/debian/conffiles $(PKGDIR)/DEBIAN/conffiles
 	install -m 0755 deploy/debian/postinst deploy/debian/prerm deploy/debian/postrm $(PKGDIR)/DEBIAN/
 	dpkg-deb --build --root-owner-group $(PKGDIR) $(DEB)
 	@echo built $(DEB)

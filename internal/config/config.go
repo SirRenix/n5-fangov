@@ -79,7 +79,34 @@ type Web struct {
 	User         string   `toml:"user"`
 	PasswordHash string   `toml:"password_hash"`           // sha256 hex of "user:password"
 	AllowedHosts []string `toml:"allowed_hosts,omitempty"` // extra Host header values besides IPs/localhost; "*" disables the check
+	TLS          string   `toml:"tls"`                     // auto | off | file (see TLSModes)
+	CertFile     string   `toml:"cert_file"`               // tls = "file": PEM certificate (chain) path
+	KeyFile      string   `toml:"key_file"`                // tls = "file": PEM private key path
 }
+
+// TLS modes accepted in web.tls. "auto" is a self-signed certificate the
+// daemon creates and keeps under the config directory, "file" uses
+// cert_file/key_file, "off" is plain HTTP. A non-loopback listener never
+// runs "off": it is forced to "auto" with a warning (LAN traffic is never
+// plain HTTP).
+var TLSModes = []string{"auto", "off", "file"}
+
+// Log holds the daemon's own log file settings. The journal (stdout) is
+// always written; the file is an addition with size rotation.
+type Log struct {
+	File      string `toml:"file"`        // "" disables the file
+	MaxSizeMB int    `toml:"max_size_mb"` // rotate above this size (1..100)
+	MaxFiles  int    `toml:"max_files"`   // rotated files kept as .1..N (1..20)
+}
+
+// Limits of the [log] section.
+const (
+	DefaultLogFile = "/var/log/n5-fangov/n5-fangov.log"
+	MinLogSizeMB   = 1
+	MaxLogSizeMB   = 100
+	MinLogFiles    = 1
+	MaxLogFiles    = 20
+)
 
 // Channel is one regulated PWM output.
 type Channel struct {
@@ -95,6 +122,7 @@ type Channel struct {
 type Config struct {
 	Daemon   Daemon    `toml:"daemon"`
 	Web      Web       `toml:"web"`
+	Log      Log       `toml:"log"`
 	Channels []Channel `toml:"channel"`
 }
 
@@ -124,8 +152,23 @@ func Default() Config {
 		Web: Web{
 			Listen: "127.0.0.1:8010",
 			Auth:   "none",
+			TLS:    "off", // DefaultTLS of the loopback listen
+		},
+		Log: Log{
+			File:      DefaultLogFile,
+			MaxSizeMB: 5,
+			MaxFiles:  5,
 		},
 	}
+}
+
+// DefaultTLS is the tls mode used when the key is absent or invalid:
+// "off" on a loopback listener, "auto" everywhere else.
+func DefaultTLS(listen string) string {
+	if IsLoopbackListen(listen) {
+		return "off"
+	}
+	return "auto"
 }
 
 // N5ProChannels returns the channel set verified on the Minisforum N5 Pro
@@ -186,7 +229,7 @@ func Parse(raw []byte) (Config, []Warning, error) {
 
 	for _, k := range sortedKeys(top) {
 		switch k {
-		case "daemon", "web", "channel":
+		case "daemon", "web", "log", "channel":
 		default:
 			p.warn(k, "unknown section, ignored")
 		}
@@ -208,6 +251,14 @@ func Parse(raw []byte) (Config, []Warning, error) {
 			p.warn("web", "not a table, defaults used")
 		} else {
 			p.web(sec, &cfg.Web)
+		}
+	}
+	if prim, ok := top["log"]; ok {
+		var sec map[string]toml.Primitive
+		if md.Type("log") != "Hash" || md.PrimitiveDecode(prim, &sec) != nil {
+			p.warn("log", "not a table, defaults used")
+		} else {
+			p.log(sec, &cfg.Log)
 		}
 	}
 	if prim, ok := top["channel"]; ok {
@@ -389,7 +440,7 @@ func (p *parser) daemon(sec map[string]toml.Primitive, d *Daemon) {
 
 func (p *parser) web(sec map[string]toml.Primitive, w *Web) {
 	const pre = "web"
-	p.unknown(pre, sec, "listen", "auth", "user", "password_hash", "allowed_hosts")
+	p.unknown(pre, sec, "listen", "auth", "user", "password_hash", "allowed_hosts", "tls", "cert_file", "key_file")
 	def := Default().Web
 	listen, _ := p.strField(pre, sec, "listen", def.Listen)
 	if _, _, err := net.SplitHostPort(listen); err != nil {
@@ -437,6 +488,48 @@ func (p *parser) web(sec map[string]toml.Primitive, w *Web) {
 			}
 		}
 	}
+	p.tls(sec, w)
+}
+
+// tls validates web.tls after listen is final: the default depends on it
+// and a non-loopback listener is never left on plain HTTP.
+func (p *parser) tls(sec map[string]toml.Primitive, w *Web) {
+	const pre = "web"
+	def := DefaultTLS(w.Listen)
+	mode, present := p.strField(pre, sec, "tls", def)
+	mode = strings.TrimSpace(mode)
+	w.CertFile, _ = p.strField(pre, sec, "cert_file", "")
+	w.KeyFile, _ = p.strField(pre, sec, "key_file", "")
+	w.CertFile = strings.TrimSpace(w.CertFile)
+	w.KeyFile = strings.TrimSpace(w.KeyFile)
+	if present && !contains(TLSModes, mode) {
+		p.warn(pre+".tls", "%q unknown (%s), %q used", mode, strings.Join(TLSModes, "|"), def)
+		mode = def
+	}
+	if mode == "file" && (w.CertFile == "" || w.KeyFile == "") {
+		p.warn(pre+".tls", "\"file\" needs cert_file and key_file, %q used", def)
+		mode = def
+	}
+	if mode == "off" && !IsLoopbackListen(w.Listen) {
+		p.warn(pre+".tls", "\"off\" on non-loopback listen %s: LAN traffic is never plain HTTP, \"auto\" used", w.Listen)
+		mode = "auto"
+	}
+	w.TLS = mode
+}
+
+func (p *parser) log(sec map[string]toml.Primitive, l *Log) {
+	const pre = "log"
+	p.unknown(pre, sec, "file", "max_size_mb", "max_files")
+	def := Default().Log
+	file, present := p.strField(pre, sec, "file", def.File)
+	file = strings.TrimSpace(file)
+	if present && file != "" && !strings.HasPrefix(file, "/") {
+		p.warn(pre+".file", "%q is not an absolute path, default %q used", file, def.File)
+		file = def.File
+	}
+	l.File = file
+	l.MaxSizeMB = p.intField(pre, sec, "max_size_mb", def.MaxSizeMB, MinLogSizeMB, MaxLogSizeMB)
+	l.MaxFiles = p.intField(pre, sec, "max_files", def.MaxFiles, MinLogFiles, MaxLogFiles)
 }
 
 // IsLoopbackListen reports whether a host:port binds only to the loopback

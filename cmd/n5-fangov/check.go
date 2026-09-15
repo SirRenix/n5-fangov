@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -39,8 +41,12 @@ func cmdCheck(args []string) int {
 	fs := flag.NewFlagSet("check", flag.ContinueOnError)
 	quiet := fs.Bool("quiet", false, "print only failures")
 	cfgPath := fs.String("config", defaultConfigPath, "config file")
+	afterUpdate := fs.Bool("after-update", false, "kernel gate for the apt hook: DKMS module present for every installed kernel (n5pro)")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
+	}
+	if *afterUpdate {
+		return cmdCheckAfterUpdate(*cfgPath, runDir())
 	}
 	results := runChecks(*cfgPath, runDir())
 	rc := exitOK
@@ -178,7 +184,27 @@ func runChecks(cfgPath, dir string) []checkResult {
 	case wspec.Auth == "none" && !isLoopbackListen(wspec.Listen):
 		adv(false, "web", fmt.Sprintf("listen %s is reachable from the network with auth = \"none\"; anyone on the network can change fan duties. Set [web].auth = \"basic\" or bind to 127.0.0.1", wspec.Listen))
 	default:
-		add(true, "web", fmt.Sprintf("listen %s, auth %s", wspec.Listen, wspec.Auth))
+		add(true, "web", fmt.Sprintf("listen %s, auth %s, tls %s", wspec.Listen, wspec.Auth, wspec.TLS))
+	}
+	// tls = "file" with a missing file: serve disables the web listener
+	// (no plain-HTTP fallback) and keeps regulating — advisory.
+	if wspec.Listen != "" && wspec.TLS == "file" {
+		for _, f := range []string{wspec.CertFile, wspec.KeyFile} {
+			if !isFile(f) {
+				adv(false, "web tls", f+": not a file; serve disables the web UI (the CLI socket keeps working)")
+			}
+		}
+	}
+	// 4c. log file (advisory: serve creates the directory itself and falls
+	// back to the journal when that fails).
+	if lf := logOf(cfg).File; lf != "" {
+		if isDir(filepath.Dir(lf)) {
+			add(true, "log", lf)
+		} else {
+			adv(false, "log", filepath.Dir(lf)+" does not exist yet; serve creates it (the unit's LogsDirectory= does too)")
+		}
+	} else {
+		add(true, "log", "journal only ([log].file empty)")
 	}
 
 	// 5. socket answers when the unit is active (skipped during ExecStartPre,
@@ -227,4 +253,164 @@ func dkmsInstalled(pkg string) (bool, string) {
 		}
 	}
 	return false, pkg + " not installed for kernel " + k + " (run: dkms status " + pkg + ")"
+}
+
+// ---------------------------------------------------------------------------
+// check --after-update (apt hook, kernel gate)
+
+// DKMS package and kernel object of the N5 Pro EC driver.
+const (
+	dkmsPackage        = "minisforum-n5-it5571"
+	dkmsKernelObject   = "minisforum_n5_it5571.ko"
+	dkmsFallbackVer    = "0.2.0"
+	defaultModulesRoot = "/lib/modules"
+	defaultDKMSSrcRoot = "/usr/src"
+)
+
+// cmdCheckAfterUpdate is run by /etc/apt/apt.conf.d/90n5-fangov after every
+// dpkg run. On a machine that uses the n5pro profile every installed
+// kernel must carry the DKMS module, otherwise the next reboot into a new
+// kernel starts without the EC driver: ExecStartPre fails, the fans stay in
+// BIOS control and the onfailure alert fires — this check says it earlier,
+// while the old kernel still runs. Exit 1 and a "kernel" alert (cooldown)
+// when a module is missing; other profiles: ok, exit 0.
+func cmdCheckAfterUpdate(cfgPath, dir string) int {
+	cfg, _, _ := loadConfig(cfgPath)
+	profileName := daemonOf(cfg).Profile
+	detected := ""
+	if dev, err := detectDevice(hwmon.New(), profileName); err == nil {
+		detected = dev.Profile().Name()
+	}
+	if !wantsN5Pro(profileName, detected, dkmsSourceVersion(defaultDKMSSrcRoot) != "") {
+		fmt.Println("n5-fangov: kernel gate not applicable (profile is not n5pro)")
+		return exitOK
+	}
+	kernels, missing, err := scanKernelModules(defaultModulesRoot, dkmsKernelObject)
+	if err != nil {
+		fmt.Printf("n5-fangov: kernel gate: %v\n", err)
+		return exitFail
+	}
+	if len(kernels) == 0 {
+		fmt.Printf("n5-fangov: kernel gate: no kernels found under %s\n", defaultModulesRoot)
+		return exitOK
+	}
+	ver := dkmsSourceVersion(defaultDKMSSrcRoot)
+	if ver == "" {
+		ver = dkmsFallbackVer
+	}
+	if len(missing) == 0 {
+		fmt.Printf("n5-fangov: fan driver module present for %d kernel(s): %s\n", len(kernels), strings.Join(kernels, " "))
+		return exitOK
+	}
+	var lines []string
+	for _, k := range missing {
+		lines = append(lines, kernelMissingLine(k, ver))
+	}
+	for _, l := range lines {
+		fmt.Println(l)
+	}
+	msg := fmt.Sprintf("Fan driver module %s is missing for %d of %d installed kernel(s). A reboot into such a kernel leaves the fans in BIOS/EC control (n5-fangov will not start).\n%s",
+		dkmsKernelObject, len(missing), len(kernels), strings.Join(lines, "\n"))
+	sendAlertCooled(dir, newAlerter(), "kernel", msg)
+	return exitFail
+}
+
+// kernelMissingLine is the line printed per kernel without the module.
+func kernelMissingLine(kernel, ver string) string {
+	return fmt.Sprintf("kernel %s: fan driver module missing — run: dkms install %s/%s -k %s", kernel, dkmsPackage, ver, kernel)
+}
+
+// wantsN5Pro decides whether the kernel gate applies: the config names the
+// profile, or auto-detection found it, or (driver not loaded right now)
+// the DKMS source tree is installed.
+func wantsN5Pro(profile, detected string, dkmsSrcPresent bool) bool {
+	switch profile {
+	case "n5pro":
+		return true
+	case "auto", "":
+		return detected == "n5pro" || dkmsSrcPresent
+	}
+	return false
+}
+
+// scanKernelModules walks root (/lib/modules): every directory that holds
+// build/ or modules.dep is an installed kernel; the module must exist as
+// updates/dkms/<ko> (also compressed: .xz/.zst/.gz). Returns the kernels
+// and those without the module, both sorted.
+func scanKernelModules(root, ko string) (kernels, missing []string, err error) {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		kdir := filepath.Join(root, e.Name())
+		if !isDir(filepath.Join(kdir, "build")) && !isFile(filepath.Join(kdir, "modules.dep")) {
+			continue
+		}
+		kernels = append(kernels, e.Name())
+		found := false
+		for _, suffix := range []string{"", ".xz", ".zst", ".gz"} {
+			if isFile(filepath.Join(kdir, "updates", "dkms", ko+suffix)) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			missing = append(missing, e.Name())
+		}
+	}
+	sort.Strings(kernels)
+	sort.Strings(missing)
+	return kernels, missing, nil
+}
+
+// dkmsSourceVersion returns the newest version of the DKMS source tree
+// <root>/<dkmsPackage>-<version>, or "" when none is installed.
+func dkmsSourceVersion(root string) string {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return ""
+	}
+	var vers []string
+	for _, e := range entries {
+		if e.IsDir() && strings.HasPrefix(e.Name(), dkmsPackage+"-") {
+			vers = append(vers, strings.TrimPrefix(e.Name(), dkmsPackage+"-"))
+		}
+	}
+	if len(vers) == 0 {
+		return ""
+	}
+	sort.Slice(vers, func(i, j int) bool { return versionLess(vers[i], vers[j]) })
+	return vers[len(vers)-1]
+}
+
+// versionLess compares dotted numeric versions ("0.2.0" < "0.10.0").
+func versionLess(a, b string) bool {
+	as, bs := strings.Split(a, "."), strings.Split(b, ".")
+	for i := 0; i < len(as) || i < len(bs); i++ {
+		var x, y int
+		if i < len(as) {
+			x, _ = strconv.Atoi(as[i])
+		}
+		if i < len(bs) {
+			y, _ = strconv.Atoi(bs[i])
+		}
+		if x != y {
+			return x < y
+		}
+	}
+	return false
+}
+
+func isDir(p string) bool {
+	st, err := os.Stat(p)
+	return err == nil && st.IsDir()
+}
+
+func isFile(p string) bool {
+	st, err := os.Stat(p)
+	return err == nil && st.Mode().IsRegular()
 }

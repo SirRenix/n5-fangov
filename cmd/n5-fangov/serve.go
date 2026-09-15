@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"log"
@@ -67,6 +68,21 @@ func cmdServe(args []string) int {
 		// Read or syntax error: defaults are in cfg, keep going (rule 8).
 		log.Printf("config: continuing with built-in defaults: %v", err)
 	}
+
+	// Log file ([log].file): the standard logger writes to stdout (journald)
+	// and, time-stamped, to the rotating file. A file that cannot be opened
+	// is a warning, not a stop: the journal stays.
+	var store logStore = journalLogStore{}
+	if lspec := logOf(cfg); lspec.File != "" {
+		if lf, err := newLogFile(lspec); err != nil {
+			log.Printf("log file: %v (journal only)", err)
+		} else {
+			teeLog(lf)
+			defer lf.Close()
+			store = lf
+			log.Printf("n5-fangov %s: log file %s (rotate above %d MiB, keep %d)", version.Version, lspec.File, lspec.MaxSizeMB, lspec.MaxFiles)
+		}
+	}
 	dspec := daemonOf(cfg)
 	chans := channelSpecs(cfg)
 	if len(chans) == 0 {
@@ -99,13 +115,59 @@ func cmdServe(args []string) int {
 		return exitFail
 	}
 
+	// TCP listener address and TLS mode. --listen overrides the file; the
+	// rule "non-loopback is never plain HTTP" is re-applied to the override.
+	wspec := webOf(cfg)
+	addr := wspec.Listen
+	if *listen != "" {
+		addr = *listen
+		wspec.Listen = addr
+		if addr != "none" && !isLoopbackListen(addr) && wspec.TLS == "off" {
+			log.Printf("web: --listen %s is not loopback, tls \"off\" replaced by \"auto\"", addr)
+			wspec.TLS = "auto"
+		}
+	}
+	if addr == "none" {
+		addr = ""
+	}
+	var cert tls.Certificate
+	useTLS := false
+	if addr != "" {
+		var err error
+		switch wspec.TLS {
+		case "auto":
+			var certPath string
+			cert, certPath, err = tlsEnsureAuto(tlsDir(*cfgPath), tlsHosts(wspec), setupOrg)
+			if err == nil {
+				log.Printf("web: TLS auto, certificate %s (trust it: n5-fangov cert export)", certPath)
+			}
+		case "file":
+			cert, err = tlsLoadFiles(wspec.CertFile, wspec.KeyFile)
+			if err == nil {
+				log.Printf("web: TLS from %s / %s", wspec.CertFile, wspec.KeyFile)
+			}
+		}
+		if err != nil {
+			// No plain-HTTP fallback: a LAN listener without TLS would carry
+			// basic auth in clear text.
+			log.Printf("web: TLS (%s): %v — web UI disabled, the CLI socket still works", wspec.TLS, err)
+			sendAlertCooled(*rdir, alerter, "web", fmt.Sprintf("web UI disabled: TLS (%s) could not be set up on %s: %v", wspec.TLS, addr, err))
+			addr = ""
+		} else {
+			useTLS = wspec.TLS != "off"
+		}
+	}
+
 	ws := newWebServer(webDeps{
 		Service:    ctrl,
 		ConfigPath: *cfgPath,
 		PresetDir:  defaultPresetDir,
 		Device:     dev,
 		Sysfs:      hw,
-		Web:        webOf(cfg),
+		Web:        wspec,
+		Log:        store,
+		Bundle:     fileBundle{cfgPath: *cfgPath, presetDir: defaultPresetDir, reload: ctrl.Reload},
+		TLS:        useTLS,
 	})
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
@@ -118,20 +180,16 @@ func cmdServe(args []string) int {
 	go func() { errc <- wrapErr("ipc", serveIPC(ctx, sock, ws.Socket)) }()
 
 	// TCP (web UI), optional.
-	addr := webOf(cfg).Listen
-	if *listen != "" {
-		addr = *listen
-	}
-	if addr == "none" {
-		addr = ""
-	}
 	if addr != "" {
 		ln, err := net.Listen("tcp", addr)
 		if err != nil {
 			log.Printf("web: listen %s: %v (web UI disabled, socket still works)", addr, err)
 			sendAlert(alerter, "web", "web UI listener failed on "+addr+": "+err.Error())
+		} else if useTLS {
+			log.Printf("web: listening on https://%s", ln.Addr())
+			go func() { errc <- wrapErr("web", ws.ServeTLS(ctx, ln, cert)) }()
 		} else {
-			log.Printf("web: listening on %s", ln.Addr())
+			log.Printf("web: listening on http://%s", ln.Addr())
 			go func() { errc <- wrapErr("web", ws.ServeTCP(ctx, ln)) }()
 		}
 	}
