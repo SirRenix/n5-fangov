@@ -310,3 +310,92 @@ is loose.
   `serve --run-dir`; there is no separate socket variable.
 - `n5-fangov check` opens `pwmN`/`pwmN_enable` O_WRONLY without writing (permission
   probe); everything else in `check`/`detect` is read-only.
+
+## v0.2 contract — setup, TLS, hardening, logs, settings bundle
+
+Ownership: **WEB builder** owns internal/web, internal/web/static, internal/tlscert (new).
+**CMD builder** owns cmd/n5-fangov, internal/config, internal/logfile (new), deploy/, README.
+
+### Config additions (internal/config)
+
+```toml
+[web]
+tls = "auto"            # auto | off | file. Default: "auto" when listen is non-loopback, "off" on loopback.
+                        # Non-loopback + "off" → warning, forced to "auto" (LAN traffic is never plain HTTP).
+cert_file = ""          # tls = "file": PEM paths
+key_file = ""
+[log]
+file = "/var/log/n5-fangov/n5-fangov.log"   # "" disables the file (journal only)
+max_size_mb = 5
+max_files = 5
+```
+
+### internal/tlscert (WEB builder)
+
+```go
+type Options struct { Dir string; Hosts []string /* SANs: IPs + DNS names */; Org string }
+func EnsureAuto(o Options) (tls.Certificate, string /*cert path*/, error)  // creates ECDSA P-256 self-signed (10y) if missing; reuses existing; regenerates when SANs changed
+func LoadFiles(certFile, keyFile string) (tls.Certificate, error)
+func ExportPEM(dir string) ([]byte, error)                                 // certificate only
+func Regenerate(o Options) (tls.Certificate, error)
+```
+`web.Server.ServeTLS(ctx, ln net.Listener, cert tls.Certificate) error` (min TLS 1.2, modern ciphers,
+HSTS header when TLS). Existing `Serve` stays for plain HTTP.
+
+### Log store (interface in internal/web, implemented by internal/logfile)
+
+```go
+type LogStore interface {
+    Lines(n int) ([]string, error)   // newest n lines of the file (falls back to journal when file disabled)
+    Export(w io.Writer) error        // whole current file
+    Clear() error                    // truncate current file (rotated files untouched); journal untouched
+    Path() string
+}
+```
+API: `GET /api/log?lines=N` (unchanged shape `{"lines":[...],"source":"file"|"journal"}`),
+`GET /api/log/export` (text/plain attachment `n5-fangov-<host>-<ts>.log`),
+`DELETE /api/log` (auth + CSRF; response `{"cleared":true,"note":"journal untouched"}`).
+`internal/logfile.New(path, maxSizeMB, maxFiles) (*Writer, error)` — io.Writer with size rotation
+(`.1`..`.N`), used by serve as `io.MultiWriter(os.Stdout, file)` for the standard logger.
+
+### Settings bundle (interface in internal/web, implemented in cmd wiring)
+
+```go
+type Bundle interface {
+    Export() ([]byte, error)                     // JSON {"format":1,"version":..,"exported":ts,"config":rawTOML,"presets":{name:rawTOML}}
+    Import(b []byte) (restartRequired bool, err error)   // validate ALL parts (config.Parse, preset parse) before writing anything; password_hash "<unchanged>" keeps current
+}
+```
+API: `GET /api/config/export` (application/json attachment `n5-fangov-settings-<ts>.json`, hash
+redacted to `<unchanged>`), `POST /api/config/import` (auth+CSRF; 200 / 202 restart_required /
+400 with errors). CLI: `n5-fangov export [FILE]`, `n5-fangov import FILE`.
+
+### Auth logging
+
+Log a failed basic-auth attempt only when an `Authorization` header was presented. Anonymous
+401s (UI before login) are not failures and must not count towards the rate limit.
+
+### CLI additions (CMD builder)
+
+```
+n5-fangov setup [--listen local|lan] [--user U] [--password P] [--yes]   interactive when flags missing:
+      detect profile → write /etc/n5-fangov/config.toml from N5ProChannels() (or generic from detected pwm)
+      → scope local/lan → admin user+password (hash computed here) → tls auto for lan → enable+start hint
+n5-fangov passwd [--user U]        set/replace web password (prompts twice, no echo)
+n5-fangov cert export [FILE]       PEM of the auto cert (to trust in browser/OS);  cert regen
+n5-fangov export [FILE] / import FILE
+n5-fangov log [-n N] [--export FILE] [--clear]
+n5-fangov check --after-update     DKMS module present for EVERY installed kernel (/lib/modules/*/updates/dkms/minisforum_n5_it5571.ko or dkms status per kernel); missing → non-zero, alert "kernel" (cooldown), printed for apt
+```
+
+### Deploy (CMD builder)
+
+- Unit hardening (must be verified on real hardware — `/sys` writes need `ProtectKernelTunables=no`):
+  `NoNewPrivileges=yes`, `ProtectSystem=strict`, `ReadWritePaths=/etc/n5-fangov /run/n5-fangov /var/log/n5-fangov /sys/class/hwmon /sys/devices`,
+  `ProtectHome=yes`, `PrivateTmp=yes`, `ProtectKernelTunables=no`, `ProtectControlGroups=yes`,
+  `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`, `RestrictNamespaces=yes`, `LockPersonality=yes`,
+  `MemoryDenyWriteExecute=yes`, `RestrictRealtime=yes`, `SystemCallArchitectures=native`,
+  `SystemCallFilter=@system-service @module`, `CapabilityBoundingSet=CAP_SYS_MODULE CAP_DAC_OVERRIDE CAP_CHOWN CAP_FOWNER`,
+  `UMask=0077`, `LogsDirectory=n5-fangov`, `LogsDirectoryMode=0750`.
+- apt hook `/etc/apt/apt.conf.d/90n5-fangov`: `DPkg::Post-Invoke { "if [ -x /usr/bin/n5-fangov ]; then /usr/bin/n5-fangov check --after-update || true; fi"; };`
+- install.sh: creates log dir, installs hook, ends with "run: n5-fangov setup". uninstall.sh removes hook, keeps /var/log unless --purge. deb: same via postinst/postrm.
