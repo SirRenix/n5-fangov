@@ -68,6 +68,12 @@ func (b *fakeBundle) Import(raw []byte) (bool, error) {
 	return b.restart, nil
 }
 
+// multiErr mimics the cmd bundle's validation error (Errors() []string).
+type multiErr []string
+
+func (m multiErr) Error() string    { return strings.Join(m, "; ") }
+func (m multiErr) Errors() []string { return m }
+
 // withDeps rebuilds the env's server with f applied to the deps.
 func (e *env) withDeps(t *testing.T, auth AuthConfig, f func(*Deps)) {
 	t.Helper()
@@ -353,6 +359,15 @@ func TestBundleImport(t *testing.T) {
 	}
 	if len(b.imported) != 2 {
 		t.Fatalf("Import calls = %d", len(b.imported))
+	}
+	// an error with Errors() []string (cmd's bundle validation) is listed item by item
+	b.importErr = fmt.Errorf("wrapped: %w", multiErr{"config: bad", "preset x: bad"})
+	r = e.do(t, "POST", "/api/config/import", doc, csrf)
+	wantCode(t, r, 400)
+	decode(t, r.body, &m)
+	errs, _ = m["errors"].([]any)
+	if m["error"] != "import rejected: config: bad" || len(errs) != 2 || errs[1] != "preset x: bad" {
+		t.Fatalf("400 body (Errors()) = %v", m)
 	}
 
 	// auth = basic: import is a write

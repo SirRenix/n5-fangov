@@ -39,9 +39,15 @@ func Load(path string) (Config, []Warning, error) {
 }
 
 // Save writes raw atomically (temp file + rename in the same directory).
-// It does not validate; callers run Parse first.
+// It does not validate; callers run Parse first. The file may carry the
+// password hash: an existing file keeps its mode, a new one is 0600 (the
+// daemon and the CLI run as root; nothing else needs to read it).
 func Save(path string, raw []byte) error {
-	return writeAtomic(path, raw, 0o644)
+	perm := os.FileMode(0o600)
+	if st, err := os.Stat(path); err == nil && st.Mode().IsRegular() {
+		perm = st.Mode().Perm()
+	}
+	return writeAtomic(path, raw, perm)
 }
 
 func writeAtomic(path string, data []byte, perm os.FileMode) error {

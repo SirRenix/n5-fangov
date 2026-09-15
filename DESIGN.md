@@ -399,3 +399,30 @@ n5-fangov check --after-update     DKMS module present for EVERY installed kerne
   `UMask=0077`, `LogsDirectory=n5-fangov`, `LogsDirectoryMode=0750`.
 - apt hook `/etc/apt/apt.conf.d/90n5-fangov`: `DPkg::Post-Invoke { "if [ -x /usr/bin/n5-fangov ]; then /usr/bin/n5-fangov check --after-update || true; fi"; };`
 - install.sh: creates log dir, installs hook, ends with "run: n5-fangov setup". uninstall.sh removes hook, keeps /var/log unless --purge. deb: same via postinst/postrm.
+
+### v0.2 integration notes (15.09.2026)
+
+Where the merged v0.2 packages deviate from the contract text above. Code is the reference.
+
+- `web.Deps.Log` is `any`, not `LogStore`: web accepts a `LogStore` or — for one release —
+  the pre-v0.2 `func(int) ([]string, error)` (adapted to a journal-only store: `source:
+  "journal"`, export = newest 100000 lines, `DELETE /api/log` → 501). Any other type is
+  logged once at `web.New` and the log endpoints answer 501. cmd passes its `logStore`
+  (`*logfile.Writer` or `journalLogStore`), which has the same method set.
+- `tlscert.Options` has a fourth member `Logf` (nil → `log.Printf`); cmd passes `log.Printf`.
+  The automatic certificate is marked **IsCA** with `KeyUsageCertSign` (self-signed +
+  BasicConstraints CA=true): browsers and OS stores accept a self-signed leaf as a trust
+  anchor only in that form. It is still one certificate that serves directly; no chain.
+  SANs always include `localhost`, `127.0.0.1`, `::1`; `EnsureAuto` regenerates when the
+  requested SANs are not covered, when expired, or when the pair does not load.
+- Bundle import errors: cmd's `fileBundle.Import` returns `*bundleError` whose `Error()`
+  joins with `"; "` and whose `Errors() []string` holds the items. web extracts the list
+  via `errors.As` on `interface{ Errors() []string }` and falls back to splitting
+  `Error()` at newlines; `{"error": "import rejected: <first>", "errors": [...]}`.
+- UI downloads (`/api/log/export`, `/api/config/export`) go through `fetch` + blob anchor,
+  not a plain `<a href>`: the in-memory basic-auth credential rides along and the CSP stays
+  strict. Curl/wget get the same attachments with `Content-Disposition`.
+- No dpkg conffile: `/etc/n5-fangov/config.toml` is written by `n5-fangov setup` only,
+  never by install.sh/postinst; an existing file is left alone (setup backs it up first).
+- `cmd/n5-fangov/wiring_v2.go` is merged (build tag and `wiring_v2_stub.go` removed); it is
+  the only cmd file that imports `internal/tlscert`.

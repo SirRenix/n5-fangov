@@ -1005,7 +1005,7 @@ func (s *Server) importConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	restart, err := s.deps.Bundle.Import(body)
 	if err != nil {
-		lines := strings.Split(strings.TrimSpace(err.Error()), "\n")
+		lines := importErrorLines(err)
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "import rejected: " + lines[0], "errors": lines})
 		return
 	}
@@ -1014,6 +1014,23 @@ func (s *Server) importConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "restart_required": false})
+}
+
+// importErrorLines turns a Bundle.Import error into the "errors" list: an
+// error carrying Errors() []string (the cmd bundle's validation list)
+// contributes its items, anything else is split at newlines. Never empty.
+func importErrorLines(err error) []string {
+	var multi interface{ Errors() []string }
+	if errors.As(err, &multi) {
+		if lines := multi.Errors(); len(lines) > 0 {
+			return lines
+		}
+	}
+	lines := strings.Split(strings.TrimSpace(err.Error()), "\n")
+	if len(lines) == 0 || (len(lines) == 1 && lines[0] == "") {
+		return []string{"import failed"}
+	}
+	return lines
 }
 
 // attachment sets the download headers for an export.

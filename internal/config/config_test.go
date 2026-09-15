@@ -430,12 +430,23 @@ func TestLoadSave(t *testing.T) {
 	if len(entries) != 1 {
 		t.Errorf("temp file left behind: %v", entries)
 	}
+	// a new file is private (it may carry the password hash)
+	if st, err := os.Stat(path); err != nil || st.Mode().Perm() != 0o600 {
+		t.Errorf("new config mode = %v, want 0600", st.Mode().Perm())
+	}
 	cfg, warns, err = Load(path)
 	if err != nil || len(warns) != 0 || len(cfg.Channels) != 2 {
 		t.Fatalf("load: %v %v", warns, err)
 	}
+	// an existing file keeps its mode across Save
+	if err := os.Chmod(path, 0o640); err != nil {
+		t.Fatal(err)
+	}
 	if err := Save(path, []byte("[[[")); err != nil {
 		t.Fatal(err)
+	}
+	if st, err := os.Stat(path); err != nil || st.Mode().Perm() != 0o640 {
+		t.Errorf("config mode after Save = %v, want 0640 (preserved)", st.Mode().Perm())
 	}
 	cfg, warns, err = Load(path)
 	if err == nil || len(warns) != 1 || !reflect.DeepEqual(cfg, Default()) {
