@@ -3,6 +3,7 @@
 #   tools\remote-go.ps1 -Path <repo-or-worktree> -Id <unique-name> [-Cmd "go test ./..."] [-Fetch]
 # Default Cmd: go mod tidy, go vet, go test, go build -> pvefand (linux/amd64, static).
 # -Fetch copies the built binary back to <Path>\dist\pvefand.
+# Run with pwsh (PowerShell 7+). Windows PowerShell 5.1 corrupts the binary tar pipe.
 param(
     [Parameter(Mandatory=$true)][string]$Path,
     [Parameter(Mandatory=$true)][string]$Id,
