@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func newTest(t *testing.T) (*Writer, string) {
@@ -291,6 +292,155 @@ func TestConcurrentWrites(t *testing.T) {
 	// with maxFiles 20 x 4000 bytes = 80 KB the ~46 KB written fit
 	if len(seen) != workers*per {
 		t.Errorf("%d distinct lines, want %d", len(seen), workers*per)
+	}
+}
+
+// blockingWriter blocks its first Write until release is closed and
+// records what it eventually received.
+type blockingWriter struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+	mu      sync.Mutex
+	buf     bytes.Buffer
+}
+
+func newBlockingWriter() *blockingWriter {
+	return &blockingWriter{started: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (b *blockingWriter) Write(p []byte) (int, error) {
+	b.once.Do(func() { close(b.started) })
+	<-b.release
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *blockingWriter) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// H1: an Export whose destination stalls (slow HTTP client) must not hold
+// the writer lock — the controller logs from inside the regulation cycle
+// and a blocked log call would run it into the systemd watchdog. Write and
+// Lines complete while the export is stuck; the export delivers the file
+// as it was when it started.
+func TestExportDoesNotBlockWrites(t *testing.T) {
+	w, _ := newTest(t)
+	w.maxSize = 1 << 30
+	for i := 0; i < 500; i++ { // > bufio buffer so the stalled Write is hit mid-copy
+		fmt.Fprintf(w, "line %04d %s\n", i, strings.Repeat("x", 40))
+	}
+	bw := newBlockingWriter()
+	exportDone := make(chan error, 1)
+	go func() { exportDone <- w.Export(bw) }()
+	select {
+	case <-bw.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("export never reached the writer")
+	}
+	writeDone := make(chan error, 1)
+	go func() {
+		_, err := w.Write([]byte("concurrent\n"))
+		writeDone <- err
+	}()
+	select {
+	case err := <-writeDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("Write blocked behind a stalled Export (writer lock held while streaming)")
+	}
+	linesDone := make(chan []string, 1)
+	go func() { l, _ := w.Lines(1); linesDone <- l }()
+	select {
+	case l := <-linesDone:
+		if strings.Join(l, ",") != "concurrent" {
+			t.Errorf("Lines during export: %v", l)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("Lines blocked behind a stalled Export")
+	}
+	close(bw.release)
+	if err := <-exportDone; err != nil {
+		t.Fatal(err)
+	}
+	out := bw.String()
+	if strings.Contains(out, "concurrent") {
+		t.Errorf("export includes bytes written after it started")
+	}
+	if !strings.HasSuffix(out, "line 0499 "+strings.Repeat("x", 40)+"\n") || strings.Count(out, "\n") != 500 {
+		t.Errorf("export content: %d lines, tail %q", strings.Count(out, "\n"), out[len(out)-60:])
+	}
+}
+
+// H1: a rotation during a stalled export renames the file under the open
+// descriptor; the export still delivers the old content, new lines land in
+// the fresh file.
+func TestExportSurvivesRotation(t *testing.T) {
+	w, path := newTest(t)
+	w.maxSize = 1 << 30
+	for i := 0; i < 200; i++ {
+		fmt.Fprintf(w, "old %04d %s\n", i, strings.Repeat("x", 40))
+	}
+	bw := newBlockingWriter()
+	exportDone := make(chan error, 1)
+	go func() { exportDone <- w.Export(bw) }()
+	<-bw.started
+	w.maxSize = 100 // next write rotates
+	if _, err := w.Write([]byte("new line\n")); err != nil {
+		t.Fatal(err)
+	}
+	if !exists(path + ".1") {
+		t.Fatal("no rotation")
+	}
+	close(bw.release)
+	if err := <-exportDone; err != nil {
+		t.Fatal(err)
+	}
+	if out := bw.String(); strings.Count(out, "\n") != 200 || strings.Contains(out, "new line") {
+		t.Errorf("export after rotation: %d lines", strings.Count(out, "\n"))
+	}
+	if lines, _ := w.Lines(5); strings.Join(lines, ",") != "new line" {
+		t.Errorf("current file after rotation: %v", lines)
+	}
+}
+
+// H2: an existing target that is not a regular file is refused — a symlink
+// (even to a regular file), a directory, a FIFO. A missing file is created.
+func TestNewRefusesNonRegularTarget(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := New(filepath.Join(dir, "sub", "new.log"), 1, 1); err != nil {
+		t.Errorf("missing file must be created: %v", err)
+	}
+	if _, err := New(dir, 1, 1); err == nil || !strings.Contains(err.Error(), "directory") {
+		t.Errorf("directory accepted: %v", err)
+	}
+	target := filepath.Join(dir, "target.log")
+	if err := os.WriteFile(target, []byte("x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link.log")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink: %v", err)
+	}
+	if _, err := New(link, 1, 1); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Errorf("symlink accepted: %v", err)
+	}
+	if b, _ := os.ReadFile(target); string(b) != "x\n" {
+		t.Errorf("symlink target touched: %q", b)
+	}
+	// a device node needs root to create; a FIFO is the same class
+	// (exists, not regular) and stands in for /dev/sda here
+	fifo := filepath.Join(dir, "fifo.log")
+	if err := mkfifo(fifo); err == nil {
+		if _, err := New(fifo, 1, 1); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+			t.Errorf("fifo accepted: %v", err)
+		}
 	}
 }
 

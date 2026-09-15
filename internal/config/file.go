@@ -3,8 +3,10 @@ package config
 import (
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -38,14 +40,46 @@ func Load(path string) (Config, []Warning, error) {
 	return Parse(raw)
 }
 
+// Logf receives the one-line notice when Save tightens the mode of an
+// existing config file. nil → log.Printf.
+var Logf func(format string, args ...any)
+
+func logf(format string, args ...any) {
+	if Logf != nil {
+		Logf(format, args...)
+		return
+	}
+	log.Printf(format, args...)
+}
+
+// secretLine matches a non-empty password_hash assignment in either quote
+// style (also the dotted web.password_hash form).
+var secretLine = regexp.MustCompile(`(?m)^[ \t]*(?:web\.)?password_hash[ \t]*=[ \t]*("[^"\n]+"|'[^'\n]+')`)
+
+// HasSecret reports whether raw carries a password hash: the parsed value
+// when the text parses, else a line-form assignment (Save is also called
+// with text that does not parse).
+func HasSecret(raw []byte) bool {
+	if cfg, _, err := Parse(raw); err == nil {
+		return cfg.Web.PasswordHash != ""
+	}
+	return secretLine.Match(raw)
+}
+
 // Save writes raw atomically (temp file + rename in the same directory).
-// It does not validate; callers run Parse first. The file may carry the
-// password hash: an existing file keeps its mode, a new one is 0600 (the
-// daemon and the CLI run as root; nothing else needs to read it).
+// It does not validate; callers run Parse first. A new file is 0600, an
+// existing one keeps its mode — unless raw carries a password hash (M3):
+// then the file is 0600 regardless, and a file that was wider before is
+// logged once as tightened. The daemon and the CLI run as root; nothing
+// else needs to read the file.
 func Save(path string, raw []byte) error {
 	perm := os.FileMode(0o600)
 	if st, err := os.Stat(path); err == nil && st.Mode().IsRegular() {
 		perm = st.Mode().Perm()
+	}
+	if HasSecret(raw) && perm&0o077 != 0 {
+		logf("config: %s carries password_hash, mode %04o tightened to 0600", path, perm)
+		perm = 0o600
 	}
 	return writeAtomic(path, raw, perm)
 }

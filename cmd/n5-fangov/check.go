@@ -268,12 +268,19 @@ const (
 )
 
 // cmdCheckAfterUpdate is run by /etc/apt/apt.conf.d/90n5-fangov after every
-// dpkg run. On a machine that uses the n5pro profile every installed
-// kernel must carry the DKMS module, otherwise the next reboot into a new
-// kernel starts without the EC driver: ExecStartPre fails, the fans stay in
-// BIOS control and the onfailure alert fires — this check says it earlier,
-// while the old kernel still runs. Exit 1 and a "kernel" alert (cooldown)
-// when a module is missing; other profiles: ok, exit 0.
+// dpkg run. On a machine that uses the n5pro profile every kernel the box
+// can boot into must carry the DKMS module, otherwise the next reboot
+// starts without the EC driver: ExecStartPre fails, the fans stay in BIOS
+// control and the onfailure alert fires — this check says it earlier,
+// while the old kernel still runs.
+//
+// "Can boot into" (M4) is the running kernel plus what
+// `proxmox-boot-tool kernel list` selects (manually, automatically,
+// pinned); without the tool: the running kernel and the newest installed
+// one. Older kernels that are merely still installed (apt keeps two) get
+// an info line only — a module missing there is not worth a notification.
+// Exit 1 and a "kernel" alert (cooldown) when a relevant kernel lacks the
+// module; other profiles: ok, exit 0.
 func cmdCheckAfterUpdate(cfgPath, dir string) int {
 	cfg, _, _ := loadConfig(cfgPath)
 	profileName := daemonOf(cfg).Profile
@@ -298,26 +305,163 @@ func cmdCheckAfterUpdate(cfgPath, dir string) int {
 	if ver == "" {
 		ver = dkmsFallbackVer
 	}
+	toolOut, toolErr := bootToolKernelList()
+	relevant, source := relevantKernels(runningKernel(), kernels, toolOut, toolErr)
 	if len(missing) == 0 {
 		fmt.Printf("n5-fangov: fan driver module present for %d kernel(s): %s\n", len(kernels), strings.Join(kernels, " "))
 		return exitOK
 	}
-	var lines []string
+	var alertLines, infoLines []string
 	for _, k := range missing {
-		lines = append(lines, kernelMissingLine(k, ver))
+		if relevant[k] {
+			alertLines = append(alertLines, kernelMissingLine(k, ver))
+		} else {
+			infoLines = append(infoLines, kernelMissingInfo(k, ver))
+		}
 	}
-	for _, l := range lines {
+	for _, l := range infoLines {
 		fmt.Println(l)
 	}
-	msg := fmt.Sprintf("Fan driver module %s is missing for %d of %d installed kernel(s). A reboot into such a kernel leaves the fans in BIOS/EC control (n5-fangov will not start).\n%s",
-		dkmsKernelObject, len(missing), len(kernels), strings.Join(lines, "\n"))
+	if len(alertLines) == 0 {
+		fmt.Printf("n5-fangov: fan driver module present for every bootable kernel (%s)\n", source)
+		return exitOK
+	}
+	for _, l := range alertLines {
+		fmt.Println(l)
+	}
+	msg := fmt.Sprintf("Fan driver module %s is missing for %d bootable kernel(s) (%s). A reboot into such a kernel leaves the fans in BIOS/EC control (n5-fangov will not start).\n%s",
+		dkmsKernelObject, len(alertLines), source, strings.Join(alertLines, "\n"))
 	sendAlertCooled(dir, newAlerter(), "kernel", msg)
 	return exitFail
 }
 
-// kernelMissingLine is the line printed per kernel without the module.
+// kernelMissingLine is the line printed per bootable kernel without the module.
 func kernelMissingLine(kernel, ver string) string {
 	return fmt.Sprintf("kernel %s: fan driver module missing — run: dkms install %s/%s -k %s", kernel, dkmsPackage, ver, kernel)
+}
+
+// kernelMissingInfo is the line for an installed kernel the box does not
+// boot into (no alert).
+func kernelMissingInfo(kernel, ver string) string {
+	return fmt.Sprintf("kernel %s: fan driver module missing (not selected for boot, info only; dkms install %s/%s -k %s if you intend to boot it)", kernel, dkmsPackage, ver, kernel)
+}
+
+// bootToolKernelList runs `proxmox-boot-tool kernel list`; a func var so
+// tests inject output. The error is what exec returns when the tool is
+// absent or fails.
+var bootToolKernelList = func() (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "proxmox-boot-tool", "kernel", "list").Output()
+	return string(out), err
+}
+
+// runningKernel is `uname -r`; a func var for tests.
+var runningKernel = func() string {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, _ := exec.CommandContext(ctx, "uname", "-r").Output()
+	return strings.TrimSpace(string(out))
+}
+
+// bootToolSections are the `proxmox-boot-tool kernel list` sections whose
+// entries the box may boot into.
+var bootToolSections = []string{"Manually selected kernels:", "Automatically selected kernels:", "Pinned kernel:"}
+
+// parseBootToolKernels extracts the kernel versions listed under the
+// bootToolSections headings ("None." entries ignored).
+func parseBootToolKernels(out string) []string {
+	var kernels []string
+	inSection := false
+	for _, line := range strings.Split(out, "\n") {
+		t := strings.TrimSpace(line)
+		if t == "" {
+			continue
+		}
+		if strings.HasSuffix(t, ":") {
+			inSection = false
+			for _, s := range bootToolSections {
+				if t == s {
+					inSection = true
+				}
+			}
+			continue
+		}
+		if inSection && t != "None." && t != "None" {
+			kernels = append(kernels, t)
+		}
+	}
+	return kernels
+}
+
+// relevantKernels is the set of installed kernels the box may boot into:
+// the running one plus the boot tool's selection, or — without the tool —
+// the running one plus the newest installed by version. source describes
+// which rule applied (for the output).
+func relevantKernels(running string, installed []string, toolOut string, toolErr error) (map[string]bool, string) {
+	isInstalled := map[string]bool{}
+	for _, k := range installed {
+		isInstalled[k] = true
+	}
+	rel := map[string]bool{}
+	if running != "" {
+		rel[running] = true
+	}
+	if toolErr == nil {
+		n := 0
+		for _, k := range parseBootToolKernels(toolOut) {
+			if isInstalled[k] {
+				rel[k] = true
+				n++
+			}
+		}
+		if n > 0 {
+			return rel, "running kernel + proxmox-boot-tool selection"
+		}
+	}
+	newest := ""
+	for _, k := range installed {
+		if newest == "" || kernelLess(newest, k) {
+			newest = k
+		}
+	}
+	if newest != "" {
+		rel[newest] = true
+	}
+	return rel, "running kernel + newest installed"
+}
+
+// kernelLess orders kernel version strings ("6.14.8-2-pve" < "6.17.4-1-pve")
+// by their numeric runs; a shorter numeric prefix sorts first.
+func kernelLess(a, b string) bool {
+	an, bn := numericRuns(a), numericRuns(b)
+	for i := 0; i < len(an) && i < len(bn); i++ {
+		if an[i] != bn[i] {
+			return an[i] < bn[i]
+		}
+	}
+	return len(an) < len(bn)
+}
+
+// numericRuns is the sequence of integers in s ("6.17.4-1-pve" → 6 17 4 1).
+func numericRuns(s string) []int {
+	var out []int
+	cur, in := 0, false
+	for _, c := range s {
+		if c >= '0' && c <= '9' {
+			cur = cur*10 + int(c-'0')
+			in = true
+			continue
+		}
+		if in {
+			out = append(out, cur)
+			cur, in = 0, false
+		}
+	}
+	if in {
+		out = append(out, cur)
+	}
+	return out
 }
 
 // wantsN5Pro decides whether the kernel gate applies: the config names the

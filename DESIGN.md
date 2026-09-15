@@ -391,12 +391,26 @@ n5-fangov check --after-update     DKMS module present for EVERY installed kerne
 ### Deploy (CMD builder)
 
 - Unit hardening (must be verified on real hardware — `/sys` writes need `ProtectKernelTunables=no`):
-  `NoNewPrivileges=yes`, `ProtectSystem=strict`, `ReadWritePaths=/etc/n5-fangov /run/n5-fangov /var/log/n5-fangov /sys/class/hwmon /sys/devices`,
-  `ProtectHome=yes`, `PrivateTmp=yes`, `ProtectKernelTunables=no`, `ProtectControlGroups=yes`,
-  `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`, `RestrictNamespaces=yes`, `LockPersonality=yes`,
-  `MemoryDenyWriteExecute=yes`, `RestrictRealtime=yes`, `SystemCallArchitectures=native`,
-  `SystemCallFilter=@system-service @module`, `CapabilityBoundingSet=CAP_SYS_MODULE CAP_DAC_OVERRIDE CAP_CHOWN CAP_FOWNER`,
-  `UMask=0077`, `LogsDirectory=n5-fangov`, `LogsDirectoryMode=0750`.
+  `NoNewPrivileges=yes`, `ProtectSystem=strict`, `ReadWritePaths=-/etc/n5-fangov -/run/n5-fangov -/var/log/n5-fangov -/sys/class/hwmon -/sys/devices -/var/spool/postfix/maildrop`
+  (`-` = missing path does not fail the start), `ProtectHome=yes`, `PrivateTmp=yes`, `PrivateDevices=yes`,
+  `ProtectKernelTunables=no`, `ProtectControlGroups=yes`,
+  `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK` (netlink: `net.Interfaces()`), `RestrictNamespaces=yes`,
+  `LockPersonality=yes`, `MemoryDenyWriteExecute=yes`, `RestrictRealtime=yes`, `SystemCallArchitectures=native`,
+  `SystemCallFilter=@system-service`, `CapabilityBoundingSet=` (empty: the daemon never loads modules or chowns;
+  the module comes from modules-load.d), `UMask=0077`, `LogsDirectory=n5-fangov`, `LogsDirectoryMode=0750`.
+  `make verify-deploy` runs `systemd-analyze verify` / `apt-config` over the deploy files where available.
+- `[log].file` must be a clean absolute path under `/var/log/` (`N5FANGOV_LOG_ROOT` moves the root for tests);
+  `logfile.New` refuses an existing target that is not a regular file (symlink, device, directory) and
+  opens with `O_NOFOLLOW`. `Lines`/`Export` hold the writer lock only to open the file, never while reading.
+- `[web].password_hash` is either the legacy `sha256("user:password")` hex or
+  `pbkdf2$<iter>$<salt hex>$<key hex>` (PBKDF2-HMAC-SHA256, 210000 iterations, 16-byte salt); `setup`/`passwd`
+  write the latter, `web.VerifyPassword` accepts both. Failed logins: 5 free, then 250 ms doubling to 2 s,
+  and at most 4 delayed attempts per IP in flight — further ones get 429 without a hash computation.
+- Auto certificate: name constraints (critical, exactly the SANs; IPs as /32 or /128) and `MaxPathLen 0`;
+  a regeneration caused by a SAN change keeps the private key. For an unspecified listen the SANs are the
+  host name plus the primary IPv4/IPv6 (route to 1.1.1.1 / 2606:4700::1111), not every interface address.
+- `check --after-update` alerts only for kernels the box can boot into (running kernel + `proxmox-boot-tool
+  kernel list` selection; without the tool: running + newest installed); other installed kernels are info lines.
 - apt hook `/etc/apt/apt.conf.d/90n5-fangov`: `DPkg::Post-Invoke { "if [ -x /usr/bin/n5-fangov ]; then /usr/bin/n5-fangov check --after-update || true; fi"; };`
 - install.sh: creates log dir, installs hook, ends with "run: n5-fangov setup". uninstall.sh removes hook, keeps /var/log unless --purge. deb: same via postinst/postrm.
 

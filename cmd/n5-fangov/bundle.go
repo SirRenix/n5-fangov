@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -43,8 +44,8 @@ type fileBundle struct {
 }
 
 // Export builds the bundle. A missing config file exports the built-in
-// defaults; the stored password hash is replaced by redactedHash wherever
-// it appears in the text.
+// defaults; the stored password hash is replaced by redactedHash the same
+// way the API does it (redactConfigText).
 func (b fileBundle) Export() ([]byte, error) {
 	raw, err := os.ReadFile(b.cfgPath)
 	if errors.Is(err, os.ErrNotExist) {
@@ -53,15 +54,11 @@ func (b fileBundle) Export() ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("config: %w", err)
 	}
-	cfg, _ := parseConfig(raw)
-	if h := webOf(cfg).PasswordHash; h != "" {
-		raw = []byte(strings.ReplaceAll(string(raw), h, redactedHash))
-	}
 	out := settingsBundle{
 		Format:   bundleFormat,
 		Version:  version.Version,
 		Exported: time.Now().Unix(),
-		Config:   string(raw),
+		Config:   redactConfigText(string(raw)),
 		Presets:  map[string]string{},
 	}
 	for _, name := range presetNames(b.presetDir) {
@@ -131,13 +128,37 @@ func (b fileBundle) Import(data []byte) (bool, error) {
 	for _, w := range warns {
 		fmt.Fprintf(os.Stderr, "import: config warning: %s\n", w)
 	}
-	for _, name := range names {
-		if err := savePresetRaw(b.presetDir, name, []byte(in.Presets[name])); err != nil {
-			return false, fmt.Errorf("preset %s: %w", name, err)
+	// L1: every preset is written to a temp name first; only when all of
+	// them and the config are on disk are the presets renamed into place.
+	// A write error leaves the preset directory as it was.
+	staged := make([]string, 0, len(names))
+	unstage := func() {
+		for _, tmp := range staged {
+			_ = os.Remove(tmp)
 		}
 	}
+	if len(names) > 0 {
+		if err := os.MkdirAll(b.presetDir, 0o755); err != nil {
+			return false, fmt.Errorf("presets: %w", err)
+		}
+	}
+	for _, name := range names {
+		tmp, err := stageFile(presetPath(b.presetDir, name), []byte(in.Presets[name]), 0o644)
+		if err != nil {
+			unstage()
+			return false, fmt.Errorf("preset %s: %w", name, err)
+		}
+		staged = append(staged, tmp)
+	}
 	if err := saveConfig(b.cfgPath, []byte(raw)); err != nil {
+		unstage()
 		return false, fmt.Errorf("config: %w", err)
+	}
+	for i, name := range names {
+		if err := os.Rename(staged[i], presetPath(b.presetDir, name)); err != nil {
+			unstage()
+			return false, fmt.Errorf("preset %s: config written, presets from %q on not: %w", name, name, err)
+		}
 	}
 	if b.reload == nil {
 		return false, nil
@@ -151,6 +172,35 @@ func (b fileBundle) Import(data []byte) (bool, error) {
 	default:
 		return false, fmt.Errorf("files written, but the daemon did not reload: %w", err)
 	}
+}
+
+// stageFile writes data to an unpredictable temp file next to path (same
+// directory, so the later rename is atomic) and returns its name.
+func stageFile(path string, data []byte, perm os.FileMode) (string, error) {
+	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".import-*.tmp")
+	if err != nil {
+		return "", err
+	}
+	tmp := f.Name()
+	fail := func(err error) (string, error) {
+		f.Close()
+		os.Remove(tmp)
+		return "", err
+	}
+	if _, err := f.Write(data); err != nil {
+		return fail(err)
+	}
+	if err := f.Sync(); err != nil {
+		return fail(err)
+	}
+	if err := f.Chmod(perm); err != nil {
+		return fail(err)
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmp)
+		return "", err
+	}
+	return tmp, nil
 }
 
 // bundleError carries every validation problem of an import so the API

@@ -70,8 +70,10 @@ the sibling repo, `experimental_write=1`); `setup` refuses without a detected pr
    - `HOST:PORT` — explicit address; non-loopback implies auth + HTTPS like `lan`.
 3. An existing config is backed up (`config.toml.bak-<timestamp>`) before it is replaced.
 
-Non-interactive: `n5-fangov setup --yes --listen lan --user admin --password '...'`
-(all needed flags must be present). Afterwards:
+Non-interactive: `n5-fangov setup --yes --listen lan --user admin --password-file /root/pw`
+(all needed flags must be present). The password comes from `--password-file F` (first
+line) or `--password -` (one line on stdin); `--password 'literal'` still works but is
+visible in `ps`, the shell history and the journal. Afterwards:
 
 ```
 n5-fangov check                  # what serve will do with this config
@@ -105,28 +107,42 @@ loopback, `auto` everywhere else, and **a non-loopback listener never runs plain
 cross the LAN in clear text).
 
 - **`auto`** — the daemon creates an ECDSA P-256 self-signed certificate (10 years) in
-  `/etc/n5-fangov/tls/` at the first start and reuses it; it is regenerated when the
-  names change. SANs: the listen host (all local addresses for `0.0.0.0`/`[::]`), the
-  host name, `localhost`, and `[web].allowed_hosts`. Browsers warn once about the
-  unknown issuer; to make that go away, trust the certificate:
+  `/etc/n5-fangov/tls/` at the first start and reuses it; when the names change it is
+  reissued **with the same key**, so a certificate you trusted stays trusted (the log
+  says `certificate regenerated (SANs changed), key unchanged`). SANs: the listen host
+  (for `0.0.0.0`/`[::]`: the primary IPv4 and IPv6 address, i.e. the source address of
+  the default route — not every interface), the host name, `localhost`, and
+  `[web].allowed_hosts`. The certificate is marked as a CA (browser stores accept
+  self-signed anchors only in that form) but carries **name constraints** limited to
+  exactly its own names and `pathlen 0`: even with the key, nothing signed by it is
+  valid for any other host. Browsers warn once about the unknown issuer; to make that
+  go away, trust the certificate:
 
   ```
   n5-fangov cert export > n5-fangov.pem      # PEM, certificate only
   # Firefox/Chrome: import as a trusted server certificate; Debian: copy to
   # /usr/local/share/ca-certificates/n5-fangov.crt && update-ca-certificates
-  n5-fangov cert regen && systemctl restart n5-fangov   # new key pair, same names
+  n5-fangov cert regen && systemctl restart n5-fangov   # new key pair, same names (re-trust needed)
   ```
 
 - **`file`** — your own certificate: `cert_file` (PEM chain) and `key_file` (PEM key),
   both required; the paths must be readable inside the unit's sandbox (see Hardening —
   `/etc/n5-fangov/` is the simple place). A missing file disables the web listener, the
-  CLI socket keeps working.
+  CLI socket keeps working. A key file readable by group or others is logged as a
+  warning at start (`chmod 0600`).
 
 - **`off`** — plain HTTP, loopback only. A reverse proxy (Caddy, nginx, the PVE proxy)
   terminating TLS in front of `127.0.0.1:8010` is the alternative to `auto`; list its
   public name in `allowed_hosts` or let it rewrite `Host`.
 
-TLS 1.2 minimum, modern cipher suites, HSTS header. Changes to `[web]` need a restart.
+TLS 1.2 minimum, modern cipher suites, HSTS header (`max-age=31536000`, no
+`includeSubDomains`, no preload). **HSTS scope:** browsers apply it to the whole host
+*name*, all ports — after one visit to `https://n5.lan:8010` the browser also
+rewrites `http://n5.lan/` (port 80) to HTTPS for a year. Browsers ignore HSTS for
+IP literals, so `https://192.0.2.10:8010` affects nothing else. Reach the UI by IP, or
+make sure every service on that name speaks HTTPS; a reverse proxy in front of
+`tls = "off"` sets its own policy (n5-fangov sends the header only on its own TLS
+listener). Changes to `[web]` need a restart.
 
 ## Security
 
@@ -141,10 +157,18 @@ The API changes fan duties, so treat the port like a management interface.
   listen = "192.0.2.10:8010"
   auth = "basic"
   user = "admin"
-  password_hash = "<sha256 hex of 'admin:password'>"   # n5-fangov passwd, or: printf 'admin:password' | sha256sum
+  password_hash = "pbkdf2$210000$<salt hex>$<key hex>"   # written by: n5-fangov passwd
   tls = "auto"                                         # or "file" with cert_file/key_file
   allowed_hosts = ["fans.example.internal"]            # names a proxy passes in Host
   ```
+
+- **Password hashes.** `n5-fangov passwd` and `setup` store salted PBKDF2-HMAC-SHA256
+  (210 000 iterations, 16-byte random salt) as `pbkdf2$<iter>$<salt>$<key>`. The
+  earlier form — the plain `sha256` hex of `user:password` (64 characters, as produced
+  by `printf 'admin:password' | sha256sum`) — **keeps working**; the daemon accepts
+  both. Run `n5-fangov passwd` once to upgrade an old hash (a restart applies it). A
+  config file that carries a hash is written `0600`; an existing wider mode is
+  tightened and logged.
 
 - **Fail closed.** `auth = "basic"` with a missing or unusable `password_hash`, or a
   typo in `auth`, never degrades to an open LAN listener: the daemon forces
@@ -157,7 +181,9 @@ The API changes fan duties, so treat the port like a management interface.
   logins are throttled per client IP (5 free, then 250 ms doubling to 2 s, reset after
   10 min or a success) and logged with user name and IP — only when an `Authorization`
   header was actually presented; the anonymous 401 the UI gets before login is not a
-  failure.
+  failure. At most 4 delayed attempts per IP are in flight at once; further ones get
+  an immediate `429` without a hash computation, so parallel requests cannot
+  side-step the delay or burn CPU on PBKDF2.
 - **The hash never leaves the daemon.** `GET /api/config` and the settings export show
   `password_hash = "<unchanged>"`; sending that text back keeps the stored hash.
 - **Host header check (DNS rebinding).** Requests are only served for IP literals,
@@ -201,7 +227,10 @@ max_files = 5                               # keep .1 .. .5 (1..20)
 
 Lines in the file carry their own timestamp; rotation renames `n5-fangov.log` to `.1`,
 shifts older files up and drops the oldest. Directory `0750`, file `0640` (the unit
-runs with `UMask=0077`).
+runs with `UMask=0077`). `file` must be a plain absolute path under `/var/log/` (no
+`..`); anything else falls back to the default with a warning, and an existing target
+that is not a regular file (symlink, device, directory) is refused — the daemon appends
+as root and must not be pointed at `/dev/sda` or its own config.
 
 ```
 n5-fangov log -n 200                 newest lines of the current file
@@ -240,10 +269,14 @@ the new kernel, the next boot has no `pwm` files, `check` fails and the fans sta
 BIOS/EC control (safe, but unregulated for the drives). Two gates catch this:
 
 1. `/etc/apt/apt.conf.d/90n5-fangov` runs `n5-fangov check --after-update` after every
-   dpkg run. It requires `updates/dkms/minisforum_n5_it5571.ko` for **every** kernel
-   under `/lib/modules`. Missing → `kernel X: fan driver module missing — run: dkms
+   dpkg run. It requires `updates/dkms/minisforum_n5_it5571.ko` for every kernel the
+   box can **boot into**: the running one plus what `proxmox-boot-tool kernel list`
+   selects (manually, automatically, pinned); without that tool the running one plus
+   the newest installed. Missing → `kernel X: fan driver module missing — run: dkms
    install minisforum-n5-it5571/<ver> -k X` on the apt output plus a `kernel` alert
-   (30 min cooldown). The apt run never fails because of it. Non-N5-Pro boxes: no-op.
+   (30 min cooldown). Older kernels that are merely still installed (apt keeps two)
+   get an `info only` line and no alert. The apt run never fails because of it.
+   Non-N5-Pro boxes: no-op.
 2. `ExecStartPre=n5-fangov check` reports `dkms` for the running kernel at every start.
 
 What a Proxmox upgrade **can** affect: the kernel (above), `dkms` itself, perl/
@@ -259,16 +292,32 @@ on real hardware after every change — `/sys` writes are what most sandboxes fo
 | Setting | Effect |
 |---|---|
 | `NoNewPrivileges=yes`, `LockPersonality=yes`, `RestrictRealtime=yes` | no privilege escalation from the daemon |
-| `ProtectSystem=strict` + `ReadWritePaths=/etc/n5-fangov /run/n5-fangov /var/log/n5-fangov /sys/class/hwmon /sys/devices` | whole file system read-only except config/presets/tls, runtime dir, logs and the hwmon attributes |
+| `ProtectSystem=strict` + `ReadWritePaths=-/etc/n5-fangov -/run/n5-fangov -/var/log/n5-fangov -/sys/class/hwmon -/sys/devices -/var/spool/postfix/maildrop` | whole file system read-only except config/presets/tls, runtime dir, logs, the hwmon attributes and the postfix maildrop (alerts via `mail`); `-` = a missing path does not fail the start |
 | `ProtectKernelTunables=no` | **must stay `no`**: the pwm files are kernel tunables |
-| `ProtectHome=yes`, `PrivateTmp=yes`, `ProtectControlGroups=yes` | no access to home, private /tmp, cgroups read-only |
-| `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`, `RestrictNamespaces=yes` | socket, TCP/HTTP(S), nothing else |
-| `MemoryDenyWriteExecute=yes`, `SystemCallArchitectures=native`, `SystemCallFilter=@system-service @module` | no JIT/exec tricks, native syscalls only |
-| `CapabilityBoundingSet=CAP_SYS_MODULE CAP_DAC_OVERRIDE CAP_CHOWN CAP_FOWNER` | sysfs and file ownership only |
+| `ProtectHome=yes`, `PrivateTmp=yes`, `PrivateDevices=yes`, `ProtectControlGroups=yes` | no access to home, private /tmp, no physical devices in /dev, cgroups read-only |
+| `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK`, `RestrictNamespaces=yes` | socket, TCP/HTTP(S), netlink for the interface list (`net.Interfaces()` — the fallback when the TLS certificate needs the box's addresses), nothing else |
+| `MemoryDenyWriteExecute=yes`, `SystemCallArchitectures=native`, `SystemCallFilter=@system-service` | no JIT/exec tricks, native syscalls only, no module loading |
+| `CapabilityBoundingSet=` (empty) | the daemon runs as uid 0 but holds no capability: it never loads modules (modules-load.d does), never chowns, and root's own files and the root-owned sysfs attributes need none |
 | `UMask=0077`, `LogsDirectory=n5-fangov` (`0750`), `RuntimeDirectory=n5-fangov` (`0750`) | files private by default |
 
-Alerts are sent by running `perl`/`mail` from inside this sandbox; they need the same
-paths readable, which `ProtectSystem=strict` leaves.
+**Alert delivery under the sandbox.** Alerts run `perl -MPVE::Notify` or `mail(1)`
+from inside this sandbox. Verified: **PVE notification targets of type SMTP** (the
+Proxmox stack talks to the mail server itself; nothing on the local file system is
+written). The `mail(1)`/sendmail path on non-PVE hosts, and a PVE *sendmail* target,
+hand the message to postfix's `postdrop`, which writes into
+`/var/spool/postfix/maildrop` — that directory is in `ReadWritePaths`, but it is
+`0730 postfix:postdrop` and `NoNewPrivileges` suppresses the setgid bit `postdrop`
+relies on, so this path additionally needs `CAP_DAC_OVERRIDE`. Not verified; if you
+need it, add a drop-in (`systemctl edit n5-fangov`) with
+`CapabilityBoundingSet=CAP_DAC_OVERRIDE` and test with an alert the daemon itself
+sends from inside the sandbox (e.g. a deliberately invalid value in the config plus
+`systemctl restart n5-fangov` → `config` alert; `n5-fangov alert` from a shell runs
+outside the sandbox and proves nothing). A failed delivery is logged
+(`alert: ... failed`), the alert text is always in the journal.
+
+`make verify-deploy` runs `systemd-analyze verify` over the units and `apt-config`
+over the apt hook (on a host that has them; the Docker build container skips both
+with a note). Run it on the target box after editing the unit.
 
 ## Compatibility
 

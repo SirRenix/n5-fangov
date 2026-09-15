@@ -1,8 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -75,6 +79,75 @@ func TestScanKernelModules(t *testing.T) {
 	if k, m, err := scanKernelModules(empty, dkmsKernelObject); err != nil || len(k) != 0 || len(m) != 0 {
 		t.Errorf("empty root: %v %v %v", k, m, err)
 	}
+}
+
+// M4: only kernels the box can boot into count. With proxmox-boot-tool
+// present its manual/automatic/pinned selection plus the running kernel
+// are relevant; without it the running one plus the newest installed.
+// Installed-but-unselected kernels are info only.
+func TestRelevantKernels(t *testing.T) {
+	installed := []string{"6.14.8-2-pve", "6.17.2-1-pve", "6.17.4-1-pve", "6.17.4-2-pve", "6.8.12-9-pve"}
+	toolOut := `Manually selected kernels:
+None.
+
+Automatically selected kernels:
+6.17.4-2-pve
+6.17.4-1-pve
+
+Pinned kernel:
+6.14.8-2-pve
+`
+	rel, source := relevantKernels("6.17.2-1-pve", installed, toolOut, nil)
+	want := map[string]bool{"6.17.2-1-pve": true, "6.17.4-2-pve": true, "6.17.4-1-pve": true, "6.14.8-2-pve": true}
+	if fmt.Sprint(rel) != fmt.Sprint(want) || !strings.Contains(source, "proxmox-boot-tool") {
+		t.Errorf("with tool: %v (%s)", rel, source)
+	}
+	if rel["6.8.12-9-pve"] {
+		t.Error("old installed kernel counted as relevant")
+	}
+	// a listed kernel that is not installed under /lib/modules is ignored
+	rel, _ = relevantKernels("6.17.2-1-pve", installed, "Automatically selected kernels:\n7.0.0-1-pve\n6.17.4-2-pve\n", nil)
+	if rel["7.0.0-1-pve"] || !rel["6.17.4-2-pve"] {
+		t.Errorf("uninstalled listed kernel: %v", rel)
+	}
+	// tool absent: running + newest installed (numeric order, not lexical:
+	// 6.17 > 6.8)
+	rel, source = relevantKernels("6.14.8-2-pve", installed, "", errors.New("exec: not found"))
+	if fmt.Sprint(rel) != fmt.Sprint(map[string]bool{"6.14.8-2-pve": true, "6.17.4-2-pve": true}) || !strings.Contains(source, "newest") {
+		t.Errorf("without tool: %v (%s)", rel, source)
+	}
+	// tool present but lists nothing usable: same fallback
+	rel, source = relevantKernels("6.14.8-2-pve", installed, "Manually selected kernels:\nNone.\n\nAutomatically selected kernels:\nNone.\n", nil)
+	if !rel["6.17.4-2-pve"] || len(rel) != 2 || !strings.Contains(source, "newest") {
+		t.Errorf("empty tool output: %v (%s)", rel, source)
+	}
+	// running kernel unknown: newest only
+	rel, _ = relevantKernels("", installed, "", errors.New("x"))
+	if len(rel) != 1 || !rel["6.17.4-2-pve"] {
+		t.Errorf("no running kernel: %v", rel)
+	}
+	if got := parseBootToolKernels(toolOut); strings.Join(got, " ") != "6.17.4-2-pve 6.17.4-1-pve 6.14.8-2-pve" {
+		t.Errorf("parse: %v", got)
+	}
+	// unknown sections are not harvested
+	if got := parseBootToolKernels("Kernels in /boot:\n6.1.0-x\n\nAutomatically selected kernels:\n6.2.0-y\n"); strings.Join(got, " ") != "6.2.0-y" {
+		t.Errorf("foreign section harvested: %v", got)
+	}
+	for _, c := range [][2]string{{"6.8.12-9-pve", "6.17.4-1-pve"}, {"6.17.4-1-pve", "6.17.4-2-pve"}, {"6.17.4-2-pve", "6.17.10-1-pve"}, {"6.17-pve", "6.17.0-1-pve"}} {
+		if !kernelLess(c[0], c[1]) || kernelLess(c[1], c[0]) {
+			t.Errorf("kernelLess(%s, %s)", c[0], c[1])
+		}
+	}
+	if kernelLess("6.17.4-2-pve", "6.17.4-2-pve") {
+		t.Error("kernelLess equal")
+	}
+	if l := kernelMissingInfo("6.8.12-9-pve", "0.2.0"); !strings.Contains(l, "info only") || !strings.Contains(l, "dkms install minisforum-n5-it5571/0.2.0 -k 6.8.12-9-pve") {
+		t.Errorf("info line: %s", l)
+	}
+	// the func vars run real commands by default; on the test host uname
+	// works and the tool is absent or works — both paths must not panic
+	_ = runningKernel()
+	_, _ = bootToolKernelList()
 }
 
 func TestWantsN5ProAndDKMSVersion(t *testing.T) {
@@ -341,11 +414,12 @@ func TestSetupConfigN5Pro(t *testing.T) {
 		t.Fatalf("lan config: %v %v\n%s", err, warns, raw)
 	}
 	w := webOf(cfg)
-	if w.Listen != "192.0.2.10:8010" || w.Auth != "basic" || w.User != "admin" || w.TLS != "auto" || w.PasswordHash != passwordHash("admin", "secret") {
+	if w.Listen != "192.0.2.10:8010" || w.Auth != "basic" || w.User != "admin" || w.TLS != "auto" || w.PasswordHash != lan.PasswordHash {
 		t.Errorf("lan: %+v", w)
 	}
-	if len(w.PasswordHash) != 64 {
-		t.Errorf("hash length %d", len(w.PasswordHash))
+	// M3: setup writes the salted PBKDF2 form, which verifies the password
+	if !strings.HasPrefix(w.PasswordHash, "pbkdf2$") || !verifyPassword("admin", "secret", w.PasswordHash) || verifyPassword("admin", "wrong", w.PasswordHash) {
+		t.Errorf("hash form %q", w.PasswordHash)
 	}
 	// the written file is what check evaluates: no fatal findings
 	dir := t.TempDir()
@@ -414,7 +488,7 @@ func TestSetupConfigGeneric(t *testing.T) {
 func TestSetWebAuth(t *testing.T) {
 	src := "# keep me\n[daemon]\nprofile = \"n5pro\"\n\n[web]\nlisten = \"127.0.0.1:8010\"  # local\nauth = \"none\"\n\n[[channel]]\nname = \"cpu\"\npwm = 1\nsensor = \"k10temp\"\ncurve = [[45, 85], [80, 255]]\ncritical = 88\n"
 	out := string(setWebAuth([]byte(src), "admin", "pw"))
-	for _, want := range []string{"# keep me", "listen = \"127.0.0.1:8010\"  # local", "auth = \"basic\"", "user = \"admin\"", "password_hash = \"" + passwordHash("admin", "pw") + "\"", "[[channel]]\nname = \"cpu\""} {
+	for _, want := range []string{"# keep me", "listen = \"127.0.0.1:8010\"  # local", "auth = \"basic\"", "user = \"admin\"", "password_hash = \"pbkdf2$", "[[channel]]\nname = \"cpu\""} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)
 		}
@@ -423,10 +497,66 @@ func TestSetWebAuth(t *testing.T) {
 	if err != nil || len(warns) != 0 || webOf(cfg).Auth != "basic" || webOf(cfg).User != "admin" {
 		t.Errorf("parse: %v %v %+v", err, warns, webOf(cfg))
 	}
+	if !verifyPassword("admin", "pw", webOf(cfg).PasswordHash) {
+		t.Errorf("written hash does not verify: %q", webOf(cfg).PasswordHash)
+	}
 	// on an empty file the [web] table is created
 	cfg, warns, err = parseConfigErr(setWebAuth(nil, "u", "p"))
 	if err != nil || len(warns) != 0 || webOf(cfg).Auth != "basic" {
 		t.Errorf("empty: %v %v %+v", err, warns, webOf(cfg))
+	}
+}
+
+// L5: without a log file, Clear is "unsupported" (the web layer answers
+// 501), not a generic error (500).
+func TestJournalLogStoreClearUnsupported(t *testing.T) {
+	err := journalLogStore{}.Clear()
+	if !errors.Is(err, errors.ErrUnsupported) || !strings.Contains(err.Error(), "journal is not cleared") {
+		t.Errorf("Clear: %v", err)
+	}
+}
+
+// M6: the password comes from a file, from stdin ("-") or — still
+// accepted — from the flag; empty sources are refused.
+func TestPasswordFromArgs(t *testing.T) {
+	dir := t.TempDir()
+	pf := filepath.Join(dir, "pw")
+	if err := os.WriteFile(pf, []byte("s3cret\r\nsecond line\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if pw, err := passwordFromArgs("", pf, nil); err != nil || pw != "s3cret" {
+		t.Errorf("file: %q %v", pw, err)
+	}
+	if pw, err := passwordFromArgs("literal", pf, nil); err != nil || pw != "s3cret" {
+		t.Errorf("file wins over literal: %q %v", pw, err)
+	}
+	if pw, err := passwordFromArgs("-", "", strings.NewReader("from-stdin\nignored\n")); err != nil || pw != "from-stdin" {
+		t.Errorf("stdin: %q %v", pw, err)
+	}
+	if pw, err := passwordFromArgs("-", "", strings.NewReader("no-newline")); err != nil || pw != "no-newline" {
+		t.Errorf("stdin without newline: %q %v", pw, err)
+	}
+	if pw, err := passwordFromArgs("literal", "", nil); err != nil || pw != "literal" {
+		t.Errorf("literal: %q %v", pw, err)
+	}
+	if pw, err := passwordFromArgs("", "", nil); err != nil || pw != "" {
+		t.Errorf("nothing given must mean ask: %q %v", pw, err)
+	}
+	for name, c := range map[string]struct{ lit, file, in string }{
+		"empty file":    {"", filepath.Join(dir, "empty"), ""},
+		"missing file":  {"", filepath.Join(dir, "nope"), ""},
+		"empty stdin":   {"-", "", ""},
+		"blank stdin":   {"-", "", "\n"},
+		"newline first": {"", filepath.Join(dir, "blank"), ""},
+	} {
+		_ = os.WriteFile(filepath.Join(dir, "empty"), nil, 0o600)
+		_ = os.WriteFile(filepath.Join(dir, "blank"), []byte("\npw\n"), 0o600)
+		if pw, err := passwordFromArgs(c.lit, c.file, strings.NewReader(c.in)); err == nil {
+			t.Errorf("%s: accepted %q", name, pw)
+		}
+	}
+	if !strings.Contains(passwordFlagHelp, "ps") || !strings.Contains(passwordFlagHelp, "--password-file") {
+		t.Errorf("usage text does not steer away from --password: %q", passwordFlagHelp)
 	}
 }
 
@@ -454,5 +584,141 @@ func TestTLSHosts(t *testing.T) {
 	}
 	if hn, _ := os.Hostname(); hn != "" && !seen[hn] {
 		t.Errorf("hostname %s missing", hn)
+	}
+}
+
+// M5/H3: an unspecified listen takes the primary addresses (route-based),
+// not every interface; when none can be found a warning is logged and the
+// certificate still covers host name + loopback.
+func TestTLSHostsUnspecified(t *testing.T) {
+	defer func(f func() []string) { primaryIPsFn = f }(primaryIPsFn)
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	defer log.SetOutput(os.Stderr)
+
+	primaryIPsFn = func() []string { return []string{"192.0.2.10", "2001:db8::10"} }
+	for _, listen := range []string{"0.0.0.0:8010", "[::]:8010", ":8010"} {
+		hosts := tlsHosts(webSpec{Listen: listen})
+		joined := " " + strings.Join(hosts, " ") + " "
+		for _, want := range []string{"192.0.2.10", "2001:db8::10", "localhost", "127.0.0.1"} {
+			if !strings.Contains(joined, " "+want+" ") {
+				t.Errorf("%s: missing %s in %v", listen, want, hosts)
+			}
+		}
+		if strings.Contains(joined, " 0.0.0.0 ") || strings.Contains(joined, " :: ") {
+			t.Errorf("%s: wildcard leaked: %v", listen, hosts)
+		}
+	}
+	if buf.Len() != 0 {
+		t.Errorf("unexpected log: %s", buf.String())
+	}
+	// a specific listen host never consults the primary addresses
+	primaryIPsFn = func() []string { t.Error("primaryIPs called for a specific host"); return nil }
+	tlsHosts(webSpec{Listen: "192.0.2.10:8010"})
+	// nothing found: warning, host name + loopback only
+	primaryIPsFn = func() []string { return nil }
+	hosts := tlsHosts(webSpec{Listen: "0.0.0.0:8010"})
+	if !strings.Contains(buf.String(), "no primary IPv4/IPv6 address") {
+		t.Errorf("no warning logged: %q", buf.String())
+	}
+	joined := " " + strings.Join(hosts, " ") + " "
+	if !strings.Contains(joined, " localhost ") || !strings.Contains(joined, " 127.0.0.1 ") {
+		t.Errorf("loopback missing: %v", hosts)
+	}
+	// the real resolver: a route may or may not exist on the test host,
+	// but it never returns loopback/unspecified addresses
+	for _, a := range primaryIPs() {
+		if ip := net.ParseIP(a); ip == nil || !ip.IsGlobalUnicast() {
+			t.Errorf("primaryIPs returned %q", a)
+		}
+	}
+	if s := routeSource("127.0.0.1:53"); s != "" {
+		t.Errorf("loopback route reported as primary: %q", s)
+	}
+}
+
+// M7: a short password hash must not be replaced as a bare substring —
+// with the old ReplaceAll a hash of "a" mangled every "a" in the config.
+func TestBundleExportShortHash(t *testing.T) {
+	root := t.TempDir()
+	cfgPath := filepath.Join(root, "config.toml")
+	src := "[daemon]\nprofile = \"n5pro\"\n\n[web]\nauth = \"basic\"\nuser = \"admin\"\npassword_hash = \"a\"\n\n[[channel]]\nname = \"cpu\"\npwm = 1\nsensor = \"k10temp\"\ncurve = [[45, 85], [80, 255]]\ncritical = 88\n"
+	if err := os.WriteFile(cfgPath, []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	data, err := fileBundle{cfgPath: cfgPath, presetDir: filepath.Join(root, "presets")}.Export()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var b settingsBundle
+	if err := json.Unmarshal(data, &b); err != nil {
+		t.Fatal(err)
+	}
+	want := strings.Replace(src, `password_hash = "a"`, `password_hash = "<unchanged>"`, 1)
+	if b.Config != want {
+		t.Errorf("short hash mangled the config:\n%s", b.Config)
+	}
+	// a long hash is still removed wherever it appears (inline table form)
+	long := strings.Repeat("ab", 32)
+	if err := os.WriteFile(cfgPath, []byte("web = { auth = \"basic\", user = \"admin\", password_hash = \""+long+"\" }\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	data, _ = fileBundle{cfgPath: cfgPath, presetDir: filepath.Join(root, "presets")}.Export()
+	_ = json.Unmarshal(data, &b)
+	if strings.Contains(b.Config, long) || !strings.Contains(b.Config, redactedHash) {
+		t.Errorf("inline hash not redacted:\n%s", b.Config)
+	}
+}
+
+// L1: presets are staged under temp names and renamed only after the
+// config is written; a config write failure leaves the preset directory
+// untouched and no temp files behind.
+func TestBundleImportStagesPresets(t *testing.T) {
+	root := t.TempDir()
+	cfgDir := filepath.Join(root, "etc")
+	presetDir := filepath.Join(root, "presets")
+	if err := os.MkdirAll(presetDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(presetDir, "quiet.toml"), []byte("[[channel]]\nname = \"old\"\npwm = 1\nsensor = \"k10temp\"\ncurve = [[45, 85], [80, 255]]\ncritical = 88\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	doc, _ := json.Marshal(settingsBundle{Format: 1, Config: "[daemon]\n", Presets: map[string]string{"quiet": quietPreset, "fast": quietPreset}})
+	// config path inside a file (not a directory): Save fails after the presets were staged
+	if err := os.WriteFile(cfgDir, []byte("i am a file"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	b := fileBundle{cfgPath: filepath.Join(cfgDir, "config.toml"), presetDir: presetDir}
+	if _, err := b.Import(doc); err == nil {
+		t.Fatal("import succeeded with an unwritable config path")
+	}
+	entries, _ := os.ReadDir(presetDir)
+	names := []string{}
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	if strings.Join(names, ",") != "quiet.toml" {
+		t.Errorf("preset dir after failed import: %v (staged files must be gone, fast.toml not created)", names)
+	}
+	if p, _ := os.ReadFile(filepath.Join(presetDir, "quiet.toml")); !strings.Contains(string(p), "old") {
+		t.Errorf("existing preset replaced although the import failed")
+	}
+	// now with a writable config path: both presets land, no temp files
+	if err := os.Remove(cfgDir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Import(doc); err != nil {
+		t.Fatal(err)
+	}
+	entries, _ = os.ReadDir(presetDir)
+	names = names[:0]
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	if strings.Join(names, ",") != "fast.toml,quiet.toml" {
+		t.Errorf("preset dir after import: %v", names)
+	}
+	if p, _ := os.ReadFile(filepath.Join(presetDir, "quiet.toml")); string(p) != quietPreset {
+		t.Errorf("preset content: %q", p)
 	}
 }

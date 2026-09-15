@@ -2,9 +2,12 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -182,6 +185,44 @@ func TestWebBasicAuth(t *testing.T) {
 	cfg, warns, _ = Parse([]byte("[web]\nauth = \"basic\"\nuser = \"admin\"\npassword_hash = \"" + h + "\"\n"))
 	if len(warns) != 0 || cfg.Web.Auth != "basic" || cfg.Web.User != "admin" {
 		t.Errorf("valid basic: %+v %v", cfg.Web, warns)
+	}
+	// M3: the PBKDF2 form is accepted as well
+	p := "pbkdf2$210000$" + strings.Repeat("0f", 16) + "$" + strings.Repeat("ab", 32)
+	cfg, warns, _ = Parse([]byte("[web]\nauth = \"basic\"\nuser = \"admin\"\npassword_hash = \"" + p + "\"\n"))
+	if len(warns) != 0 || cfg.Web.Auth != "basic" || cfg.Web.PasswordHash != p {
+		t.Errorf("valid pbkdf2: %+v %v", cfg.Web, warns)
+	}
+}
+
+// M3: both stored hash forms parse; malformed ones are rejected with a
+// reason.
+func TestParsePasswordHash(t *testing.T) {
+	legacy, err := ParsePasswordHash(strings.Repeat("ab", 32))
+	if err != nil || len(legacy.Legacy) != 32 || legacy.Iter != 0 {
+		t.Errorf("legacy: %+v %v", legacy, err)
+	}
+	ph, err := ParsePasswordHash(" pbkdf2$210000$" + strings.Repeat("0f", 16) + "$" + strings.Repeat("ab", 32) + " ")
+	if err != nil || ph.Legacy != nil || ph.Iter != 210000 || len(ph.Salt) != 16 || len(ph.Key) != 32 {
+		t.Errorf("pbkdf2: %+v %v", ph, err)
+	}
+	bad := []string{
+		"",
+		"zz",
+		strings.Repeat("g", 64),
+		strings.Repeat("ab", 31),
+		"pbkdf2$210000$" + strings.Repeat("0f", 16),
+		"pbkdf2$abc$" + strings.Repeat("0f", 16) + "$" + strings.Repeat("ab", 32),
+		"pbkdf2$10$" + strings.Repeat("0f", 16) + "$" + strings.Repeat("ab", 32),
+		"pbkdf2$210000$zz$" + strings.Repeat("ab", 32),
+		"pbkdf2$210000$0f$" + strings.Repeat("ab", 32),
+		"pbkdf2$210000$" + strings.Repeat("0f", 16) + "$" + strings.Repeat("ab", 16),
+		"pbkdf2$210000$" + strings.Repeat("0f", 16) + "$" + strings.Repeat("ab", 32) + "$x",
+		"scrypt$1$2$3",
+	}
+	for _, s := range bad {
+		if _, err := ParsePasswordHash(s); err == nil {
+			t.Errorf("%q accepted", s)
+		}
 	}
 }
 
@@ -459,6 +500,59 @@ func TestLoadSave(t *testing.T) {
 	cfg, warns, err = Load(dir)
 	if !errors.Is(err, ErrUnreadable) || len(warns) != 1 || !reflect.DeepEqual(cfg, Default()) {
 		t.Errorf("unreadable: %v %v", warns, err)
+	}
+}
+
+// M3: a config that carries a password hash is written 0600 even when the
+// existing file was wider, with one log line; a file without a hash keeps
+// its mode.
+func TestSaveTightensModeWithHash(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("file modes")
+	}
+	path := filepath.Join(t.TempDir(), "config.toml")
+	var logged []string
+	Logf = func(f string, a ...any) { logged = append(logged, fmt.Sprintf(f, a...)) }
+	t.Cleanup(func() { Logf = nil })
+	if err := Save(path, []byte(good)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	withHash := strings.Replace(good, "auth = \"none\"", "auth = \"basic\"\nuser = \"a\"\npassword_hash = \""+strings.Repeat("ab", 32)+"\"", 1)
+	if !HasSecret([]byte(withHash)) || HasSecret([]byte(good)) {
+		t.Fatal("HasSecret")
+	}
+	// hash present in text that does not parse: still a secret
+	if !HasSecret([]byte("[web]\npassword_hash = 'x'\n[[[")) || HasSecret([]byte("[web]\npassword_hash = \"\"\n[[[")) {
+		t.Error("HasSecret on unparsable text")
+	}
+	if err := Save(path, []byte(withHash)); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := os.Stat(path); st.Mode().Perm() != 0o600 {
+		t.Errorf("mode with hash = %o, want 0600", st.Mode().Perm())
+	}
+	if len(logged) != 1 || !strings.Contains(logged[0], "tightened") || !strings.Contains(logged[0], "0644") {
+		t.Errorf("log = %v", logged)
+	}
+	// already 0600: no log line
+	if err := Save(path, []byte(withHash)); err != nil {
+		t.Fatal(err)
+	}
+	if len(logged) != 1 {
+		t.Errorf("logged again: %v", logged)
+	}
+	// without a hash the existing mode is kept
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(path, []byte(good)); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := os.Stat(path); st.Mode().Perm() != 0o644 {
+		t.Errorf("mode without hash = %o, want 0644 (kept)", st.Mode().Perm())
 	}
 }
 
@@ -769,6 +863,57 @@ func TestLogSection(t *testing.T) {
 	back, warns, err := Parse(Marshal(cfg))
 	if err != nil || len(warns) != 0 || !reflect.DeepEqual(cfg, back) {
 		t.Errorf("log round trip: %v %v\n%+v\n%s", err, warns, back, Marshal(cfg))
+	}
+}
+
+// H2: [log].file is appended to as root, so it must be a file under
+// /var/log in clean form. Anything else falls back to the default with a
+// warning; N5FANGOV_LOG_ROOT moves the root for tests only.
+func TestLogFileUnderVarLog(t *testing.T) {
+	bad := []string{
+		"/dev/sda",
+		"/etc/n5-fangov/config.toml",
+		"/var/log/../etc/passwd",
+		"/var/log/n5-fangov/../../../etc/shadow",
+		"/var/log//n5-fangov/x.log",
+		"/var/log/./x.log",
+		"/var/log/",
+		"/var/log",
+		"/var/logs/x.log",
+		"/var/log/n5-fangov/",
+		"relative.log",
+		"../var/log/x.log",
+	}
+	for _, f := range bad {
+		cfg, warns, err := Parse([]byte("[log]\nfile = " + strconv.Quote(f) + "\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		hasWarn(t, warns, "log.file")
+		if cfg.Log.File != DefaultLogFile {
+			t.Errorf("%q accepted as %q", f, cfg.Log.File)
+		}
+		if ValidLogPath(f) == nil {
+			t.Errorf("ValidLogPath(%q) = nil", f)
+		}
+	}
+	for _, f := range []string{"/var/log/n5-fangov/n5-fangov.log", "/var/log/fans.log", "/var/log/a/b/c.log"} {
+		cfg, warns, _ := Parse([]byte("[log]\nfile = " + strconv.Quote(f) + "\n"))
+		if len(warns) != 0 || cfg.Log.File != f {
+			t.Errorf("%q: %v %q", f, warns, cfg.Log.File)
+		}
+	}
+	// test override: a temp root replaces /var/log; /var/log itself is then refused
+	root := t.TempDir()
+	t.Setenv(LogRootEnv, root)
+	if err := ValidLogPath(filepath.Join(root, "x.log")); err != nil {
+		t.Errorf("override root: %v", err)
+	}
+	if ValidLogPath("/var/log/x.log") == nil {
+		t.Errorf("/var/log accepted while the root is overridden")
+	}
+	if ValidLogPath(root+"/../escape.log") == nil {
+		t.Errorf("escape from the overridden root accepted")
 	}
 }
 

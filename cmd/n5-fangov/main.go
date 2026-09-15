@@ -52,7 +52,7 @@ var order = []string{
 
 // helpText is the usage line per subcommand.
 var helpText = map[string]string{
-	"setup":    "[--listen local|lan|HOST:PORT] [--user U] [--password P] [--yes]  write the config for this machine",
+	"setup":    "[--listen local|lan|HOST:PORT] [--user U] [--password-file F | --password -] [--yes]  write the config for this machine",
 	"serve":    "[--config PATH] [--dry-run] [--run-dir DIR] [--listen ADDR]  run the daemon",
 	"status":   "                       show channels, temperatures, duty, rpm, mode",
 	"set":      "<ch> <duty|NN%>        manual override for one channel",
@@ -63,7 +63,7 @@ var helpText = map[string]string{
 	"detect":   "                       list profiles with detection result (read-only)",
 	"test":     "<ch> [--force]         channel verification run (writes duty, daemon must be stopped)",
 	"failsafe": "                       put all configured channels into their safe state",
-	"passwd":   "[--user U]             set the web user/password (auth = basic), restart to apply",
+	"passwd":   "[--user U] [--password-file F | --password -]  set the web user/password (auth = basic), restart to apply",
 	"cert":     "export [FILE] | regen  auto TLS certificate: print PEM to trust it, or replace it",
 	"export":   "[FILE]                 settings bundle (config + presets, hash redacted) as JSON",
 	"import":   "FILE                   restore a settings bundle (validated first), reload the daemon",

@@ -145,6 +145,9 @@ func cmdServe(args []string) int {
 			cert, err = tlsLoadFiles(wspec.CertFile, wspec.KeyFile)
 			if err == nil {
 				log.Printf("web: TLS from %s / %s", wspec.CertFile, wspec.KeyFile)
+				if merr := tlsCheckKeyMode(wspec.KeyFile); merr != nil {
+					log.Printf("WARNING: %v", merr)
+				}
 			}
 		}
 		if err != nil {

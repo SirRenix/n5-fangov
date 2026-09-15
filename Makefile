@@ -5,6 +5,9 @@
 #   make deb     -> dist/n5-fangov_<version>_amd64.deb (no conffile: the config is
 #                   written by `n5-fangov setup`; the example goes to /usr/share/doc)
 #   make check   -> go vet + go test
+#   make verify-deploy -> systemd-analyze verify on the units and apt-config
+#                   on the apt hook (each skipped with a note when the tool
+#                   is absent, e.g. in the build container)
 #   make clean
 
 MODULE   := github.com/SirRenix/n5-fangov
@@ -21,7 +24,7 @@ export CGO_ENABLED = 0
 export GOOS        = linux
 export GOARCH      = $(ARCH)
 
-.PHONY: build check deb clean version
+.PHONY: build check verify-deploy deb clean version
 
 build:
 	mkdir -p $(DIST)
@@ -30,6 +33,25 @@ build:
 check:
 	go vet ./...
 	go test ./...
+
+# Static checks of the deploy files. Needs a systemd host for the unit
+# check (the Docker build container has none). The units are copied to a
+# temp dir; on a host without the package installed the Exec* paths are
+# pointed at /bin/true so verify judges the directives, not the install.
+# apt-config parses the hook the way apt does (exit 100 on a syntax error).
+verify-deploy:
+	@if command -v systemd-analyze >/dev/null 2>&1; then \
+	    tmp=$$(mktemp -d); cp deploy/n5-fangov.service deploy/n5-fangov-onfailure.service $$tmp/; \
+	    if [ ! -x /usr/bin/n5-fangov ]; then \
+	        sed -i -e 's#/usr/bin/n5-fangov#/bin/true#g' -e 's#/usr/libexec/n5-fangov/n5-fangov-onfailure#/bin/true#g' $$tmp/*.service; \
+	        echo "n5-fangov not installed here: Exec* paths replaced by /bin/true for the check"; \
+	    fi; \
+	    systemd-analyze verify --man=no $$tmp/n5-fangov.service $$tmp/n5-fangov-onfailure.service; rc=$$?; \
+	    rm -rf $$tmp; [ $$rc -eq 0 ] && echo "systemd-analyze verify: ok"; exit $$rc; \
+	else echo "systemd-analyze not found: unit check skipped"; fi
+	@if command -v apt-config >/dev/null 2>&1; then \
+	    apt-config -c deploy/apt-90n5-fangov.conf dump DPkg::Post-Invoke >/dev/null && echo "apt-config: hook parses"; \
+	else echo "apt-config not found: apt hook check skipped"; fi
 
 version:
 	@echo $(VERSION) '(deb: $(DEBVER))'

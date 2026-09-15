@@ -3,10 +3,14 @@ package tlscert
 import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"math/big"
 	"net"
 	"os"
 	"path/filepath"
@@ -254,6 +258,170 @@ func TestExportPEM(t *testing.T) {
 	}
 	if _, err := ExportPEM(dir); err == nil || !strings.Contains(err.Error(), "no CERTIFICATE") {
 		t.Fatalf("key-only file: %v", err)
+	}
+}
+
+// M1: the automatic certificate is a CA in the browser's store, so it
+// carries name constraints that pin it to exactly its own SANs (critical)
+// and MaxPathLen 0. A leaf for any other name signed with its key fails
+// verification against it.
+func TestNameConstraints(t *testing.T) {
+	dir := t.TempDir()
+	cert, _, err := EnsureAuto(Options{Dir: dir, Hosts: []string{"192.0.2.20", "n5.lan", "fd00::20"}, Logf: func(string, ...any) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf := cert.Leaf
+	if !leaf.PermittedDNSDomainsCritical {
+		t.Error("name constraints not critical")
+	}
+	if !leaf.MaxPathLenZero || leaf.MaxPathLen != 0 {
+		t.Errorf("MaxPathLen = %d (zero=%v), want 0", leaf.MaxPathLen, leaf.MaxPathLenZero)
+	}
+	if fmt.Sprint(leaf.PermittedDNSDomains) != fmt.Sprint(leaf.DNSNames) {
+		t.Errorf("PermittedDNSDomains %v != DNSNames %v", leaf.PermittedDNSDomains, leaf.DNSNames)
+	}
+	if len(leaf.PermittedIPRanges) != len(leaf.IPAddresses) || len(leaf.ExcludedDNSDomains) != 0 || len(leaf.ExcludedIPRanges) != 0 {
+		t.Fatalf("IP constraints %v for SANs %v", leaf.PermittedIPRanges, leaf.IPAddresses)
+	}
+	for i, ipn := range leaf.PermittedIPRanges {
+		ones, bits := ipn.Mask.Size()
+		if !ipn.IP.Equal(leaf.IPAddresses[i]) || ones != bits || (bits != 32 && bits != 128) {
+			t.Errorf("constraint %v for SAN %v", ipn, leaf.IPAddresses[i])
+		}
+	}
+	// a leaf for a foreign name signed by this CA: refused by the constraint
+	pool := x509.NewCertPool()
+	pool.AddCert(leaf)
+	mint := func(dns string, ip net.IP) *x509.Certificate {
+		t.Helper()
+		k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		tmpl := &x509.Certificate{
+			SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: dns},
+			NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+			KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		}
+		if dns != "" {
+			tmpl.DNSNames = []string{dns}
+		}
+		if ip != nil {
+			tmpl.IPAddresses = []net.IP{ip}
+		}
+		der, err := x509.CreateCertificate(rand.Reader, tmpl, leaf, &k.PublicKey, cert.PrivateKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c, _ := x509.ParseCertificate(der)
+		return c
+	}
+	if _, err := mint("evil.example", nil).Verify(x509.VerifyOptions{Roots: pool, DNSName: "evil.example"}); err == nil {
+		t.Error("leaf for a foreign DNS name verified against the constrained CA")
+	}
+	if _, err := mint("", net.ParseIP("192.0.2.21")).Verify(x509.VerifyOptions{Roots: pool, DNSName: "192.0.2.21"}); err == nil {
+		t.Error("leaf for a foreign IP verified against the constrained CA")
+	}
+	if _, err := mint("n5.lan", nil).Verify(x509.VerifyOptions{Roots: pool, DNSName: "n5.lan"}); err != nil {
+		t.Errorf("leaf for an own SAN refused: %v", err)
+	}
+	// the certificate itself still verifies for its names
+	if _, err := leaf.Verify(x509.VerifyOptions{Roots: pool, DNSName: "192.0.2.20"}); err != nil {
+		t.Errorf("self verify: %v", err)
+	}
+	// L3: no temp files left next to the pair
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 2 {
+		t.Errorf("dir holds %d entries, want cert.pem and key.pem only", len(entries))
+	}
+}
+
+// M5: a regeneration caused by a SAN change keeps the private key (the
+// trust imported into a browser stays valid); an expired certificate gets
+// a fresh key; Regenerate always does.
+func TestRegenerateKeepsKeyOnSANChange(t *testing.T) {
+	dir := t.TempDir()
+	var logged []string
+	logf := func(f string, a ...any) { logged = append(logged, fmt.Sprintf(f, a...)) }
+	first, _, err := EnsureAuto(Options{Dir: dir, Hosts: []string{"192.0.2.20"}, Logf: logf})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub := func(c tls.Certificate) []byte { b, _ := x509.MarshalPKIXPublicKey(c.Leaf.PublicKey); return b }
+	keyPEM, _ := os.ReadFile(filepath.Join(dir, KeyFile))
+	logged = nil
+	second, _, err := EnsureAuto(Options{Dir: dir, Hosts: []string{"192.0.2.20", "n5.lan"}, Logf: logf})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Leaf.SerialNumber.Cmp(first.Leaf.SerialNumber) == 0 || !hasDNS(second.Leaf, "n5.lan") {
+		t.Fatal("SAN change did not regenerate")
+	}
+	if string(pub(second)) != string(pub(first)) {
+		t.Error("SAN change replaced the private key")
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, KeyFile)); string(b) != string(keyPEM) {
+		t.Error("key.pem rewritten with different content")
+	}
+	if len(logged) == 0 || !strings.Contains(logged[0], "certificate regenerated (SANs changed") || !strings.Contains(logged[0], "key unchanged") {
+		t.Errorf("log = %v", logged)
+	}
+	// expired: write an expired certificate for the same key, then a fresh key is made
+	key := second.PrivateKey.(*ecdsa.PrivateKey)
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(3), Subject: pkix.Name{CommonName: "old"},
+		NotBefore: time.Now().Add(-48 * time.Hour), NotAfter: time.Now().Add(-24 * time.Hour),
+		KeyUsage: x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign, BasicConstraintsValid: true, IsCA: true,
+		DNSNames: []string{"localhost", "n5.lan"}, IPAddresses: []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1"), net.ParseIP("192.0.2.20")},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, CertFile), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	logged = nil
+	third, _, err := EnsureAuto(Options{Dir: dir, Hosts: []string{"192.0.2.20", "n5.lan"}, Logf: logf})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(pub(third)) == string(pub(second)) {
+		t.Error("expired certificate kept its key")
+	}
+	if len(logged) == 0 || !strings.Contains(logged[0], "expired") || strings.Contains(logged[0], "key unchanged") {
+		t.Errorf("expiry log = %v", logged)
+	}
+	fresh, err := Regenerate(Options{Dir: dir, Hosts: []string{"192.0.2.20", "n5.lan"}, Logf: logf})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(pub(fresh)) == string(pub(third)) {
+		t.Error("Regenerate kept the key")
+	}
+}
+
+// L8: a key file readable by group or others is reported.
+func TestCheckKeyMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("file modes")
+	}
+	dir := t.TempDir()
+	key := filepath.Join(dir, "key.pem")
+	if err := os.WriteFile(key, []byte("k"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckKeyMode(key); err != nil {
+		t.Errorf("0600: %v", err)
+	}
+	for _, m := range []os.FileMode{0o640, 0o604, 0o644, 0o660} {
+		if err := os.Chmod(key, m); err != nil {
+			t.Fatal(err)
+		}
+		if err := CheckKeyMode(key); err == nil || !strings.Contains(err.Error(), fmt.Sprintf("%04o", m)) {
+			t.Errorf("%04o: %v", m, err)
+		}
+	}
+	if err := CheckKeyMode(filepath.Join(dir, "missing")); err != nil {
+		t.Errorf("missing file: %v", err)
 	}
 }
 

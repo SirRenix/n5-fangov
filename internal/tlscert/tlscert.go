@@ -68,25 +68,34 @@ func Paths(dir string) (certPath, keyPath string) {
 // EnsureAuto returns the automatic certificate from o.Dir, creating it when
 // missing. An existing pair is reused when it loads, is within its validity
 // period and its SANs cover every requested host; otherwise it is
-// regenerated and one log line says why. The second result is the
-// certificate path (for the "trust this file" hint).
+// regenerated and one log line says why. When only the SANs changed, the
+// existing private key is kept (M5): the certificate is a trust anchor in
+// browsers and OS stores, and a key that stays the same is what lets an
+// imported trust survive a renamed host or a new address. The second
+// result is the certificate path (for the "trust this file" hint).
 func EnsureAuto(o Options) (tls.Certificate, string, error) {
 	certPath, keyPath := Paths(o.Dir)
 	want := sanSet(o.Hosts)
 	cert, err := LoadFiles(certPath, keyPath)
+	var keep *ecdsa.PrivateKey
 	switch {
 	case err == nil:
-		reason := reuseProblem(cert.Leaf, want)
+		reason, sanOnly := reuseProblem(cert.Leaf, want)
 		if reason == "" {
 			return cert, certPath, nil
 		}
-		o.logf("tlscert: regenerating %s: %s", certPath, reason)
+		if k, ok := cert.PrivateKey.(*ecdsa.PrivateKey); ok && sanOnly {
+			keep = k
+			o.logf("tlscert: certificate regenerated (SANs changed: %s), key unchanged", reason)
+		} else {
+			o.logf("tlscert: regenerating %s: %s", certPath, reason)
+		}
 	case errors.Is(err, os.ErrNotExist):
 		o.logf("tlscert: no certificate in %s, generating a self-signed one (SANs: %s)", o.Dir, want)
 	default:
 		o.logf("tlscert: regenerating %s: %v", certPath, err)
 	}
-	c, err := Regenerate(o)
+	c, err := generate(o, keep)
 	return c, certPath, err
 }
 
@@ -128,9 +137,13 @@ func ExportPEM(dir string) ([]byte, error) {
 	return nil, fmt.Errorf("tlscert: %s contains no CERTIFICATE block", certPath)
 }
 
-// Regenerate creates a new self-signed ECDSA P-256 certificate for o and
-// writes cert.pem and key.pem (0600) into o.Dir, replacing any existing pair.
-func Regenerate(o Options) (tls.Certificate, error) {
+// Regenerate creates a new self-signed ECDSA P-256 certificate with a new
+// key for o and writes cert.pem and key.pem (0600) into o.Dir, replacing
+// any existing pair.
+func Regenerate(o Options) (tls.Certificate, error) { return generate(o, nil) }
+
+// generate builds the certificate; key nil → a fresh P-256 key.
+func generate(o Options, key *ecdsa.PrivateKey) (tls.Certificate, error) {
 	want := sanSet(o.Hosts)
 	org := o.Org
 	if org == "" {
@@ -144,9 +157,12 @@ func Regenerate(o Options) (tls.Certificate, error) {
 			break
 		}
 	}
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return tls.Certificate{}, fmt.Errorf("tlscert: generate key: %w", err)
+	if key == nil {
+		var err error
+		key, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			return tls.Certificate{}, fmt.Errorf("tlscert: generate key: %w", err)
+		}
 	}
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 127))
 	if err != nil {
@@ -166,6 +182,16 @@ func Regenerate(o Options) (tls.Certificate, error) {
 		IsCA:                  true,
 		DNSNames:              want.dns,
 		IPAddresses:           want.ips,
+		// M1: a trust anchor in a browser store can sign for any name.
+		// Name constraints pin this one to exactly its own SANs, and
+		// MaxPathLen 0 forbids intermediates: even with the key in hand
+		// nobody can mint a certificate for another host that the
+		// store would accept.
+		MaxPathLen:                  0,
+		MaxPathLenZero:              true,
+		PermittedDNSDomainsCritical: true,
+		PermittedDNSDomains:         want.dns,
+		PermittedIPRanges:           hostRanges(want.ips),
 	}
 	der, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &key.PublicKey, key)
 	if err != nil {
@@ -198,17 +224,56 @@ func Regenerate(o Options) (tls.Certificate, error) {
 	return cert, nil
 }
 
-// writePrivate writes data to path with mode 0600 via a temp file + rename.
+// hostRanges turns single addresses into /32 (IPv4) or /128 (IPv6)
+// networks for the name constraints.
+func hostRanges(ips []net.IP) []*net.IPNet {
+	out := make([]*net.IPNet, 0, len(ips))
+	for _, ip := range ips {
+		if v4 := ip.To4(); v4 != nil {
+			out = append(out, &net.IPNet{IP: v4, Mask: net.CIDRMask(32, 32)})
+		} else {
+			out = append(out, &net.IPNet{IP: ip.To16(), Mask: net.CIDRMask(128, 128)})
+		}
+	}
+	return out
+}
+
+// CheckKeyMode reports an error when the private key file at path is
+// readable by group or others (L8). A missing file is not reported here;
+// LoadFiles does that.
+func CheckKeyMode(path string) error {
+	st, err := os.Stat(path)
+	if err != nil {
+		return nil
+	}
+	if m := st.Mode().Perm(); m&0o077 != 0 {
+		return fmt.Errorf("tlscert: %s is mode %04o, readable by group/others; run: chmod 0600 %s", path, m, path)
+	}
+	return nil
+}
+
+// writePrivate writes data to path with mode 0600 via an unpredictable
+// temp file in the same directory (os.CreateTemp creates it 0600) and a
+// rename (L3).
 func writePrivate(path string, data []byte) error {
-	tmp := path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*.tmp")
 	if err != nil {
 		return fmt.Errorf("tlscert: write %s: %w", path, err)
 	}
-	if _, err := f.Write(data); err != nil {
+	tmp := f.Name()
+	fail := func(err error) error {
 		f.Close()
 		os.Remove(tmp)
 		return fmt.Errorf("tlscert: write %s: %w", path, err)
+	}
+	if err := f.Chmod(0o600); err != nil {
+		return fail(err)
+	}
+	if _, err := f.Write(data); err != nil {
+		return fail(err)
+	}
+	if err := f.Sync(); err != nil {
+		return fail(err)
 	}
 	if err := f.Close(); err != nil {
 		os.Remove(tmp)
@@ -278,17 +343,19 @@ func sanSet(hosts []string) sans {
 	return out
 }
 
-// reuseProblem reports why leaf cannot serve the requested SANs ("" = fine).
-func reuseProblem(leaf *x509.Certificate, want sans) string {
+// reuseProblem reports why leaf cannot serve the requested SANs ("" =
+// fine). sanOnly is true when the only problem is a missing SAN: then the
+// key may be kept (see EnsureAuto).
+func reuseProblem(leaf *x509.Certificate, want sans) (reason string, sanOnly bool) {
 	if leaf == nil {
-		return "certificate not parsed"
+		return "certificate not parsed", false
 	}
 	now := time.Now()
 	if now.After(leaf.NotAfter) {
-		return "certificate expired " + leaf.NotAfter.Format("2006-01-02")
+		return "certificate expired " + leaf.NotAfter.Format("2006-01-02"), false
 	}
 	if now.Before(leaf.NotBefore) {
-		return "certificate not valid before " + leaf.NotBefore.Format("2006-01-02")
+		return "certificate not valid before " + leaf.NotBefore.Format("2006-01-02"), false
 	}
 	for _, d := range want.dns {
 		found := false
@@ -299,7 +366,7 @@ func reuseProblem(leaf *x509.Certificate, want sans) string {
 			}
 		}
 		if !found {
-			return "SAN list lacks name " + d
+			return "SAN list lacks name " + d, true
 		}
 	}
 	for _, ip := range want.ips {
@@ -311,8 +378,8 @@ func reuseProblem(leaf *x509.Certificate, want sans) string {
 			}
 		}
 		if !found {
-			return "SAN list lacks IP " + ip.String()
+			return "SAN list lacks IP " + ip.String(), true
 		}
 	}
-	return ""
+	return "", false
 }

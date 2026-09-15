@@ -7,8 +7,13 @@ package config
 
 import (
 	"bytes"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
+	"os"
+	"path"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -106,6 +111,12 @@ const (
 	MaxLogSizeMB   = 100
 	MinLogFiles    = 1
 	MaxLogFiles    = 20
+	// LogRoot is the directory [log].file must live under (H2): the daemon
+	// runs as root and appends to that path, so the config must not be able
+	// to point it at a device, another service's file or its own config.
+	LogRoot = "/var/log/"
+	// LogRootEnv overrides LogRoot for tests only (a temp dir).
+	LogRootEnv = "N5FANGOV_LOG_ROOT"
 )
 
 // Channel is one regulated PWM output.
@@ -464,8 +475,8 @@ func (p *parser) web(sec map[string]toml.Primitive, w *Web) {
 			p.warn(pre+".auth", "basic requires user and password_hash, auth set to none")
 			auth = "none"
 			authBroken = true
-		} else if _, err := parseHex(w.PasswordHash); err != nil {
-			p.warn(pre+".password_hash", "not a 64-char sha256 hex digest, auth set to none")
+		} else if _, err := ParsePasswordHash(w.PasswordHash); err != nil {
+			p.warn(pre+".password_hash", "%v, auth set to none", err)
 			auth = "none"
 			authBroken = true
 		}
@@ -523,13 +534,47 @@ func (p *parser) log(sec map[string]toml.Primitive, l *Log) {
 	def := Default().Log
 	file, present := p.strField(pre, sec, "file", def.File)
 	file = strings.TrimSpace(file)
-	if present && file != "" && !strings.HasPrefix(file, "/") {
-		p.warn(pre+".file", "%q is not an absolute path, default %q used", file, def.File)
-		file = def.File
+	if present && file != "" {
+		if err := ValidLogPath(file); err != nil {
+			p.warn(pre+".file", "%q %v, default %q used", file, err, def.File)
+			file = def.File
+		}
 	}
 	l.File = file
 	l.MaxSizeMB = p.intField(pre, sec, "max_size_mb", def.MaxSizeMB, MinLogSizeMB, MaxLogSizeMB)
 	l.MaxFiles = p.intField(pre, sec, "max_files", def.MaxFiles, MinLogFiles, MaxLogFiles)
+}
+
+// logRoot is LogRoot, or the test override, always with a trailing slash.
+func logRoot() string {
+	root := LogRoot
+	if r := os.Getenv(LogRootEnv); r != "" {
+		root = filepath.ToSlash(r)
+	}
+	if !strings.HasSuffix(root, "/") {
+		root += "/"
+	}
+	return root
+}
+
+// ValidLogPath checks a [log].file value: absolute, in clean form (no "..",
+// "." or doubled slashes, so the prefix check cannot be escaped), a file
+// name under LogRoot. The error text is meant to be appended to the value.
+func ValidLogPath(p string) error {
+	if !strings.HasPrefix(p, "/") {
+		return errors.New("is not an absolute path")
+	}
+	if strings.HasSuffix(p, "/") {
+		return errors.New("is a directory, not a file")
+	}
+	if path.Clean(p) != p {
+		return errors.New("is not a clean path (\"..\", \".\" or repeated slashes)")
+	}
+	root := logRoot()
+	if !strings.HasPrefix(p, root) || len(p) == len(root) {
+		return fmt.Errorf("is not a file under %s", root)
+	}
+	return nil
 }
 
 // IsLoopbackListen reports whether a host:port binds only to the loopback
@@ -547,19 +592,64 @@ func IsLoopbackListen(listen string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-func parseHex(s string) ([]byte, error) {
-	if len(s) != 64 {
-		return nil, fmt.Errorf("length %d", len(s))
-	}
-	out := make([]byte, 32)
-	for i := 0; i < 32; i++ {
-		b, err := strconv.ParseUint(s[2*i:2*i+2], 16, 8)
-		if err != nil {
-			return nil, err
+// PasswordHash is a parsed [web].password_hash value in one of the two
+// stored forms:
+//
+//	<64 hex>                              legacy: sha256("user:password")
+//	pbkdf2$<iter>$<salt hex>$<key hex>    PBKDF2-HMAC-SHA256 of the password
+//
+// The legacy form keeps working; `n5-fangov passwd` writes the PBKDF2 form.
+// Verification (internal/web) uses the fields; this package only checks
+// the syntax.
+type PasswordHash struct {
+	// Legacy is the 32-byte sha256 digest, nil for the PBKDF2 form.
+	Legacy []byte
+	// Iter, Salt, Key describe the PBKDF2 form (Key is the derived key).
+	Iter int
+	Salt []byte
+	Key  []byte
+}
+
+// PBKDF2 parameters accepted (and, for Iter, produced by the writers).
+const (
+	PBKDF2Prefix  = "pbkdf2"
+	PBKDF2Iter    = 210000 // OWASP 2023 minimum for HMAC-SHA256
+	PBKDF2MinIter = 1000
+	PBKDF2MaxIter = 10000000
+	PBKDF2KeyLen  = 32
+	PBKDF2SaltLen = 16
+)
+
+// ParsePasswordHash checks the syntax of a stored hash (see PasswordHash).
+func ParsePasswordHash(s string) (PasswordHash, error) {
+	s = strings.TrimSpace(s)
+	if strings.HasPrefix(s, PBKDF2Prefix+"$") {
+		parts := strings.Split(s, "$")
+		if len(parts) != 4 {
+			return PasswordHash{}, errors.New("pbkdf2 hash needs pbkdf2$<iter>$<salt>$<key>")
 		}
-		out[i] = byte(b)
+		iter, err := strconv.Atoi(parts[1])
+		if err != nil || iter < PBKDF2MinIter || iter > PBKDF2MaxIter {
+			return PasswordHash{}, fmt.Errorf("pbkdf2 iterations %q outside %d..%d", parts[1], PBKDF2MinIter, PBKDF2MaxIter)
+		}
+		salt, err := hex.DecodeString(parts[2])
+		if err != nil || len(salt) < 8 {
+			return PasswordHash{}, errors.New("pbkdf2 salt is not hex of at least 8 bytes")
+		}
+		key, err := hex.DecodeString(parts[3])
+		if err != nil || len(key) != PBKDF2KeyLen {
+			return PasswordHash{}, fmt.Errorf("pbkdf2 key is not hex of %d bytes", PBKDF2KeyLen)
+		}
+		return PasswordHash{Iter: iter, Salt: salt, Key: key}, nil
 	}
-	return out, nil
+	if len(s) != 64 {
+		return PasswordHash{}, errors.New("not a 64-char sha256 hex digest or a pbkdf2$ hash")
+	}
+	legacy, err := hex.DecodeString(s)
+	if err != nil {
+		return PasswordHash{}, errors.New("not a 64-char sha256 hex digest or a pbkdf2$ hash")
+	}
+	return PasswordHash{Legacy: legacy}, nil
 }
 
 func (p *parser) channels(secs []map[string]toml.Primitive) []Channel {

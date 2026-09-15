@@ -629,8 +629,8 @@ func TestConfigHashRedaction(t *testing.T) {
 	if strings.Contains(r.body, RedactedHash) {
 		t.Fatalf("empty hash redacted: %s", r.body)
 	}
-	if redactRaw("password_hash = \"abc\" # x\n  password_hash=\"def\"\nother = \"abc\"\n") != "password_hash = \"<unchanged>\" # x\n  password_hash=\"<unchanged>\"\nother = \"abc\"\n" {
-		t.Fatal("redactRaw shape")
+	if RedactRaw("password_hash = \"abc\" # x\n  password_hash=\"def\"\nother = \"abc\"\n") != "password_hash = \"<unchanged>\" # x\n  password_hash=\"<unchanged>\"\nother = \"abc\"\n" {
+		t.Fatal("RedactRaw shape")
 	}
 }
 
@@ -648,7 +648,7 @@ func TestRedactRawForms(t *testing.T) {
 		"nospaces": "[web]\npassword_hash=\"" + hash + "\"\n",
 	}
 	for name, src := range cases {
-		out := redactRaw(src)
+		out := RedactRaw(src)
 		if strings.Contains(out, hash) {
 			t.Errorf("%s: hash leaked: %s", name, out)
 		}
@@ -660,7 +660,7 @@ func TestRedactRawForms(t *testing.T) {
 		}
 	}
 	// quote style survives redaction and the placeholder substitution
-	if got := redactRaw("password_hash = 'abc'\n"); got != "password_hash = '<unchanged>'\n" {
+	if got := RedactRaw("password_hash = 'abc'\n"); got != "password_hash = '<unchanged>'\n" {
 		t.Errorf("single-quote redaction: %q", got)
 	}
 	back := mapHashLiterals("web.password_hash\t= '<unchanged>'\npassword_hash = \"<unchanged>\"\npassword_hash = \"keep\"\n",
@@ -670,11 +670,11 @@ func TestRedactRawForms(t *testing.T) {
 	}
 	// a short bogus hash is only touched in line form, never as a bare
 	// substring (it would hit unrelated text)
-	if got := redactRaw("[web]\npassword_hash = \"ab\"\n[[channel]]\nname = \"ab\"\n"); got != "[web]\npassword_hash = \"<unchanged>\"\n[[channel]]\nname = \"ab\"\n" {
+	if got := RedactRaw("[web]\npassword_hash = \"ab\"\n[[channel]]\nname = \"ab\"\n"); got != "[web]\npassword_hash = \"<unchanged>\"\n[[channel]]\nname = \"ab\"\n" {
 		t.Errorf("short hash: %q", got)
 	}
 	// unparsable text: the regex still covers the line forms
-	if got := redactRaw("[[[\npassword_hash = '" + hash + "'\n"); strings.Contains(got, hash) {
+	if got := RedactRaw("[[[\npassword_hash = '" + hash + "'\n"); strings.Contains(got, hash) {
 		t.Errorf("broken TOML leaked: %q", got)
 	}
 	if currentHash("[[[\npassword_hash = '"+hash+"'\n") != hash {
@@ -788,7 +788,8 @@ func TestHostHeader(t *testing.T) {
 // TestAuthRateLimit (M4): repeated failures from one IP are delayed with a
 // growing back-off, logged, and reset by a success.
 func TestAuthRateLimit(t *testing.T) {
-	e := newEnv(t, AuthConfig{Mode: "basic", User: "admin", PasswordHash: PasswordHash("admin", "pw")})
+	// legacy hash: cheap to verify, the limiter is what is under test
+	e := newEnv(t, AuthConfig{Mode: "basic", User: "admin", PasswordHash: LegacyPasswordHash("admin", "pw")})
 	now := time.Unix(1789500000, 0)
 	var slept []time.Duration
 	var mu sync.Mutex
@@ -879,6 +880,111 @@ func TestAuthorizedConstantTime(t *testing.T) {
 	if s.authorized(httptest.NewRequest("PUT", "/api/config", nil)) {
 		t.Fatal("accepted request without Authorization header")
 	}
+}
+
+// M3b: the stored hash may be the legacy sha256("user:password") hex or
+// the salted PBKDF2 form; both verify, wrong password/user fail on both,
+// and a stored value that parses as neither fails closed.
+func TestVerifyPasswordFormats(t *testing.T) {
+	legacy := LegacyPasswordHash("admin", "pw")
+	modern := PasswordHash("admin", "pw")
+	if len(legacy) != 64 || !strings.HasPrefix(modern, "pbkdf2$210000$") {
+		t.Fatalf("forms: %q %q", legacy, modern)
+	}
+	if PasswordHash("admin", "pw") == modern {
+		t.Fatal("PBKDF2 hash is not salted (two calls agree)")
+	}
+	for name, stored := range map[string]string{"legacy": legacy, "pbkdf2": modern} {
+		if !VerifyPassword("admin", "pw", stored) {
+			t.Errorf("%s: valid password rejected", name)
+		}
+		if VerifyPassword("admin", "pw2", stored) || VerifyPassword("admin", "", stored) {
+			t.Errorf("%s: wrong password accepted", name)
+		}
+		e := newEnv(t, AuthConfig{Mode: "basic", User: "admin", PasswordHash: stored})
+		wantCode(t, e.do(t, "PUT", "/api/override/cpu", `{"duty":10}`, basicAuth("admin", "pw")), 200)
+		wantError(t, e.do(t, "PUT", "/api/override/cpu", `{"duty":10}`, basicAuth("admin", "PW")), 401, "authentication")
+		wantError(t, e.do(t, "PUT", "/api/override/cpu", `{"duty":10}`, basicAuth("other", "pw")), 401, "authentication")
+	}
+	// the legacy form binds the user name into the digest: a legacy hash
+	// for "other" does not verify "admin" even with the right password
+	if VerifyPassword("admin", "pw", LegacyPasswordHash("other", "pw")) {
+		t.Error("legacy hash of another user accepted")
+	}
+	for _, bad := range []string{"", "nothex", strings.Repeat("g", 64), "pbkdf2$210000$zz$" + strings.Repeat("ab", 32), "pbkdf2$1$" + strings.Repeat("0f", 16) + "$" + strings.Repeat("ab", 32)} {
+		if VerifyPassword("admin", "pw", bad) {
+			t.Errorf("stored %q verified", bad)
+		}
+	}
+	// a hand-made PBKDF2 value with a different iteration count verifies too
+	custom := "pbkdf2$1000$" + strings.Repeat("0f", 16) + "$"
+	e := newEnv(t, AuthConfig{Mode: "basic", User: "admin", PasswordHash: custom + strings.Repeat("00", 32)})
+	wantError(t, e.do(t, "PUT", "/api/override/cpu", `{"duty":10}`, basicAuth("admin", "pw")), 401, "authentication")
+}
+
+// M3c: once limitConcurrent failed attempts of one IP are sleeping, further
+// attempts from that IP get an immediate 429 — no sleep, no hash
+// computation, no extra failure count. When the sleepers return, the IP is
+// served again.
+func TestAuthConcurrencyCap(t *testing.T) {
+	e := newEnv(t, AuthConfig{Mode: "basic", User: "admin", PasswordHash: LegacyPasswordHash("admin", "pw")})
+	release := make(chan struct{})
+	var sleeping sync.WaitGroup
+	e.srv.limiter.sleep = func(d time.Duration) {
+		sleeping.Done()
+		<-release
+	}
+	// use up the free attempts
+	for i := 0; i < limitFree; i++ {
+		wantCode(t, e.do(t, "PUT", "/api/override/cpu", `{"duty":10}`, basicAuth("admin", "wrong")), 401)
+	}
+	// limitConcurrent attempts park in the sleep
+	sleeping.Add(limitConcurrent)
+	codes := make(chan int, limitConcurrent)
+	for i := 0; i < limitConcurrent; i++ {
+		go func() { codes <- e.do(t, "PUT", "/api/override/cpu", `{"duty":10}`, basicAuth("admin", "wrong")).code }()
+	}
+	sleeping.Wait()
+	if !e.srv.limiter.busy(remoteIPOf(e)) {
+		t.Fatal("limiter not busy with all sleepers parked")
+	}
+	// the next one is refused at once, even with the right password
+	r := e.do(t, "PUT", "/api/override/cpu", `{"duty":10}`, basicAuth("admin", "pw"))
+	wantError(t, r, 429, "too many")
+	if len(e.svc.overrides) != 0 {
+		t.Fatal("override applied while the IP was throttled")
+	}
+	nlog := func() int {
+		e.logMu.Lock()
+		defer e.logMu.Unlock()
+		return len(e.logged)
+	}
+	if n := nlog(); n != limitFree { // the parked ones log after their sleep
+		t.Errorf("refused attempt logged as a failure: %d log lines", n)
+	}
+	// anonymous requests (no Authorization header) are not affected
+	wantCode(t, e.do(t, "GET", "/api/state", "", nil), 200)
+	wantCode(t, e.do(t, "PUT", "/api/override/cpu", `{"duty":10}`, csrf), 401)
+	close(release)
+	for i := 0; i < limitConcurrent; i++ {
+		if c := <-codes; c != 401 {
+			t.Errorf("parked attempt answered %d", c)
+		}
+	}
+	if n := nlog(); n != limitFree+limitConcurrent {
+		t.Errorf("failure count after release: %d log lines, want %d", n, limitFree+limitConcurrent)
+	}
+	if e.srv.limiter.busy(remoteIPOf(e)) {
+		t.Fatal("limiter still busy after the sleepers returned")
+	}
+	e.srv.limiter.sleep = func(time.Duration) {}
+	wantCode(t, e.do(t, "PUT", "/api/override/cpu", `{"duty":10}`, basicAuth("admin", "pw")), 200)
+}
+
+// remoteIPOf is the client IP the test server sees for e.do.
+func remoteIPOf(e *env) string {
+	host, _, _ := net.SplitHostPort(strings.TrimPrefix(e.ts.URL, "http://"))
+	return host
 }
 
 func TestConfigGetPut(t *testing.T) {

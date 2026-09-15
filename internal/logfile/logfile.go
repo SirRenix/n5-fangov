@@ -34,8 +34,14 @@ const (
 // TailLimit is how much of the file Lines reads from the end.
 const TailLimit = 1 << 20
 
-// Writer is a rotating log file. Safe for concurrent use; every method
-// takes the same lock, so a tail never sees a half-rotated file.
+// Writer is a rotating log file. Safe for concurrent use. Writes, rotation
+// and Clear hold the lock; the read side (Lines, Export) holds it only to
+// open the current file and take its size, then reads from that descriptor
+// without the lock (H1): a slow HTTP client draining an export must never
+// block the controller's log calls, which run inside the regulation cycle
+// and would otherwise stall it into the systemd watchdog. A rotation that
+// happens meanwhile renames the file; the open descriptor stays valid and
+// the reader sees the file as it was.
 type Writer struct {
 	mu       sync.Mutex
 	path     string
@@ -47,6 +53,11 @@ type Writer struct {
 // New opens (or creates) path for appending. maxSizeMB is the rotation
 // threshold, maxFiles how many rotated files to keep (.1 .. .N); values
 // below 1 are raised to 1. The directory is created with DirMode.
+//
+// An existing path must be a regular file (H2): the daemon runs as root
+// and the path comes from the config, so a symlink, a device node or a
+// directory there is refused instead of being appended to. The path form
+// itself (under /var/log, no "..") is the config parser's job.
 func New(path string, maxSizeMB, maxFiles int) (*Writer, error) {
 	if path == "" {
 		return nil, errors.New("logfile: empty path")
@@ -56,6 +67,9 @@ func New(path string, maxSizeMB, maxFiles int) (*Writer, error) {
 	}
 	if maxFiles < 1 {
 		maxFiles = 1
+	}
+	if err := checkTarget(path); err != nil {
+		return nil, err
 	}
 	if err := os.MkdirAll(filepath.Dir(path), DirMode); err != nil {
 		return nil, fmt.Errorf("logfile: %w", err)
@@ -67,8 +81,32 @@ func New(path string, maxSizeMB, maxFiles int) (*Writer, error) {
 	return w, nil
 }
 
+// checkTarget refuses an existing path that is not a regular file. Lstat,
+// not Stat: a symlink is refused even when it points at a regular file.
+func checkTarget(path string) error {
+	st, err := os.Lstat(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("logfile: %w", err)
+	}
+	switch m := st.Mode(); {
+	case m&os.ModeSymlink != 0:
+		return fmt.Errorf("logfile: %s is a symlink, refusing to follow it", path)
+	case m.IsDir():
+		return fmt.Errorf("logfile: %s is a directory", path)
+	case !m.IsRegular():
+		return fmt.Errorf("logfile: %s is not a regular file (%s)", path, m.Type())
+	}
+	return nil
+}
+
 func (w *Writer) open() error {
-	f, err := os.OpenFile(w.path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, FileMode)
+	if err := checkTarget(w.path); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(w.path, os.O_WRONLY|os.O_APPEND|os.O_CREATE|openNoFollow, FileMode)
 	if err != nil {
 		return fmt.Errorf("logfile: %w", err)
 	}
@@ -142,33 +180,66 @@ func (w *Writer) Close() error {
 	return err
 }
 
-// Lines returns the newest n lines of the current file (oldest first). It
-// reads at most TailLimit bytes from the end; a line cut at that boundary
-// is dropped. A missing file yields no lines and no error.
-func (w *Writer) Lines(n int) ([]string, error) {
+// openCurrent opens the current file for reading and returns it with the
+// size at that moment. The lock is held only for the open + stat: it keeps
+// the open out of the rotation window (between the rename and the reopen
+// the path does not exist), nothing more. A missing file yields (nil, 0, nil).
+func (w *Writer) openCurrent() (*os.File, int64, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return tail(w.path, n)
+	return openSized(w.path)
 }
 
-// tail is Lines without the lock (shared with ReadLines).
+// openSized opens path for reading with its current size; a missing file
+// is (nil, 0, nil).
+func openSized(path string) (*os.File, int64, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, 0, nil
+		}
+		return nil, 0, err
+	}
+	st, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, 0, err
+	}
+	return f, st.Size(), nil
+}
+
+// Lines returns the newest n lines of the current file (oldest first). It
+// reads at most TailLimit bytes from the end; a line cut at that boundary
+// is dropped. A missing file yields no lines and no error. The read runs
+// without the writer lock (see Writer).
+func (w *Writer) Lines(n int) ([]string, error) {
+	if n <= 0 {
+		return nil, nil
+	}
+	f, size, err := w.openCurrent()
+	if err != nil || f == nil {
+		return nil, err
+	}
+	defer f.Close()
+	return tailFrom(f, size, n)
+}
+
+// tail is Lines on a path without a Writer (ReadLines).
 func tail(path string, n int) ([]string, error) {
 	if n <= 0 {
 		return nil, nil
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
+	f, size, err := openSized(path)
+	if err != nil || f == nil {
 		return nil, err
 	}
 	defer f.Close()
-	st, err := f.Stat()
-	if err != nil {
-		return nil, err
-	}
-	size := st.Size()
+	return tailFrom(f, size, n)
+}
+
+// tailFrom reads the newest n lines from the last TailLimit bytes of f,
+// whose size is size.
+func tailFrom(f *os.File, size int64, n int) ([]string, error) {
 	start := int64(0)
 	cut := false
 	if size > TailLimit {
@@ -202,25 +273,33 @@ func tail(path string, n int) ([]string, error) {
 	return out, nil
 }
 
-// Export copies the whole current file to dst. Rotated files are not
-// included. A missing file exports nothing.
+// Export copies the current file as it was when Export was called to dst
+// (bytes appended meanwhile are not included). Rotated files are not
+// included. A missing file exports nothing. The copy runs without the
+// writer lock: dst may be a slow network client (see Writer).
 func (w *Writer) Export(dst io.Writer) error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return export(w.path, dst)
-}
-
-func export(path string, dst io.Writer) error {
-	f, err := os.Open(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
+	f, size, err := w.openCurrent()
+	if err != nil || f == nil {
 		return err
 	}
 	defer f.Close()
+	return exportFrom(f, size, dst)
+}
+
+// export is Export on a path without a Writer (ExportFile).
+func export(path string, dst io.Writer) error {
+	f, size, err := openSized(path)
+	if err != nil || f == nil {
+		return err
+	}
+	defer f.Close()
+	return exportFrom(f, size, dst)
+}
+
+// exportFrom copies the first size bytes of f to dst.
+func exportFrom(f *os.File, size int64, dst io.Writer) error {
 	bw := bufio.NewWriter(dst)
-	if _, err := io.Copy(bw, f); err != nil {
+	if _, err := io.Copy(bw, io.LimitReader(f, size)); err != nil {
 		return err
 	}
 	return bw.Flush()

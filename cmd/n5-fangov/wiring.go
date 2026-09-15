@@ -78,13 +78,24 @@ func logOf(cfg config.Config) logSpec {
 // setting: "off" on loopback, "auto" elsewhere.
 func defaultTLSMode(listen string) string { return config.DefaultTLS(listen) }
 
-// passwordHash computes the [web].password_hash value for user/password
-// (sha256 hex of "user:password", the only scheme without a dependency).
+// passwordHash computes the [web].password_hash value for user/password:
+// salted PBKDF2-HMAC-SHA256 (`pbkdf2$<iter>$<salt>$<key>`). The legacy
+// sha256("user:password") hex form stays accepted by the daemon.
 func passwordHash(user, password string) string { return web.PasswordHash(user, password) }
+
+// verifyPassword checks a password against a stored hash of either form.
+func verifyPassword(user, password, stored string) bool {
+	return web.VerifyPassword(user, password, stored)
+}
 
 // redactedHash is the placeholder the API and bundles use for the stored
 // password hash.
 const redactedHash = web.RedactedHash
+
+// redactConfigText replaces the password hash in config text the same way
+// GET /api/config does (line forms by regex, the parsed value as a bare
+// substring only when it is long enough not to hit other text) (M7).
+func redactConfigText(raw string) string { return web.RedactRaw(raw) }
 
 // setConfigKey edits one key of a top-level table in raw TOML text without
 // touching comments or other keys (passwd, setup on an existing file).
@@ -517,8 +528,10 @@ func (journalLogStore) Export(w io.Writer) error {
 	return nil
 }
 
+// Clear is refused with errors.ErrUnsupported so the API answers 501, not
+// 500 (L5): there is nothing to clear, the journal is never touched.
 func (journalLogStore) Clear() error {
-	return errors.New("no log file configured ([log].file is empty); the journal is not cleared")
+	return fmt.Errorf("no log file configured ([log].file is empty); the journal is not cleared: %w", errors.ErrUnsupported)
 }
 
 func (journalLogStore) Path() string { return "" }
@@ -542,8 +555,7 @@ func isRestartRequired(err error) bool { return errors.Is(err, control.ErrRestar
 func errRestartRequired() error        { return control.ErrRestartRequired }
 
 // Config text helpers for bundles and setup.
-func defaultConfigRaw() []byte                         { return config.Marshal(config.Default()) }
-func savePresetRaw(dir, name string, raw []byte) error { return config.SavePresetRaw(dir, name, raw) }
+func defaultConfigRaw() []byte { return config.Marshal(config.Default()) }
 
 // fileConfigStore backs GET/PUT /api/config with the TOML file.
 type fileConfigStore struct{ path string }

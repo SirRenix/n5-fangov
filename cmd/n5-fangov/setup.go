@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bufio"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"sort"
@@ -45,14 +47,20 @@ func cmdSetup(args []string) int {
 	cfgPath := fs.String("config", defaultConfigPath, "config file to write")
 	listen := fs.String("listen", "", "local | lan | host:port  (local: 127.0.0.1 without auth/TLS; lan: primary LAN IP with basic auth and HTTPS)")
 	user := fs.String("user", "", "web user (lan)")
-	password := fs.String("password", "", "web password (lan); prompted twice without echo when omitted")
+	password := fs.String("password", "", passwordFlagHelp)
+	passwordFile := fs.String("password-file", "", passwordFileFlagHelp)
 	yes := fs.Bool("yes", false, "non-interactive: no questions, all needed flags required, existing config overwritten (backup kept)")
 	prof := fs.String("profile", "auto", "profile to detect (auto | n5pro | nct67xx | it87xx | monitor)")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
 	if fs.NArg() != 0 {
-		fmt.Fprintln(os.Stderr, "usage: n5-fangov setup [--listen local|lan|HOST:PORT] [--user U] [--password P] [--yes]")
+		fmt.Fprintln(os.Stderr, "usage: n5-fangov setup [--listen local|lan|HOST:PORT] [--user U] [--password-file F | --password -] [--yes]")
+		return exitUsage
+	}
+	pwArg, err := passwordFromArgs(*password, *passwordFile, os.Stdin)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "setup:", err)
 		return exitUsage
 	}
 
@@ -128,10 +136,10 @@ func cmdSetup(args []string) int {
 				return exitFail
 			}
 		}
-		pw := *password
+		pw := pwArg
 		if pw == "" {
 			if *yes {
-				fmt.Fprintln(os.Stderr, "setup: --yes with a LAN listener needs --user and --password")
+				fmt.Fprintln(os.Stderr, "setup: --yes with a LAN listener needs --user and --password-file (or --password -)")
 				return exitUsage
 			}
 			if pw, err = pr.askPasswordTwice(); err != nil {
@@ -295,12 +303,18 @@ func cmdPasswd(args []string) int {
 	fs := flag.NewFlagSet("passwd", flag.ContinueOnError)
 	cfgPath := fs.String("config", defaultConfigPath, "config file")
 	user := fs.String("user", "", "web user (default: the configured one, else "+setupAdmin+")")
-	password := fs.String("password", "", "password (default: prompted twice without echo)")
+	password := fs.String("password", "", passwordFlagHelp)
+	passwordFile := fs.String("password-file", "", passwordFileFlagHelp)
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
 	if fs.NArg() != 0 {
-		fmt.Fprintln(os.Stderr, "usage: n5-fangov passwd [--user U] [--password P]")
+		fmt.Fprintln(os.Stderr, "usage: n5-fangov passwd [--user U] [--password-file F | --password -]")
+		return exitUsage
+	}
+	pw, err := passwordFromArgs(*password, *passwordFile, os.Stdin)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "passwd:", err)
 		return exitUsage
 	}
 	raw, err := os.ReadFile(*cfgPath)
@@ -317,7 +331,6 @@ func cmdPasswd(args []string) int {
 		return exitFail
 	}
 	u := strings.TrimSpace(*user)
-	pw := *password
 	if u == "" || pw == "" {
 		pr := openPrompter()
 		defer pr.close()
@@ -353,6 +366,42 @@ func cmdPasswd(args []string) int {
 	fmt.Printf("%s: auth = basic, user %q, password hash updated\n", *cfgPath, u)
 	fmt.Println("apply with:  systemctl restart n5-fangov   ([web] is read at start)")
 	return exitOK
+}
+
+// Password flag help (M6): a password on the command line is visible in
+// `ps`, the shell history and the journal; a file or stdin is not.
+const (
+	passwordFlagHelp     = "password; \"-\" reads one line from stdin. A literal value is visible in ps/history — prefer --password-file or \"-\""
+	passwordFileFlagHelp = "file whose first line is the password (mode 0600 recommended)"
+)
+
+// passwordFromArgs resolves the password flags: --password-file wins, then
+// --password "-" (one line from stdin), then the literal. "" means "ask".
+func passwordFromArgs(literal, file string, stdin io.Reader) (string, error) {
+	switch {
+	case file != "":
+		b, err := os.ReadFile(file)
+		if err != nil {
+			return "", fmt.Errorf("--password-file: %w", err)
+		}
+		pw := strings.TrimRight(firstLine(string(b)), "\r")
+		if pw == "" {
+			return "", fmt.Errorf("--password-file %s: first line is empty", file)
+		}
+		return pw, nil
+	case literal == "-":
+		r := bufio.NewReader(stdin)
+		line, err := r.ReadString('\n')
+		if err != nil && line == "" {
+			return "", errors.New("--password -: no line on stdin")
+		}
+		pw := strings.TrimRight(line, "\r\n")
+		if pw == "" {
+			return "", errors.New("--password -: empty line on stdin")
+		}
+		return pw, nil
+	}
+	return literal, nil
 }
 
 // setWebAuth edits the three auth keys of [web] in place.

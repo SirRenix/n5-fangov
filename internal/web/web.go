@@ -5,6 +5,8 @@ package web
 
 import (
 	"context"
+	"crypto/pbkdf2"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/tls"
@@ -170,7 +172,7 @@ type SensorInfo struct {
 type AuthConfig struct {
 	Mode         string // "none" | "basic"
 	User         string
-	PasswordHash string // sha256 hex of "user:password", see PasswordHash
+	PasswordHash string // pbkdf2$... (PasswordHash) or legacy sha256 hex (LegacyPasswordHash)
 }
 
 // Deps wires the handler to the rest of the daemon. Nil optional members
@@ -347,10 +349,45 @@ func (s *Server) ServeSocket(ctx context.Context, socketPath string) error {
 	return ipc.Serve(ctx, socketPath, s.socket)
 }
 
-// PasswordHash computes the configured hash form: sha256 hex of "user:password".
+// PasswordHash computes the stored form of a password (M3): salted
+// PBKDF2-HMAC-SHA256, config.PBKDF2Iter iterations, rendered as
+// pbkdf2$<iter>$<salt hex>$<key hex>. setup and passwd write this form.
 func PasswordHash(user, password string) string {
+	salt := make([]byte, config.PBKDF2SaltLen)
+	if _, err := rand.Read(salt); err != nil {
+		panic("web: crypto/rand: " + err.Error()) // no entropy: nothing sensible to store
+	}
+	key, err := pbkdf2.Key(sha256.New, password, salt, config.PBKDF2Iter, config.PBKDF2KeyLen)
+	if err != nil {
+		panic("web: pbkdf2: " + err.Error()) // only for out-of-range parameters
+	}
+	return fmt.Sprintf("%s$%d$%s$%s", config.PBKDF2Prefix, config.PBKDF2Iter, hex.EncodeToString(salt), hex.EncodeToString(key))
+}
+
+// LegacyPasswordHash is the pre-M3 stored form: sha256 hex of
+// "user:password". Still accepted by VerifyPassword; no longer written.
+func LegacyPasswordHash(user, password string) string {
 	sum := sha256.Sum256([]byte(user + ":" + password))
 	return hex.EncodeToString(sum[:])
+}
+
+// VerifyPassword checks user/password against a stored hash in either
+// form with constant-time comparisons. A stored value that does not parse
+// never verifies (fail closed).
+func VerifyPassword(user, password, stored string) bool {
+	ph, err := config.ParsePasswordHash(stored)
+	if err != nil {
+		return false
+	}
+	if ph.Legacy != nil {
+		got := sha256.Sum256([]byte(user + ":" + password))
+		return subtle.ConstantTimeCompare(got[:], ph.Legacy) == 1
+	}
+	key, err := pbkdf2.Key(sha256.New, password, ph.Salt, ph.Iter, len(ph.Key))
+	if err != nil {
+		return false
+	}
+	return subtle.ConstantTimeCompare(key, ph.Key) == 1
 }
 
 // ---- routing -------------------------------------------------------------
@@ -413,6 +450,14 @@ func (s *Server) guard(next http.Handler) http.Handler {
 			return
 		}
 		if strings.EqualFold(s.deps.Auth.Mode, "basic") && (write || protectedRead(r.URL.Path)) {
+			// An IP that already has limitConcurrent failed attempts
+			// sleeping gets an immediate 429 before any hash is computed
+			// (M3c): the delay cannot be side-stepped with parallel
+			// requests, and the PBKDF2 cost is not paid for them.
+			if r.Header.Get("Authorization") != "" && s.limiter.busy(remoteIP(r)) {
+				writeError(w, http.StatusTooManyRequests, "too many concurrent authentication attempts")
+				return
+			}
 			if !s.authorized(r) {
 				// Only a presented credential is a failure: the UI's first
 				// request arrives anonymous and gets a silent 401 that opens
@@ -466,20 +511,19 @@ func remoteIP(r *http.Request) string {
 	return r.RemoteAddr
 }
 
-// authorized checks basic auth in constant time against the configured hash.
+// authorized checks basic auth against the configured user and hash
+// (either stored form, see VerifyPassword). Both comparisons run
+// regardless of the other's outcome.
 func (s *Server) authorized(r *http.Request) bool {
 	user, pass, ok := r.BasicAuth()
 	if !ok {
 		return false
 	}
-	want, err := hex.DecodeString(strings.ToLower(strings.TrimSpace(s.deps.Auth.PasswordHash)))
-	if err != nil || len(want) != sha256.Size {
-		// Misconfigured hash: nobody gets in (fail closed).
-		return false
-	}
-	got := sha256.Sum256([]byte(user + ":" + pass))
 	userOK := subtle.ConstantTimeCompare([]byte(user), []byte(s.deps.Auth.User))
-	hashOK := subtle.ConstantTimeCompare(got[:], want)
+	hashOK := 0
+	if VerifyPassword(user, pass, s.deps.Auth.PasswordHash) {
+		hashOK = 1
+	}
 	return userOK&hashOK == 1
 }
 
@@ -542,7 +586,7 @@ func (s *Server) getHistory(w http.ResponseWriter, r *http.Request) {
 var hashLine = regexp.MustCompile(`(?m)^([ \t]*(?:web\.)?password_hash[ \t]*=[ \t]*)("[^"\n]*"|'[^'\n]*')`)
 
 // minLiteralHash is the shortest hash value that is also replaced as a
-// bare substring (see redactRaw); shorter strings would hit unrelated text.
+// bare substring (see RedactRaw); shorter strings would hit unrelated text.
 const minLiteralHash = 32
 
 // mapHashLiterals rewrites the value of every hashLine match for which f
@@ -559,12 +603,12 @@ func mapHashLiterals(raw string, f func(val string) (string, bool)) string {
 	})
 }
 
-// redactRaw replaces a non-empty password_hash value in TOML text (H1).
+// RedactRaw replaces a non-empty password_hash value in TOML text (H1).
 // The line forms are rewritten by regex; in addition the hash the parser
 // actually sees is replaced wherever it appears (inline table, unusual
 // layout), so the value never leaves the daemon however the file is laid
 // out.
-func redactRaw(raw string) string {
+func RedactRaw(raw string) string {
 	out := mapHashLiterals(raw, func(v string) (string, bool) {
 		return RedactedHash, v != "" && v != RedactedHash
 	})
@@ -622,7 +666,7 @@ func (s *Server) getConfig(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "read config: "+err.Error())
 		return
 	}
-	out := map[string]any{"raw": redactRaw(string(raw))}
+	out := map[string]any{"raw": RedactRaw(string(raw))}
 	if p, ok := s.deps.Config.(ParsedConfigStore); ok {
 		if cfg, err := p.Parsed(); err == nil {
 			redactParsed(cfg)
@@ -931,6 +975,9 @@ func (s *Server) clearLog(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "clear log: "+err.Error())
 		return
 	}
+	// The truncation itself erased the trail; this line is the first entry
+	// of the new file and lands in the journal as well (L2).
+	s.logf("web: log cleared by %s", remoteIP(r))
 	writeJSON(w, http.StatusOK, map[string]any{"cleared": true, "note": "journal untouched"})
 }
 
@@ -958,7 +1005,7 @@ func (s *Server) exportConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 // redactBundle rewrites the "config" string of a bundle document with
-// redactRaw; every other member passes through untouched.
+// RedactRaw; every other member passes through untouched.
 func redactBundle(raw []byte) ([]byte, error) {
 	var doc map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &doc); err != nil {
@@ -969,7 +1016,7 @@ func redactBundle(raw []byte) ([]byte, error) {
 		if err := json.Unmarshal(c, &cfg); err != nil {
 			return nil, fmt.Errorf("bundle config is not a string: %w", err)
 		}
-		b, err := json.Marshal(redactRaw(cfg))
+		b, err := json.Marshal(RedactRaw(cfg))
 		if err != nil {
 			return nil, err
 		}

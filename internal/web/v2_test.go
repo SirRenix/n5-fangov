@@ -144,6 +144,13 @@ func TestLogStoreEndpoints(t *testing.T) {
 	if c["cleared"] != true || c["note"] != "journal untouched" || ls.cleared != 1 {
 		t.Fatalf("clear = %v (cleared %d)", c, ls.cleared)
 	}
+	// L2: the clear leaves a trace naming the client
+	e.logMu.Lock()
+	cleared := strings.Join(e.logged, "\n")
+	e.logMu.Unlock()
+	if !strings.Contains(cleared, "web: log cleared by 127.0.0.1") {
+		t.Fatalf("clear not logged: %q", cleared)
+	}
 	r = e.do(t, "GET", "/api/log", "", nil)
 	decode(t, r.body, &m)
 	if len(m.Lines) != 0 {

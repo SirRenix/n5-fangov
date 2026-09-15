@@ -15,11 +15,16 @@ const (
 	limitMax     = 2 * time.Second
 	limitReset   = 10 * time.Minute
 	limitEntries = 4096 // upper bound on tracked IPs
+	// limitConcurrent is how many failed attempts of one IP may sleep at
+	// the same time; further attempts are refused immediately (429)
+	// without a hash computation (M3c).
+	limitConcurrent = 4
 )
 
 type authFails struct {
-	n    int
-	last time.Time
+	n        int
+	last     time.Time
+	sleeping int // attempts of this IP currently inside sleep
 }
 
 type authLimiter struct {
@@ -65,12 +70,31 @@ func (l *authLimiter) fail(ip string) (int, time.Duration) {
 	f.n++
 	f.last = now
 	n := f.n
-	l.mu.Unlock()
 	d := delayFor(n)
 	if d > 0 {
+		f.sleeping++
+	}
+	l.mu.Unlock()
+	if d > 0 {
 		l.sleep(d)
+		l.mu.Lock()
+		// reset may have replaced or removed the entry meanwhile; only
+		// decrement the one this attempt incremented.
+		if cur := l.byIP[ip]; cur == f {
+			f.sleeping--
+		}
+		l.mu.Unlock()
 	}
 	return n, d
+}
+
+// busy reports whether ip already has limitConcurrent failed attempts
+// sleeping; the caller refuses the request without touching the hash.
+func (l *authLimiter) busy(ip string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	f := l.byIP[ip]
+	return f != nil && f.sleeping >= limitConcurrent
 }
 
 // reset forgets ip after a successful authentication.

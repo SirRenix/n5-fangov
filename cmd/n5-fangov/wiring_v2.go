@@ -42,6 +42,9 @@ func tlsLoadFiles(certFile, keyFile string) (tls.Certificate, error) {
 	return tlscert.LoadFiles(certFile, keyFile)
 }
 
+// tlsCheckKeyMode reports a private key file readable by group/others (L8).
+func tlsCheckKeyMode(keyFile string) error { return tlscert.CheckKeyMode(keyFile) }
+
 // tlsExportPEM returns the certificate block only (never the key).
 func tlsExportPEM(dir string) ([]byte, error) { return tlscert.ExportPEM(dir) }
 

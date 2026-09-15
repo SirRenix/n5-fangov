@@ -7,7 +7,9 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strings"
+	"syscall"
 )
 
 // prompter reads interactive answers from the controlling terminal
@@ -107,12 +109,16 @@ func (p *prompter) askYesNo(label string, def bool) (bool, error) {
 }
 
 // askPassword reads a line with echo off. Returns the password and whether
-// the echo could be switched off.
+// the echo could be switched off. Ctrl-C during the read restores the echo
+// before the process ends (L4); otherwise the shell is left with a silent
+// terminal.
 func (p *prompter) askPassword(label string) (string, bool, error) {
 	fmt.Fprintf(p.out, "%s: ", label)
 	hidden := p.stty("-echo") == nil
 	if !hidden {
 		fmt.Fprint(p.out, "(input visible, stty unavailable) ")
+	} else {
+		defer p.echoOnInterrupt(os.Exit)()
 	}
 	s, err := p.readLine()
 	if hidden {
@@ -123,6 +129,28 @@ func (p *prompter) askPassword(label string) (string, bool, error) {
 		return "", hidden, err
 	}
 	return s, hidden, nil
+}
+
+// echoOnInterrupt restores the terminal echo and exits with 130 (128 +
+// SIGINT) when SIGINT or SIGTERM arrives while a password is being read.
+// The returned func stops the handler; call it when the read is done.
+func (p *prompter) echoOnInterrupt(exit func(int)) (stop func()) {
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-sig:
+			_ = p.stty("echo")
+			fmt.Fprintln(p.out)
+			exit(130)
+		case <-done:
+		}
+	}()
+	return func() {
+		signal.Stop(sig)
+		close(done)
+	}
 }
 
 // askPasswordTwice asks for a password and its confirmation, up to three
