@@ -20,8 +20,12 @@ import (
 
 // Limits used by validation. Exported so the web UI and CLI can show them.
 const (
-	MinInterval   = 2 * time.Second
-	MaxInterval   = 120 * time.Second
+	MinInterval = 2 * time.Second
+	// MaxInterval: the unit runs with WatchdogSec=60 and the daemon pings
+	// once per cycle (plus an independent 10 s ticker while the loop is
+	// alive); two cycles must fit into the watchdog window. Larger values
+	// are clamped to MaxInterval with a warning, not replaced by the default.
+	MaxInterval   = 30 * time.Second
 	MinCurvePts   = 2
 	MaxCurvePts   = 8
 	MinCurveTemp  = -20
@@ -311,28 +315,12 @@ func (p *parser) strField(prefix string, sec map[string]toml.Primitive, key, def
 	return v, true
 }
 
-// durField accepts a duration string ("10s", "30m") or an integer (seconds).
+// durField accepts a duration string ("10s", "30m") or an integer (seconds);
+// a value outside lo..hi yields the default with a warning.
 func (p *parser) durField(prefix string, sec map[string]toml.Primitive, key string, def, lo, hi time.Duration) time.Duration {
-	prim, ok := sec[key]
+	d, ok := p.durRaw(prefix, sec, key, def)
 	if !ok {
-		return def
-	}
-	var d time.Duration
-	var s string
-	if err := p.md.PrimitiveDecode(prim, &s); err == nil {
-		v, perr := time.ParseDuration(s)
-		if perr != nil {
-			p.warn(prefix+"."+key, "%q is not a duration, default %s used", s, def)
-			return def
-		}
-		d = v
-	} else {
-		var n int64
-		if err := p.md.PrimitiveDecode(prim, &n); err != nil {
-			p.warn(prefix+"."+key, "not a duration string or integer seconds, default %s used", def)
-			return def
-		}
-		d = time.Duration(n) * time.Second
+		return d
 	}
 	if d < lo || d > hi {
 		p.warn(prefix+"."+key, "%s outside %s..%s, default %s used", d, lo, hi, def)
@@ -341,12 +329,49 @@ func (p *parser) durField(prefix string, sec map[string]toml.Primitive, key stri
 	return d
 }
 
+// durRaw decodes a duration string or integer seconds. ok is false when the
+// key is absent or malformed (then def is returned, with a warning for the
+// malformed case).
+func (p *parser) durRaw(prefix string, sec map[string]toml.Primitive, key string, def time.Duration) (time.Duration, bool) {
+	prim, ok := sec[key]
+	if !ok {
+		return def, false
+	}
+	var s string
+	if err := p.md.PrimitiveDecode(prim, &s); err == nil {
+		v, perr := time.ParseDuration(s)
+		if perr != nil {
+			p.warn(prefix+"."+key, "%q is not a duration, default %s used", s, def)
+			return def, false
+		}
+		return v, true
+	}
+	var n int64
+	if err := p.md.PrimitiveDecode(prim, &n); err != nil {
+		p.warn(prefix+"."+key, "not a duration string or integer seconds, default %s used", def)
+		return def, false
+	}
+	return time.Duration(n) * time.Second, true
+}
+
 func (p *parser) daemon(sec map[string]toml.Primitive, d *Daemon) {
 	const pre = "daemon"
 	p.unknown(pre, sec, "interval", "step_up", "step_down", "stall_min_duty", "stall_cycles",
 		"stale_cycles", "alert_cooldown", "log_every", "profile")
 	def := Default().Daemon
-	d.Interval = p.durField(pre, sec, "interval", def.Interval, MinInterval, MaxInterval)
+	// interval: below the minimum -> default; above MaxInterval -> clamped
+	// (the operator wanted "slow", the watchdog window only allows 30 s).
+	if iv, ok := p.durRaw(pre, sec, "interval", def.Interval); !ok {
+		d.Interval = iv
+	} else if iv < MinInterval {
+		p.warn(pre+".interval", "%s below %s, default %s used", iv, MinInterval, def.Interval)
+		d.Interval = def.Interval
+	} else if iv > MaxInterval {
+		p.warn(pre+".interval", "%s above %s (WatchdogSec=60 needs two cycles), %s used", iv, MaxInterval, MaxInterval)
+		d.Interval = MaxInterval
+	} else {
+		d.Interval = iv
+	}
 	d.StepUp = p.intField(pre, sec, "step_up", def.StepUp, 1, 255)
 	d.StepDown = p.intField(pre, sec, "step_down", def.StepDown, 1, 255)
 	d.StallMinDuty = p.intField(pre, sec, "stall_min_duty", def.StallMinDuty, 1, 255)

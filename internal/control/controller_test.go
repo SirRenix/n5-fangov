@@ -229,24 +229,32 @@ func TestStallAndRecovery(t *testing.T) {
 	h2.expectMode("hdd", ModeAuto)
 }
 
-func TestSensorErrorFailsafe(t *testing.T) {
+// A sensor read error isolates its channel (safe duty, mode sensor-error);
+// the other channels keep regulating and the status stays "ok".
+func TestSensorErrorIsolatesChannel(t *testing.T) {
 	h := newHarness(t, n5cfg(), nil)
 	h.cycles(1)
 	before := h.sensors.resolves
 	h.sensors.get("nvme:max").fail(errors.New("no nvme"))
 	h.cycles(1)
-	for _, n := range []string{"cpu", "ssd", "hdd"} {
-		h.expectDuty(n, 255)
-		h.expectMode(n, ModeSensor)
-	}
-	if s := h.c.Snapshot(); s.Status != "sensor-error" {
-		t.Errorf("status %q", s.Status)
+	h.expectDuty("ssd", 255) // stop "auto" -> 255
+	h.expectMode("ssd", ModeSensor)
+	h.expectDuty("cpu", 85) // others regulate as before
+	h.expectMode("cpu", ModeAuto)
+	h.expectDuty("hdd", 105)
+	h.expectMode("hdd", ModeAuto)
+	if s := h.c.Snapshot(); s.Status != "ok" {
+		t.Errorf("status %q, want ok while other channels regulate", s.Status)
 	}
 	if h.alerts.count("sensor") != 1 {
-		t.Errorf("sensor alert count %d", h.alerts.count("sensor"))
+		t.Fatalf("sensor alert count %d", h.alerts.count("sensor"))
+	}
+	if msg := h.alerts.msgs[0]; !strings.Contains(msg, `channel "ssd"`) || !strings.Contains(msg, "nvme:max") ||
+		!strings.Contains(msg, "no nvme") || !strings.Contains(msg, "duty 255") || !strings.Contains(msg, "other channels keep regulating") {
+		t.Errorf("alert must name the channel, sensor, cause and duty: %q", msg)
 	}
 	if h.sensors.resolves <= before {
-		t.Errorf("sensors not re-resolved after error")
+		t.Errorf("sensor not re-resolved after error")
 	}
 	h.cycles(2)
 	if h.alerts.count("sensor") != 1 {
@@ -256,20 +264,170 @@ func TestSensorErrorFailsafe(t *testing.T) {
 	if h.state("ssd").Temp != -999 {
 		t.Errorf("unknown temp must be -999, got %v", h.state("ssd").Temp)
 	}
-	// recovery: back to ok, slewing down from 255
+	// the curve keeps working on the healthy channels meanwhile
+	h.sensors.get("k10temp").set(60000)
+	h.cycles(1)
+	h.expectDuty("cpu", 125) // 85 + step_up 40 towards 158
+	h.expectMode("cpu", ModeAuto)
+	// recovery: ssd back to the curve, slewing down from 255; logged
 	h.sensors.get("nvme:max").set(44000)
+	h.cycles(1)
+	h.expectDuty("ssd", 240)
+	h.expectMode("ssd", ModeAuto)
+	if !h.log.contains("ssd: sensor nvme:max readable again") {
+		t.Errorf("recovery not logged:\n%s", strings.Join(h.log.lines, "\n"))
+	}
+	// a second failure after the cooldown alerts again (transition)
+	h.clock.advance(31 * time.Minute)
+	h.sensors.get("nvme:max").fail(errors.New("gone again"))
+	h.cycles(1)
+	if h.alerts.count("sensor") != 2 {
+		t.Errorf("alert on re-failure after cooldown: %d", h.alerts.count("sensor"))
+	}
+
+	// implausible value is a sensor error too, and only for that channel
+	h.sensors.get("nvme:max").set(44000)
+	h.sensors.get("k10temp").set(130000)
+	h.cycles(1)
+	h.expectDuty("cpu", 255)
+	h.expectMode("cpu", ModeSensor)
+	h.expectMode("hdd", ModeAuto)
+	h.expectDuty("hdd", 105)
+	if !h.log.contains("implausible 130000") {
+		t.Errorf("implausible reading not logged")
+	}
+}
+
+// A channel with a fixed stop duty goes to that duty on a sensor error,
+// not to 255 (the operator's "nobody regulates this fan" value); a manual
+// override does not apply while the temperature is unknown.
+func TestSensorErrorUsesStopDuty(t *testing.T) {
+	h := newHarness(t, n5cfg(), nil)
+	h.cycles(1)
+	if err := h.c.SetOverride("hdd", 200); err != nil {
+		t.Fatal(err)
+	}
+	h.cycles(1)
+	h.expectDuty("hdd", 200)
+	h.sensors.get("drivetemp:max").fail(errors.New("no drives"))
+	h.cycles(1)
+	h.expectDuty("hdd", 140) // stop = "140"
+	h.expectMode("hdd", ModeSensor)
+	if h.dev.getDuty(3) != 140 {
+		t.Errorf("device duty %d", h.dev.getDuty(3))
+	}
+	if !strings.Contains(h.alerts.msgs[0], "duty 140 (configured stop duty)") {
+		t.Errorf("alert: %q", h.alerts.msgs[0])
+	}
+	// stays there across a rewrite cycle, with the override still stored
+	h.cycles(6)
+	h.expectDuty("hdd", 140)
+	if h.c.Overrides()["hdd"] != 200 {
+		t.Errorf("override dropped")
+	}
+	// back: the override applies again
+	h.sensors.get("drivetemp:max").set(33000)
+	h.cycles(1)
+	h.expectDuty("hdd", 200)
+	h.expectMode("hdd", ModeManual)
+}
+
+// A sensor the factory cannot resolve at all (drivetemp absent on an N5 Pro
+// without HDDs) isolates only the built-in hdd channel; cpu and ssd
+// regulate. When every sensor fails the status turns "sensor-error".
+func TestSensorFactoryFailsForOneChannel(t *testing.T) {
+	h := newHarnessDev(t, cpuOnly(), newN5FakeDev(), nil)
+	delete(h.sensors.sensors, "drivetemp:max")
+	h.c.chans[2].sensor = nil // New resolved it before the delete
+	if got := h.c.Channels(); strings.Join(got, ",") != "cpu,ssd,hdd" {
+		t.Fatalf("channels: %v", got)
+	}
+	h.cycles(3)
+	h.expectDuty("hdd", 140)
+	h.expectMode("hdd", ModeSensor)
+	h.expectDuty("cpu", 85)
+	h.expectMode("cpu", ModeAuto)
+	h.expectDuty("ssd", 74)
+	h.expectMode("ssd", ModeAuto)
+	if s := h.c.Snapshot(); s.Status != "ok" {
+		t.Errorf("status %q", s.Status)
+	}
+	if h.alerts.count("sensor") != 1 || !strings.Contains(h.alerts.msgs[len(h.alerts.msgs)-1], `channel "hdd": sensor drivetemp:max unresolved`) {
+		t.Errorf("alerts: %v\n%v", h.alerts.kinds, h.alerts.msgs)
+	}
+	if n := h.log.count("sensor \"drivetemp:max\" for channel \"hdd\""); n != 1 {
+		t.Errorf("resolve failure logged %d times (want once)", n)
+	}
+	// regulation on the healthy channels is unaffected
+	h.sensors.get("k10temp").set(60000)
+	h.cycles(1)
+	h.expectDuty("cpu", 125)
+	h.expectDuty("hdd", 140)
+
+	// every sensor gone -> global sensor-error, each channel at its safe duty
+	h.sensors.get("k10temp").fail(errors.New("cpu gone"))
+	h.sensors.get("nvme:max").fail(errors.New("nvme gone"))
+	h.cycles(1)
+	if s := h.c.Snapshot(); s.Status != "sensor-error" {
+		t.Errorf("status %q, want sensor-error when all channels fail", s.Status)
+	}
+	h.expectDuty("cpu", 255)
+	h.expectDuty("ssd", 255)
+	h.expectDuty("hdd", 140)
+	h.expectMode("cpu", ModeSensor)
+	if h.alerts.count("sensor") != 1 { // hdd's alert is still within the cooldown
+		t.Errorf("alerts: %v", h.alerts.msgs)
+	}
+	// the sensor appears later (module loaded): resolved and regulated
+	h.sensors.get("k10temp").set(36000)
+	h.sensors.get("nvme:max").set(44000)
+	h.sensors.add("drivetemp:max", 33000)
 	h.cycles(1)
 	if s := h.c.Snapshot(); s.Status != "ok" {
 		t.Errorf("status after recovery %q", s.Status)
 	}
+	h.expectMode("hdd", ModeAuto)
+	h.expectDuty("hdd", 125) // slew from 140 towards 105: -15
+}
+
+// All sensors failing at once: global "sensor-error", every channel at its
+// own safe duty, one alert saying so.
+func TestSensorErrorAllChannels(t *testing.T) {
+	h := newHarness(t, n5cfg(), nil)
+	h.cycles(1)
+	for _, id := range []string{"k10temp", "nvme:max", "drivetemp:max"} {
+		h.sensors.get(id).fail(errors.New(id + " gone"))
+	}
+	h.cycles(1)
+	if s := h.c.Snapshot(); s.Status != "sensor-error" {
+		t.Errorf("status %q", s.Status)
+	}
+	h.expectDuty("cpu", 255)
+	h.expectDuty("ssd", 255)
+	h.expectDuty("hdd", 140)
+	for _, n := range []string{"cpu", "ssd", "hdd"} {
+		h.expectMode(n, ModeSensor)
+	}
+	if h.alerts.count("sensor") != 1 {
+		t.Fatalf("alerts: %v", h.alerts.kinds)
+	}
+	if msg := h.alerts.msgs[0]; !strings.Contains(msg, "ALL channels affected") ||
+		!strings.Contains(msg, `channel "cpu"`) || !strings.Contains(msg, `channel "hdd"`) {
+		t.Errorf("alert: %q", msg)
+	}
+	h.cycles(3)
+	if s := h.c.Snapshot(); s.Status != "sensor-error" || h.alerts.count("sensor") != 1 {
+		t.Errorf("persisting: status %q alerts %d", s.Status, h.alerts.count("sensor"))
+	}
+	// one sensor back: status ok again, that channel regulates
+	h.sensors.get("k10temp").set(36000)
+	h.cycles(1)
+	if s := h.c.Snapshot(); s.Status != "ok" {
+		t.Errorf("status with one healthy channel %q", s.Status)
+	}
 	h.expectDuty("cpu", 240)
 	h.expectMode("cpu", ModeAuto)
-
-	// implausible value is a sensor error too
-	h.sensors.get("k10temp").set(130000)
-	h.cycles(1)
-	h.expectDuty("hdd", 255)
-	h.expectMode("hdd", ModeSensor)
+	h.expectMode("ssd", ModeSensor)
 }
 
 func TestStaleSensor(t *testing.T) {
@@ -281,8 +439,13 @@ func TestStaleSensor(t *testing.T) {
 	h.cycles(1) // sameRaw = 3 ≥ 3
 	h.expectMode("cpu", ModeSensor)
 	h.expectDuty("cpu", 255)
+	h.expectMode("ssd", ModeAuto) // isolated to the frozen channel
+	h.expectDuty("ssd", 74)
 	if h.alerts.count("sensor") != 1 || !h.log.contains("frozen") {
 		t.Errorf("stale must alert as sensor error")
+	}
+	if !strings.Contains(h.alerts.msgs[0], `channel "cpu": sensor k10temp unchanged for`) {
+		t.Errorf("alert: %q", h.alerts.msgs[0])
 	}
 	h.sensors.get("k10temp").set(36001)
 	h.cycles(1)
@@ -295,12 +458,40 @@ func TestUnresolvedSensorAtStart(t *testing.T) {
 	h := newHarness(t, cfg, nil)
 	h.cycles(1)
 	h.expectMode("cpu", ModeSensor)
-	h.expectDuty("ssd", 255)
+	h.expectDuty("cpu", 255)
+	h.expectMode("ssd", ModeAuto) // not affected
+	h.expectDuty("ssd", 74)
 	h.sensors.add("later", 50000)
 	h.cycles(1)
 	h.expectMode("cpu", ModeAuto)
 	if s := h.c.Snapshot(); s.Status != "ok" {
 		t.Errorf("status %q", s.Status)
+	}
+}
+
+// LastCycle is the liveness signal for serve's watchdog pings: zero before
+// the first cycle, then the clock at the end of the latest one.
+func TestLastCycle(t *testing.T) {
+	h := newHarness(t, n5cfg(), nil)
+	if !h.c.LastCycle().IsZero() {
+		t.Fatalf("LastCycle before any cycle: %v", h.c.LastCycle())
+	}
+	h.cycles(1)
+	if got := h.c.LastCycle(); !got.Equal(time.Unix(1_789_500_000, 0)) {
+		t.Errorf("after first cycle: %v", got)
+	}
+	h.cycles(2) // clock advanced 10 s after each cycle
+	if got := h.c.LastCycle(); !got.Equal(time.Unix(1_789_500_020, 0)) {
+		t.Errorf("after third cycle: %v", got)
+	}
+	if h.c.Interval() != 10*time.Second {
+		t.Errorf("Interval(): %s", h.c.Interval())
+	}
+	// a cycle in sensor-error still counts as alive (the loop runs)
+	h.sensors.get("k10temp").fail(errors.New("x"))
+	h.cycles(1)
+	if got := h.c.LastCycle(); !got.Equal(time.Unix(1_789_500_030, 0)) {
+		t.Errorf("after sensor-error cycle: %v", got)
 	}
 }
 
@@ -550,8 +741,48 @@ func TestChannelNotOnDevice(t *testing.T) {
 	if got := h.c.Channels(); len(got) != 3 {
 		t.Errorf("channels: %v", got)
 	}
-	if h.alerts.count("config") != 1 {
-		t.Errorf("config alert: %d", h.alerts.count("config"))
+	if h.alerts.count(AlertConfigChannels) != 1 || h.alerts.count("config") != 0 {
+		t.Errorf("channel-set alert kinds: %v", h.alerts.kinds)
+	}
+	if !strings.Contains(h.alerts.msgs[0], `channel "x" uses pwm7`) || !h.log.contains(`config: channel "x" uses pwm7`) {
+		t.Errorf("dropped channel not reported: %v\n%s", h.alerts.msgs, strings.Join(h.log.lines, "\n"))
+	}
+}
+
+// The controller's channel-set corrections use their own alert kind
+// ("config-channels"): serve stamps "config" for parse warnings first, and
+// a shared kind would swallow the sanitizer's content through the cooldown.
+// Sanitizer notes and dropped channels travel in one alert.
+func TestConfigChannelsAlertKind(t *testing.T) {
+	cfg := cpuOnly()
+	cfg.Channels = append(cfg.Channels, config.Channel{Name: "x", PWM: 7, Sensor: "k10temp", Curve: config.DefaultCurve(), Critical: 90, Stop: "auto"})
+	// serve stamped "config" a moment ago (parse warnings alert)
+	dir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(dir, "alert.config"), []byte("1789500000\n"), 0o644)
+	h := newHarnessDev(t, cfg, newN5FakeDev(), func(o *Options) { o.RunDir = dir })
+	if AlertConfigChannels == "config" {
+		t.Fatal("alert kinds must differ")
+	}
+	if h.alerts.count(AlertConfigChannels) != 1 || h.alerts.count("config") != 0 {
+		t.Fatalf("alerts: %v (config stamp must not suppress the channel-set alert)", h.alerts.kinds)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "alert."+AlertConfigChannels)); err != nil {
+		t.Errorf("own stamp file: %v", err)
+	}
+	msg := h.alerts.msgs[0]
+	for _, want := range []string{"pwm2 (ssd) not in config", "pwm3 (hdd) not in config", `channel "x" uses pwm7`} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("alert lacks %q: %q", want, msg)
+		}
+	}
+	// reload of the same file: the sanitizer completes it again, same kind,
+	// after the cooldown
+	h.clock.advance(31 * time.Minute)
+	if err := h.c.Apply(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if h.alerts.count(AlertConfigChannels) != 2 || !strings.Contains(h.alerts.msgs[1], "config corrected on reload") {
+		t.Errorf("reload alert: %v", h.alerts.msgs)
 	}
 }
 

@@ -106,7 +106,8 @@ func cmdTest(args []string) int {
 // defaults) and pwm1..3 missing from the config get their built-in stop.
 // A pwm no channel owns falls back to "auto".
 func testStopPolicy(profileName string, chans []chanSpec, pwm int) string {
-	for _, c := range sanitizeChannelSpecs(profileName, chans) {
+	fixed, _ := sanitizeChannelSpecs(profileName, chans)
+	for _, c := range fixed {
 		if c.PWM == pwm {
 			return c.Stop
 		}

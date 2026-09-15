@@ -30,7 +30,7 @@ untested* — the dashboard says so, per profile.
 | Controller hangs | systemd watchdog (60 s) → kill → failsafe → restart |
 | Controller dies (crash, OOM, kill) | `ExecStopPost=ventula failsafe` → profile-defined safe state |
 | Kernel update without the DKMS module | `ExecStartPre=ventula check` fails loudly → alert; fans stay in EC/BIOS mode |
-| Sensor unreadable, implausible or frozen | all channels 255, alert, re-resolve |
+| Sensor unreadable, implausible, frozen or absent | that channel at its safe duty (fixed stop duty, else 255), alert naming it, re-resolve; the other channels keep regulating |
 | Fan stalls (0 RPM at duty ≥ threshold) | channel 255, alert, auto-recovery |
 | Write fails or read-back differs | 255, alert |
 | Somebody else writes to `/sys` | set-point re-asserted every minute, warning |

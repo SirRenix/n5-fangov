@@ -17,7 +17,8 @@ ExecStartPre=/usr/bin/ventula check --quiet
 ExecStart=/usr/bin/ventula serve
 # Runs after EVERY end, also after SIGKILL, watchdog kill or crash
 ExecStopPost=/usr/bin/ventula failsafe
-# The daemon sends WATCHDOG=1 every cycle (interval 2..120 s); a hung loop is restarted
+# The daemon sends WATCHDOG=1 every cycle (interval 2..30 s) and every 10 s from a
+# ticker while the loop is alive (last cycle within 3x interval); a hung loop is restarted
 WatchdogSec=60
 Restart=always
 RestartSec=5

@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SirRenix/ventula/internal/config"
 	"github.com/SirRenix/ventula/internal/control"
 	"github.com/SirRenix/ventula/internal/ipc"
 )
@@ -398,23 +399,62 @@ func (s *Server) getHistory(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-var hashLine = regexp.MustCompile(`(?m)^([ \t]*password_hash[ \t]*=[ \t]*)"([^"\n]*)"`)
+// hashLine matches a password_hash assignment at line start in either TOML
+// quote style ("basic" or 'literal'), with any spacing, also in the dotted
+// form web.password_hash. Group 2 is the quoted literal including quotes.
+var hashLine = regexp.MustCompile(`(?m)^([ \t]*(?:web\.)?password_hash[ \t]*=[ \t]*)("[^"\n]*"|'[^'\n]*')`)
 
-// redactRaw replaces a non-empty password_hash value in TOML text (H1).
-func redactRaw(raw string) string {
+// minLiteralHash is the shortest hash value that is also replaced as a
+// bare substring (see redactRaw); shorter strings would hit unrelated text.
+const minLiteralHash = 32
+
+// mapHashLiterals rewrites the value of every hashLine match for which f
+// returns true, keeping the quote style.
+func mapHashLiterals(raw string, f func(val string) (string, bool)) string {
 	return hashLine.ReplaceAllStringFunc(raw, func(m string) string {
 		sub := hashLine.FindStringSubmatch(m)
-		if sub[2] == "" || sub[2] == RedactedHash {
+		lit := sub[2]
+		nv, ok := f(lit[1 : len(lit)-1])
+		if !ok {
 			return m
 		}
-		return sub[1] + `"` + RedactedHash + `"`
+		return sub[1] + lit[:1] + nv + lit[:1]
 	})
 }
 
-// currentHash extracts password_hash from TOML text ("" when absent).
+// redactRaw replaces a non-empty password_hash value in TOML text (H1).
+// The line forms are rewritten by regex; in addition the hash the parser
+// actually sees is replaced wherever it appears (inline table, unusual
+// layout), so the value never leaves the daemon however the file is laid
+// out.
+func redactRaw(raw string) string {
+	out := mapHashLiterals(raw, func(v string) (string, bool) {
+		return RedactedHash, v != "" && v != RedactedHash
+	})
+	if h := parsedHash(raw); len(h) >= minLiteralHash {
+		out = strings.ReplaceAll(out, h, RedactedHash)
+	}
+	return out
+}
+
+// parsedHash returns web.password_hash as the config parser reads it, or
+// "" when the text does not parse or has none.
+func parsedHash(raw string) string {
+	cfg, _, err := config.Parse([]byte(raw))
+	if err != nil {
+		return ""
+	}
+	return cfg.Web.PasswordHash
+}
+
+// currentHash extracts password_hash from TOML text ("" when absent): the
+// parsed value when the text parses, else the first line-form literal.
 func currentHash(raw string) string {
+	if h := parsedHash(raw); h != "" {
+		return h
+	}
 	if sub := hashLine.FindStringSubmatch(raw); sub != nil {
-		return sub[2]
+		return sub[2][1 : len(sub[2])-1]
 	}
 	return ""
 }
@@ -485,12 +525,8 @@ func (s *Server) putConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		hash := currentHash(string(cur))
-		body = []byte(hashLine.ReplaceAllStringFunc(string(body), func(m string) string {
-			sub := hashLine.FindStringSubmatch(m)
-			if sub[2] != RedactedHash {
-				return m
-			}
-			return sub[1] + `"` + hash + `"`
+		body = []byte(mapHashLiterals(string(body), func(v string) (string, bool) {
+			return hash, v == RedactedHash
 		}))
 	}
 	var warnings []string

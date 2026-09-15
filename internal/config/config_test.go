@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -439,6 +440,55 @@ func TestLoadSave(t *testing.T) {
 	cfg, warns, err = Load(path)
 	if err == nil || len(warns) != 1 || !reflect.DeepEqual(cfg, Default()) {
 		t.Errorf("syntax error via Load: %v %v", warns, err)
+	}
+	if errors.Is(err, ErrUnreadable) {
+		t.Errorf("syntax error must not count as unreadable: %v", err)
+	}
+	// a directory in place of the file: unreadable (fatal for `check`)
+	cfg, warns, err = Load(dir)
+	if !errors.Is(err, ErrUnreadable) || len(warns) != 1 || !reflect.DeepEqual(cfg, Default()) {
+		t.Errorf("unreadable: %v %v", warns, err)
+	}
+}
+
+// daemon.interval is capped at MaxInterval (WatchdogSec=60 in the unit):
+// above it the value is clamped with a warning, below MinInterval the
+// default applies.
+func TestIntervalCap(t *testing.T) {
+	if MaxInterval != 30*time.Second {
+		t.Fatalf("MaxInterval %s, want 30s (WatchdogSec=60 needs two cycles)", MaxInterval)
+	}
+	cases := []struct {
+		src  string
+		want time.Duration
+		warn bool
+	}{
+		{`"45s"`, 30 * time.Second, true},
+		{`"2m"`, 30 * time.Second, true},
+		{`120`, 30 * time.Second, true},
+		{`"30s"`, 30 * time.Second, false},
+		{`"2s"`, 2 * time.Second, false},
+		{`"1s"`, 10 * time.Second, true},
+		{`"abc"`, 10 * time.Second, true},
+	}
+	for _, c := range cases {
+		cfg, warns, err := Parse([]byte("[daemon]\ninterval = " + c.src + "\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.Daemon.Interval != c.want {
+			t.Errorf("interval %s: got %s, want %s", c.src, cfg.Daemon.Interval, c.want)
+		}
+		if got := len(warns) > 0; got != c.warn {
+			t.Errorf("interval %s: warnings %v, want warning=%v", c.src, warns, c.warn)
+		}
+		if c.warn {
+			hasWarn(t, warns, "daemon.interval")
+		}
+	}
+	_, warns, _ := Parse([]byte("[daemon]\ninterval = \"45s\"\n"))
+	if !strings.Contains(warns[0].Msg, "above 30s") || !strings.Contains(warns[0].Msg, "30s used") {
+		t.Errorf("clamp warning text: %v", warns)
 	}
 }
 

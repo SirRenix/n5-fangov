@@ -100,8 +100,9 @@ func channelSpecs(cfg config.Config) []chanSpec {
 // sanitizeChannelSpecs applies control.SanitizeChannels to a channel list:
 // on the n5pro profile pwm1..3 missing from the config are added with the
 // built-in defaults and pwm3 never keeps stop="auto" (the EC does not
-// regulate it after a write). Other profiles come back unchanged.
-func sanitizeChannelSpecs(profileName string, chans []chanSpec) []chanSpec {
+// regulate it after a write). Other profiles come back unchanged. notes
+// carries one line per correction (what serve logs and alerts).
+func sanitizeChannelSpecs(profileName string, chans []chanSpec) (out []chanSpec, notes []string) {
 	in := make([]config.Channel, 0, len(chans))
 	for _, c := range chans {
 		in = append(in, config.Channel{
@@ -113,9 +114,26 @@ func sanitizeChannelSpecs(profileName string, chans []chanSpec) []chanSpec {
 			Stop:     c.Stop,
 		})
 	}
-	out, _ := control.SanitizeChannels(profileName, in)
-	return channelSpecs(config.Config{Channels: out})
+	fixed, notes := control.SanitizeChannels(profileName, in)
+	return channelSpecs(config.Config{Channels: fixed}), notes
 }
+
+// safeDutyOf is the duty a channel holds while its sensor is unusable
+// (control.safeDuty): the fixed stop duty when configured, else 255.
+func safeDutyOf(c chanSpec) string {
+	if d, fixed := (config.Channel{Stop: c.Stop}).StopDuty(); fixed {
+		return strconv.Itoa(d) + " (configured stop duty)"
+	}
+	return "255"
+}
+
+// configUnreadable reports whether a loadConfig error means the file exists
+// but cannot be read (as opposed to a TOML syntax error, which serve
+// survives on the built-in defaults).
+func configUnreadable(err error) bool { return errors.Is(err, config.ErrUnreadable) }
+
+// isLoopbackListen reports whether a [web].listen value binds loopback only.
+func isLoopbackListen(listen string) bool { return config.IsLoopbackListen(listen) }
 
 func daemonOf(cfg config.Config) daemonSpec {
 	return daemonSpec{
@@ -277,8 +295,14 @@ func runController(ctx context.Context, c *control.Controller) error { return c.
 // Idempotent; a no-op when Run already did it.
 func stopController(c *control.Controller) { c.Stop() }
 
+// controllerLastCycle is when the loop last finished a cycle (zero before
+// the first); controllerInterval is the active cycle interval.
+func controllerLastCycle(c *control.Controller) time.Time    { return c.LastCycle() }
+func controllerInterval(c *control.Controller) time.Duration { return c.Interval() }
+
 func notifyReady()    { _ = sdnotify.Ready() }
 func notifyStopping() { _ = sdnotify.Stopping() }
+func notifyWatchdog() { _ = sdnotify.Watchdog() }
 
 // ---------------------------------------------------------------------------
 // Web handler and IPC (agent C).

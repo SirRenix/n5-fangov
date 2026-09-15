@@ -50,7 +50,7 @@ testdata/sysfs/n5pro/          fake /sys tree mirroring n5host (hwmon names, tem
 
 ```toml
 [daemon]
-interval = "10s"        # 2s..120s
+interval = "10s"        # 2s..30s; above 30s clamped with a warning (WatchdogSec=60: two cycles must fit)
 step_up = 40            # max duty increase per cycle (1..255)
 step_down = 15          # max duty decrease per cycle (1..255)
 stall_min_duty = 60     # RPM 0 at or above this duty counts as stall
@@ -119,11 +119,18 @@ one remains; zero devices → error.
 ## Controller (internal/control)
 
 Port of the Bash `n5-fand` logic (n5pro-ec/deploy/n5-fand):
-per cycle: sd_notify WATCHDOG=1 → read sensors (error → failsafe all, alert `sensor`)
+per cycle: sd_notify WATCHDOG=1 → read sensors (per channel: unresolved / unreadable /
+implausible / frozen → **that channel** at its safe duty, mode `sensor-error`, alert
+`sensor` naming the channel; the others keep regulating)
 → targets from curve (interpolate) → overrides → critical → stall check → slew (first
 cycle direct; manual direct) → write (rewrite unchanged every 6th cycle) → verify →
 state snapshot → history ring (2h at interval) → periodic log line.
-Failsafe = duty 255 on all managed channels. Stop = SafeStop per channel.
+Safe duty of a channel = its fixed stop duty when configured (N5 Pro HDD: 140), else 255;
+overrides do not apply while the temperature is unknown. Status becomes `sensor-error`
+only when every channel is affected. The `sensor` alert goes out on the transition
+into the bad state (cooldown applies), not every cycle — a sensor that is simply absent
+(no HDDs → no `drivetemp`) is one notification, and `ventula status` shows the mode.
+Failsafe (write errors) = duty 255 on all managed channels. Stop = SafeStop per channel.
 Overrides via `Controller.SetOverride(ch, duty)` / `ClearOverride(ch)` (from API).
 Config reload: `Controller.Reload(cfg)` swaps curves/sensors atomically; channel set
 changes require restart (return error).
@@ -182,6 +189,16 @@ ventula test <ch>            channel verification run (like n5pro-ec 06 script),
                              restores the channel with the stop of the sanitized channel set (n5pro pwm3 never "auto"), unowned pwm → "auto"
 ```
 
+`ventula check` (ExecStartPre) follows rule 8: **fatal** (exit 1) only when serve itself
+cannot run — config file exists but is unreadable, no device for the profile, a `pwmN`/
+`pwmN_enable` of a managed channel does not open for writing. Everything else is a
+`warn` line with exit 0: missing config, TOML syntax error (serve uses the defaults),
+invalid values, a pwm the profile lacks (serve ignores the channel), an unresolvable or
+unreadable sensor (serve isolates the channel at its safe duty — this includes the
+built-in N5 Pro channels, so a box without HDDs starts), and a non-loopback `[web].listen`
+with `auth = "none"`. check evaluates the **sanitized** channel set (same
+`control.SanitizeChannels` as serve).
+
 ## Web UI (internal/web/static)
 
 Tabs: Overview (cards per channel, live canvas charts, hardware details, last alerts),
@@ -198,6 +215,18 @@ RuntimeDirectory=ventula, RuntimeDirectoryMode=0750 (the socket carries no auth)
 `ventula failsafe` = SafeStop all channels using the config,
 works without the daemon.
 
+Watchdog: the loop sends WATCHDOG=1 at the start of every cycle; in addition serve
+pings every 10 s from a ticker **only while the loop is alive** (`Controller.LastCycle()`
+within 3×interval). `daemon.interval` is capped at 30 s so two cycles always fit into
+WatchdogSec=60; a stuck loop silences the ticker and the watchdog fires as intended.
+
+`ventula-onfailure` reads Result/ExecMainCode/ExecMainStatus first (they describe the
+new process once the restart began), sleeps 8 s (RestartSec=5), then polls `is-active`
+for up to 25 s while the unit is `activating` (ExecStartPre check + first cycle before
+READY=1). `active` → "restart" alert, still `activating` → "restart in progress" alert
+(same kind), anything else → "failed" alert. Cooldown 30 min per kind via
+`/run/ventula/alert.<kind>`.
+
 ## Testing
 
 `go vet ./... && go test ./...` must pass in Docker (`tools/remote-go.ps1`). Fake sysfs
@@ -212,11 +241,15 @@ is loose.
 - `config.Default()` has **no channels**; the N5 Pro set is `config.N5ProChannels()`.
   A missing config file therefore starts the daemon in monitoring-only mode (rule 8) —
   **except on the N5 Pro**: `control.SanitizeChannels` adds pwm1..3 from `N5ProChannels()`
-  when the config lacks them and forces `stop=140` on pwm3 (warning + `config` alert),
-  in `control.New`, `Apply` and `control.Failsafe` alike. A channel the daemon wrote once
-  and then ignored would stay at its last duty (the EC does not regulate pwm3 after a write).
+  when the config lacks them and forces `stop=140` on pwm3 (warning + `config-channels`
+  alert, together with channels dropped for a pwm the device lacks), in `control.New`,
+  `Apply` and `control.Failsafe` alike. A channel the daemon wrote once and then ignored
+  would stay at its last duty (the EC does not regulate pwm3 after a write). The alert
+  kind is deliberately not `config`: serve stamps `config` for parse warnings a moment
+  earlier and the shared 30-min stamp would swallow the controller's text.
 - `config.Load` returns `(Config, []Warning, error)`: missing file → defaults + one
-  warning + `err == nil`; read error or TOML syntax error → defaults + warning + `err`.
+  warning + `err == nil`; read error → defaults + warning + `err` wrapping
+  `config.ErrUnreadable`; TOML syntax error → defaults + warning + `err`.
   `config.Parse` also returns an error (syntax only). `Warning` is `{Field, Msg}`.
 - `hwmon.FS.FindByName` returns `[]Device` (may be empty), not `(Device, error)`.
 - `sensor.Known` returns `[]sensor.Info{ID, Description}`, not `[]string`; the
@@ -245,6 +278,10 @@ is loose.
   controller (stamps `RunDir/alert.<kind>`); `serve` routes its start-up alerts
   (config/profile/start) through `sendAlertCooled`, which uses the same stamp files
   (30 min), so a restart loop cannot spam PVE. `ventula alert` (onfailure) has no cooldown.
+  `GET /api/config` redacts `password_hash` in both quote styles, with any spacing, in
+  the dotted `web.password_hash` form, and — via the parsed value — wherever else a
+  hash of 32+ characters appears in the text (inline table); `PUT` restores the stored
+  hash for the `<unchanged>` placeholder in the same forms.
 - `web.Deps` takes closures (`Profiles func() []ProfileInfo`, `Sensors func()
   []SensorInfo`, `Log func(int) ([]string, error)`), `AuthConfig` (not `Auth`),
   and `PresetStore{List() ([]Preset, error); Apply(name) error; Save(name) error}`

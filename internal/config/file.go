@@ -15,9 +15,17 @@ const DefaultPath = "/etc/ventula/config.toml"
 // DefaultPresetDir holds preset files (<name>.toml with [[channel]] tables only).
 const DefaultPresetDir = "/etc/ventula/presets"
 
+// ErrUnreadable marks a Load error caused by the file itself (exists but
+// cannot be read), as opposed to a TOML syntax error. `ventula check`
+// treats only the former as fatal: with a syntax error serve runs on the
+// built-in defaults (rule 8), with an unreadable file the operator's
+// intent is unknown.
+var ErrUnreadable = errors.New("config file unreadable")
+
 // Load reads and parses path. The returned Config is always usable:
 //   - file missing: Default(), one warning, err == nil
-//   - unreadable or TOML syntax error: Default(), warning, err != nil
+//   - unreadable: Default(), warning, err wraps ErrUnreadable
+//   - TOML syntax error: Default(), warning, err != nil
 //   - invalid values: defaults per field, warnings, err == nil
 func Load(path string) (Config, []Warning, error) {
 	raw, err := os.ReadFile(path)
@@ -25,7 +33,7 @@ func Load(path string) (Config, []Warning, error) {
 		if errors.Is(err, os.ErrNotExist) {
 			return Default(), []Warning{{Field: "file", Msg: path + " not found, built-in defaults active"}}, nil
 		}
-		return Default(), []Warning{{Field: "file", Msg: err.Error()}}, fmt.Errorf("config: %w", err)
+		return Default(), []Warning{{Field: "file", Msg: err.Error()}}, fmt.Errorf("config: %w: %w", ErrUnreadable, err)
 	}
 	return Parse(raw)
 }

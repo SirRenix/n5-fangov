@@ -129,6 +129,12 @@ type channel struct {
 	target  int
 	mode    Mode
 
+	// sensorBad is the channel's sensor state after the last cycle (alerts
+	// go out on the transition into it); sensorErr says why, for the log
+	// and the alert text.
+	sensorBad bool
+	sensorErr string
+
 	stallCnt int
 	stalled  bool
 	recov    int
@@ -163,6 +169,10 @@ type Controller struct {
 	hwMu    sync.Mutex
 	stopped atomic.Bool // set by Stop: the loop skips all further writes
 
+	// lastCycle is the unix-nanosecond time at which the last cycle
+	// finished (0 before the first); see LastCycle.
+	lastCycle atomic.Int64
+
 	// loop-only state (touched by the Run goroutine only)
 	n        int
 	wrErr    int
@@ -176,12 +186,15 @@ type Controller struct {
 
 // New builds a controller for cfg on dev. Sensors are resolved through
 // sensors; a sensor that cannot be resolved now is retried every cycle (the
-// channel meanwhile runs the sensor-error path, i.e. 255). Channels whose
-// pwm does not exist on dev are dropped with a log line (rule 8: config
-// errors never prevent start). On the N5 Pro, pwm1..3 missing from the
-// config are added with the built-in defaults (SanitizeChannels), because
-// a channel the daemon touched once and then ignores stays wherever the
-// last write left it.
+// channel meanwhile sits at its safe duty in mode sensor-error while the
+// other channels regulate, see safeDuty). Channels whose pwm does not exist
+// on dev are dropped with a log line (rule 8: config errors never prevent
+// start). On the N5 Pro, pwm1..3 missing from the config are added with
+// the built-in defaults (SanitizeChannels), because a channel the daemon
+// touched once and then ignores stays wherever the last write left it.
+// Both corrections go out as one "config-channels" alert (distinct from the
+// "config" alert serve sends for parse warnings, so neither suppresses the
+// other through the shared cooldown stamps).
 func New(cfg config.Config, dev profile.Device, sensors SensorFactory, alerter Alerter, opts Options) (*Controller, error) {
 	if dev == nil {
 		return nil, errors.New("control: nil device")
@@ -228,10 +241,10 @@ func New(cfg config.Config, dev profile.Device, sensors SensorFactory, alerter A
 			c.loadAlertStamps()
 		}
 	}
-	var notes []string
+	var notes, dropped []string
 	c.cfg.Channels, notes = SanitizeChannels(dev.Profile().Name(), c.cfg.Channels)
-	c.reportNotes(notes)
-	c.chans = c.buildChannels(c.cfg)
+	c.chans, dropped = c.buildChannels(c.cfg)
+	c.reportNotes("config corrected at start", append(notes, dropped...))
 	if c.opts.RunDir != "" {
 		c.loadOverrides()
 	}
@@ -266,7 +279,10 @@ type alertLogger struct{ l Logger }
 
 func (a alertLogger) Alert(kind, msg string) { a.l.Printf("ALERT[%s]: %s", kind, msg) }
 
-func (c *Controller) buildChannels(cfg config.Config) []*channel {
+// buildChannels creates the runtime channels for cfg. Channels whose pwm
+// the device lacks are skipped; one note per skipped channel is returned
+// for reportNotes.
+func (c *Controller) buildChannels(cfg config.Config) (chans []*channel, dropped []string) {
 	devChans := map[int]profile.Channel{}
 	for _, dc := range c.dev.Channels() {
 		devChans[dc.Index] = dc
@@ -275,8 +291,7 @@ func (c *Controller) buildChannels(cfg config.Config) []*channel {
 	for _, cc := range cfg.Channels {
 		dc, ok := devChans[cc.PWM]
 		if !ok {
-			c.log.Printf("config: channel %q: pwm%d not present on %s, channel ignored", cc.Name, cc.PWM, c.dev.Profile().Name())
-			c.raise("config", fmt.Sprintf("channel %q uses pwm%d which the %s profile does not provide; channel ignored", cc.Name, cc.PWM, c.dev.Profile().Name()))
+			dropped = append(dropped, fmt.Sprintf("channel %q uses pwm%d which the %s profile does not provide; channel ignored", cc.Name, cc.PWM, c.dev.Profile().Name()))
 			continue
 		}
 		ch := &channel{cfg: cc, hasTach: dc.HasTach, cur: 255, rpm: -1, mode: ModeAuto, target: 255}
@@ -293,19 +308,26 @@ func (c *Controller) buildChannels(cfg config.Config) []*channel {
 		ch.sensor = c.resolveSensor(cc)
 		out = append(out, ch)
 	}
-	return out
+	return out, dropped
 }
 
-// reportNotes logs config corrections made by SanitizeChannels and raises
-// one "config" alert for them.
-func (c *Controller) reportNotes(notes []string) {
+// AlertConfigChannels is the alert kind for channel-set corrections made by
+// the controller (SanitizeChannels additions, forced stop values, channels
+// dropped because the device lacks their pwm). serve stamps "config" for
+// parse warnings; a shared kind would let the earlier of the two silence the
+// other for the cooldown period.
+const AlertConfigChannels = "config-channels"
+
+// reportNotes logs channel-set corrections and raises one
+// AlertConfigChannels alert carrying all of them.
+func (c *Controller) reportNotes(what string, notes []string) {
 	if len(notes) == 0 {
 		return
 	}
 	for _, n := range notes {
 		c.log.Printf("config: %s", n)
 	}
-	c.raise("config", "config corrected at start:\n"+strings.Join(notes, "\n"))
+	c.raise(AlertConfigChannels, what+":\n"+strings.Join(notes, "\n"))
 }
 
 // SanitizeChannels applies the profile-specific safety corrections that a
@@ -381,6 +403,22 @@ func (c *Controller) Config() config.Config {
 	return c.cfg.Clone()
 }
 
+// LastCycle returns the time (Options.Now) at which the last regulation
+// cycle finished, or the zero time before the first one. serve uses it as
+// the liveness signal for its independent watchdog pings: they continue
+// only while cycles keep finishing, so a stuck loop still trips the
+// systemd watchdog. Lock-free, safe while the loop holds its mutexes.
+func (c *Controller) LastCycle() time.Time {
+	ns := c.lastCycle.Load()
+	if ns == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, ns)
+}
+
+// Interval returns the active regulation interval.
+func (c *Controller) Interval() time.Duration { return c.interval() }
+
 // ---- loop -------------------------------------------------------------------
 
 // Run executes the regulation loop until ctx is done, then calls Stop.
@@ -436,32 +474,38 @@ func (c *Controller) cycle() error {
 	}
 
 	// -- sensors ----------------------------------------------------------
-	ok := true
+	// Every channel is judged on its own: a sensor that is unresolved,
+	// unreadable, implausible or frozen puts only its channel at the safe
+	// duty (mode sensor-error, see safeDuty); the other channels keep
+	// regulating. Only when every channel is affected does the cycle
+	// status become "sensor-error".
 	for _, ch := range chans {
 		ch.tempOK = false
+		ch.sensorErr = ""
 		if ch.sensor == nil {
 			// unresolved at start or after a reload: retry every cycle
 			ch.sensor = c.resolveSensor(ch.cfg)
 		}
 		if ch.sensor == nil {
-			ok = false
+			ch.sensorErr = "unresolved"
 			continue
 		}
 		v, err := ch.sensor.Read()
-		if err != nil {
-			c.logOnce("read."+ch.cfg.Name, "sensor %s (%s): %v", ch.cfg.Sensor, ch.cfg.Name, err)
-			ok = false
-			continue
+		switch {
+		case err != nil:
+			ch.sensorErr = "read: " + err.Error()
+		case v < MinPlausible || v > MaxPlausible:
+			ch.sensorErr = fmt.Sprintf("implausible %d m°C", v)
+		default:
+			ch.temp, ch.tempOK = v, true
 		}
-		c.logClear("read." + ch.cfg.Name)
-		if v < MinPlausible || v > MaxPlausible {
-			c.logOnce("read."+ch.cfg.Name, "sensor %s (%s): implausible %d m°C", ch.cfg.Sensor, ch.cfg.Name, v)
-			ok = false
-			continue
+		if ch.sensorErr != "" {
+			c.logOnce("read."+ch.cfg.Name, "sensor %s (%s): %s", ch.cfg.Sensor, ch.cfg.Name, ch.sensorErr)
+		} else {
+			c.logClear("read." + ch.cfg.Name)
 		}
-		ch.temp, ch.tempOK = v, true
 	}
-	if ok && len(chans) > 0 && chans[0].cfg.Sensor == staleSensor {
+	if len(chans) > 0 && chans[0].tempOK && chans[0].cfg.Sensor == staleSensor {
 		// stale detection on the first channel's sensor, and only when that
 		// is k10temp (see staleSensor): whole-degree sources legitimately
 		// report the same value for a long time.
@@ -473,29 +517,69 @@ func (c *Controller) cycle() error {
 		}
 		c.lastRaw, c.haveRaw = raw, true
 		if c.sameRaw >= d.StaleCycles {
-			ok = false
-			c.logOnce("stale", "sensor %s unchanged for %s (%d m°C) -> frozen?",
-				chans[0].cfg.Sensor, time.Duration(c.sameRaw)*d.Interval, raw)
+			chans[0].tempOK = false
+			chans[0].sensorErr = fmt.Sprintf("unchanged for %s (%d m°C) -> frozen?", time.Duration(c.sameRaw)*d.Interval, raw)
+			c.logOnce("stale", "sensor %s (%s): %s", chans[0].cfg.Sensor, chans[0].cfg.Name, chans[0].sensorErr)
+		} else {
+			c.logClear("stale")
 		}
+	}
+	nBad := 0
+	var newlyBad []*channel
+	for _, ch := range chans {
+		bad := !ch.tempOK
+		switch {
+		case bad:
+			nBad++
+			if ch.sensor != nil {
+				// the device may have re-enumerated: resolve again (an
+				// unresolved sensor was already retried above)
+				if s := c.resolveSensor(ch.cfg); s != nil {
+					ch.sensor = s
+				}
+			}
+			if !ch.sensorBad {
+				newlyBad = append(newlyBad, ch)
+			}
+		case ch.sensorBad:
+			c.log.Printf("%s: sensor %s readable again, regulation resumed", ch.cfg.Name, ch.cfg.Sensor)
+		}
+		ch.sensorBad = bad
 	}
 	extra := c.readExtra()
 	c.readRPMs(chans)
 
-	if !ok {
-		c.logOnce("sensor", "sensor error -> all channels 255 (%s)", c.sensorSummary(chans))
-		c.raise("sensor", "sensor unreadable/implausible/frozen -> fans at 255 (journalctl -u ventula)")
-		c.reresolve(chans)
-		lost := c.noteFailsafe(c.failsafeAll(chans, ModeSensor))
-		c.finishCycle(chans, extra, "sensor-error", d)
-		return lost
+	if len(newlyBad) > 0 {
+		// alert on the transition, not every cycle: a sensor that stays
+		// absent (no HDDs, drivetemp not loaded) is one notification
+		var lines []string
+		for _, ch := range newlyBad {
+			lines = append(lines, fmt.Sprintf("channel %q: sensor %s %s -> duty %d (%s)",
+				ch.cfg.Name, ch.cfg.Sensor, ch.sensorErr, c.safeDuty(ch), c.safeDutyWhy(ch)))
+		}
+		scope := "the other channels keep regulating"
+		if nBad == len(chans) {
+			scope = "ALL channels affected, nothing is regulated"
+		}
+		c.raise("sensor", "sensor error: "+strings.Join(lines, "; ")+"; "+scope+" (journalctl -u ventula)")
 	}
-	c.logClear("sensor")
-	c.logClear("stale")
+	if nBad > 0 {
+		c.logOnce("sensor", "sensor error -> %d of %d channel(s) at safe duty (%s)", nBad, len(chans), c.sensorSummary(chans))
+	} else {
+		c.logClear("sensor")
+	}
 
 	// -- targets ----------------------------------------------------------
 	crit := false
 	var critParts []string
 	for _, ch := range chans {
+		if !ch.tempOK {
+			// unknown temperature: safe duty, no curve, no override
+			// (critical cannot be judged without a reading)
+			ch.target = c.safeDuty(ch)
+			ch.mode = ModeSensor
+			continue
+		}
 		ch.mode = ModeAuto
 		ch.target = Interpolate(ch.cfg.Curve, ch.temp)
 		if v, has := ovr[ch.cfg.Name]; has {
@@ -567,8 +651,29 @@ func (c *Controller) cycle() error {
 			c.wrErr = 0
 		}
 	}
+	if nBad > 0 && nBad == len(chans) {
+		status = "sensor-error"
+	}
 	c.finishCycle(chans, extra, status, d)
 	return lost
+}
+
+// safeDuty is where a channel goes while its temperature is unknown: the
+// fixed stop duty when one is configured (the operator's "nobody regulates
+// this fan" value, e.g. 140 on the N5 Pro HDD channel), otherwise 255
+// (rule 4). A manual override does not apply in that state.
+func (c *Controller) safeDuty(ch *channel) int {
+	if d, fixed := ch.cfg.StopDuty(); fixed {
+		return d
+	}
+	return 255
+}
+
+func (c *Controller) safeDutyWhy(ch *channel) string {
+	if _, fixed := ch.cfg.StopDuty(); fixed {
+		return "configured stop duty"
+	}
+	return "full speed"
 }
 
 // writePhase slews every channel towards its target and writes it. A
@@ -639,6 +744,7 @@ func (c *Controller) finishCycle(chans []*channel, extra map[string]float64, sta
 	c.mu.Unlock()
 	c.writeState(snap)
 	c.n++
+	c.lastCycle.Store(now.UnixNano())
 	line := c.statusLine(chans)
 	c.opts.Status(status + ": " + line)
 	if d.LogEvery > 0 && (c.n-1)%d.LogEvery == 0 {
@@ -667,10 +773,11 @@ func (c *Controller) sensorSummary(chans []*channel) string {
 	var parts []string
 	for _, ch := range chans {
 		v := "?"
-		if ch.sensor == nil {
-			v = "unresolved"
-		} else if ch.tempOK {
+		switch {
+		case ch.tempOK:
 			v = fmtTemp(ch.temp)
+		case ch.sensorErr != "":
+			v = ch.sensorErr
 		}
 		parts = append(parts, ch.cfg.Name+"="+v)
 	}
@@ -1007,12 +1114,7 @@ func (c *Controller) Apply(cfg config.Config) error {
 	// N5 Pro channel matches the completed set (no spurious restart).
 	var notes []string
 	cfg.Channels, notes = SanitizeChannels(c.dev.Profile().Name(), cfg.Channels)
-	if len(notes) > 0 {
-		for _, n := range notes {
-			c.log.Printf("reload: config: %s", n)
-		}
-		c.raise("config", "config corrected on reload:\n"+strings.Join(notes, "\n"))
-	}
+	c.reportNotes("config corrected on reload", notes)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	base := c.cfg
@@ -1044,20 +1146,23 @@ func (c *Controller) applyPendingLocked() {
 	for _, cc := range c.cfg.Channels {
 		byName[cc.Name] = cc
 	}
+	// Resolve changed sensors first (sysfs lookups, must not run under the
+	// hardware lock), then swap config and sensors in one short critical
+	// section. ch.cfg is only written here and read by Stop under hwMu.
+	ups := make([]chanUpdate, len(c.chans))
 	firstSensorChanged := false
-	// ch.cfg is read by Stop (stop values) under hwMu only.
-	c.hwMu.Lock()
 	for i, ch := range c.chans {
 		cc := byName[ch.cfg.Name]
+		ups[i].cfg = cc
 		if cc.Sensor != ch.cfg.Sensor {
-			ch.sensor = c.resolveSensor(cc)
+			ups[i].sensor = c.resolveSensor(cc)
+			ups[i].newSensor = true
 			if i == 0 {
 				firstSensorChanged = true
 			}
 		}
-		ch.cfg = cc
 	}
-	c.hwMu.Unlock()
+	c.swapChannelConfig(ups)
 	if firstSensorChanged {
 		c.haveRaw, c.sameRaw = false, 0
 	}
@@ -1068,6 +1173,26 @@ func (c *Controller) applyPendingLocked() {
 		}
 	}
 	c.log.Printf("config applied")
+}
+
+// chanUpdate is one channel's pending config swap (applyPendingLocked).
+type chanUpdate struct {
+	cfg       config.Channel
+	sensor    SensorReader // resolved outside the hardware lock; nil = unresolved
+	newSensor bool         // sensor id changed: install sensor (even nil)
+}
+
+// swapChannelConfig installs ups under hwMu. Stop reads ch.cfg under the
+// same lock, so it never sees a half-applied channel set.
+func (c *Controller) swapChannelConfig(ups []chanUpdate) {
+	c.hwMu.Lock()
+	defer c.hwMu.Unlock()
+	for i, ch := range c.chans {
+		if ups[i].newSensor {
+			ch.sensor = ups[i].sensor
+		}
+		ch.cfg = ups[i].cfg
+	}
 }
 
 func sameChannelSet(a, b []config.Channel) bool {

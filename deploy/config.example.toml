@@ -2,12 +2,16 @@
 #
 # Invalid values never prevent start: each bad field falls back to its
 # built-in default with a warning in the journal and a "config" alert.
+# A channel whose sensor cannot be read (e.g. drivetemp:max without any
+# SATA drive) is held at its safe duty -- the fixed stop duty if one is
+# configured, else 255 -- in mode "sensor-error" while the other channels
+# keep regulating; one "sensor" alert names the channel.
 # Values below are the Minisforum N5 Pro set measured on 14.09.2026
 # (duty -> RPM: CPU 85->2000 140->3120 255->5073; SSD 74->2130 255->4687;
 #  HDD 87->1237 105->1650 140->2250 179->2725 255->3540).
 
 [daemon]
-interval = "10s"        # regulation cycle, 2s..120s
+interval = "10s"        # regulation cycle, 2s..30s (larger values are clamped to 30s: the unit runs with WatchdogSec=60 and two cycles must fit)
 step_up = 40            # max duty increase per cycle (1..255)
 step_down = 15          # max duty decrease per cycle (1..255)
 stall_min_duty = 60     # RPM 0 at or above this duty counts as a stall (1..255)

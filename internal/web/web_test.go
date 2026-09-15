@@ -634,6 +634,64 @@ func TestConfigHashRedaction(t *testing.T) {
 	}
 }
 
+// TestRedactRawForms (polish L4): single-quoted literals, tabs/odd spacing,
+// the dotted key web.password_hash and an inline table are all redacted;
+// the PUT placeholder substitution keeps the quote style.
+func TestRedactRawForms(t *testing.T) {
+	hash := PasswordHash("admin", "pw")
+	cases := map[string]string{
+		"double":   "[web]\nauth = \"basic\"\nuser = \"admin\"\npassword_hash = \"" + hash + "\"\n",
+		"single":   "[web]\nauth = \"basic\"\nuser = \"admin\"\npassword_hash = '" + hash + "'\n",
+		"spacing":  "[web]\nauth = \"basic\"\nuser = \"admin\"\n\t password_hash\t=\t'" + hash + "'   # note\n",
+		"dotted":   "web.auth = \"basic\"\nweb.user = \"admin\"\nweb.password_hash = \"" + hash + "\"\n",
+		"inline":   "web = { auth = \"basic\", user = \"admin\", password_hash = \"" + hash + "\" }\n",
+		"nospaces": "[web]\npassword_hash=\"" + hash + "\"\n",
+	}
+	for name, src := range cases {
+		out := redactRaw(src)
+		if strings.Contains(out, hash) {
+			t.Errorf("%s: hash leaked: %s", name, out)
+		}
+		if !strings.Contains(out, RedactedHash) {
+			t.Errorf("%s: placeholder missing: %s", name, out)
+		}
+		if got := currentHash(src); got != hash {
+			t.Errorf("%s: currentHash = %q", name, got)
+		}
+	}
+	// quote style survives redaction and the placeholder substitution
+	if got := redactRaw("password_hash = 'abc'\n"); got != "password_hash = '<unchanged>'\n" {
+		t.Errorf("single-quote redaction: %q", got)
+	}
+	back := mapHashLiterals("web.password_hash\t= '<unchanged>'\npassword_hash = \"<unchanged>\"\npassword_hash = \"keep\"\n",
+		func(v string) (string, bool) { return hash, v == RedactedHash })
+	if back != "web.password_hash\t= '"+hash+"'\npassword_hash = \""+hash+"\"\npassword_hash = \"keep\"\n" {
+		t.Errorf("placeholder substitution: %q", back)
+	}
+	// a short bogus hash is only touched in line form, never as a bare
+	// substring (it would hit unrelated text)
+	if got := redactRaw("[web]\npassword_hash = \"ab\"\n[[channel]]\nname = \"ab\"\n"); got != "[web]\npassword_hash = \"<unchanged>\"\n[[channel]]\nname = \"ab\"\n" {
+		t.Errorf("short hash: %q", got)
+	}
+	// unparsable text: the regex still covers the line forms
+	if got := redactRaw("[[[\npassword_hash = '" + hash + "'\n"); strings.Contains(got, hash) {
+		t.Errorf("broken TOML leaked: %q", got)
+	}
+	if currentHash("[[[\npassword_hash = '"+hash+"'\n") != hash {
+		t.Errorf("currentHash on broken TOML")
+	}
+	// PUT with a single-quoted placeholder restores the stored hash
+	e := newEnv(t, AuthConfig{Mode: "basic", User: "admin", PasswordHash: hash})
+	e.cfg.raw = []byte(cases["single"] + "\n[[channel]]\nname = \"cpu\"\npwm = 1\nsensor = \"k10temp\"\ncurve = [[45,85],[80,255]]\ncritical = 88\nstop = \"auto\"\n")
+	ok := basicAuth("admin", "pw")
+	body := strings.Replace(string(e.cfg.raw), hash, RedactedHash, 1)
+	wantCode(t, e.do(t, "PUT", "/api/config", body, ok), 200)
+	saved := string(e.cfg.saved[len(e.cfg.saved)-1])
+	if !strings.Contains(saved, "password_hash = '"+hash+"'") || strings.Contains(saved, RedactedHash) {
+		t.Errorf("single-quoted placeholder not substituted: %s", saved)
+	}
+}
+
 // TestConfigValidateBeforeSave (M2): a syntax error answers 400 with the
 // warnings under "errors" and nothing is written or reloaded; field
 // warnings do not block but are reported.

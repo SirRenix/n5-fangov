@@ -28,7 +28,7 @@ func TestH1N5ProMissingChannelsAdded(t *testing.T) {
 	if got := h.c.Channels(); strings.Join(got, ",") != "cpu,ssd,hdd" {
 		t.Fatalf("channels: %v", got)
 	}
-	if h.alerts.count("config") != 1 || !h.log.contains("pwm3 (hdd) not in config") || !h.log.contains("pwm2 (ssd) not in config") {
+	if h.alerts.count(AlertConfigChannels) != 1 || !h.log.contains("pwm3 (hdd) not in config") || !h.log.contains("pwm2 (ssd) not in config") {
 		t.Errorf("missing channels must warn + alert: alerts=%v\n%s", h.alerts.kinds, strings.Join(h.log.lines, "\n"))
 	}
 	cfgNow := h.c.Config()
@@ -78,7 +78,7 @@ func TestH1N5ProMissingChannelsAdded(t *testing.T) {
 	}
 	// a fake profile with the same config gets no additions
 	h2 := newHarness(t, cpuOnly(), nil)
-	if got := h2.c.Channels(); len(got) != 1 || h2.alerts.count("config") != 0 {
+	if got := h2.c.Channels(); len(got) != 1 || h2.alerts.count(AlertConfigChannels) != 0 {
 		t.Errorf("non-n5pro: %v", got)
 	}
 }
@@ -91,7 +91,7 @@ func TestM1N5ProPwm3AutoForced(t *testing.T) {
 	if got := stopOf(h.c.Config(), "hdd"); got != "140" {
 		t.Errorf("stop after New: %q", got)
 	}
-	if h.alerts.count("config") != 1 || !h.log.contains("pwm3) has stop=\"auto\"") {
+	if h.alerts.count(AlertConfigChannels) != 1 || !h.log.contains("pwm3) has stop=\"auto\"") {
 		t.Errorf("must warn + alert: %v", h.log.lines)
 	}
 	h.cycles(1)
@@ -197,15 +197,22 @@ func TestM2DeviceLostEndsRun(t *testing.T) {
 	if h2.c.fsFail != 0 {
 		t.Errorf("one bad channel counted as device lost: %d", h2.c.fsFail)
 	}
-	// sensor-error failsafe path counts too
+	// all sensors failing while the device is gone counts too: the safe
+	// duty writes fail (cycle 1), the write failsafe follows (cycle 2),
+	// six failing failsafes later the loop gives up
 	h3 := newHarness(t, n5cfg(), nil)
 	h3.cycles(1)
 	h3.dev.setFailAll(true)
-	h3.sensors.get("k10temp").fail(errors.New("gone"))
-	for i := 0; i < 5; i++ {
+	for _, id := range []string{"k10temp", "nvme:max", "drivetemp:max"} {
+		h3.sensors.get(id).fail(errors.New("gone"))
+	}
+	for i := 0; i < 6; i++ {
 		if err := h3.c.cycle(); err != nil {
 			t.Fatalf("cycle %d: %v", i, err)
 		}
+	}
+	if s := h3.c.Snapshot(); s.Status != "sensor-error" {
+		t.Errorf("status %q", s.Status)
 	}
 	if err := h3.c.cycle(); !errors.Is(err, ErrDeviceLost) {
 		t.Errorf("6th failing failsafe: %v", err)

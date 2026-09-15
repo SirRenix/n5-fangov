@@ -144,6 +144,27 @@ func cmdServe(args []string) int {
 		errc <- err
 	}()
 
+	// Watchdog pings independent of the cycle: the loop sends WATCHDOG=1
+	// once per cycle, but the interval may be up to 30 s against
+	// WatchdogSec=60, so a single slow sensor read would already cost a
+	// restart. The ticker pings every watchdogPing while the loop is alive
+	// (last cycle finished within watchdogSlack × interval) and falls
+	// silent when it is stuck, so the watchdog still fires then.
+	go func() {
+		t := time.NewTicker(watchdogPing)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case now := <-t.C:
+				if watchdogAlive(controllerLastCycle(ctrl), controllerInterval(ctrl), now) {
+					notifyWatchdog()
+				}
+			}
+		}
+	}()
+
 	// READY=1 once the first cycle produced a snapshot (or after a grace
 	// period, so a stuck first read still lets systemd's watchdog take over
 	// instead of TimeoutStartSec killing a half-started daemon).
@@ -182,6 +203,26 @@ func cmdServe(args []string) int {
 	stopController(ctrl)
 	log.Printf("stopped (exit %d)", exit)
 	return exit
+}
+
+// watchdogPing is how often serve sends WATCHDOG=1 on its own while the
+// loop is alive; watchdogSlack × interval is how long a cycle may be
+// overdue before the loop counts as stuck.
+const (
+	watchdogPing  = 10 * time.Second
+	watchdogSlack = 3
+)
+
+// watchdogAlive reports whether the loop finished a cycle recently enough
+// (within watchdogSlack × interval before now) for serve to keep pinging
+// the systemd watchdog on the loop's behalf. Zero lastCycle (no cycle yet)
+// is not alive: before READY=1 the watchdog is not armed, after it a
+// never-finishing first cycle must trip it.
+func watchdogAlive(lastCycle time.Time, interval time.Duration, now time.Time) bool {
+	if lastCycle.IsZero() || interval <= 0 {
+		return false
+	}
+	return now.Sub(lastCycle) <= watchdogSlack*interval
 }
 
 // waitFirstCycle polls the snapshot until the first cycle replaced the

@@ -15,9 +15,18 @@ mkdir -p "$RUN"
 result="$(systemctl show -p Result --value "$UNIT" 2>/dev/null)"
 code="$(systemctl show -p ExecMainCode --value "$UNIT" 2>/dev/null)"
 status="$(systemctl show -p ExecMainStatus --value "$UNIT" 2>/dev/null)"
-sleep 8    # RestartSec=5: after this we know whether the restart succeeded
-nrest="$(systemctl show -p NRestarts --value "$UNIT" 2>/dev/null)"
+sleep 8    # RestartSec=5: the restart has begun by now
+# The restarted unit is "activating" while ExecStartPre (check) and the
+# first cycle run (READY=1 waits for it, up to 2x interval + 5 s). Poll up
+# to 25 s until systemd has a verdict; "activating" at the end still means
+# a restart is in progress, not a dead daemon.
 active="$(systemctl is-active "$UNIT" 2>/dev/null)"
+waited=0
+while [[ "$active" == "activating" || "$active" == "reloading" || "$active" == "deactivating" ]] && (( waited < 25 )); do
+    sleep 1; waited=$((waited + 1))
+    active="$(systemctl is-active "$UNIT" 2>/dev/null)"
+done
+nrest="$(systemctl show -p NRestarts --value "$UNIT" 2>/dev/null)"
 
 case "$result" in
     watchdog)        why="watchdog: the loop did not answer for 60 s (hung sensor read?)";;
@@ -44,6 +53,12 @@ if [[ "$active" == "active" ]]; then
 Cause: $why
 Meanwhile the failsafe was active (channels in their configured safe state).
 Now: daemon running again. Check: ventula status; ventula log 50"
+elif [[ "$active" == "activating" ]]; then
+    typ="restart"
+    msg="ventula was down; the automatic restart (no. $nrest) is still in progress after $((8 + waited)) s (unit 'activating': self-check or first cycle).
+Cause: $why
+Meanwhile the failsafe was active (channels in their configured safe state).
+Check in a minute: systemctl status ventula; ventula status; ventula log 50"
 else
     typ="failed"
     msg="ventula is DOWN and is NOT running any more.
