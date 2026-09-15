@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>pvefand</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="hdr">
+  <div class="hdr-l">
+    <span class="brand">pvefand</span>
+    <span class="prof" id="h-profile">—</span>
+    <span class="badge" id="h-verified" hidden></span>
+  </div>
+  <div class="hdr-r">
+    <span class="chip" id="h-status" role="status">…</span>
+    <span class="meta" id="h-uptime" title="daemon uptime">up —</span>
+    <span class="meta" id="h-version">v —</span>
+    <span class="live" id="h-live" aria-live="polite"><i></i>live</span>
+    <button class="btn icon" id="h-settings" aria-expanded="false" aria-controls="settings" title="Settings">⚙<span class="sr">Settings</span></button>
+  </div>
+  <div class="popover" id="settings" hidden>
+    <label>Temperature unit
+      <select id="s-unit"><option value="C">°C</option><option value="F">°F</option></select></label>
+    <label>Refresh interval
+      <select id="s-interval"><option value="5">5 s</option><option value="10">10 s</option><option value="30">30 s</option></select></label>
+    <label>Theme
+      <select id="s-theme"><option value="dark">dark</option><option value="light">light</option><option value="system">system</option></select></label>
+  </div>
+</header>
+
+<div class="banner" id="banner" role="alert" hidden>Connection to the daemon lost — retrying. Fans keep running on the daemon side.</div>
+
+<form class="login" id="login" hidden>
+  <strong>Sign in</strong>
+  <label>User <input id="l-user" autocomplete="username" required></label>
+  <label>Password <input id="l-pass" type="password" autocomplete="current-password" required></label>
+  <button class="btn primary" type="submit">Sign in</button>
+  <span class="hint">Kept in memory only.</span>
+</form>
+
+<nav class="tabs" role="tablist" aria-label="Sections" id="tabs">
+  <button role="tab" id="tab-overview" aria-controls="p-overview" aria-selected="true">Overview</button>
+  <button role="tab" id="tab-curves" aria-controls="p-curves" aria-selected="false" tabindex="-1">Curves</button>
+  <button role="tab" id="tab-manual" aria-controls="p-manual" aria-selected="false" tabindex="-1">Manual</button>
+  <button role="tab" id="tab-presets" aria-controls="p-presets" aria-selected="false" tabindex="-1">Presets</button>
+  <button role="tab" id="tab-log" aria-controls="p-log" aria-selected="false" tabindex="-1">Log</button>
+  <button role="tab" id="tab-compat" aria-controls="p-compat" aria-selected="false" tabindex="-1">Compatibility</button>
+</nav>
+
+<main>
+<section id="p-overview" role="tabpanel" aria-labelledby="tab-overview">
+  <div class="cards" id="cards"></div>
+  <div class="charts">
+    <div class="card chart-card">
+      <div class="card-h"><h2>Temperature · last 2 h</h2><div class="legend" id="lg-temp"></div></div>
+      <div class="chart" id="ch-temp"><canvas></canvas><div class="tip" hidden></div></div>
+    </div>
+    <div class="card chart-card">
+      <div class="card-h"><h2 id="ch-fan-title">Fan speed · last 2 h</h2>
+        <div class="seg" role="group" aria-label="Fan chart metric">
+          <button class="on" data-metric="rpm" aria-pressed="true">RPM</button><button data-metric="duty" aria-pressed="false">Duty</button>
+        </div>
+        <div class="legend" id="lg-fan"></div></div>
+      <div class="chart" id="ch-fan"><canvas></canvas><div class="tip" hidden></div></div>
+    </div>
+  </div>
+  <div class="grid3">
+    <div class="card"><h2>Extra sensors</h2><div class="chips" id="extra"></div></div>
+    <div class="card"><h2>Hardware</h2><dl class="kv" id="hw"></dl></div>
+    <div class="card"><h2>Recent alerts</h2><ul class="alerts" id="alerts"></ul></div>
+  </div>
+</section>
+
+<section id="p-curves" role="tabpanel" aria-labelledby="tab-curves" hidden>
+  <div class="bar">
+    <p class="hint">Drag points or edit the table. 2–8 points, temperatures ascending. Applying rewrites the <code>[[channel]]</code> tables and keeps <code>[daemon]</code>/<code>[web]</code>.</p>
+    <div class="actions"><button class="btn" id="cv-revert">Revert</button><button class="btn primary" id="cv-apply">Apply to daemon</button></div>
+  </div>
+  <div class="notice" id="cv-notice" hidden></div>
+  <div class="editors" id="editors"></div>
+</section>
+
+<section id="p-manual" role="tabpanel" aria-labelledby="tab-manual" hidden>
+  <p class="hint">Manual duty holds until “Back to auto”. Critical-temperature and stall guards still apply and override any manual value.</p>
+  <div class="cards" id="manual"></div>
+</section>
+
+<section id="p-presets" role="tabpanel" aria-labelledby="tab-presets" hidden>
+  <div class="bar">
+    <form class="inline" id="ps-save"><label>Save current as <input id="ps-name" placeholder="name" pattern="[a-z0-9_\-]+" required></label><button class="btn" type="submit">Save</button></form>
+  </div>
+  <div class="notice" id="ps-notice" hidden></div>
+  <div class="list" id="presets"></div>
+</section>
+
+<section id="p-log" role="tabpanel" aria-labelledby="tab-log" hidden>
+  <div class="bar">
+    <label class="grow">Filter <input id="lg-filter" type="search" placeholder="substring…"></label>
+    <label class="chk"><input id="lg-auto" type="checkbox" checked> auto-scroll</label>
+    <button class="btn" id="lg-refresh">Refresh</button>
+  </div>
+  <pre class="log" id="log" tabindex="0" aria-label="Daemon log"></pre>
+</section>
+
+<section id="p-compat" role="tabpanel" aria-labelledby="tab-compat" hidden>
+  <div class="card tbl-wrap"><table class="tbl" id="profiles"><thead><tr><th>Profile</th><th>Title</th><th>Status</th><th>Notes</th></tr></thead><tbody></tbody></table></div>
+</section>
+</main>
+
+<div class="toasts" id="toasts" aria-live="polite" aria-relevant="additions"></div>
+<script src="app.js"></script>
+</body>
+</html>
