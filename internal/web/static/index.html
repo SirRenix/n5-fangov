@@ -18,7 +18,7 @@
     <span class="chip" id="h-status" role="status">…</span>
     <span class="meta" id="h-uptime" title="daemon uptime">up —</span>
     <span class="meta" id="h-version">v —</span>
-    <span class="meta sec" id="h-sec" title="transport">—</span>
+    <button class="meta sec" id="h-sec" type="button" title="transport" aria-haspopup="dialog" aria-controls="cert">—</button>
     <span class="live" id="h-live" aria-live="polite"><i></i>live</span>
     <button class="btn icon" id="h-settings" aria-expanded="false" aria-controls="settings" title="Settings">⚙<span class="sr">Settings</span></button>
   </div>
@@ -34,6 +34,9 @@
     <button class="btn" id="s-import" type="button">Import settings…</button>
     <input type="file" id="s-file" accept=".json,application/json" hidden>
     <span class="hint sm">Config + presets as one JSON file.</span>
+    <hr>
+    <button class="btn" id="s-cert" type="button">Certificate…</button>
+    <span class="hint sm" id="s-cert-hint">TLS certificate of this dashboard.</span>
   </div>
 </header>
 
@@ -119,6 +122,47 @@
   <div class="card tbl-wrap"><table class="tbl" id="profiles"><thead><tr><th>Profile</th><th>Title</th><th>Status</th><th>Notes</th></tr></thead><tbody></tbody></table></div>
 </section>
 </main>
+
+<dialog class="dlg" id="cert" aria-labelledby="cert-title">
+  <div class="dlg-h"><h2 id="cert-title">Certificate</h2><span class="badge" id="ct-mode">—</span><button class="btn icon" id="ct-close" type="button" aria-label="Close">×</button></div>
+  <p class="hint" id="ct-off" hidden>TLS is off: this listener serves plain HTTP on loopback. Set <code>[web].tls</code> to <code>auto</code> or bind to a LAN address (<code>n5-fangov setup --listen lan</code>) to get a certificate.</p>
+  <div id="ct-body">
+    <dl class="kv" id="ct-kv"></dl>
+    <div class="chips" id="ct-san" aria-label="Subject alternative names"></div>
+    <div class="fp"><span class="k">SHA-256</span><code id="ct-fp"></code><button class="btn sm" id="ct-copy" type="button" title="Copy fingerprint">copy</button></div>
+    <div class="notice" id="ct-notice" hidden></div>
+    <div class="act">
+      <button class="btn" id="ct-crt" type="button" title="PEM — Firefox, macOS, Linux">Download .crt</button>
+      <button class="btn" id="ct-cer" type="button" title="DER — Windows, Android">Download .cer</button>
+      <button class="btn" id="ct-regen" type="button">Regenerate…</button>
+      <button class="btn" id="ct-upload" type="button">Upload own certificate…</button>
+      <button class="btn" id="ct-reset" type="button" hidden>Back to auto</button>
+    </div>
+    <form class="sub" id="ct-regen-f" hidden>
+      <p class="hint">Reissue the automatic certificate for the current hosts. The private key is kept, so a certificate you already trust stays trusted.</p>
+      <label class="chk"><input type="checkbox" id="ct-newkey"> generate a new key (breaks imported trust)</label>
+      <div class="act"><button class="btn primary" type="submit">Regenerate now</button><button class="btn" type="button" data-cancel>Cancel</button></div>
+    </form>
+    <form class="sub" id="ct-upload-f" hidden>
+      <p class="hint">PEM certificate (chain allowed) and its private key. The pair is validated, stored under <code>/etc/n5-fangov/tls/</code> and served immediately; <code>[web].tls</code> becomes <code>file</code>.</p>
+      <label>Certificate <input type="file" id="ct-cfile" accept=".pem,.crt,.cer,.txt"></label>
+      <textarea id="ct-cpem" rows="3" placeholder="-----BEGIN CERTIFICATE-----" spellcheck="false"></textarea>
+      <label>Private key <input type="file" id="ct-kfile" accept=".pem,.key,.txt"></label>
+      <textarea id="ct-kpem" rows="3" placeholder="-----BEGIN PRIVATE KEY-----" spellcheck="false"></textarea>
+      <div class="act"><button class="btn primary" type="submit">Upload and use</button><button class="btn" type="button" data-cancel>Cancel</button></div>
+    </form>
+    <details class="how">
+      <summary>How to trust this certificate</summary>
+      <ol>
+        <li><b>Windows:</b> download <b>.cer</b> → double-click → Install Certificate → <i>Local Machine</i> → <i>Place all certificates in the following store</i> → <i>Trusted Root Certification Authorities</i>. Chrome and Edge pick it up after a restart.</li>
+        <li><b>macOS:</b> download <b>.crt</b> → open it in Keychain Access → keychain <i>System</i> → double-click the entry → Trust → <i>Always Trust</i>. Safari and Chrome use it at once.</li>
+        <li><b>Firefox:</b> Settings → Privacy &amp; Security → Certificates → View Certificates → <i>Authorities</i> → Import the <b>.crt</b> → tick <i>Trust this CA to identify websites</i>.</li>
+        <li><b>Android:</b> download <b>.cer</b> → Settings → Security → Encryption &amp; credentials → Install a certificate → <i>CA certificate</i> → pick the file.</li>
+      </ol>
+      <p class="hint sm">The certificate is self-signed with name constraints for exactly its own names: trusting it cannot vouch for any other host. Linux CLI: copy the .crt to <code>/usr/local/share/ca-certificates/</code> and run <code>update-ca-certificates</code>.</p>
+    </details>
+  </div>
+</dialog>
 
 <div class="toasts" id="toasts" aria-live="polite" aria-relevant="additions"></div>
 <script src="app.js"></script>

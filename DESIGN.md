@@ -339,6 +339,7 @@ func LoadFiles(certFile, keyFile string) (tls.Certificate, error)
 func ExportPEM(dir string) ([]byte, error)                                 // certificate only
 func Regenerate(o Options) (tls.Certificate, error)
 ```
+(v0.3 adds Store, Info, ValidatePair, Reissue — see "v0.3 contract".)
 `web.Server.ServeTLS(ctx, ln net.Listener, cert tls.Certificate) error` (min TLS 1.2, modern ciphers,
 HSTS header when TLS). Existing `Serve` stays for plain HTTP.
 
@@ -438,5 +439,91 @@ Where the merged v0.2 packages deviate from the contract text above. Code is the
   strict. Curl/wget get the same attachments with `Content-Disposition`.
 - No dpkg conffile: `/etc/n5-fangov/config.toml` is written by `n5-fangov setup` only,
   never by install.sh/postinst; an existing file is left alone (setup backs it up first).
-- `cmd/n5-fangov/wiring_v2.go` is merged (build tag and `wiring_v2_stub.go` removed); it is
-  the only cmd file that imports `internal/tlscert`.
+- `cmd/n5-fangov/wiring_v2.go` is merged (build tag and `wiring_v2_stub.go` removed); it and
+  `tlsmgr.go` (v0.3 certificate manager) are the cmd files that import `internal/tlscert`.
+## v0.3 contract — certificate management in the dashboard (16.09.2026)
+
+The operator sees the active certificate, downloads it to trust it, regenerates it or
+uploads an own pair — without a restart. Ownership as in v0.2: internal/tlscert and
+internal/web are the WEB side, the manager and the CLI live in cmd.
+
+### internal/tlscert additions
+
+```go
+type Store struct{ /* atomic *tls.Certificate */ }
+func NewStore(cert tls.Certificate) *Store
+func (s *Store) Get(*tls.ClientHelloInfo) (*tls.Certificate, error)  // tls.Config.GetCertificate
+func (s *Store) Set(cert tls.Certificate)                            // next handshake; open connections untouched
+func (s *Store) Current() tls.Certificate
+
+type InfoData struct {
+    Subject, Issuer string; DNSNames, IPs []string; NotBefore, NotAfter time.Time
+    FingerprintSHA256 string /* colon-hex, upper */; IsCA bool; KeyAlgo string /* "ECDSA P-256" */; SerialHex string
+}
+func Info(cert tls.Certificate) InfoData
+func ValidatePair(certPEM, keyPEM []byte, hosts []string) (tls.Certificate, []string /*warnings*/, error)
+    // errors: no PEM block, key does not match, expired, not yet valid
+    // warnings: SAN list lacks host <h> (per host), expires in N days (< 30), no SANs, weak key (RSA < 2048), SHA-1/MD5 signature
+func Reissue(o Options) (tls.Certificate, error)   // new certificate, key from o.Dir kept (Regenerate: new key)
+func PEM(cert) / DER(cert) ([]byte, error)         // leaf only
+func WritePrivate(path string, data []byte) error  // 0600, temp file + rename
+```
+
+`web.Server.ServeTLSStore(ctx, ln, *tlscert.Store)` is the listener; `ServeTLS(ctx, ln, cert)`
+wraps it with a store that is never swapped.
+
+### TLSMgr (interface in internal/web, implemented by cmd `tlsManager`)
+
+```go
+type TLSMgr interface {
+    Info() (tlscert.InfoData, mode string, err error)      // mode: auto | file | off
+    ExportPEM() ([]byte, error)
+    ExportDER() ([]byte, error)
+    Regenerate(keepKey bool) (tlscert.InfoData, error)     // auto only; file → web.ErrTLSFileMode (409)
+    Upload(certPEM, keyPEM []byte) (tlscert.InfoData, []string, error)  // validation failure → web.ValidationError (400)
+    ResetAuto() (tlscert.InfoData, error)
+}
+```
+`web.Deps.TLSMgr` (nil → 501) and `web.Deps.TLSHosts` (the SAN hosts, reported by GET).
+Manager semantics (cmd): the tls directory is `<config dir>/tls`; the auto pair stays
+`cert.pem`/`key.pem`, an upload lands as `custom-cert.pem`/`custom-key.pem` (0600) and
+sets `[web] tls = "file"`, `cert_file`, `key_file` via `config.SetKey` (comments kept),
+config first, then `Store.Set`. ResetAuto: `EnsureAuto` (reuses the auto pair), config
+`tls = "auto"` with empty paths, custom files deleted. Mode `off` (also: no TCP listener)
+→ `web.ErrTLSOff` from every method except Info. Regenerate/Upload/ResetAuto serialise
+on a mutex; the store swap is the last step, so a failed write never changes what is served.
+
+### API
+
+```
+GET  /api/tls                 → {"mode":"auto|file|off","info":{InfoData}|null,"hosts":[...]}   public
+GET  /api/tls/cert.crt        → application/x-pem-file, attachment n5-fangov-<host>.crt        public
+GET  /api/tls/cert.cer        → application/pkix-cert, attachment n5-fangov-<host>.cer          public
+POST /api/tls/regenerate      body {"keep_key":true} (default true, empty body ok)             auth+CSRF
+                              → {"ok","keep_key","info"} + "warning" when keep_key=false
+POST /api/tls/upload          multipart parts cert/key (file or field) or JSON {"cert","key"}; 64 KiB   auth+CSRF
+                              → {"ok","mode":"file","info","warnings":[...]}; 400 on a pair that does not validate
+POST /api/tls/reset           → {"ok","mode":"auto","info"}                                     auth+CSRF
+```
+Mode `off`: everything except `GET /api/tls` answers `409 {"error":"tls is off"}`. Each
+state change logs `web: tls <regenerate|upload|reset> by <ip>`.
+
+### UI
+
+Header lock (`#h-sec`, now a button) — tooltip carries mode and expiry, click opens the
+`<dialog id="cert">` (also *Settings → Certificate…*): mode badge, subject/issuer, SAN
+chips, validity (highlight < 30 days), fingerprint + copy, Download .crt/.cer,
+Regenerate… (inline confirm with "generate a new key" checkbox), Upload own
+certificate… (two file inputs that fill two PEM textareas; warnings shown), Back to auto
+(mode file), collapsible "How to trust this certificate" (Windows/macOS/Firefox/Android).
+In file mode a notice lists listen hosts the certificate does not cover. Mock:
+`?mock=1&tls=off|file|soon`. JS budget raised to 52 KB (the panel markup lives in
+index.html, the JS only binds data).
+
+### CLI
+
+```
+n5-fangov cert info | export [--der] [FILE] | regen [--new-key] | upload CERT KEY | reset
+```
+Socket API when the daemon answers (hot swap), else the same `tlsManager` on the files
+plus a restart hint. `cert regen` keeps the key by default (old behaviour was a new key).

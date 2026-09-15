@@ -64,7 +64,7 @@ var helpText = map[string]string{
 	"test":     "<ch> [--force]         channel verification run (writes duty, daemon must be stopped)",
 	"failsafe": "                       put all configured channels into their safe state",
 	"passwd":   "[--user U] [--password-file F | --password -]  set the web user/password (auth = basic), restart to apply",
-	"cert":     "export [FILE] | regen  auto TLS certificate: print PEM to trust it, or replace it",
+	"cert":     "info | export [--der] [FILE] | regen [--new-key] | upload CERT KEY | reset  dashboard certificate (live via the daemon)",
 	"export":   "[FILE]                 settings bundle (config + presets, hash redacted) as JSON",
 	"import":   "FILE                   restore a settings bundle (validated first), reload the daemon",
 	"version":  "                       print version",

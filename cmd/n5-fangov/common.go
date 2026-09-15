@@ -214,3 +214,28 @@ func fmtDuration(sec int64) string {
 		return fmt.Sprintf("%dm%02ds", int(d.Minutes()), int(d.Seconds())%60)
 	}
 }
+
+// raw performs a GET and returns the body bytes (downloads such as the
+// certificate). A non-2xx status is an error carrying the server's text.
+func (a *api) raw(path string) ([]byte, error) {
+	resp, err := a.c.Get(a.base + path)
+	if err != nil {
+		return nil, classifyDialErr(a.sock, err)
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode/100 != 2 {
+		msg := strings.TrimSpace(string(data))
+		var je struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(data, &je) == nil && je.Error != "" {
+			msg = je.Error
+		}
+		return nil, fmt.Errorf("GET %s: HTTP %d: %s", path, resp.StatusCode, msg)
+	}
+	return data, nil
+}

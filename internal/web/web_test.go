@@ -1189,13 +1189,13 @@ func TestStaticIndex(t *testing.T) {
 	if !strings.HasPrefix(r.hdr.Get("Content-Type"), "text/javascript") || !strings.Contains(r.body, "X-N5-Fangov-Csrf") {
 		t.Errorf("app.js: %q %.100s", r.hdr.Get("Content-Type"), r.body)
 	}
-	if len(r.body) > 46*1024 {
-		t.Errorf("app.js is %d bytes, budget 46 KB", len(r.body))
+	if len(r.body) > 52*1024 {
+		t.Errorf("app.js is %d bytes, budget 52 KB", len(r.body))
 	}
 	// UI assumptions the server honours: since-polling, {"lines"} log wrapper,
 	// "channel" key, "<unchanged>" hash placeholder passes through untouched,
 	// v0.2 endpoints (log export/clear, settings export/import, tls flag).
-	for _, want := range []string{"since=", "b.lines", "cfg.channel", "warnings", "/api/log/export", "/api/config/export", "/api/config/import", "b.source", ".tls"} {
+	for _, want := range []string{"since=", "b.lines", "cfg.channel", "warnings", "/api/log/export", "/api/config/export", "/api/config/import", "b.source", ".tls", "/api/tls/regenerate", "/api/tls/upload", "/api/tls/reset", "cert.cer"} {
 		if !strings.Contains(r.body, want) {
 			t.Errorf("app.js lacks %q", want)
 		}

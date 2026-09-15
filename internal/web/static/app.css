@@ -63,6 +63,8 @@ main{padding:16px;max-width:1500px;margin:0 auto}
 .popover .btn{text-align:left}
 .hint.sm{font-size:12px;color:var(--fg3)}
 .sec{font-weight:600;letter-spacing:.02em}
+button.sec{background:none;border:0;padding:2px 4px;cursor:pointer;border-radius:4px}
+button.sec:hover{background:var(--bg3)}
 .sec.ok{color:var(--ok)}
 .sec.warn{color:var(--warn)}
 .banner{background:color-mix(in srgb,var(--crit) 18%,var(--bg2));color:var(--fg);border-bottom:1px solid var(--crit);padding:8px 16px;font-size:13px}
@@ -214,3 +216,28 @@ input[type=checkbox]{accent-color:var(--info)}
 .toast button{position:absolute;right:4px;top:4px;background:none;border:0;color:var(--fg2);cursor:pointer;font-size:14px;padding:2px 6px}
 @media (prefers-reduced-motion:no-preference){.toast{animation:in .15s ease-out}}
 @keyframes in{from{opacity:0;transform:translateY(6px)}}
+
+/* certificate dialog */
+.dlg{background:var(--bg2);color:var(--fg);border:1px solid var(--line2);border-radius:var(--r);box-shadow:0 16px 48px rgba(0,0,0,.5);padding:16px;width:min(640px,calc(100vw - 32px));max-height:calc(100vh - 32px);overflow:auto;box-sizing:border-box}
+.dlg::backdrop{background:rgba(0,0,0,.55)}
+.dlg-h{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.dlg-h h2{margin:0;flex:1}
+.dlg-h .icon{font-size:18px;line-height:1}
+.badge.file{color:var(--man);border-color:color-mix(in srgb,var(--man) 50%,transparent);background:color-mix(in srgb,var(--man) 12%,transparent)}
+.badge.off{color:var(--fg2);border-color:var(--line2)}
+#ct-body{display:grid;gap:12px}
+#ct-kv dd.soon{color:var(--warn);font-weight:600}
+#ct-kv dd.expired{color:var(--crit);font-weight:600}
+.chips .ip{color:var(--fg2)}
+.fp{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px}
+.fp .k{color:var(--fg3)}
+.fp code{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:4px 8px;overflow-wrap:anywhere;flex:1;min-width:0;font-size:11px;line-height:1.5}
+.dlg .act{display:flex;flex-wrap:wrap;gap:8px}
+.dlg .notice{margin:0}
+.dlg .sub{display:grid;gap:8px;padding:12px;border:1px solid var(--line);border-radius:var(--r);background:var(--bg)}
+.dlg .sub label{display:flex;gap:8px;align-items:center;font-size:13px;color:var(--fg2);flex-wrap:wrap}
+.dlg .sub input[type=file]{font-size:12px;flex:1;min-width:0}
+.dlg textarea{background:var(--bg2);border:1px solid var(--line2);border-radius:6px;padding:6px 8px;font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:inherit;resize:vertical;width:100%;box-sizing:border-box}
+.how summary{cursor:pointer;color:var(--fg2);font-size:13px}
+.how ol{margin:8px 0 0;padding-left:20px;font-size:13px;display:grid;gap:6px}
+.how ol i{color:var(--fg2);font-style:normal}

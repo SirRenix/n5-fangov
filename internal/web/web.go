@@ -29,6 +29,7 @@ import (
 	"github.com/SirRenix/n5-fangov/internal/config"
 	"github.com/SirRenix/n5-fangov/internal/control"
 	"github.com/SirRenix/n5-fangov/internal/ipc"
+	"github.com/SirRenix/n5-fangov/internal/tlscert"
 )
 
 //go:embed static/index.html static/app.js static/app.css
@@ -203,6 +204,11 @@ type Deps struct {
 	// exposed as "tls" in GET /api/version for the UI indicator. ServeTLS
 	// sets it itself; a TLS reverse proxy in front of plain Serve may set it.
 	TLS bool
+	// TLSMgr backs the /api/tls endpoints (certificate panel). nil → 501.
+	TLSMgr TLSMgr
+	// TLSHosts are the addresses the certificate should cover (listen host,
+	// host name, allowed_hosts); reported by GET /api/tls.
+	TLSHosts []string
 	// Logf receives auth failures and startup warnings; nil → log.Printf.
 	Logf func(format string, args ...any)
 }
@@ -279,13 +285,22 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 }
 
 // ServeTLS serves the TCP handler on ln with TLS terminated by cert (the
-// automatic pair from internal/tlscert or a configured file pair): TLS 1.2
-// minimum, X25519/P-256/P-384, AEAD suites only, HTTP/2 offered. Every
-// response carries Strict-Transport-Security. Sets Deps.TLS for
-// /api/version.
+// automatic pair from internal/tlscert or a configured file pair). It is
+// ServeTLSStore with a store that is never swapped.
 func (s *Server) ServeTLS(ctx context.Context, ln net.Listener, cert tls.Certificate) error {
+	return s.ServeTLSStore(ctx, ln, tlscert.NewStore(cert))
+}
+
+// ServeTLSStore serves the TCP handler on ln with TLS terminated by the
+// certificate currently in store: TLS 1.2 minimum, X25519/P-256/P-384,
+// AEAD suites only, HTTP/2 offered. Every response carries
+// Strict-Transport-Security. Sets Deps.TLS for /api/version. The store is
+// consulted per handshake (tls.Config.GetCertificate), so a Store.Set from
+// the certificate manager takes effect for the next connection without
+// touching established ones or the listener.
+func (s *Server) ServeTLSStore(ctx context.Context, ln net.Listener, store *tlscert.Store) error {
 	cfg := &tls.Config{
-		Certificates:     []tls.Certificate{cert},
+		GetCertificate:   store.Get,
 		MinVersion:       tls.VersionTLS12,
 		CurvePreferences: []tls.CurveID{tls.X25519, tls.CurveP256, tls.CurveP384},
 		CipherSuites: []uint16{ // TLS 1.2 only; 1.3 suites are fixed
@@ -411,6 +426,12 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/profiles", s.getProfiles)
 	m.HandleFunc("GET /api/version", s.getVersion)
 	m.HandleFunc("GET /api/sensors", s.getSensors)
+	m.HandleFunc("GET /api/tls", s.getTLS)
+	m.HandleFunc("GET /api/tls/cert.crt", s.tlsCertPEM)
+	m.HandleFunc("GET /api/tls/cert.cer", s.tlsCertDER)
+	m.HandleFunc("POST /api/tls/regenerate", s.tlsRegenerate)
+	m.HandleFunc("POST /api/tls/upload", s.tlsUpload)
+	m.HandleFunc("POST /api/tls/reset", s.tlsReset)
 	m.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "unknown endpoint")
 	})

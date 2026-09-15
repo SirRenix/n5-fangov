@@ -94,10 +94,12 @@ n5-fangov curve                  active curves
 n5-fangov log -n 50              log file (journal when no file is configured)
 n5-fangov test 3                 channel verification run (daemon must be stopped)
 n5-fangov export settings.json   config + presets as one JSON bundle
+n5-fangov cert info              dashboard certificate (see HTTPS)
 ```
 
 Web dashboard: `http://127.0.0.1:8010` (`local`) or `https://<host>:8010` (`lan`). Tabs:
-Overview, Curves, Manual, Presets, Log, Compatibility.
+Overview, Curves, Manual, Presets, Log, Compatibility; the lock icon in the header opens
+the certificate panel (download, trust, regenerate, upload).
 
 ## HTTPS
 
@@ -106,34 +108,78 @@ loopback, `auto` everywhere else, and **a non-loopback listener never runs plain
 `tls = "off"` there is replaced by `auto` with a warning (basic auth would otherwise
 cross the LAN in clear text).
 
+### The dashboard flow
+
+The lock icon in the header shows the transport; its tooltip carries the certificate
+mode and expiry, and clicking it (or *Settings → Certificate…*) opens the certificate
+panel: subject, issuer, SANs, validity (highlighted below 30 days), key type, SHA-256
+fingerprint with a copy button, and the actions below. Making the browser warning go
+away takes three steps:
+
+1. **Download** — *Download .crt* (PEM: Firefox, macOS, Linux) or *Download .cer* (DER:
+   Windows, Android). Both are the certificate only, never the key, and need no login.
+2. **Trust** — the panel's *How to trust this certificate* lists the four recipes:
+   Windows: double-click the .cer → Local Machine → Trusted Root Certification
+   Authorities; macOS: Keychain Access → System → Always Trust; Firefox: Settings →
+   Certificates → Authorities → Import; Android: Settings → Security → Install a
+   certificate → CA certificate. Linux CLI: copy the .crt to
+   `/usr/local/share/ca-certificates/` and run `update-ca-certificates`.
+3. **Reload** — the connection is now verified; the fingerprint in the panel is the one
+   to compare against the browser's certificate viewer.
+
+The certificate is marked as a CA (browser stores accept a self-signed anchor only in
+that form) but carries **name constraints** limited to exactly its own names and
+`pathlen 0`: even with the key, nothing signed by it is valid for any other host.
+
+### Modes and actions
+
 - **`auto`** — the daemon creates an ECDSA P-256 self-signed certificate (10 years) in
-  `/etc/n5-fangov/tls/` at the first start and reuses it; when the names change it is
-  reissued **with the same key**, so a certificate you trusted stays trusted (the log
-  says `certificate regenerated (SANs changed), key unchanged`). SANs: the listen host
-  (for `0.0.0.0`/`[::]`: the primary IPv4 and IPv6 address, i.e. the source address of
-  the default route — not every interface), the host name, `localhost`, and
-  `[web].allowed_hosts`. The certificate is marked as a CA (browser stores accept
-  self-signed anchors only in that form) but carries **name constraints** limited to
-  exactly its own names and `pathlen 0`: even with the key, nothing signed by it is
-  valid for any other host. Browsers warn once about the unknown issuer; to make that
-  go away, trust the certificate:
-
-  ```
-  n5-fangov cert export > n5-fangov.pem      # PEM, certificate only
-  # Firefox/Chrome: import as a trusted server certificate; Debian: copy to
-  # /usr/local/share/ca-certificates/n5-fangov.crt && update-ca-certificates
-  n5-fangov cert regen && systemctl restart n5-fangov   # new key pair, same names (re-trust needed)
-  ```
-
-- **`file`** — your own certificate: `cert_file` (PEM chain) and `key_file` (PEM key),
-  both required; the paths must be readable inside the unit's sandbox (see Hardening —
-  `/etc/n5-fangov/` is the simple place). A missing file disables the web listener, the
-  CLI socket keeps working. A key file readable by group or others is logged as a
-  warning at start (`chmod 0600`).
-
+  `/etc/n5-fangov/tls/` at the first start and reuses it. SANs: the listen host (for
+  `0.0.0.0`/`[::]`: the primary IPv4 and IPv6 address, i.e. the source address of the
+  default route — not every interface), the host name, `localhost`, and
+  `[web].allowed_hosts`. When the names change it is reissued **with the same key**, so a
+  certificate you trusted stays trusted (log: `certificate regenerated (SANs changed),
+  key unchanged`).
+  - **Regenerate** reissues it for the current names. The private key is kept by default;
+    the checkbox *generate a new key* makes a fresh pair — every store that trusts the old
+    certificate then has to import the new one, and the response says so.
+- **`file`** — your own certificate. **Upload own certificate…** takes a PEM certificate
+  (chain allowed) and its key, as files or pasted text (64 KiB max). The pair is validated
+  first (PEM, key matches, not expired; warnings for a SAN list that misses a listen host,
+  an expiry within 30 days, a weak key), stored as
+  `/etc/n5-fangov/tls/custom-cert.pem` / `custom-key.pem` (0600), and the config is set to
+  `tls = "file"` with the two paths (comments and everything else untouched). Pointing
+  `cert_file`/`key_file` at files of your own by hand works the same way; they must be
+  readable inside the unit's sandbox (see Hardening — `/etc/n5-fangov/` is the simple
+  place). A missing file disables the web listener, the CLI socket keeps working; a key
+  file readable by group or others is logged as a warning at start (`chmod 0600`).
+  - **Back to auto** returns to the automatic certificate (the auto pair is kept on disk,
+    so this is instant), sets `tls = "auto"` and deletes the uploaded pair.
 - **`off`** — plain HTTP, loopback only. A reverse proxy (Caddy, nginx, the PVE proxy)
   terminating TLS in front of `127.0.0.1:8010` is the alternative to `auto`; list its
-  public name in `allowed_hosts` or let it rewrite `Host`.
+  public name in `allowed_hosts` or let it rewrite `Host`. The panel then only says so;
+  the certificate endpoints answer `409 tls is off`.
+
+Every change from the panel is **hot-swapped**: the new certificate serves the next
+handshake, open connections and the fan controller are untouched, no restart. Changes
+are logged as `web: tls <regenerate|upload|reset> by <ip>` and need the same login as
+any other write (`auth = "basic"`).
+
+### CLI equivalents
+
+```
+n5-fangov cert info                    mode, subject, SANs, validity, fingerprint
+n5-fangov cert export [--der] [FILE]   certificate only, PEM (or DER with --der); "-" = stdout
+n5-fangov cert regen [--new-key]       reissue; key kept unless --new-key
+n5-fangov cert upload CERT KEY         install an own PEM pair (tls = "file")
+n5-fangov cert reset                   back to the automatic certificate
+```
+
+With the daemon running the commands go through the unix socket and take effect at once
+(same code path as the panel). Without it they work on the files and the config directly
+and print the `systemctl restart n5-fangov` that applies the change.
+
+### Transport
 
 TLS 1.2 minimum, modern cipher suites, HSTS header (`max-age=31536000`, no
 `includeSubDomains`, no preload). **HSTS scope:** browsers apply it to the whole host
@@ -142,7 +188,8 @@ rewrites `http://n5.lan/` (port 80) to HTTPS for a year. Browsers ignore HSTS fo
 IP literals, so `https://192.0.2.10:8010` affects nothing else. Reach the UI by IP, or
 make sure every service on that name speaks HTTPS; a reverse proxy in front of
 `tls = "off"` sets its own policy (n5-fangov sends the header only on its own TLS
-listener). Changes to `[web]` need a restart.
+listener). `listen`, `auth` and `allowed_hosts` still need a restart; the certificate
+does not.
 
 ## Security
 

@@ -5,7 +5,6 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -410,9 +409,11 @@ type webDeps struct {
 	Device     profile.Device // detected device; its profile is "active"
 	Sysfs      *hwmon.FS
 	Web        webSpec
-	Log        logStore // file store when [log].file is set, else the journal
-	Bundle     bundle   // settings export/import
-	TLS        bool     // the TCP listener serves HTTPS (HSTS)
+	Log        logStore    // file store when [log].file is set, else the journal
+	Bundle     bundle      // settings export/import
+	TLS        bool        // the TCP listener serves HTTPS (HSTS)
+	TLSMgr     *tlsManager // certificate manager behind /api/tls (nil: 501)
+	TLSHosts   []string    // SAN hosts reported by GET /api/tls
 }
 
 // logStore is the log read side (DESIGN v0.2 "Log store"): implemented by
@@ -436,15 +437,16 @@ type webServer struct {
 	TCP      http.Handler
 	Socket   http.Handler
 	serve    func(ctx context.Context, ln net.Listener) error
-	serveTLS func(ctx context.Context, ln net.Listener, cert tls.Certificate) error
+	serveTLS func(ctx context.Context, ln net.Listener, mgr *tlsManager) error
 }
 
 // ServeTCP serves the TCP handler on ln until ctx is done.
 func (s webServer) ServeTCP(ctx context.Context, ln net.Listener) error { return s.serve(ctx, ln) }
 
-// ServeTLS serves the TCP handler over TLS with cert until ctx is done.
-func (s webServer) ServeTLS(ctx context.Context, ln net.Listener, cert tls.Certificate) error {
-	return s.serveTLS(ctx, ln, cert)
+// ServeTLS serves the TCP handler over TLS with the certificate the
+// manager holds (hot-swappable) until ctx is done.
+func (s webServer) ServeTLS(ctx context.Context, ln net.Listener, mgr *tlsManager) error {
+	return s.serveTLS(ctx, ln, mgr)
 }
 
 func newWebServer(d webDeps) webServer {

@@ -32,9 +32,9 @@ allowed_hosts = []      # extra Host header names to serve, e.g. the name a reve
                         # listen host always pass; anything else gets 421 (DNS-rebinding guard).
                         # "*" disables the check. Changes need a restart, like all of [web].
 tls = "off"             # auto | off | file. Default: "off" on a loopback listen, "auto" elsewhere.
-                        # auto = self-signed certificate in /etc/n5-fangov/tls (trust it: n5-fangov cert export).
+                        # auto = self-signed certificate in /etc/n5-fangov/tls (download and trust it from the dashboard or: n5-fangov cert export).
                         # A non-loopback listen with "off" is forced to "auto": LAN traffic is never plain HTTP.
-cert_file = ""          # tls = "file": PEM certificate (chain)
+cert_file = ""          # tls = "file": PEM certificate (chain); the dashboard upload sets these two to /etc/n5-fangov/tls/custom-*.pem
 key_file = ""           # tls = "file": PEM private key
 
 [log]

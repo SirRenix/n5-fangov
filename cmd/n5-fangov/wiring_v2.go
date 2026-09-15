@@ -1,13 +1,13 @@
 // wiring_v2.go holds the calls into the v0.2 WEB-builder code
-// (internal/tlscert, web.Server.ServeTLS, web.Deps.Log/Bundle/TLS). It was
-// build-tagged `ignore` while the two trees were separate; since the merge
-// it is a regular part of the package and the stub is gone.
+// (internal/tlscert, web.Server.ServeTLSStore, web.Deps.Log/Bundle/TLS/
+// TLSMgr). It was build-tagged `ignore` while the two trees were separate;
+// since the merge it is a regular part of the package and the stub is gone.
+// tlsmgr.go (the certificate manager) is the other cmd file that imports
+// internal/tlscert.
 package main
 
 import (
 	"context"
-	"crypto/tls"
-	"log"
 	"net"
 
 	"github.com/SirRenix/n5-fangov/internal/tlscert"
@@ -16,39 +16,26 @@ import (
 
 // applyV2Deps sets the v0.2 members of web.Deps. Deps.Log is `any`: web
 // accepts a LogStore (our logStore has the same method set) or the legacy
-// func(int) ([]string, error). Bundle and TLS map 1:1.
+// func(int) ([]string, error). Bundle and TLS map 1:1; TLSMgr only when
+// set (a typed nil would look non-nil behind the interface).
 func applyV2Deps(deps *web.Deps, d webDeps) {
 	deps.Log = d.Log
 	deps.Bundle = d.Bundle
 	deps.TLS = d.TLS
+	if d.TLSMgr != nil {
+		deps.TLSMgr = d.TLSMgr
+	}
+	deps.TLSHosts = d.TLSHosts
 }
 
-// serveTLSFunc returns web.Server.ServeTLS (TLS 1.2+, HSTS, sets Deps.TLS).
-func serveTLSFunc(s *web.Server) func(context.Context, net.Listener, tls.Certificate) error {
-	return s.ServeTLS
-}
-
-func tlsOptions(dir string, hosts []string, org string) tlscert.Options {
-	return tlscert.Options{Dir: dir, Hosts: hosts, Org: org, Logf: log.Printf}
-}
-
-// tlsEnsureAuto loads or creates the automatic self-signed pair in dir.
-func tlsEnsureAuto(dir string, hosts []string, org string) (tls.Certificate, string, error) {
-	return tlscert.EnsureAuto(tlsOptions(dir, hosts, org))
-}
-
-// tlsLoadFiles loads a configured PEM pair (tls = "file").
-func tlsLoadFiles(certFile, keyFile string) (tls.Certificate, error) {
-	return tlscert.LoadFiles(certFile, keyFile)
+// serveTLSFunc returns a ServeTLSStore wrapper (TLS 1.2+, HSTS, sets
+// Deps.TLS) fed by the manager's store, so a regenerate/upload/reset from
+// the dashboard reaches the next handshake without a restart.
+func serveTLSFunc(s *web.Server) func(context.Context, net.Listener, *tlsManager) error {
+	return func(ctx context.Context, ln net.Listener, mgr *tlsManager) error {
+		return s.ServeTLSStore(ctx, ln, mgr.Store())
+	}
 }
 
 // tlsCheckKeyMode reports a private key file readable by group/others (L8).
 func tlsCheckKeyMode(keyFile string) error { return tlscert.CheckKeyMode(keyFile) }
-
-// tlsExportPEM returns the certificate block only (never the key).
-func tlsExportPEM(dir string) ([]byte, error) { return tlscert.ExportPEM(dir) }
-
-// tlsRegenerate replaces the automatic pair.
-func tlsRegenerate(dir string, hosts []string, org string) (tls.Certificate, error) {
-	return tlscert.Regenerate(tlsOptions(dir, hosts, org))
-}

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
 	"flag"
 	"fmt"
 	"log"
@@ -130,34 +129,32 @@ func cmdServe(args []string) int {
 	if addr == "none" {
 		addr = ""
 	}
-	var cert tls.Certificate
+	// Certificate manager: loads or creates the pair for the configured
+	// mode, serves it through a hot-swappable store and backs /api/tls
+	// (dashboard certificate panel, `n5-fangov cert` via the socket).
+	hosts := tlsHosts(wspec)
+	tlsMgr := newTLSManager(*cfgPath, wspec, hosts)
 	useTLS := false
-	if addr != "" {
-		var err error
-		switch wspec.TLS {
-		case "auto":
-			var certPath string
-			cert, certPath, err = tlsEnsureAuto(tlsDir(*cfgPath), tlsHosts(wspec), setupOrg)
-			if err == nil {
-				log.Printf("web: TLS auto, certificate %s (trust it: n5-fangov cert export)", certPath)
-			}
-		case "file":
-			cert, err = tlsLoadFiles(wspec.CertFile, wspec.KeyFile)
-			if err == nil {
-				log.Printf("web: TLS from %s / %s", wspec.CertFile, wspec.KeyFile)
-				if merr := tlsCheckKeyMode(wspec.KeyFile); merr != nil {
-					log.Printf("WARNING: %v", merr)
-				}
-			}
-		}
-		if err != nil {
+	if addr == "" {
+		tlsMgr.mode = "off" // no TCP listener: nothing to certify, /api/tls says so
+	} else {
+		certPath, err := tlsMgr.load(true)
+		switch {
+		case err != nil:
 			// No plain-HTTP fallback: a LAN listener without TLS would carry
 			// basic auth in clear text.
 			log.Printf("web: TLS (%s): %v — web UI disabled, the CLI socket still works", wspec.TLS, err)
 			sendAlertCooled(*rdir, alerter, "web", fmt.Sprintf("web UI disabled: TLS (%s) could not be set up on %s: %v", wspec.TLS, addr, err))
 			addr = ""
-		} else {
-			useTLS = wspec.TLS != "off"
+		case wspec.TLS == "auto":
+			log.Printf("web: TLS auto, certificate %s (download and trust it from the dashboard or: n5-fangov cert export)", certPath)
+			useTLS = true
+		case wspec.TLS == "file":
+			log.Printf("web: TLS from %s / %s", wspec.CertFile, wspec.KeyFile)
+			if merr := tlsCheckKeyMode(wspec.KeyFile); merr != nil {
+				log.Printf("WARNING: %v", merr)
+			}
+			useTLS = true
 		}
 	}
 
@@ -171,6 +168,8 @@ func cmdServe(args []string) int {
 		Log:        store,
 		Bundle:     fileBundle{cfgPath: *cfgPath, presetDir: defaultPresetDir, reload: ctrl.Reload},
 		TLS:        useTLS,
+		TLSMgr:     tlsMgr,
+		TLSHosts:   hosts,
 	})
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
@@ -190,7 +189,7 @@ func cmdServe(args []string) int {
 			sendAlert(alerter, "web", "web UI listener failed on "+addr+": "+err.Error())
 		} else if useTLS {
 			log.Printf("web: listening on https://%s", ln.Addr())
-			go func() { errc <- wrapErr("web", ws.ServeTLS(ctx, ln, cert)) }()
+			go func() { errc <- wrapErr("web", ws.ServeTLS(ctx, ln, tlsMgr)) }()
 		} else {
 			log.Printf("web: listening on http://%s", ln.Addr())
 			go func() { errc <- wrapErr("web", ws.ServeTCP(ctx, ln)) }()

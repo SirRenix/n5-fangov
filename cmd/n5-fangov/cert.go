@@ -1,8 +1,6 @@
 package main
 
 import (
-	"flag"
-	"fmt"
 	"log"
 	"net"
 	"os"
@@ -152,60 +150,4 @@ func localIPs() ([]string, error) {
 		}
 	}
 	return out, nil
-}
-
-// cmdCert: `cert export [FILE]` prints the auto certificate (PEM) so it
-// can be trusted in a browser or OS store; `cert regen` replaces it (new
-// key, same SANs) — restart the daemon afterwards.
-func cmdCert(args []string) int {
-	fs := flag.NewFlagSet("cert", flag.ContinueOnError)
-	cfgPath := fs.String("config", defaultConfigPath, "config file (the certificate lives next to it in tls/)")
-	if err := fs.Parse(args); err != nil {
-		return exitUsage
-	}
-	usage := func() int {
-		fmt.Fprintln(os.Stderr, "usage: n5-fangov cert export [FILE]   |   n5-fangov cert regen")
-		return exitUsage
-	}
-	if fs.NArg() < 1 {
-		return usage()
-	}
-	dir := tlsDir(*cfgPath)
-	switch fs.Arg(0) {
-	case "export":
-		if fs.NArg() > 2 {
-			return usage()
-		}
-		pem, err := tlsExportPEM(dir)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "cert export: %v\n(the certificate is created at the first start with [web].tls = \"auto\" on a non-loopback listen)\n", err)
-			return exitFail
-		}
-		if fs.NArg() == 1 || fs.Arg(1) == "-" {
-			os.Stdout.Write(pem)
-			return exitOK
-		}
-		if err := os.WriteFile(fs.Arg(1), pem, 0o644); err != nil {
-			fmt.Fprintln(os.Stderr, "cert export:", err)
-			return exitFail
-		}
-		fmt.Printf("certificate written to %s\n", fs.Arg(1))
-		return exitOK
-	case "regen":
-		if fs.NArg() != 1 {
-			return usage()
-		}
-		cfg, warns, _ := loadConfig(*cfgPath)
-		for _, w := range warns {
-			fmt.Fprintf(os.Stderr, "config: %s\n", w)
-		}
-		hosts := tlsHosts(webOf(cfg))
-		if _, err := tlsRegenerate(dir, hosts, setupOrg); err != nil {
-			fmt.Fprintln(os.Stderr, "cert regen:", err)
-			return exitFail
-		}
-		fmt.Printf("new certificate in %s for %s\napply with:  systemctl restart n5-fangov\n", dir, strings.Join(hosts, ", "))
-		return exitOK
-	}
-	return usage()
 }

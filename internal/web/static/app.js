@@ -134,6 +134,25 @@ const mock = (() => {
 	for (let i = 0; i < 200; i++) { const t = t0 - (200 - i) * 300; const p = point(t);
 		logs.push(`${new Date(t * 1000).toISOString().slice(0, 19)} ${i % 37 === 5 ? 'WARN stall: hdd rpm=0 at duty=105 → 255' : i % 53 === 7 ? 'ERROR sensor drivetemp:max: no devices' : 'INFO'} ` + cfg.channel.map(c => `${c.name} ${p.temp[c.name]}/${p.duty[c.name]}`).join(' ')); }
 	const wait = v => new Promise(r => setTimeout(() => r(v), 120));
+	// certificate mock: ?tls=off|file|soon sets the start state
+	const q = new URLSearchParams(location.search).get('tls'), T = { mode: q === 'off' || q === 'file' ? q : 'auto', n: 0 };
+	const tlsInfo = () => { const up = T.mode === 'file', cn = up ? 'CN=fans.example,O=Homelab' : 'CN=n5.lan,O=n5-fangov', d = new Date(t0 * 1000); d.setFullYear(d.getFullYear() + (up ? 1 : 10));
+		return { subject: cn, issuer: up ? 'CN=Homelab CA' : cn, dns_names: up ? ['fans.example'] : ['n5.lan', 'n5host', 'localhost'], ips: up ? [] : ['192.0.2.20', '127.0.0.1', '::1'],
+			not_before: new Date(t0 * 1000 - 36e5).toISOString(), not_after: q === 'soon' ? new Date(t0 * 1000 + 12 * 864e5).toISOString() : d.toISOString(), is_ca: !up, key_algo: up ? 'RSA 2048' : 'ECDSA P-256',
+			serial_hex: '3F0' + T.n + 'A9C1', fingerprint_sha256: Array.from({ length: 32 }, (_, i) => ((i * 37 + T.n * 11) % 256 | 256).toString(16).slice(1).toUpperCase()).join(':') }; };
+	const fail = (msg, status) => Promise.reject(Object.assign(new Error(msg), { status }));
+	const mockTLS = (p, opt) => {
+		if (p === '/api/tls') return wait({ status: 200, body: { mode: T.mode, info: T.mode === 'off' ? null : tlsInfo(), hosts: ['192.0.2.20', 'n5.lan', 'n5host', 'localhost'] } });
+		if (T.mode === 'off') return fail('tls is off', 409);
+		if (p === '/api/tls/cert.crt') return wait({ status: 200, body: '-----BEGIN CERTIFICATE-----\nMIIBmock\n-----END CERTIFICATE-----\n', filename: 'n5-fangov-n5host.crt' });
+		if (p === '/api/tls/cert.cer') return wait({ status: 200, body: '0\u0082\u0001mock', filename: 'n5-fangov-n5host.cer' });
+		if (p === '/api/tls/regenerate') { if (T.mode === 'file') return fail('custom certificate active; reset to auto first', 409);
+			T.n++; const keep = !opt.json || opt.json.keep_key !== false; return wait({ status: 200, body: { ok: true, keep_key: keep, info: tlsInfo(), warning: keep ? undefined : 'new private key: re-download and trust the certificate' } }); }
+		if (p === '/api/tls/upload') { const j = opt.json || {}; if (!/BEGIN CERTIFICATE/.test(j.cert || '') || !/PRIVATE KEY/.test(j.key || '')) return fail('certificate: no PEM CERTIFICATE block', 400);
+			T.mode = 'file'; T.n++; return wait({ status: 200, body: { ok: true, mode: 'file', info: tlsInfo(), warnings: ['SAN list lacks host 192.0.2.20', 'SAN list lacks host n5host'] } }); }
+		if (p === '/api/tls/reset') { T.mode = 'auto'; return wait({ status: 200, body: { ok: true, mode: 'auto', info: tlsInfo() } }); }
+		return fail('mock: not found ' + p, 404);
+	};
 	return (path, opt) => {
 		const m = opt.method || 'GET', u = new URL(path, location.origin), p = u.pathname;
 		if (p === '/api/state') { const now = Date.now() / 1000, pt = point(now), stall = (now | 0) % 40 < 3;
@@ -145,12 +164,12 @@ const mock = (() => {
 		if (p === '/api/history') { const since = +u.searchParams.get('since') || 0, now = Date.now() / 1000, out = [];
 			for (let t = now - 7200; t <= now; t += 10) if (t > since) out.push(point(t)); return wait({ status: 200, body: out }); }
 		if (p === '/api/config' && m === 'GET') return wait({ status: 200, body: { config: cfg, raw: raw() } });
-		if (p === '/api/config' && m === 'PUT') { if (/critical = 9\d\d/.test(opt.body)) return Promise.reject(Object.assign(new Error('validation failed\nchannel cpu: critical out of range 30..110'), { status: 400 }));
+		if (p === '/api/config' && m === 'PUT') { if (/critical = 9\d\d/.test(opt.body)) return fail('validation failed\nchannel cpu: critical out of range 30..110', 400);
 			const n = (opt.body.match(/\[\[channel\]\]/g) || []).length; return wait({ status: n === cfg.channel.length ? 200 : 202, body: { ok: true } }); }
 		if (p === '/api/sensors') return wait({ status: 200, body: [{ id: 'k10temp', temp: 38.2 }, { id: 'nvme:max', temp: 41 }, { id: 'drivetemp:max', temp: 39.5 }, { id: 'ec:cpu', temp: 39.7 }, { id: 'ec:system', temp: 32 }] });
 		if (p.startsWith('/api/override/')) { const n = p.split('/')[3];
 			if (m === 'DELETE') { delete overrides[n]; return wait({ status: 200, body: { ok: true } }); }
-			if (n === 'hdd' && opt.json.duty < 60) return Promise.reject(Object.assign(new Error('duty 40 below stall_min_duty 60 for hdd'), { status: 400 }));
+			if (n === 'hdd' && opt.json.duty < 60) return fail('duty 40 below stall_min_duty 60 for hdd', 400);
 			overrides[n] = opt.json.duty; return wait({ status: 200, body: { ok: true } }); }
 		if (p === '/api/presets') return wait({ status: 200, body: Object.keys(presets).map(k => ({ name: k, channels: presets[k] })) });
 		if (p.startsWith('/api/presets/')) { const n = p.split('/')[3]; if (m === 'PUT') { presets[n] = cfg.channel; return wait({ status: 201, body: { ok: true } }); }
@@ -160,15 +179,16 @@ const mock = (() => {
 		if (p === '/api/log/export') return wait({ status: 200, body: logs.join('\n') + '\n', filename: 'n5-fangov-mock-20260915-120000.log' });
 		if (p === '/api/config/export') return wait({ status: 200, body: { format: 1, version: '0.2.0-mock', exported: Math.floor(t0), config: raw().replace(/password_hash = "[^"]+"/, 'password_hash = "<unchanged>"'), presets: Object.fromEntries(Object.entries(presets).map(([k, v]) => [k, v.map(tomlChannel).join('\n')])) }, filename: 'n5-fangov-settings-20260915-120000.json' });
 		if (p === '/api/config/import') { let j; try { j = JSON.parse(opt.body); } catch (e) { j = null; }
-			if (!j || j.format !== 1) return Promise.reject(Object.assign(new Error('import rejected: bundle format missing\nexpected "format": 1'), { status: 400 }));
+			if (!j || j.format !== 1) return fail('import rejected: bundle format missing\nexpected "format": 1', 400);
 			return wait({ status: /restart/.test(opt.body) ? 202 : 200, body: { ok: true } }); }
 		if (p === '/api/profiles') return wait({ status: 200, body: [
 			{ name: 'n5pro', title: 'Minisforum N5 Pro (IT5571 EC)', verified: true, notes: 'EC does not resume HDD regulation after a write; stop = fixed duty.' },
 			{ name: 'nct67xx', title: 'Nuvoton NCT67xx (SmartFan IV)', verified: false, notes: 'Auto = pwmN_enable 5; original restored on stop.' },
 			{ name: 'it87xx', title: 'ITE IT86xx/IT87xx', verified: false, notes: 'Original pwmN_enable restored on stop.' },
 			{ name: 'monitor', title: 'Monitoring only (no PWM)', verified: false, notes: 'Sensors only, never writes.' }] });
-		if (p === '/api/version') return wait({ status: 200, body: { version: '0.2.0-mock', tls: new URLSearchParams(location.search).get('tls') === '1' } });
-		return Promise.reject(Object.assign(new Error('mock: not found ' + p), { status: 404 }));
+		if (p === '/api/version') return wait({ status: 200, body: { version: '0.2.0-mock', tls: T.mode !== 'off' } });
+		if (p.startsWith('/api/tls')) return mockTLS(p, opt);
+		return fail('mock: not found ' + p, 404);
 	};
 })();
 
@@ -263,9 +283,12 @@ const redrawAll = () => { for (const w of charts) w._st && w._st.draw(); for (co
 // state
 let snap = null, cfg = null, cfgRaw = '', profiles = [], sensors = [], version = '', tls = null;
 const LOOPBACK = /^(localhost|127\.\d+\.\d+\.\d+|\[::1\])$/i.test(location.hostname);
-const secState = () => { const e = $('#h-sec'), on = tls === null ? location.protocol === 'https:' : !!tls;
+let cert = null;
+const dLeft = iso => Math.floor((new Date(iso) - Date.now()) / 86400e3);
+const secState = () => { const e = $('#h-sec'), on = tls === null ? location.protocol === 'https:' : !!tls, i = cert && cert.info;
 	e.textContent = on ? '🔒 TLS' : '🔓 HTTP'; e.className = 'meta sec ' + (on ? 'ok' : LOOPBACK ? '' : 'warn');
-	e.title = on ? 'TLS-encrypted connection' : LOOPBACK ? 'plain HTTP on loopback' : 'plain HTTP on a non-loopback address — credentials and settings travel unencrypted'; };
+	e.title = (on ? 'TLS-encrypted connection' : LOOPBACK ? 'plain HTTP on loopback' : 'plain HTTP on a non-loopback address — credentials and settings travel unencrypted')
+		+ (cert ? `\ncertificate: ${cert.mode}` + (i ? ` · expires ${i.not_after.slice(0, 10)}${dLeft(i.not_after) < 30 ? ' (soon!)' : ''}` : '') : '') + '\nclick for the certificate panel'; };
 let hist = [], lastTs = 0, fanMetric = 'rpm';
 const critOf = name => { const c = cfg && chList().find(x => x.name === name); return c && +c.critical > 0 ? +c.critical : null; };
 const chList = () => (cfg && (cfg.channel || cfg.channels)) || [];
@@ -595,11 +618,53 @@ $('#s-file').addEventListener('change', async () => {
 	} catch (e) { toast(e.message, 'err', 15000); }
 });
 
+// certificate panel (GET /api/tls is public, POSTs need CSRF + auth)
+const dlg = $('#cert'), ctNotice = (msg, kind) => { const n = $('#ct-notice'); n.hidden = !msg; n.className = 'notice ' + (kind || ''); n.textContent = msg || ''; };
+const ctForm = id => { for (const f of ['#ct-regen-f', '#ct-upload-f']) $(f).hidden = f !== id || !$(f).hidden; };
+async function loadCert() { try { cert = (await api('/api/tls')).body; } catch (e) { cert = null; if (e.status !== 501) toast('certificate: ' + e.message, 'err'); } secState(); }
+function renderCert() {
+	const c = cert || { mode: 'off' }, i = c.info, b = $('#ct-mode');
+	b.textContent = c.mode === 'file' ? 'own certificate' : c.mode === 'auto' ? 'automatic' : 'TLS off'; b.className = 'badge ' + (c.mode === 'auto' ? 'ok' : c.mode);
+	$('#ct-off').hidden = !!i; $('#ct-body').hidden = !i; $('#ct-reset').hidden = c.mode !== 'file'; $('#ct-regen').hidden = c.mode === 'file';
+	if (!i) return;
+	const kv = clear($('#ct-kv')), left = dLeft(i.not_after), until = h('dd', { class: left < 0 ? 'expired' : left < 30 ? 'soon' : '' }, i.not_after.slice(0, 10) + (left < 0 ? ' — expired' : left < 30 ? ` — in ${left} days` : ''));
+	for (const [k, v] of [['subject', i.subject], ['issuer', i.issuer], ['valid from', i.not_before.slice(0, 10)], ['valid until', until], ['key', i.key_algo + (i.is_ca ? ' · CA flag (trust anchor)' : '')], ['serial', h('dd', { class: 'mono' }, i.serial_hex)]])
+		kv.append(h('dt', null, k), v.nodeType ? v : h('dd', null, v));
+	const san = clear($('#ct-san')); for (const n of i.dns_names) san.append(h('span', null, n)); for (const n of i.ips) san.append(h('span', { class: 'ip' }, n));
+	if (!i.dns_names.length && !i.ips.length) san.append(h('span', { class: 'empty' }, 'no SANs'));
+	$('#ct-fp').textContent = i.fingerprint_sha256;
+	const miss = (c.hosts || []).filter(x => !i.dns_names.includes(x) && !i.ips.includes(x));
+	if (miss.length && c.mode === 'file') ctNotice('Not in this certificate: ' + miss.join(', ') + ' (browsers will warn)', 'warn');
+}
+async function openCert() { showS(false); ctNotice(''); $('#ct-regen-f').hidden = $('#ct-upload-f').hidden = true; await loadCert(); renderCert(); if (!dlg.open) dlg.showModal(); }
+$('#h-sec').addEventListener('click', openCert); $('#s-cert').addEventListener('click', openCert);
+$('#ct-close').addEventListener('click', () => dlg.close());
+dlg.addEventListener('click', ev => { if (ev.target === dlg) dlg.close(); });
+$$('#cert [data-cancel]').forEach(b => b.addEventListener('click', () => { b.closest('form').hidden = true; }));
+$('#ct-crt').addEventListener('click', () => act(() => download('/api/tls/cert.crt', 'n5-fangov.crt')));
+$('#ct-cer').addEventListener('click', () => act(() => download('/api/tls/cert.cer', 'n5-fangov.cer')));
+$('#ct-copy').addEventListener('click', () => navigator.clipboard.writeText($('#ct-fp').textContent).then(() => toast('Fingerprint copied', 'ok'), () => toast('Clipboard blocked — select the text', 'warn')));
+$('#ct-regen').addEventListener('click', () => { $('#ct-newkey').checked = false; ctForm('#ct-regen-f'); });
+$('#ct-upload').addEventListener('click', () => ctForm('#ct-upload-f'));
+const ctDone = (r, msg) => { cert = Object.assign(cert || {}, { mode: r.body.mode || cert.mode, info: r.body.info }); renderCert(); secState();
+	const w = r.body.warning ? [r.body.warning] : r.body.warnings || []; ctNotice(w.join('\n'), 'warn'); toast(msg + (w.length ? ' (warnings)' : ''), w.length ? 'warn' : 'ok', 8000); };
+$('#ct-regen-f').addEventListener('submit', async ev => { ev.preventDefault(); const nk = $('#ct-newkey').checked;
+	if (nk && !confirm('Generate a new private key?\nEvery browser and OS store that trusts the current certificate must import the new one.')) return;
+	const r = await act(() => api('/api/tls/regenerate', { method: 'POST', json: { keep_key: !nk } })); if (!r) return; $('#ct-regen-f').hidden = true; ctDone(r, 'Certificate regenerated'); });
+for (const [f, ta] of [['#ct-cfile', '#ct-cpem'], ['#ct-kfile', '#ct-kpem']]) $(f).addEventListener('change', async ev => { const x = ev.target.files[0]; if (!x) return;
+	if (x.size > 65536) return toast(x.name + ': larger than 64 KiB', 'err'); $(ta).value = await x.text(); });
+$('#ct-upload-f').addEventListener('submit', async ev => { ev.preventDefault(); const c = $('#ct-cpem').value.trim(), k = $('#ct-kpem').value.trim();
+	if (!/BEGIN CERTIFICATE/.test(c) || !/PRIVATE KEY/.test(k)) return ctNotice('Need a PEM CERTIFICATE block and a PRIVATE KEY block.', 'err');
+	const r = await act(() => api('/api/tls/upload', { method: 'POST', json: { cert: c, key: k } })); if (!r) return;
+	$('#ct-upload-f').hidden = true; for (const id of ['#ct-cpem', '#ct-kpem', '#ct-cfile', '#ct-kfile']) $(id).value = ''; ctDone(r, 'Own certificate installed'); });
+$('#ct-reset').addEventListener('click', async () => { if (!confirm('Back to the automatic certificate? The uploaded pair is deleted.')) return;
+	const r = await act(() => api('/api/tls/reset', { method: 'POST' })); if (r) ctDone(r, 'Automatic certificate active'); });
+
 // boot
 (async () => {
 	if (MOCK) toast('Mock mode', 'warn', 8000);
 	api('/api/profiles').then(r => { profiles = Array.isArray(r.body) ? r.body : r.body.profiles || []; renderHeader(); if (snap) renderCards(); }).catch(() => {});
-	secState();
+	secState(); loadCert();
 	api('/api/version').then(r => { version = typeof r.body === 'string' ? r.body.trim() : r.body.version || ''; if (typeof r.body.tls === 'boolean') tls = r.body.tls; secState(); renderHeader(); }).catch(() => {});
 	await loadConfig();
 	if (document.hidden) { poll(); loadHistory(); }
