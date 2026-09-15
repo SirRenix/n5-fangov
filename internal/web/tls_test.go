@@ -3,13 +3,21 @@ package web
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"io"
+	"math/big"
 	"mime/multipart"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -28,6 +36,8 @@ type fakeTLSMgr struct {
 	uploadErr error
 	warns     []string
 	resets    int
+	notKept   bool // Regenerate(true) could not reuse the key (L2)
+	fallback  bool // M3: file pair unreadable, auto served
 }
 
 func newFakeTLSMgr(mode string) *fakeTLSMgr {
@@ -47,17 +57,18 @@ func (m *fakeTLSMgr) ExportPEM() ([]byte, error) {
 	return []byte("-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n"), nil
 }
 func (m *fakeTLSMgr) ExportDER() ([]byte, error) { return []byte{0x30, 0x82, 0x01, 0x02}, nil }
-func (m *fakeTLSMgr) Regenerate(keepKey bool) (tlscert.InfoData, error) {
+func (m *fakeTLSMgr) Regenerate(keepKey bool) (tlscert.InfoData, bool, error) {
 	if m.regenErr != nil {
-		return tlscert.InfoData{}, m.regenErr
+		return tlscert.InfoData{}, false, m.regenErr
 	}
 	if m.mode == "file" {
-		return tlscert.InfoData{}, ErrTLSFileMode
+		return tlscert.InfoData{}, false, ErrTLSFileMode
 	}
 	m.regen = append(m.regen, keepKey)
 	m.info.SerialHex = "NEW"
-	return m.info, nil
+	return m.info, keepKey && !m.notKept, nil
 }
+func (m *fakeTLSMgr) Fallback() bool { return m.fallback }
 func (m *fakeTLSMgr) Upload(certPEM, keyPEM []byte) (tlscert.InfoData, []string, error) {
 	if m.uploadErr != nil {
 		return tlscert.InfoData{}, nil, m.uploadErr
@@ -101,6 +112,28 @@ func TestTLSInfoAndDownloads(t *testing.T) {
 	if !strings.Contains(r.body, `"not_after":"2036-09-13T00:00:00Z"`) || !strings.Contains(r.body, `"dns_names":["n5.lan","localhost"]`) {
 		t.Errorf("info JSON shape: %s", r.body)
 	}
+	if !strings.Contains(r.body, `"warnings":[]`) || !strings.Contains(r.body, `"fallback":false`) {
+		t.Errorf("warnings/fallback defaults: %s", r.body)
+	}
+	// L4: warnings are computed server-side against TLSHosts (loopback
+	// excluded); M3: fallback is exposed
+	m.fallback = true
+	e.withDeps(t, AuthConfig{Mode: "basic", User: "admin", PasswordHash: PasswordHash("admin", "pw")}, func(d *Deps) {
+		d.TLSMgr = m
+		d.TLSHosts = []string{"192.0.2.20", "n5.lan", "other.lan:8010", "localhost", "127.0.0.1", "::1"}
+	})
+	r = e.do(t, "GET", "/api/tls", "", nil)
+	wantCode(t, r, 200)
+	if !strings.Contains(r.body, `"warnings":["SAN list lacks host other.lan"]`) || !strings.Contains(r.body, `"fallback":true`) {
+		t.Errorf("warnings/fallback: %s", r.body)
+	}
+	m.fallback = false
+	m.info.NotAfter = time.Now().Add(3 * 24 * time.Hour)
+	r = e.do(t, "GET", "/api/tls", "", nil)
+	if !strings.Contains(r.body, `"warnings":["certificate expires in 3 days (`) {
+		t.Errorf("expiry warning: %s", r.body)
+	}
+	m.info.NotAfter = time.Date(2036, 9, 13, 0, 0, 0, 0, time.UTC)
 	r = e.do(t, "GET", "/api/tls/cert.crt", "", nil)
 	name := wantAttachment(t, r, "application/x-pem-file", `^n5-fangov-[A-Za-z0-9.-]+\.crt$`)
 	if !strings.HasPrefix(r.body, "-----BEGIN CERTIFICATE-----") {
@@ -253,6 +286,15 @@ func TestTLSRegenerateKeepKey(t *testing.T) {
 		t.Errorf("keep flags = %v", m.regen)
 	}
 	wantError(t, e.do(t, "POST", "/api/tls/regenerate", `{"keepkey":1}`, hdr), 400, "invalid JSON")
+	// L2: keep requested but the stored key was unusable → kept=false + warning
+	m.notKept = true
+	r = e.do(t, "POST", "/api/tls/regenerate", `{"keep_key":true}`, hdr)
+	wantCode(t, r, 200)
+	decode(t, r.body, &out)
+	if w, _ := out["warning"].(string); !strings.Contains(w, "could not be reused") || out["kept"] != false || out["keep_key"] != true {
+		t.Errorf("not-kept regenerate: %s", r.body)
+	}
+	m.notKept = false
 	m.mode = "file"
 	wantError(t, e.do(t, "POST", "/api/tls/regenerate", "", csrf), 409, "custom certificate")
 	m.mode = "auto"
@@ -322,6 +364,37 @@ func TestServeTLSStoreHotSwap(t *testing.T) {
 	if err := json.Unmarshal(body, &v); err != nil || v["tls"] != true {
 		t.Errorf("version over swapped TLS = %s", body)
 	}
+	// L1: a client with a session cache that connected before a swap must
+	// not resume the old session afterwards (no tickets are issued), so it
+	// too sees the new certificate.
+	third, err := tlscert.Regenerate(tlscert.Options{Dir: dir, Hosts: []string{"127.0.0.1", "third.example"}, Logf: quiet})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := tls.NewLRUClientSessionCache(4)
+	resuming := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true, ClientSessionCache: cache}, DisableKeepAlives: true}}
+	res, err = resuming.Get(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, res.Body)
+	res.Body.Close()
+	if !bytes.Equal(res.TLS.PeerCertificates[0].Raw, second.Leaf.Raw) {
+		t.Fatal("cache-priming connection got the wrong certificate")
+	}
+	store.Set(third)
+	res, err = resuming.Get(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, res.Body)
+	res.Body.Close()
+	if res.TLS.DidResume {
+		t.Error("session resumed across a certificate swap (session tickets must be disabled)")
+	}
+	if !bytes.Equal(res.TLS.PeerCertificates[0].Raw, third.Leaf.Raw) {
+		t.Error("client with a session cache did not see the swapped certificate")
+	}
 	cancel()
 	select {
 	case err := <-errc:
@@ -330,5 +403,121 @@ func TestServeTLSStoreHotSwap(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("ServeTLSStore did not stop")
+	}
+}
+
+// testLeafPEM builds a self-signed P-256 certificate PEM for the given
+// SANs (the fake manager never parses it; the handler's host guard does).
+func testLeafPEM(t *testing.T, hosts ...string) string {
+	t.Helper()
+	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(3), Subject: pkix.Name{CommonName: "guard"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(24 * time.Hour)}
+	for _, h := range hosts {
+		if ip := net.ParseIP(h); ip != nil {
+			tmpl.IPAddresses = append(tmpl.IPAddresses, ip)
+		} else {
+			tmpl.DNSNames = append(tmpl.DNSNames, h)
+		}
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &k.PublicKey, k)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
+}
+
+// TestTLSUploadHostGuard (M4): over TLS, an upload whose leaf does not
+// cover the name the request came in by (SNI, else Host) is refused with
+// 400 + force_required; force=true (JSON or multipart) or a covering leaf
+// passes; over plain HTTP (unix socket, reverse proxy) there is no guard.
+func TestTLSUploadHostGuard(t *testing.T) {
+	m := newFakeTLSMgr("auto")
+	e := newEnv(t, AuthConfig{})
+	e.withDeps(t, AuthConfig{}, func(d *Deps) { d.TLSMgr = m; d.TLSHosts = []string{"127.0.0.1"}; d.AllowedHosts = []string{"n5.lan"} })
+	ts := httptest.NewUnstartedServer(e.srv.Handler())
+	ts.StartTLS()
+	t.Cleanup(ts.Close)
+	key := "-----BEGIN PRIVATE KEY-----\nB\n-----END PRIVATE KEY-----\n"
+	post := func(t *testing.T, sni, ctype, body string) (int, string) {
+		t.Helper()
+		tr := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true, ServerName: sni}, DisableKeepAlives: true}
+		req, _ := http.NewRequest("POST", ts.URL+"/api/tls/upload", strings.NewReader(body))
+		req.Header.Set(CSRFHeader, "1")
+		req.Header.Set("Content-Type", ctype)
+		res, err := (&http.Client{Transport: tr}).Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		b, _ := io.ReadAll(res.Body)
+		return res.StatusCode, string(b)
+	}
+	jsonBody := func(cert string, force bool) string {
+		b, _ := json.Marshal(map[string]any{"cert": cert, "key": key, "force": force})
+		return string(b)
+	}
+	foreign := testLeafPEM(t, "fans.example")
+	// reached by IP (no SNI): a leaf without that IP SAN is refused
+	code, body := post(t, "", "application/json", jsonBody(foreign, false))
+	if code != 400 || !strings.Contains(body, `"force_required":true`) || !strings.Contains(body, `"host":"127.0.0.1"`) || !strings.Contains(body, "HSTS") {
+		t.Errorf("uncovered IP: %d %s", code, body)
+	}
+	if len(m.uploads) != 0 {
+		t.Fatal("refused upload reached the manager")
+	}
+	// force=true passes it through
+	if code, body = post(t, "", "application/json", jsonBody(foreign, true)); code != 200 || len(m.uploads) != 1 {
+		t.Errorf("forced upload: %d %s", code, body)
+	}
+	// a leaf covering the IP passes without force
+	if code, body = post(t, "", "application/json", jsonBody(testLeafPEM(t, "fans.example", "127.0.0.1"), false)); code != 200 || len(m.uploads) != 2 {
+		t.Errorf("covering upload: %d %s", code, body)
+	}
+	// SNI names the host: n5.lan covered / not covered
+	if code, body = post(t, "n5.lan", "application/json", jsonBody(testLeafPEM(t, "n5.lan"), false)); code != 200 {
+		t.Errorf("SNI covered: %d %s", code, body)
+	}
+	if code, body = post(t, "n5.lan", "application/json", jsonBody(testLeafPEM(t, "other.lan"), false)); code != 400 || !strings.Contains(body, `"host":"n5.lan"`) {
+		t.Errorf("SNI uncovered: %d %s", code, body)
+	}
+	// multipart with force field
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	mw.WriteField("cert", foreign)
+	mw.WriteField("key", key)
+	mw.Close()
+	if code, body = post(t, "", mw.FormDataContentType(), buf.String()); code != 400 {
+		t.Errorf("multipart uncovered: %d %s", code, body)
+	}
+	buf.Reset()
+	mw = multipart.NewWriter(&buf)
+	mw.WriteField("cert", foreign)
+	mw.WriteField("key", key)
+	mw.WriteField("force", "true")
+	mw.Close()
+	if code, body = post(t, "", mw.FormDataContentType(), buf.String()); code != 200 {
+		t.Errorf("multipart forced: %d %s", code, body)
+	}
+	// an unparsable certificate is left to the manager's validation (400 from there)
+	m.uploadErr = ValidationError{errors.New("certificate: no PEM CERTIFICATE block")}
+	if code, body = post(t, "", "application/json", jsonBody("junk", false)); code != 400 || strings.Contains(body, "force_required") {
+		t.Errorf("junk over TLS: %d %s", code, body)
+	}
+	m.uploadErr = nil
+	// plain HTTP: no guard
+	n := len(m.uploads)
+	r := e.do(t, "POST", "/api/tls/upload", jsonBody(foreign, false), map[string]string{CSRFHeader: "1", "Content-Type": "application/json"})
+	if r.code != 200 || len(m.uploads) != n+1 {
+		t.Errorf("plain HTTP upload guarded: %d %s", r.code, r.body)
+	}
+	e.logMu.Lock()
+	joined := strings.Join(e.logged, "\n")
+	e.logMu.Unlock()
+	if !strings.Contains(joined, `web: tls upload by 127.0.0.1 ("CN=uploaded"`) {
+		t.Errorf("L7 subject not quoted in audit line: %q", joined)
 	}
 }

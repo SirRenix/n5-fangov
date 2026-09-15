@@ -85,6 +85,9 @@ type certClient struct {
 var errNoCertYet = errors.New("no certificate yet (it is created at the first start with tls = \"auto\")")
 
 // offline builds the manager from the config file for the no-daemon path.
+// The manager comes back even when the current pair does not load (the
+// error says why): info and export need a loaded pair, reset, upload and
+// regen do not — they are the repair (M3). offlineRepair is their variant.
 func (c certClient) offline() (*tlsManager, error) {
 	cfg, warns, _ := loadConfig(c.cfgPath)
 	for _, w := range warns {
@@ -111,6 +114,7 @@ type tlsResp struct {
 	Hosts    []string          `json:"hosts"`
 	Warnings []string          `json:"warnings"`
 	Warning  string            `json:"warning"`
+	Fallback bool              `json:"fallback"`
 }
 
 func (c certClient) info() int {
@@ -123,6 +127,10 @@ func (c certClient) info() int {
 			return exitOK
 		}
 		printCertInfo(resp.Mode, "daemon", *resp.Info, resp.Hosts)
+		printWarnings(resp.Warnings)
+		if resp.Fallback {
+			fmt.Println("note: the configured file pair could not be loaded; the automatic certificate is served (see the daemon log). Repair: cert upload CERT KEY or cert reset")
+		}
 		return exitOK
 	case !errors.Is(err, errNoDaemon):
 		fmt.Fprintln(os.Stderr, "cert info:", err)
@@ -181,6 +189,17 @@ func (c certClient) export(der bool, file string) int {
 	return exitOK
 }
 
+// offlineRepair is offline for the commands that replace the pair: a pair
+// that cannot be loaded is reported as a note, not an error, and the
+// manager is returned for the repair.
+func (c certClient) offlineRepair(cmd string) *tlsManager {
+	m, err := c.offline()
+	if err != nil && !errors.Is(err, errNoCertYet) {
+		fmt.Fprintf(os.Stderr, "%s: note: current certificate not loadable (%v); continuing\n", cmd, err)
+	}
+	return m
+}
+
 func (c certClient) regen(keepKey bool) int {
 	var resp tlsResp
 	_, err := newAPI(c.dir).doRaw("POST", "/api/tls/regenerate", "application/json", []byte(fmt.Sprintf(`{"keep_key":%v}`, keepKey)), &resp)
@@ -198,19 +217,18 @@ func (c certClient) regen(keepKey bool) int {
 		fmt.Fprintln(os.Stderr, "cert regen:", err)
 		return exitFail
 	}
-	m, err := c.offline()
-	if err != nil && !errors.Is(err, errNoCertYet) {
-		fmt.Fprintln(os.Stderr, "cert regen:", err)
-		return exitFail
-	}
-	info, err := m.Regenerate(keepKey)
+	m := c.offlineRepair("cert regen")
+	info, kept, err := m.Regenerate(keepKey)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "cert regen:", err)
 		return exitFail
 	}
 	fmt.Printf("new certificate in %s\napply with:  systemctl restart n5-fangov\n", m.dir)
-	if !keepKey {
+	switch {
+	case !keepKey:
 		fmt.Println("note: new private key — download and trust the certificate again where it was imported")
+	case !kept:
+		fmt.Println("note: the stored private key could not be reused, a new pair was generated — download and trust the certificate again where it was imported")
 	}
 	printCertInfo("auto", "files", info, m.hosts)
 	return exitOK
@@ -242,11 +260,7 @@ func (c certClient) upload(certFile, keyFile string) int {
 		fmt.Fprintln(os.Stderr, "cert upload:", err)
 		return exitFail
 	}
-	m, err := c.offline()
-	if err != nil && !errors.Is(err, errNoCertYet) {
-		fmt.Fprintln(os.Stderr, "cert upload:", err)
-		return exitFail
-	}
+	m := c.offlineRepair("cert upload")
 	if m.Mode() == "off" {
 		fmt.Fprintln(os.Stderr, "cert upload: tls is off in", c.cfgPath)
 		return exitFail
@@ -276,11 +290,7 @@ func (c certClient) reset() int {
 		fmt.Fprintln(os.Stderr, "cert reset:", err)
 		return exitFail
 	}
-	m, err := c.offline()
-	if err != nil && !errors.Is(err, errNoCertYet) {
-		fmt.Fprintln(os.Stderr, "cert reset:", err)
-		return exitFail
-	}
+	m := c.offlineRepair("cert reset")
 	if m.Mode() == "off" {
 		fmt.Fprintln(os.Stderr, "cert reset: tls is off in", c.cfgPath)
 		return exitFail
@@ -313,7 +323,7 @@ func printCertInfo(mode, source string, i tlscert.InfoData, hosts []string) {
 	case left < 0:
 		expiry += "  EXPIRED"
 	case left < tlscert.ExpiresSoon:
-		expiry += fmt.Sprintf("  (expires in %d days)", int(left.Hours()/24))
+		expiry += fmt.Sprintf("  (expires in %d days)", tlscert.DaysLeft(i.NotAfter, time.Now()))
 	}
 	fmt.Printf("valid:        %s .. %s\n", i.NotBefore.Format("2006-01-02"), expiry)
 	ca := ""

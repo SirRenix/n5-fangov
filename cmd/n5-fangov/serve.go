@@ -118,12 +118,14 @@ func cmdServe(args []string) int {
 	// rule "non-loopback is never plain HTTP" is re-applied to the override.
 	wspec := webOf(cfg)
 	addr := wspec.Listen
+	modeOverridden := false // the effective tls mode differs from the file's (M2: the manager must not pin it)
 	if *listen != "" {
 		addr = *listen
 		wspec.Listen = addr
 		if addr != "none" && !isLoopbackListen(addr) && wspec.TLS == "off" {
 			log.Printf("web: --listen %s is not loopback, tls \"off\" replaced by \"auto\"", addr)
 			wspec.TLS = "auto"
+			modeOverridden = true
 		}
 	}
 	if addr == "none" {
@@ -137,8 +139,9 @@ func cmdServe(args []string) int {
 	useTLS := false
 	if addr == "" {
 		tlsMgr.mode = "off" // no TCP listener: nothing to certify, /api/tls says so
+		modeOverridden = modeOverridden || wspec.TLS != "off"
 	} else {
-		certPath, err := tlsMgr.load(true)
+		certPath, fellBack, err := tlsMgr.loadForServe()
 		switch {
 		case err != nil:
 			// No plain-HTTP fallback: a LAN listener without TLS would carry
@@ -146,6 +149,15 @@ func cmdServe(args []string) int {
 			log.Printf("web: TLS (%s): %v — web UI disabled, the CLI socket still works", wspec.TLS, err)
 			sendAlertCooled(*rdir, alerter, "web", fmt.Sprintf("web UI disabled: TLS (%s) could not be set up on %s: %v", wspec.TLS, addr, err))
 			addr = ""
+		case fellBack != nil:
+			// M3: the configured pair is unreadable or unusable; the listener
+			// stays up on the automatic certificate so the panel (or `cert
+			// reset`/`cert upload`) can repair it. The config keeps tls = "file".
+			log.Printf("web: TLS file pair %s / %s unusable: %v — FALLBACK to the automatic certificate %s (mode %q); fix with the certificate panel, `n5-fangov cert upload` or `cert reset`",
+				wspec.CertFile, wspec.KeyFile, fellBack, certPath, modeFallback)
+			sendAlertCooled(*rdir, alerter, "tls", fmt.Sprintf("custom certificate unreadable, serving the automatic certificate\n%s / %s: %v\nThe dashboard on %s stays up with the self-signed certificate %s; a browser that does not trust that one refuses the LAN name under HSTS — reach the dashboard by IP or import the certificate (n5-fangov cert export). Repair: certificate panel, `n5-fangov cert upload CERT KEY` or `n5-fangov cert reset`.",
+				wspec.CertFile, wspec.KeyFile, fellBack, addr, certPath))
+			useTLS = true
 		case wspec.TLS == "auto":
 			log.Printf("web: TLS auto, certificate %s (download and trust it from the dashboard or: n5-fangov cert export)", certPath)
 			useTLS = true
@@ -157,6 +169,9 @@ func cmdServe(args []string) int {
 			useTLS = true
 		}
 	}
+	if modeOverridden {
+		tlsMgr.ownsConfig = false
+	}
 
 	ws := newWebServer(webDeps{
 		Service:    ctrl,
@@ -166,10 +181,11 @@ func cmdServe(args []string) int {
 		Sysfs:      hw,
 		Web:        wspec,
 		Log:        store,
-		Bundle:     fileBundle{cfgPath: *cfgPath, presetDir: defaultPresetDir, reload: ctrl.Reload},
+		Bundle:     fileBundle{cfgPath: *cfgPath, presetDir: defaultPresetDir, reload: ctrl.Reload, pin: tlsMgr.pinConfig},
 		TLS:        useTLS,
 		TLSMgr:     tlsMgr,
 		TLSHosts:   hosts,
+		ConfigPin:  tlsMgr.pinConfig,
 	})
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)

@@ -144,11 +144,12 @@
       <div class="act"><button class="btn primary" type="submit">Regenerate now</button><button class="btn" type="button" data-cancel>Cancel</button></div>
     </form>
     <form class="sub" id="ct-upload-f" hidden>
-      <p class="hint">PEM certificate (chain allowed) and its private key. The pair is validated, stored under <code>/etc/n5-fangov/tls/</code> and served immediately; <code>[web].tls</code> becomes <code>file</code>.</p>
+      <p class="hint">PEM certificate (chain allowed) and its private key. The pair is validated (key type usable by this server, a test handshake, not expired), stored under <code>/etc/n5-fangov/tls/</code> and served immediately; <code>[web].tls</code> becomes <code>file</code>. Encrypted keys are refused — decrypt with openssl first.</p>
       <label>Certificate <input type="file" id="ct-cfile" accept=".pem,.crt,.cer,.txt"></label>
-      <textarea id="ct-cpem" rows="3" placeholder="-----BEGIN CERTIFICATE-----" spellcheck="false"></textarea>
+      <textarea id="ct-cpem" rows="3" placeholder="-----BEGIN CERTIFICATE-----" spellcheck="false" autocomplete="off"></textarea>
       <label>Private key <input type="file" id="ct-kfile" accept=".pem,.key,.txt"></label>
-      <textarea id="ct-kpem" rows="3" placeholder="-----BEGIN PRIVATE KEY-----" spellcheck="false"></textarea>
+      <textarea id="ct-kpem" rows="3" placeholder="-----BEGIN PRIVATE KEY-----" spellcheck="false" autocomplete="off"></textarea>
+      <label class="chk warn" id="ct-force-l" hidden><input type="checkbox" id="ct-force"> <span>install anyway — the certificate does not cover <b id="ct-force-h"></b>, the name this session uses; under HSTS the browser will refuse the connection afterwards, so keep another covered name or the IP at hand</span></label>
       <div class="act"><button class="btn primary" type="submit">Upload and use</button><button class="btn" type="button" data-cancel>Cancel</button></div>
     </form>
     <details class="how">

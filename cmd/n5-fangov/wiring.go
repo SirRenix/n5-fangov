@@ -414,6 +414,10 @@ type webDeps struct {
 	TLS        bool        // the TCP listener serves HTTPS (HSTS)
 	TLSMgr     *tlsManager // certificate manager behind /api/tls (nil: 501)
 	TLSHosts   []string    // SAN hosts reported by GET /api/tls
+	// ConfigPin is applied to every config text written through the API
+	// (PUT /api/config, preset apply; the bundle carries its own): the
+	// certificate manager re-applies its [web] tls keys (M2). nil: none.
+	ConfigPin func(raw []byte) []byte
 }
 
 // logStore is the log read side (DESIGN v0.2 "Log store"): implemented by
@@ -489,12 +493,12 @@ func newWebServer(d webDeps) webServer {
 	}
 	deps := web.Deps{
 		Service: d.Service,
-		Config:  fileConfigStore{path: d.ConfigPath},
+		Config:  fileConfigStore{path: d.ConfigPath, pin: d.ConfigPin},
 		Validate: func(raw []byte) ([]string, error) {
 			_, warns, err := config.Parse(raw)
 			return warningStrings(warns), err
 		},
-		Presets:      dirPresetStore{dir: d.PresetDir, cfgPath: d.ConfigPath, svc: d.Service},
+		Presets:      dirPresetStore{dir: d.PresetDir, cfgPath: d.ConfigPath, svc: d.Service, pin: d.ConfigPin},
 		Profiles:     profiles,
 		Version:      version.Version,
 		Auth:         web.AuthConfig{Mode: d.Web.Auth, User: d.Web.User, PasswordHash: d.Web.PasswordHash},
@@ -559,8 +563,13 @@ func errRestartRequired() error        { return control.ErrRestartRequired }
 // Config text helpers for bundles and setup.
 func defaultConfigRaw() []byte { return config.Marshal(config.Default()) }
 
-// fileConfigStore backs GET/PUT /api/config with the TOML file.
-type fileConfigStore struct{ path string }
+// fileConfigStore backs GET/PUT /api/config with the TOML file. pin (M2)
+// is applied to the text before it is written: the certificate manager
+// owns [web] tls/cert_file/key_file, a stale editor copy cannot revert them.
+type fileConfigStore struct {
+	path string
+	pin  func([]byte) []byte
+}
 
 // Raw returns the current file content; a missing file reads as the
 // built-in defaults so the editor has something to start from.
@@ -579,6 +588,9 @@ func (s fileConfigStore) Save(raw []byte) error {
 	_, warns, err := config.Parse(raw)
 	if err != nil {
 		return err
+	}
+	if s.pin != nil {
+		raw = s.pin(raw)
 	}
 	for _, w := range warns {
 		log.Printf("config save: %s", w)
@@ -643,6 +655,7 @@ type dirPresetStore struct {
 	dir     string
 	cfgPath string
 	svc     control.Service
+	pin     func([]byte) []byte // M2, see fileConfigStore
 }
 
 // List returns every preset with the channel names it contains.
@@ -684,6 +697,9 @@ func (s dirPresetStore) Apply(name string) error {
 	}
 	cfg.Channels = config.CloneChannels(chans)
 	raw := config.Marshal(cfg)
+	if s.pin != nil {
+		raw = s.pin(raw)
+	}
 	if err := config.Save(s.cfgPath, raw); err != nil {
 		return err
 	}

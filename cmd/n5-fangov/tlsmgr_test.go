@@ -26,7 +26,13 @@ const mgrTOML = "# operator notes stay\n[daemon]\ninterval = \"10s\"\n\n[web]\nl
 
 func testPair(t *testing.T, cn string, hosts ...string) (certPEM, keyPEM []byte) {
 	t.Helper()
-	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	return testPairCurve(t, elliptic.P256(), cn, hosts...)
+}
+
+// testPairCurve is testPair on an explicit curve (P-224 for the M1 tests).
+func testPairCurve(t *testing.T, curve elliptic.Curve, cn string, hosts ...string) (certPEM, keyPEM []byte) {
+	t.Helper()
+	k, err := ecdsa.GenerateKey(curve, rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,9 +96,12 @@ func TestTLSManagerRegenerateKeepsKey(t *testing.T) {
 		return b
 	}
 	k0 := pubKey()
-	re, err := m.Regenerate(true)
+	re, kept, err := m.Regenerate(true)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !kept {
+		t.Error("Regenerate(keep) reported kept=false")
 	}
 	if re.SerialHex == info.SerialHex || pubOf(re) == pubOf(info) {
 		t.Error("Regenerate(keep) did not issue a new certificate")
@@ -108,9 +117,12 @@ func TestTLSManagerRegenerateKeepsKey(t *testing.T) {
 	if err != nil || tlscert.Info(loaded).SerialHex != re.SerialHex {
 		t.Errorf("disk pair: %v %s", err, tlscert.Info(loaded).SerialHex)
 	}
-	fresh, err := m.Regenerate(false)
+	fresh, kept, err := m.Regenerate(false)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if kept {
+		t.Error("Regenerate(new key) reported kept=true")
 	}
 	if string(pubKey()) == string(k0) || fresh.SerialHex == re.SerialHex {
 		t.Error("Regenerate(new key) kept the key")
@@ -132,7 +144,7 @@ func TestTLSManagerRegenerateKeepsKey(t *testing.T) {
 	if _, err := m.ExportPEM(); !errors.Is(err, web.ErrTLSOff) {
 		t.Errorf("off ExportPEM = %v", err)
 	}
-	if _, err := m.Regenerate(true); !errors.Is(err, web.ErrTLSOff) {
+	if _, _, err := m.Regenerate(true); !errors.Is(err, web.ErrTLSOff) {
 		t.Errorf("off Regenerate = %v", err)
 	}
 	if _, _, err := m.Upload(nil, nil); !errors.Is(err, web.ErrTLSOff) {
@@ -213,7 +225,7 @@ func TestTLSManagerUploadWritesConfig(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(m.dir, tlscert.CertFile)); err != nil {
 		t.Error("auto cert.pem removed by upload")
 	}
-	if _, err := m.Regenerate(true); !errors.Is(err, web.ErrTLSFileMode) {
+	if _, _, err := m.Regenerate(true); !errors.Is(err, web.ErrTLSFileMode) {
 		t.Errorf("Regenerate in file mode = %v", err)
 	}
 	// a fresh manager from the written config loads the upload

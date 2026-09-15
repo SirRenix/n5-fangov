@@ -3,6 +3,7 @@ package tlscert
 import (
 	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/tls"
@@ -11,6 +12,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"os"
 	"strings"
@@ -123,30 +125,60 @@ func keyAlgo(pub any) string {
 // ValidatePair warns.
 const ExpiresSoon = 30 * 24 * time.Hour
 
+// ErrEncryptedKey: the key PEM is password-protected (PKCS#8 ENCRYPTED
+// PRIVATE KEY or a legacy "Proc-Type: 4,ENCRYPTED" block). The daemon has
+// no way to ask for the passphrase (L3).
+var ErrEncryptedKey = errors.New("encrypted private keys are not supported — decrypt with openssl first (openssl pkey -in key.pem -out key-plain.pem)")
+
 // ValidatePair checks an uploaded certificate/key pair before it is
-// stored: both must be PEM, the key must belong to the leaf, the leaf must
-// be within its validity period. Anything a browser would still accept
-// but the operator should know about comes back as warnings: a SAN list
-// that lacks one of hosts (the addresses the dashboard is reached by), an
-// expiry within ExpiresSoon, a weak key, a certificate without SANs.
+// stored: the certificate PEM must carry at least one CERTIFICATE block
+// (the leaf first, intermediates after it; other block types are
+// skipped), the key PEM one unencrypted PRIVATE KEY block (PKCS#8, PKCS#1
+// "RSA PRIVATE KEY" or SEC 1 "EC PRIVATE KEY"; "EC PARAMETERS" and the
+// like are skipped, an encrypted key is ErrEncryptedKey). The key must
+// belong to the leaf, the leaf must be within its validity period, and
+// the pair must survive a handshake against ServerConfig (M1): ECDSA on a
+// curve other than P-256/P-384/P-521 and RSA below 1024 bits are refused
+// before that with a clear message, since crypto/tls cannot sign with
+// them. Anything a browser would still accept but the operator should
+// know about comes back as warnings: a SAN list that lacks one of hosts
+// (the addresses the dashboard is reached by), an expiry within
+// ExpiresSoon, a weak key (RSA < 2048), a weak signature, a certificate
+// without SANs. The returned certificate carries the whole chain.
 func ValidatePair(certPEM, keyPEM []byte, hosts []string) (tls.Certificate, []string, error) {
-	if block, _ := pem.Decode(certPEM); block == nil || block.Type != "CERTIFICATE" {
+	certs := pemBlocks(certPEM, func(t string) bool { return t == "CERTIFICATE" })
+	if len(certs) == 0 {
 		return tls.Certificate{}, nil, errors.New("certificate: no PEM CERTIFICATE block")
 	}
-	if block, _ := pem.Decode(keyPEM); block == nil || !strings.Contains(block.Type, "PRIVATE KEY") {
+	var keyBlock *pem.Block
+	for _, b := range pemBlocks(keyPEM, func(t string) bool { return strings.HasSuffix(t, "PRIVATE KEY") }) {
+		if b.Type == "ENCRYPTED PRIVATE KEY" || strings.Contains(b.Headers["Proc-Type"], "ENCRYPTED") {
+			return tls.Certificate{}, nil, fmt.Errorf("key: %w", ErrEncryptedKey)
+		}
+		keyBlock = b
+		break
+	}
+	if keyBlock == nil {
 		return tls.Certificate{}, nil, errors.New("key: no PEM PRIVATE KEY block")
 	}
-	cert, err := tls.X509KeyPair(certPEM, keyPEM)
+	leaf, err := x509.ParseCertificate(certs[0].Bytes)
+	if err != nil {
+		return tls.Certificate{}, nil, fmt.Errorf("certificate: %w", err)
+	}
+	if err := usableKey(leaf.PublicKey); err != nil {
+		return tls.Certificate{}, nil, err
+	}
+	// Re-encoded: only the CERTIFICATE blocks and the one key block reach
+	// crypto/tls, whatever else the files carried.
+	var chain []byte
+	for _, b := range certs {
+		chain = append(chain, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: b.Bytes})...)
+	}
+	cert, err := tls.X509KeyPair(chain, pem.EncodeToMemory(&pem.Block{Type: keyBlock.Type, Bytes: keyBlock.Bytes}))
 	if err != nil {
 		return tls.Certificate{}, nil, fmt.Errorf("certificate/key pair: %w", err)
 	}
-	if cert.Leaf == nil {
-		cert.Leaf, err = x509.ParseCertificate(cert.Certificate[0])
-		if err != nil {
-			return tls.Certificate{}, nil, fmt.Errorf("certificate: %w", err)
-		}
-	}
-	leaf := cert.Leaf
+	cert.Leaf = leaf
 	now := time.Now()
 	if now.After(leaf.NotAfter) {
 		return tls.Certificate{}, nil, fmt.Errorf("certificate expired %s", leaf.NotAfter.UTC().Format("2006-01-02"))
@@ -154,10 +186,11 @@ func ValidatePair(certPEM, keyPEM []byte, hosts []string) (tls.Certificate, []st
 	if now.Before(leaf.NotBefore) {
 		return tls.Certificate{}, nil, fmt.Errorf("certificate not valid before %s", leaf.NotBefore.UTC().Format("2006-01-02"))
 	}
-	var warns []string
-	if left := leaf.NotAfter.Sub(now); left < ExpiresSoon {
-		warns = append(warns, fmt.Sprintf("certificate expires in %d days (%s)", int(left.Hours()/24), leaf.NotAfter.UTC().Format("2006-01-02")))
+	if err := CheckUsable(cert); err != nil {
+		return tls.Certificate{}, nil, err
 	}
+	var warns []string
+	warns = append(warns, expiryWarnings(leaf.NotAfter, now)...)
 	if len(leaf.DNSNames) == 0 && len(leaf.IPAddresses) == 0 {
 		warns = append(warns, "certificate has no subject alternative names; browsers ignore the CN and will not match any host")
 	}
@@ -170,20 +203,123 @@ func ValidatePair(certPEM, keyPEM []byte, hosts []string) (tls.Certificate, []st
 			warns = append(warns, "SAN list lacks host "+h)
 		}
 	}
-	switch k := leaf.PublicKey.(type) {
-	case *rsa.PublicKey:
-		if k.N.BitLen() < 2048 {
-			warns = append(warns, fmt.Sprintf("weak key: RSA %d bits (2048 or more expected)", k.N.BitLen()))
-		}
-	case *ecdsa.PublicKey:
-		if k.Curve.Params().BitSize < 256 {
-			warns = append(warns, "weak key: "+keyAlgo(k))
-		}
+	if k, ok := leaf.PublicKey.(*rsa.PublicKey); ok && k.N.BitLen() < 2048 {
+		warns = append(warns, fmt.Sprintf("weak key: RSA %d bits (2048 or more expected)", k.N.BitLen()))
 	}
 	if leaf.SignatureAlgorithm == x509.SHA1WithRSA || leaf.SignatureAlgorithm == x509.ECDSAWithSHA1 || leaf.SignatureAlgorithm == x509.MD5WithRSA {
 		warns = append(warns, "weak signature: "+leaf.SignatureAlgorithm.String()+" (browsers refuse it)")
 	}
 	return cert, warns, nil
+}
+
+// pemBlocks returns every PEM block of raw whose type satisfies want, in
+// order; undecodable trailing bytes end the scan.
+func pemBlocks(raw []byte, want func(string) bool) []*pem.Block {
+	var out []*pem.Block
+	for rest := raw; len(rest) > 0; {
+		var b *pem.Block
+		b, rest = pem.Decode(rest)
+		if b == nil {
+			break
+		}
+		if want(b.Type) {
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
+// usableKey refuses public keys crypto/tls has no signature scheme for
+// (M1): ECDSA outside P-256/P-384/P-521, RSA below 1024 bits (Go 1.24
+// refuses to sign with those). Everything else (including unknown types)
+// is left to CheckUsable.
+func usableKey(pub any) error {
+	switch k := pub.(type) {
+	case *ecdsa.PublicKey:
+		switch k.Curve {
+		case elliptic.P256(), elliptic.P384(), elliptic.P521():
+			return nil
+		}
+		return fmt.Errorf("certificate/key cannot be used by this server: %s (TLS supports ECDSA on P-256, P-384 and P-521 only)", keyAlgo(k))
+	case *rsa.PublicKey:
+		if k.N.BitLen() < 1024 {
+			return fmt.Errorf("certificate/key cannot be used by this server: RSA %d bits (1024 bits minimum, 2048 recommended)", k.N.BitLen())
+		}
+	}
+	return nil
+}
+
+// DaysLeft is the number of days until notAfter, rounded up (L5): a
+// certificate that expires tomorrow afternoon has "1 day" left, one that
+// expired an hour ago "0 days" (negative beyond a full day).
+func DaysLeft(notAfter, now time.Time) int {
+	return int(math.Ceil(notAfter.Sub(now).Hours() / 24))
+}
+
+// expiryWarnings: expired, or expires within ExpiresSoon.
+func expiryWarnings(notAfter, now time.Time) []string {
+	date := notAfter.UTC().Format("2006-01-02")
+	switch left := notAfter.Sub(now); {
+	case left < 0:
+		return []string{"certificate expired " + date}
+	case left < ExpiresSoon:
+		return []string{fmt.Sprintf("certificate expires in %d days (%s)", DaysLeft(notAfter, now), date)}
+	}
+	return nil
+}
+
+// Warnings computes the operator warnings for a served certificate the
+// way ValidatePair does, from its InfoData (GET /api/tls, L4): expiry
+// within ExpiresSoon or past, no SANs, and every host of hosts the SAN
+// list does not cover. localhost, 127.0.0.1 and ::1 are not checked — the
+// operator's own certificate is for the LAN name, and the loopback names
+// only matter to the automatic one, which always carries them.
+func Warnings(info InfoData, hosts []string, now time.Time) []string {
+	if info.FingerprintSHA256 == "" {
+		return nil
+	}
+	var warns []string
+	warns = append(warns, expiryWarnings(info.NotAfter, now)...)
+	if len(info.DNSNames) == 0 && len(info.IPs) == 0 {
+		warns = append(warns, "certificate has no subject alternative names; browsers ignore the CN and will not match any host")
+	}
+	for _, h := range MissingHosts(info, hosts) {
+		warns = append(warns, "SAN list lacks host "+h)
+	}
+	return warns
+}
+
+// MissingHosts returns the hosts (normalised, loopback and wildcards
+// skipped) that the SANs of info do not cover, with x509's own matching
+// rules (wildcards, IP literals).
+func MissingHosts(info InfoData, hosts []string) []string {
+	probe := &x509.Certificate{DNSNames: info.DNSNames}
+	for _, s := range info.IPs {
+		if ip := net.ParseIP(s); ip != nil {
+			probe.IPAddresses = append(probe.IPAddresses, ip)
+		}
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, h := range hosts {
+		h = normalizeHost(h)
+		if h == "" || seen[h] || isLoopbackName(h) {
+			continue
+		}
+		seen[h] = true
+		if probe.VerifyHostname(h) != nil {
+			out = append(out, h)
+		}
+	}
+	return out
+}
+
+func isLoopbackName(h string) bool {
+	if h == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && ip.IsLoopback()
 }
 
 // normalizeHost strips a port and IPv6 brackets and lowercases; "" for
@@ -223,15 +359,19 @@ func PEM(cert tls.Certificate) ([]byte, error) {
 
 // Reissue creates a new self-signed certificate for o with the private key
 // of the existing pair in o.Dir (the trust an operator imported stays
-// valid). Without a loadable key it behaves like Regenerate.
-func Reissue(o Options) (tls.Certificate, error) {
+// valid). Without a loadable key it behaves like Regenerate and reports
+// kept=false (L2), so the caller can tell the operator that the imported
+// trust is gone.
+func Reissue(o Options) (cert tls.Certificate, kept bool, err error) {
 	_, keyPath := Paths(o.Dir)
 	if key := loadECDSAKey(keyPath); key != nil {
 		o.logf("tlscert: reissuing certificate in %s, key unchanged", o.Dir)
-		return generate(o, key)
+		cert, err = generate(o, key)
+		return cert, err == nil, err
 	}
 	o.logf("tlscert: no reusable key in %s, generating a new pair", o.Dir)
-	return generate(o, nil)
+	cert, err = generate(o, nil)
+	return cert, false, err
 }
 
 // loadECDSAKey returns the P-256 key stored at path, nil when absent or

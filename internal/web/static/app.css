@@ -94,6 +94,7 @@ input[type=checkbox]{accent-color:var(--info)}
 .bar .grow input{flex:1}
 .bar .actions{margin-left:auto;display:flex;gap:8px}
 .chk{display:inline-flex;gap:6px;align-items:center;font-size:13px;color:var(--fg2)}
+.dlg .sub label.chk.warn{flex-wrap:nowrap;align-items:flex-start;color:var(--warn);line-height:1.35}.chk.warn input{margin-top:2px;flex:none}.chk.warn span{flex:1;min-width:0}
 .inline{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .inline label{display:flex;gap:8px;align-items:center;font-size:13px;color:var(--fg2)}
 .notice{background:color-mix(in srgb,var(--warn) 14%,var(--bg2));border:1px solid var(--warn);border-radius:var(--r);padding:8px 12px;font-size:13px;margin-bottom:12px}

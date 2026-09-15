@@ -41,6 +41,9 @@ type fileBundle struct {
 	cfgPath   string
 	presetDir string
 	reload    func(raw []byte) error
+	// pin (M2): applied to the imported config text before it is written
+	// and reloaded; the certificate manager keeps its [web] tls keys.
+	pin func(raw []byte) []byte
 }
 
 // Export builds the bundle. A missing config file exports the built-in
@@ -149,6 +152,9 @@ func (b fileBundle) Import(data []byte) (bool, error) {
 			return false, fmt.Errorf("preset %s: %w", name, err)
 		}
 		staged = append(staged, tmp)
+	}
+	if b.pin != nil {
+		raw = string(b.pin([]byte(raw)))
 	}
 	if err := saveConfig(b.cfgPath, []byte(raw)); err != nil {
 		unstage()

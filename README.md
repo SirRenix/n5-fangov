@@ -142,28 +142,65 @@ that form) but carries **name constraints** limited to exactly its own names and
   key unchanged`).
   - **Regenerate** reissues it for the current names. The private key is kept by default;
     the checkbox *generate a new key* makes a fresh pair — every store that trusts the old
-    certificate then has to import the new one, and the response says so.
+    certificate then has to import the new one, and the response says so. The same
+    warning appears when the key was meant to be kept but could not be read
+    (`"kept": false` in the response): a new pair was generated.
 - **`file`** — your own certificate. **Upload own certificate…** takes a PEM certificate
-  (chain allowed) and its key, as files or pasted text (64 KiB max). The pair is validated
-  first (PEM, key matches, not expired; warnings for a SAN list that misses a listen host,
-  an expiry within 30 days, a weak key), stored as
+  (chain allowed: leaf first, intermediates after it; other PEM blocks such as
+  `EC PARAMETERS` are skipped) and its key (PKCS#8, PKCS#1 `RSA PRIVATE KEY` or SEC 1
+  `EC PRIVATE KEY`), as files or pasted text (64 KiB max). The pair is validated first:
+  PEM, key matches, not expired, a key type this server can actually sign with (ECDSA
+  P-256/P-384/P-521, RSA ≥ 1024, Ed25519 — anything else is refused, as is an encrypted
+  key: decrypt it with `openssl pkey -in key.pem -out key-plain.pem` first), and one test
+  handshake against the listener's own TLS config, so a pair that is accepted is a pair
+  the listener serves. Warnings (not errors) for a SAN list that misses a listen host, an
+  expiry within 30 days, a weak key (RSA < 2048). The pair is stored as
   `/etc/n5-fangov/tls/custom-cert.pem` / `custom-key.pem` (0600), and the config is set to
   `tls = "file"` with the two paths (comments and everything else untouched). Pointing
   `cert_file`/`key_file` at files of your own by hand works the same way; they must be
   readable inside the unit's sandbox (see Hardening — `/etc/n5-fangov/` is the simple
-  place). A missing file disables the web listener, the CLI socket keeps working; a key
-  file readable by group or others is logged as a warning at start (`chmod 0600`).
+  place). A key file readable by group or others is logged as a warning at start
+  (`chmod 0600`).
+  - **Lock-out guard.** The upload is refused (400) when the certificate does not cover
+    the name your browser session uses (SNI, else the Host header): after the swap the
+    browser would see a name mismatch and, **under HSTS, refuse the connection** — no
+    warning page, no "proceed anyway", and this panel would be out of reach. The panel
+    then offers an *install anyway* checkbox (`force=true` in the API); use it only when
+    you can reach the dashboard by another covered name or by IP (browsers ignore HSTS
+    for IP literals). Uploads through the CLI socket are not guarded.
+  - **Unreadable pair at start.** When `tls = "file"` and the pair cannot be loaded or
+    served (file gone, key/cert mismatch, unusable key type), the daemon does **not**
+    take the dashboard down: it serves the automatic certificate instead, logs
+    `FALLBACK to the automatic certificate`, sends the alert `tls` (cooled like the other
+    start alerts) and reports mode `auto (fallback from file)` — the panel shows a
+    warn-coloured *automatic (fallback)* badge, `GET /api/tls` carries `"fallback": true`.
+    The config keeps `tls = "file"` and its paths. Repair from the panel (upload again or
+    *Back to auto*) or with `n5-fangov cert upload CERT KEY` / `cert reset`, which work
+    offline on a broken pair too (`cert info`/`cert export` need a loadable one).
   - **Back to auto** returns to the automatic certificate (the auto pair is kept on disk,
-    so this is instant), sets `tls = "auto"` and deletes the uploaded pair.
+    so this is instant), sets `tls = "auto"` and deletes the uploaded pair; a
+    `cert_file`/`key_file` of your own outside `/etc/n5-fangov/tls/` is left where it is.
+  - **The daemon owns `[web] tls`, `cert_file` and `key_file` while it runs.** Every
+    config write that goes through the API — curves applied from the editor, a settings
+    import, a preset — gets the three keys re-applied from the certificate manager, so an
+    editor that still holds the pre-upload text cannot silently revert an upload or a
+    reset. Change the mode through the panel or `n5-fangov cert …`; a hand edit of the
+    file takes effect at the next start (with `--listen` overriding the file, the keys are
+    left as they are).
 - **`off`** — plain HTTP, loopback only. A reverse proxy (Caddy, nginx, the PVE proxy)
   terminating TLS in front of `127.0.0.1:8010` is the alternative to `auto`; list its
   public name in `allowed_hosts` or let it rewrite `Host`. The panel then only says so;
   the certificate endpoints answer `409 tls is off`.
 
 Every change from the panel is **hot-swapped**: the new certificate serves the next
-handshake, open connections and the fan controller are untouched, no restart. Changes
-are logged as `web: tls <regenerate|upload|reset> by <ip>` and need the same login as
-any other write (`auth = "basic"`).
+handshake, open connections and the fan controller are untouched, no restart. The
+listener issues no TLS session tickets, so a browser that reconnects sees the new
+certificate at once instead of resuming an old session. Changes are logged as
+`web: tls <regenerate|upload|reset> by <ip>` and need the same login as any other write
+(`auth = "basic"`). The panel's notice lists what the server finds worth knowing about
+the active certificate (`warnings` in `GET /api/tls`): an expiry within 30 days, no
+SANs, and listen hosts the SAN list does not cover — under HSTS the browser will refuse
+such a name, so a certificate for the LAN name should carry every name you use.
 
 ### CLI equivalents
 

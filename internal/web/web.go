@@ -292,27 +292,16 @@ func (s *Server) ServeTLS(ctx context.Context, ln net.Listener, cert tls.Certifi
 }
 
 // ServeTLSStore serves the TCP handler on ln with TLS terminated by the
-// certificate currently in store: TLS 1.2 minimum, X25519/P-256/P-384,
-// AEAD suites only, HTTP/2 offered. Every response carries
+// certificate currently in store, with tlscert.ServerConfig (TLS 1.2
+// minimum, AEAD suites, HTTP/2, no session tickets) — the same config
+// tlscert.ValidatePair handshakes against, so an accepted pair is one this
+// listener can serve (M1). Every response carries
 // Strict-Transport-Security. Sets Deps.TLS for /api/version. The store is
 // consulted per handshake (tls.Config.GetCertificate), so a Store.Set from
 // the certificate manager takes effect for the next connection without
 // touching established ones or the listener.
 func (s *Server) ServeTLSStore(ctx context.Context, ln net.Listener, store *tlscert.Store) error {
-	cfg := &tls.Config{
-		GetCertificate:   store.Get,
-		MinVersion:       tls.VersionTLS12,
-		CurvePreferences: []tls.CurveID{tls.X25519, tls.CurveP256, tls.CurveP384},
-		CipherSuites: []uint16{ // TLS 1.2 only; 1.3 suites are fixed
-			tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-			tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-			tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,
-			tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-			tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
-		},
-		NextProtos: []string{"h2", "http/1.1"},
-	}
+	cfg := tlscert.ServerConfig(store.Get)
 	s.deps.TLS = true // before serving: handlers read it without a lock
 	if !strings.EqualFold(s.deps.Auth.Mode, "basic") && !listenerIsLoopback(ln) {
 		s.logf("WARNING: web listening on non-loopback %s with TLS but without auth; anyone reaching this port can change fan duties. Set [web].auth = \"basic\".", ln.Addr())

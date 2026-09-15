@@ -220,7 +220,7 @@ func generate(o Options, key *ecdsa.PrivateKey) (tls.Certificate, error) {
 	if cert.Leaf == nil {
 		cert.Leaf, _ = x509.ParseCertificate(der)
 	}
-	o.logf("tlscert: wrote %s (CN %s, SANs: %s, valid until %s)", certPath, cn, want, tmpl.NotAfter.Format("2006-01-02"))
+	o.logf("tlscert: wrote %s (CN %q, SANs: %s, valid until %s)", certPath, cn, want, tmpl.NotAfter.Format("2006-01-02"))
 	return cert, nil
 }
 

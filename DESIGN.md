@@ -462,62 +462,104 @@ type InfoData struct {
 }
 func Info(cert tls.Certificate) InfoData
 func ValidatePair(certPEM, keyPEM []byte, hosts []string) (tls.Certificate, []string /*warnings*/, error)
-    // errors: no PEM block, key does not match, expired, not yet valid
-    // warnings: SAN list lacks host <h> (per host), expires in N days (< 30), no SANs, weak key (RSA < 2048), SHA-1/MD5 signature
-func Reissue(o Options) (tls.Certificate, error)   // new certificate, key from o.Dir kept (Regenerate: new key)
+    // PEM blocks are iterated: every CERTIFICATE block (leaf first, chain kept), the first *PRIVATE KEY block
+    // (PKCS#8, PKCS#1, SEC 1; EC PARAMETERS etc. skipped); ENCRYPTED PRIVATE KEY / Proc-Type: 4,ENCRYPTED → ErrEncryptedKey
+    // errors: no PEM block, encrypted key, key type crypto/tls cannot sign with (ECDSA ∉ {P-256,P-384,P-521}, RSA < 1024),
+    //         key does not match, expired, not yet valid, CheckUsable failed ("certificate/key cannot be used by this server: …")
+    // warnings: SAN list lacks host <h> (per host), expires in N days (< 30, DaysLeft = ceil), no SANs, weak key (RSA < 2048), SHA-1/MD5 signature
+func ServerConfig(getCert func(*tls.ClientHelloInfo) (*tls.Certificate, error)) *tls.Config
+    // the listener's tls.Config: TLS 1.2+, AEAD suites, h2, SessionTicketsDisabled (a swap is what every new connection sees)
+func CheckUsable(cert tls.Certificate) error        // one in-process handshake over net.Pipe against ServerConfig
+func Warnings(info InfoData, hosts []string, now time.Time) []string   // GET /api/tls: expiry, no SANs, MissingHosts (loopback excluded)
+func MissingHosts(info InfoData, hosts []string) []string
+func DaysLeft(notAfter, now time.Time) int          // ceil; the UI uses the same rounding
+func Reissue(o Options) (tls.Certificate, kept bool, error)  // new certificate, key from o.Dir kept; kept=false when it was not loadable (new pair)
 func PEM(cert) / DER(cert) ([]byte, error)         // leaf only
 func WritePrivate(path string, data []byte) error  // 0600, temp file + rename
 ```
 
-`web.Server.ServeTLSStore(ctx, ln, *tlscert.Store)` is the listener; `ServeTLS(ctx, ln, cert)`
-wraps it with a store that is never swapped.
+`web.Server.ServeTLSStore(ctx, ln, *tlscert.Store)` is the listener, built on
+`tlscert.ServerConfig(store.Get)` — the same config ValidatePair handshakes against, so a
+pair that validates is a pair the listener can serve; `ServeTLS(ctx, ln, cert)` wraps it
+with a store that is never swapped.
 
 ### TLSMgr (interface in internal/web, implemented by cmd `tlsManager`)
 
 ```go
 type TLSMgr interface {
-    Info() (tlscert.InfoData, mode string, err error)      // mode: auto | file | off
+    Info() (tlscert.InfoData, mode string, err error)      // mode: auto | file | off | "auto (fallback from file)"
     ExportPEM() ([]byte, error)
     ExportDER() ([]byte, error)
-    Regenerate(keepKey bool) (tlscert.InfoData, error)     // auto only; file → web.ErrTLSFileMode (409)
+    Regenerate(keepKey bool) (tlscert.InfoData, kept bool, error)  // auto only; file → web.ErrTLSFileMode (409); kept=false: new pair despite keepKey
     Upload(certPEM, keyPEM []byte) (tlscert.InfoData, []string, error)  // validation failure → web.ValidationError (400)
     ResetAuto() (tlscert.InfoData, error)
 }
+type TLSFallback interface{ Fallback() bool }               // optional; GET /api/tls "fallback"
 ```
 `web.Deps.TLSMgr` (nil → 501) and `web.Deps.TLSHosts` (the SAN hosts, reported by GET).
-Manager semantics (cmd): the tls directory is `<config dir>/tls`; the auto pair stays
-`cert.pem`/`key.pem`, an upload lands as `custom-cert.pem`/`custom-key.pem` (0600) and
-sets `[web] tls = "file"`, `cert_file`, `key_file` via `config.SetKey` (comments kept),
-config first, then `Store.Set`. ResetAuto: `EnsureAuto` (reuses the auto pair), config
-`tls = "auto"` with empty paths, custom files deleted. Mode `off` (also: no TCP listener)
-→ `web.ErrTLSOff` from every method except Info. Regenerate/Upload/ResetAuto serialise
-on a mutex; the store swap is the last step, so a failed write never changes what is served.
+Manager semantics (cmd): the tls directory is `<config dir>/tls` (config path made
+absolute); the auto pair stays `cert.pem`/`key.pem`, an upload lands as
+`custom-cert.pem`/`custom-key.pem` (0600) and sets `[web] tls = "file"`, `cert_file`,
+`key_file` via `config.SetKey` (comments kept), config first, then `Store.Set`. A config
+write that fails after the custom files were written restores them (previous content or
+absent) so the file system never disagrees with the config. ResetAuto: `EnsureAuto`
+(reuses the auto pair), config `tls = "auto"` with empty paths, custom files deleted; a
+`cert_file`/`key_file` outside the tls directory is left alone. Mode `off` (also: no TCP
+listener) → `web.ErrTLSOff` from every method except Info. Regenerate/Upload/ResetAuto
+serialise on a mutex; every certificate passes `tlscert.CheckUsable` before it reaches
+the store, so a failed write or an unusable pair never changes what is served.
+
+**The manager owns the three `[web]` tls keys.** Every config text written through the
+API — `PUT /api/config` (`fileConfigStore`), settings import (`fileBundle`), preset apply
+(`dirPresetStore`) — goes through `tlsManager.pinConfig` (cmd wiring, `webDeps.ConfigPin`),
+which re-applies the manager's mode and paths; a stale copy of the file in the curve
+editor cannot revert an upload or a reset. Text that already yields the same values is
+left byte-for-byte. Not applied while the effective mode came from a `--listen` override
+or there is no TCP listener (`ownsConfig=false`).
+
+**Fallback (serve):** `tls = "file"` whose pair cannot be loaded or served does not
+disable the listener: `loadForServe` ensures the auto pair, serves it, logs the reason and
+sends the cooled alert `tls` ("custom certificate unreadable, serving the automatic
+certificate"). The config keeps `tls = "file"` and its paths; Info reports mode
+`auto (fallback from file)`, `Fallback()` is true, Regenerate is allowed (it is the auto
+pair being served), Upload or ResetAuto end the fallback. The CLI offline path
+(`cert reset|upload|regen` without a daemon) tolerates an unloadable pair — it prints a
+note and repairs; `cert info|export` need a loaded pair.
 
 ### API
 
 ```
-GET  /api/tls                 → {"mode":"auto|file|off","info":{InfoData}|null,"hosts":[...]}   public
+GET  /api/tls                 → {"mode":"auto|file|off|auto (fallback from file)","info":{InfoData}|null,"hosts":[...],
+                                 "warnings":[...],"fallback":bool}                                   public
+                                 warnings = tlscert.Warnings(info, TLSHosts): expiry, no SANs, uncovered hosts (loopback excluded)
 GET  /api/tls/cert.crt        → application/x-pem-file, attachment n5-fangov-<host>.crt        public
 GET  /api/tls/cert.cer        → application/pkix-cert, attachment n5-fangov-<host>.cer          public
 POST /api/tls/regenerate      body {"keep_key":true} (default true, empty body ok)             auth+CSRF
-                              → {"ok","keep_key","info"} + "warning" when keep_key=false
-POST /api/tls/upload          multipart parts cert/key (file or field) or JSON {"cert","key"}; 64 KiB   auth+CSRF
-                              → {"ok","mode":"file","info","warnings":[...]}; 400 on a pair that does not validate
+                              → {"ok","keep_key","kept","info"} + "warning" when keep_key=false or kept=false
+POST /api/tls/upload          multipart parts cert/key (file or field) [+ force] or JSON {"cert","key","force"?}; 64 KiB   auth+CSRF
+                              → {"ok","mode":"file","info","warnings":[...]}; 400 on a pair that does not validate;
+                                400 {"error","host","force_required":true} when the request came over TLS and the leaf
+                                does not cover the name the client used (SNI, else Host) — HSTS lock-out guard; force=true overrides
 POST /api/tls/reset           → {"ok","mode":"auto","info"}                                     auth+CSRF
 ```
 Mode `off`: everything except `GET /api/tls` answers `409 {"error":"tls is off"}`. Each
-state change logs `web: tls <regenerate|upload|reset> by <ip>`.
+state change logs `web: tls <regenerate|upload|reset> by <ip>` (upload with the subject `%q`).
 
 ### UI
 
 Header lock (`#h-sec`, now a button) — tooltip carries mode and expiry, click opens the
-`<dialog id="cert">` (also *Settings → Certificate…*): mode badge, subject/issuer, SAN
-chips, validity (highlight < 30 days), fingerprint + copy, Download .crt/.cer,
-Regenerate… (inline confirm with "generate a new key" checkbox), Upload own
-certificate… (two file inputs that fill two PEM textareas; warnings shown), Back to auto
-(mode file), collapsible "How to trust this certificate" (Windows/macOS/Firefox/Android).
-In file mode a notice lists listen hosts the certificate does not cover. Mock:
-`?mock=1&tls=off|file|soon`. JS budget raised to 52 KB (the panel markup lives in
+`<dialog id="cert">` (also *Settings → Certificate…*): mode badge (`automatic (fallback)`
+in warn colour during a fallback), subject/issuer, SAN chips, validity (highlight < 30
+days, days = ceil like the server), fingerprint + copy, Download .crt/.cer, Regenerate…
+(inline confirm with "generate a new key" checkbox), Upload own certificate… (two file
+inputs that fill two PEM textareas, `autocomplete="off"`, cleared on cancel/close; a
+`force_required` 400 reveals the *install anyway* checkbox with the HSTS warning and the
+name), Back to auto (mode file or fallback), collapsible "How to trust this certificate"
+(Windows/macOS/Firefox/Android). The notice shows the server's `warnings` (no SAN matching
+in the UI; "under HSTS the browser will refuse that name") and the fallback explanation.
+After every certificate action the panel re-reads `/api/tls` and the config
+(`loadConfig()`), so the curve editor holds the rewritten `[web]` keys. Mock:
+`?mock=1&tls=off|file|soon|fallback`. JS budget 56 KB (the panel markup lives in
 index.html, the JS only binds data).
 
 ### CLI

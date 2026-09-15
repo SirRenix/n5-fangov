@@ -202,7 +202,7 @@ func TestValidatePair(t *testing.T) {
 	// expires soon + no SANs
 	soon, soonKey := selfSigned(t, nil, &x509.Certificate{Subject: pkix.Name{CommonName: "soon"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(5 * 24 * time.Hour)})
 	_, warns, err = ValidatePair(soon, soonKey, nil)
-	if err != nil || len(warns) != 2 || !strings.Contains(warns[0], "expires in 4 days") || !strings.Contains(warns[1], "no subject alternative names") {
+	if err != nil || len(warns) != 2 || !strings.Contains(warns[0], "expires in 5 days") || !strings.Contains(warns[1], "no subject alternative names") {
 		t.Errorf("soon: %v %v", err, warns)
 	}
 	// weak RSA key
@@ -230,9 +230,12 @@ func TestReissueKeepsKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	pub := func(c tls.Certificate) string { b, _ := x509.MarshalPKIXPublicKey(c.Leaf.PublicKey); return string(b) }
-	re, err := Reissue(Options{Dir: dir, Hosts: []string{"192.0.2.20", "n5.lan"}, Logf: quiet})
+	re, kept, err := Reissue(Options{Dir: dir, Hosts: []string{"192.0.2.20", "n5.lan"}, Logf: quiet})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !kept {
+		t.Error("Reissue with a key file reported kept=false")
 	}
 	if re.Leaf.SerialNumber.Cmp(first.Leaf.SerialNumber) == 0 || !hasDNS(re.Leaf, "n5.lan") {
 		t.Fatal("Reissue did not produce a new certificate")
@@ -243,9 +246,12 @@ func TestReissueKeepsKey(t *testing.T) {
 	if err := os.Remove(filepath.Join(dir, KeyFile)); err != nil {
 		t.Fatal(err)
 	}
-	fresh, err := Reissue(Options{Dir: dir, Hosts: []string{"192.0.2.20"}, Logf: quiet})
+	fresh, kept, err := Reissue(Options{Dir: dir, Hosts: []string{"192.0.2.20"}, Logf: quiet})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if kept {
+		t.Error("Reissue without a key file reported kept=true (L2)")
 	}
 	if pub(fresh) == pub(first) {
 		t.Error("Reissue without a key file reused one")

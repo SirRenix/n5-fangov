@@ -1,13 +1,16 @@
 package web
 
 import (
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"mime"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/SirRenix/n5-fangov/internal/tlscert"
 )
@@ -21,14 +24,23 @@ type TLSMgr interface {
 	ExportPEM() ([]byte, error)
 	ExportDER() ([]byte, error)
 	// Regenerate reissues the automatic certificate; keepKey keeps the
-	// private key so trust imported into browsers survives.
-	Regenerate(keepKey bool) (tlscert.InfoData, error)
+	// private key so trust imported into browsers survives. kept reports
+	// whether the key really was kept (L2): a stored key that cannot be
+	// loaded yields a new pair even with keepKey, and the response says so.
+	Regenerate(keepKey bool) (info tlscert.InfoData, kept bool, err error)
 	// Upload validates and installs an operator-supplied PEM pair (mode
 	// becomes "file"); the warnings come from tlscert.ValidatePair.
 	Upload(certPEM, keyPEM []byte) (tlscert.InfoData, []string, error)
 	// ResetAuto returns to the automatic certificate (mode "auto") and
 	// removes the uploaded pair.
 	ResetAuto() (tlscert.InfoData, error)
+}
+
+// TLSFallback is optionally implemented by a TLSMgr: true while the
+// configured file pair could not be loaded and the automatic certificate
+// is served in its place (M3). GET /api/tls exposes it as "fallback".
+type TLSFallback interface {
+	Fallback() bool
 }
 
 // maxTLSUpload bounds the upload body (two PEM files fit in a few KiB).
@@ -72,8 +84,11 @@ func tlsFail(w http.ResponseWriter, err error, clientErr bool) {
 	}
 }
 
-// getTLS: {mode, info, hosts}. Public — the certificate is what every
-// client sees in the handshake anyway; the panel needs it before login.
+// getTLS: {mode, info, hosts, warnings, fallback}. Public — the
+// certificate is what every client sees in the handshake anyway; the
+// panel needs it before login. warnings are computed here the way
+// ValidatePair does it (L4): expiry, no SANs, listen hosts the SAN list
+// does not cover (loopback excluded) — the UI does no matching of its own.
 func (s *Server) getTLS(w http.ResponseWriter, r *http.Request) {
 	m, ok := s.tlsMgr(w, false)
 	if !ok {
@@ -84,11 +99,15 @@ func (s *Server) getTLS(w http.ResponseWriter, r *http.Request) {
 		tlsFail(w, err, false)
 		return
 	}
-	out := map[string]any{"mode": mode, "hosts": nonNil(s.deps.TLSHosts)}
+	out := map[string]any{"mode": mode, "hosts": nonNil(s.deps.TLSHosts), "warnings": []string{}, "fallback": false}
+	if fb, ok := m.(TLSFallback); ok && fb.Fallback() {
+		out["fallback"] = true
+	}
 	if mode == "off" || info.FingerprintSHA256 == "" {
 		out["info"] = nil
 	} else {
 		out["info"] = tlsInfoJSON(info)
+		out["warnings"] = nonNil(tlscert.Warnings(info, s.deps.TLSHosts, time.Now()))
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -105,14 +124,14 @@ func (s *Server) tlsCertPEM(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	pem, err := m.ExportPEM()
+	data, err := m.ExportPEM()
 	if err != nil {
 		tlsFail(w, err, false)
 		return
 	}
 	attachment(w, "application/x-pem-file", "n5-fangov-"+hostLabel()+".crt")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(pem)
+	_, _ = w.Write(data)
 }
 
 func (s *Server) tlsCertDER(w http.ResponseWriter, r *http.Request) {
@@ -162,21 +181,33 @@ func (s *Server) tlsRegenerate(w http.ResponseWriter, r *http.Request) {
 			keep = *b.KeepKey
 		}
 	}
-	info, err := m.Regenerate(keep)
+	info, kept, err := m.Regenerate(keep)
 	if err != nil {
 		tlsFail(w, err, false)
 		return
 	}
-	s.logf("web: tls regenerate (keep_key=%v) by %s", keep, remoteIP(r))
-	out := map[string]any{"ok": true, "keep_key": keep, "info": tlsInfoJSON(info)}
-	if !keep {
+	s.logf("web: tls regenerate (keep_key=%v, kept=%v) by %s", keep, kept, remoteIP(r))
+	out := map[string]any{"ok": true, "keep_key": keep, "kept": kept, "info": tlsInfoJSON(info)}
+	switch {
+	case !keep:
 		out["warning"] = "new private key: the trust imported from the previous certificate no longer applies — download and trust the certificate again"
+	case !kept:
+		out["warning"] = "the stored private key could not be reused, so a new pair was generated: the trust imported from the previous certificate no longer applies — download and trust the certificate again"
 	}
 	writeJSON(w, http.StatusOK, out)
 }
 
 // tlsUpload accepts multipart/form-data (parts "cert" and "key", file or
-// field) or JSON {"cert": pem, "key": pem}, at most maxTLSUpload bytes.
+// field, optional "force") or JSON {"cert": pem, "key": pem, "force":
+// bool}, at most maxTLSUpload bytes.
+//
+// M4: a request that arrived over this listener's TLS names the host the
+// operator is connected through (SNI, else the Host header). A leaf that
+// does not cover that name is refused with 400 and "force_required":
+// after the swap the browser would see a name mismatch and, under the
+// HSTS this listener sends, refuse the connection outright — the operator
+// would be locked out of the panel that could undo it. force=true
+// overrides (the operator reaches the dashboard by another name).
 func (s *Server) tlsUpload(w http.ResponseWriter, r *http.Request) {
 	m, ok := s.tlsMgr(w, true)
 	if !ok {
@@ -185,6 +216,7 @@ func (s *Server) tlsUpload(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxTLSUpload)
 	ctype, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	var certPEM, keyPEM []byte
+	force := false
 	switch ctype {
 	case "multipart/form-data":
 		if err := r.ParseMultipartForm(maxTLSUpload); err != nil {
@@ -204,6 +236,10 @@ func (s *Server) tlsUpload(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		switch strings.ToLower(strings.TrimSpace(r.FormValue("force"))) {
+		case "1", "true", "on", "yes":
+			force = true
+		}
 	default:
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -215,8 +251,9 @@ func (s *Server) tlsUpload(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var b struct {
-			Cert string `json:"cert"`
-			Key  string `json:"key"`
+			Cert  string `json:"cert"`
+			Key   string `json:"key"`
+			Force bool   `json:"force"`
 		}
 		dec := json.NewDecoder(strings.NewReader(string(body)))
 		dec.DisallowUnknownFields()
@@ -224,11 +261,20 @@ func (s *Server) tlsUpload(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid JSON body (expected {\"cert\": pem, \"key\": pem}): "+err.Error())
 			return
 		}
-		certPEM, keyPEM = []byte(b.Cert), []byte(b.Key)
+		certPEM, keyPEM, force = []byte(b.Cert), []byte(b.Key), b.Force
 	}
 	if len(strings.TrimSpace(string(certPEM))) == 0 || len(strings.TrimSpace(string(keyPEM))) == 0 {
 		writeError(w, http.StatusBadRequest, "cert and key are both required (PEM)")
 		return
+	}
+	if host := connectedHost(r); host != "" && !force {
+		if uncovered, ok := leafLacksHost(certPEM, host); ok && uncovered {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error": fmt.Sprintf("certificate does not cover %q, the name this browser session uses: after the swap the browser would see a name mismatch and, under HSTS, refuse the connection — you would be locked out of this panel. Reach the dashboard through a name the certificate covers, or resend with force=true if you know what you are doing.", host),
+				"host":  host, "force_required": true,
+			})
+			return
+		}
 	}
 	info, warns, err := m.Upload(certPEM, keyPEM)
 	if err != nil {
@@ -237,8 +283,45 @@ func (s *Server) tlsUpload(w http.ResponseWriter, r *http.Request) {
 		tlsFail(w, err, isValidationError(err))
 		return
 	}
-	s.logf("web: tls upload by %s (%s, %d warning(s))", remoteIP(r), info.Subject, len(warns))
+	s.logf("web: tls upload by %s (%q, %d warning(s), force=%v)", remoteIP(r), info.Subject, len(warns), force)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "mode": "file", "info": tlsInfoJSON(info), "warnings": nonNil(warns)})
+}
+
+// connectedHost is the name the client reached this TLS listener by: the
+// SNI of the handshake, else the Host header without port ("" when the
+// request did not arrive over TLS — the unix socket and plain HTTP have
+// no HSTS lock-out to guard against).
+func connectedHost(r *http.Request) string {
+	if r.TLS == nil {
+		return ""
+	}
+	if r.TLS.ServerName != "" {
+		return strings.ToLower(strings.TrimSuffix(r.TLS.ServerName, "."))
+	}
+	return normalizeHost(r.Host)
+}
+
+// leafLacksHost parses the first CERTIFICATE block of certPEM and reports
+// whether its SANs fail to cover host (IP literals against the IP SANs,
+// names against DNS SANs with x509's wildcard rules). ok is false when
+// there is no parsable leaf — then ValidatePair produces the real error.
+func leafLacksHost(certPEM []byte, host string) (lacks, ok bool) {
+	for rest := certPEM; len(rest) > 0; {
+		var b *pem.Block
+		b, rest = pem.Decode(rest)
+		if b == nil {
+			return false, false
+		}
+		if b.Type != "CERTIFICATE" {
+			continue
+		}
+		leaf, err := x509.ParseCertificate(b.Bytes)
+		if err != nil {
+			return false, false
+		}
+		return leaf.VerifyHostname(host) != nil, true
+	}
+	return false, false
 }
 
 // ValidationError marks an Upload error caused by the submitted pair

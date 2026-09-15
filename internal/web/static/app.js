@@ -77,7 +77,7 @@ const api = async (path, opt) => {
 			const msg = body && typeof body === 'object'
 				? (body.error || body.message || '') + (Array.isArray(body.errors) ? '\n' + body.errors.join('\n') : '')
 				: String(body || r.statusText);
-			const err = new Error(msg || `HTTP ${r.status}`); err.status = r.status; throw err;
+			const err = new Error(msg || `HTTP ${r.status}`); err.status = r.status; err.body = body; throw err;
 		}
 		return { status: r.status, body };
 	}
@@ -135,22 +135,24 @@ const mock = (() => {
 		logs.push(`${new Date(t * 1000).toISOString().slice(0, 19)} ${i % 37 === 5 ? 'WARN stall: hdd rpm=0 at duty=105 → 255' : i % 53 === 7 ? 'ERROR sensor drivetemp:max: no devices' : 'INFO'} ` + cfg.channel.map(c => `${c.name} ${p.temp[c.name]}/${p.duty[c.name]}`).join(' ')); }
 	const wait = v => new Promise(r => setTimeout(() => r(v), 120));
 	// certificate mock: ?tls=off|file|soon sets the start state
-	const q = new URLSearchParams(location.search).get('tls'), T = { mode: q === 'off' || q === 'file' ? q : 'auto', n: 0 };
-	const tlsInfo = () => { const up = T.mode === 'file', cn = up ? 'CN=fans.example,O=Homelab' : 'CN=n5.lan,O=n5-fangov', d = new Date(t0 * 1000); d.setFullYear(d.getFullYear() + (up ? 1 : 10));
+	const q = new URLSearchParams(location.search).get('tls'), T = { mode: q === 'off' || q === 'file' || q === 'fallback' ? (q === 'fallback' ? 'file' : q) : 'auto', fb: q === 'fallback', n: 0 };
+	const tlsInfo = () => { const up = T.mode === 'file' && !T.fb, cn = up ? 'CN=fans.example,O=Homelab' : 'CN=n5.lan,O=n5-fangov', d = new Date(t0 * 1000); d.setFullYear(d.getFullYear() + (up ? 1 : 10));
 		return { subject: cn, issuer: up ? 'CN=Homelab CA' : cn, dns_names: up ? ['fans.example'] : ['n5.lan', 'n5host', 'localhost'], ips: up ? [] : ['192.0.2.20', '127.0.0.1', '::1'],
 			not_before: new Date(t0 * 1000 - 36e5).toISOString(), not_after: q === 'soon' ? new Date(t0 * 1000 + 12 * 864e5).toISOString() : d.toISOString(), is_ca: !up, key_algo: up ? 'RSA 2048' : 'ECDSA P-256',
 			serial_hex: '3F0' + T.n + 'A9C1', fingerprint_sha256: Array.from({ length: 32 }, (_, i) => ((i * 37 + T.n * 11) % 256 | 256).toString(16).slice(1).toUpperCase()).join(':') }; };
 	const fail = (msg, status) => Promise.reject(Object.assign(new Error(msg), { status }));
 	const mockTLS = (p, opt) => {
-		if (p === '/api/tls') return wait({ status: 200, body: { mode: T.mode, info: T.mode === 'off' ? null : tlsInfo(), hosts: ['192.0.2.20', 'n5.lan', 'n5host', 'localhost'] } });
+		if (p === '/api/tls') return wait({ status: 200, body: { mode: T.fb ? 'auto (fallback from file)' : T.mode, fallback: !!T.fb, info: T.mode === 'off' ? null : tlsInfo(), hosts: ['192.0.2.20', 'n5.lan', 'n5host', 'localhost'],
+			warnings: T.mode === 'file' && !T.fb ? ['SAN list lacks host 192.0.2.20', 'SAN list lacks host n5.lan', 'SAN list lacks host n5host'] : q === 'soon' ? ['certificate expires in 12 days'] : [] } });
 		if (T.mode === 'off') return fail('tls is off', 409);
 		if (p === '/api/tls/cert.crt') return wait({ status: 200, body: '-----BEGIN CERTIFICATE-----\nMIIBmock\n-----END CERTIFICATE-----\n', filename: 'n5-fangov-n5host.crt' });
 		if (p === '/api/tls/cert.cer') return wait({ status: 200, body: '0\u0082\u0001mock', filename: 'n5-fangov-n5host.cer' });
 		if (p === '/api/tls/regenerate') { if (T.mode === 'file') return fail('custom certificate active; reset to auto first', 409);
 			T.n++; const keep = !opt.json || opt.json.keep_key !== false; return wait({ status: 200, body: { ok: true, keep_key: keep, info: tlsInfo(), warning: keep ? undefined : 'new private key: re-download and trust the certificate' } }); }
 		if (p === '/api/tls/upload') { const j = opt.json || {}; if (!/BEGIN CERTIFICATE/.test(j.cert || '') || !/PRIVATE KEY/.test(j.key || '')) return fail('certificate: no PEM CERTIFICATE block', 400);
-			T.mode = 'file'; T.n++; return wait({ status: 200, body: { ok: true, mode: 'file', info: tlsInfo(), warnings: ['SAN list lacks host 192.0.2.20', 'SAN list lacks host n5host'] } }); }
-		if (p === '/api/tls/reset') { T.mode = 'auto'; return wait({ status: 200, body: { ok: true, mode: 'auto', info: tlsInfo() } }); }
+			if (!j.force) { const e = fail('certificate does not cover "' + location.hostname + '", the name this browser session uses: under HSTS the browser would refuse the connection after the swap', 400); return e.catch(x => { x.body = { error: x.message, host: location.hostname, force_required: true }; throw x; }); }
+			T.mode = 'file'; T.fb = false; T.n++; return wait({ status: 200, body: { ok: true, mode: 'file', info: tlsInfo(), warnings: ['SAN list lacks host 192.0.2.20', 'SAN list lacks host n5host'] } }); }
+		if (p === '/api/tls/reset') { T.mode = 'auto'; T.fb = false; return wait({ status: 200, body: { ok: true, mode: 'auto', info: tlsInfo() } }); }
 		return fail('mock: not found ' + p, 404);
 	};
 	return (path, opt) => {
@@ -284,7 +286,7 @@ const redrawAll = () => { for (const w of charts) w._st && w._st.draw(); for (co
 let snap = null, cfg = null, cfgRaw = '', profiles = [], sensors = [], version = '', tls = null;
 const LOOPBACK = /^(localhost|127\.\d+\.\d+\.\d+|\[::1\])$/i.test(location.hostname);
 let cert = null;
-const dLeft = iso => Math.floor((new Date(iso) - Date.now()) / 86400e3);
+const dLeft = iso => Math.ceil((new Date(iso) - Date.now()) / 86400e3);
 const secState = () => { const e = $('#h-sec'), on = tls === null ? location.protocol === 'https:' : !!tls, i = cert && cert.info;
 	e.textContent = on ? '🔒 TLS' : '🔓 HTTP'; e.className = 'meta sec ' + (on ? 'ok' : LOOPBACK ? '' : 'warn');
 	e.title = (on ? 'TLS-encrypted connection' : LOOPBACK ? 'plain HTTP on loopback' : 'plain HTTP on a non-loopback address — credentials and settings travel unencrypted')
@@ -622,10 +624,12 @@ $('#s-file').addEventListener('change', async () => {
 const dlg = $('#cert'), ctNotice = (msg, kind) => { const n = $('#ct-notice'); n.hidden = !msg; n.className = 'notice ' + (kind || ''); n.textContent = msg || ''; };
 const ctForm = id => { for (const f of ['#ct-regen-f', '#ct-upload-f']) $(f).hidden = f !== id || !$(f).hidden; };
 async function loadCert() { try { cert = (await api('/api/tls')).body; } catch (e) { cert = null; if (e.status !== 501) toast('certificate: ' + e.message, 'err'); } secState(); }
+// mode "auto (fallback from file)" + fallback:true: the configured file pair
+// could not be loaded, the automatic certificate stands in (M3).
 function renderCert() {
-	const c = cert || { mode: 'off' }, i = c.info, b = $('#ct-mode');
-	b.textContent = c.mode === 'file' ? 'own certificate' : c.mode === 'auto' ? 'automatic' : 'TLS off'; b.className = 'badge ' + (c.mode === 'auto' ? 'ok' : c.mode);
-	$('#ct-off').hidden = !!i; $('#ct-body').hidden = !i; $('#ct-reset').hidden = c.mode !== 'file'; $('#ct-regen').hidden = c.mode === 'file';
+	const c = cert || { mode: 'off' }, i = c.info, b = $('#ct-mode'), fb = !!c.fallback, isFile = c.mode === 'file', isAuto = c.mode === 'auto' || fb;
+	b.textContent = fb ? 'automatic (fallback)' : isFile ? 'own certificate' : isAuto ? 'automatic' : 'TLS off'; b.className = 'badge ' + (fb ? 'warn' : isAuto ? 'ok' : c.mode);
+	$('#ct-off').hidden = !!i; $('#ct-body').hidden = !i; $('#ct-reset').hidden = !isFile && !fb; $('#ct-regen').hidden = isFile;
 	if (!i) return;
 	const kv = clear($('#ct-kv')), left = dLeft(i.not_after), until = h('dd', { class: left < 0 ? 'expired' : left < 30 ? 'soon' : '' }, i.not_after.slice(0, 10) + (left < 0 ? ' — expired' : left < 30 ? ` — in ${left} days` : ''));
 	for (const [k, v] of [['subject', i.subject], ['issuer', i.issuer], ['valid from', i.not_before.slice(0, 10)], ['valid until', until], ['key', i.key_algo + (i.is_ca ? ' · CA flag (trust anchor)' : '')], ['serial', h('dd', { class: 'mono' }, i.serial_hex)]])
@@ -633,30 +637,42 @@ function renderCert() {
 	const san = clear($('#ct-san')); for (const n of i.dns_names) san.append(h('span', null, n)); for (const n of i.ips) san.append(h('span', { class: 'ip' }, n));
 	if (!i.dns_names.length && !i.ips.length) san.append(h('span', { class: 'empty' }, 'no SANs'));
 	$('#ct-fp').textContent = i.fingerprint_sha256;
-	const miss = (c.hosts || []).filter(x => !i.dns_names.includes(x) && !i.ips.includes(x));
-	if (miss.length && c.mode === 'file') ctNotice('Not in this certificate: ' + miss.join(', ') + ' (browsers will warn)', 'warn');
+	// warnings come from the server (same rules as the upload validation)
+	const w = (c.warnings || []).map(x => /^SAN list lacks host/.test(x) ? x + ' — under HSTS the browser will refuse that name' : x);
+	if (fb) w.unshift('The configured certificate files could not be loaded — the automatic certificate is served instead (see the daemon log). Upload the pair again or go back to auto.');
+	if (w.length) ctNotice(w.join('\n'), 'warn');
 }
-async function openCert() { showS(false); ctNotice(''); $('#ct-regen-f').hidden = $('#ct-upload-f').hidden = true; await loadCert(); renderCert(); if (!dlg.open) dlg.showModal(); }
+const ctClearUpload = () => { for (const id of ['#ct-cpem', '#ct-kpem', '#ct-cfile', '#ct-kfile']) $(id).value = ''; $('#ct-force').checked = false; $('#ct-force-l').hidden = true; };
+async function openCert() { showS(false); ctNotice(''); $('#ct-regen-f').hidden = $('#ct-upload-f').hidden = true; ctClearUpload(); await loadCert(); renderCert(); if (!dlg.open) dlg.showModal(); }
 $('#h-sec').addEventListener('click', openCert); $('#s-cert').addEventListener('click', openCert);
 $('#ct-close').addEventListener('click', () => dlg.close());
 dlg.addEventListener('click', ev => { if (ev.target === dlg) dlg.close(); });
-$$('#cert [data-cancel]').forEach(b => b.addEventListener('click', () => { b.closest('form').hidden = true; }));
+dlg.addEventListener('close', ctClearUpload);
+$$('#cert [data-cancel]').forEach(b => b.addEventListener('click', () => { b.closest('form').hidden = true; ctClearUpload(); }));
 $('#ct-crt').addEventListener('click', () => act(() => download('/api/tls/cert.crt', 'n5-fangov.crt')));
 $('#ct-cer').addEventListener('click', () => act(() => download('/api/tls/cert.cer', 'n5-fangov.cer')));
 $('#ct-copy').addEventListener('click', () => navigator.clipboard.writeText($('#ct-fp').textContent).then(() => toast('Fingerprint copied', 'ok'), () => toast('Clipboard blocked — select the text', 'warn')));
 $('#ct-regen').addEventListener('click', () => { $('#ct-newkey').checked = false; ctForm('#ct-regen-f'); });
 $('#ct-upload').addEventListener('click', () => ctForm('#ct-upload-f'));
-const ctDone = (r, msg) => { cert = Object.assign(cert || {}, { mode: r.body.mode || cert.mode, info: r.body.info }); renderCert(); secState();
-	const w = r.body.warning ? [r.body.warning] : r.body.warnings || []; ctNotice(w.join('\n'), 'warn'); toast(msg + (w.length ? ' (warnings)' : ''), w.length ? 'warn' : 'ok', 8000); };
+// after a change: re-read /api/tls (mode, server-side warnings, fallback) and
+// the config — the manager rewrote [web] tls/cert_file/key_file, and a stale
+// cfgRaw in the curve editor would otherwise carry the old values (M2).
+const ctDone = async (r, msg) => { const w = r.body.warning ? [r.body.warning] : r.body.warnings || [];
+	toast(msg + (w.length ? ' (warnings)' : ''), w.length ? 'warn' : 'ok', 8000);
+	await loadCert(); renderCert(); const have = new Set((cert && cert.warnings) || []), extra = w.filter(x => !have.has(x));
+	if (extra.length) { const n = $('#ct-notice'); ctNotice((n.hidden ? '' : n.textContent + '\n') + extra.join('\n'), 'warn'); } loadConfig(); };
 $('#ct-regen-f').addEventListener('submit', async ev => { ev.preventDefault(); const nk = $('#ct-newkey').checked;
 	if (nk && !confirm('Generate a new private key?\nEvery browser and OS store that trusts the current certificate must import the new one.')) return;
 	const r = await act(() => api('/api/tls/regenerate', { method: 'POST', json: { keep_key: !nk } })); if (!r) return; $('#ct-regen-f').hidden = true; ctDone(r, 'Certificate regenerated'); });
 for (const [f, ta] of [['#ct-cfile', '#ct-cpem'], ['#ct-kfile', '#ct-kpem']]) $(f).addEventListener('change', async ev => { const x = ev.target.files[0]; if (!x) return;
 	if (x.size > 65536) return toast(x.name + ': larger than 64 KiB', 'err'); $(ta).value = await x.text(); });
+// M4: a 400 with force_required means the leaf does not cover the name this
+// session uses; the server refuses until the operator ticks "force".
 $('#ct-upload-f').addEventListener('submit', async ev => { ev.preventDefault(); const c = $('#ct-cpem').value.trim(), k = $('#ct-kpem').value.trim();
 	if (!/BEGIN CERTIFICATE/.test(c) || !/PRIVATE KEY/.test(k)) return ctNotice('Need a PEM CERTIFICATE block and a PRIVATE KEY block.', 'err');
-	const r = await act(() => api('/api/tls/upload', { method: 'POST', json: { cert: c, key: k } })); if (!r) return;
-	$('#ct-upload-f').hidden = true; for (const id of ['#ct-cpem', '#ct-kpem', '#ct-cfile', '#ct-kfile']) $(id).value = ''; ctDone(r, 'Own certificate installed'); });
+	let r; try { r = await api('/api/tls/upload', { method: 'POST', json: { cert: c, key: k, force: $('#ct-force').checked } }); }
+	catch (e) { if (e.body && e.body.force_required) { $('#ct-force-l').hidden = false; $('#ct-force-h').textContent = e.body.host; ctNotice(e.message, 'err'); toast('Certificate does not cover ' + e.body.host, 'err'); } else toast(e.message, 'err'); return; }
+	$('#ct-upload-f').hidden = true; ctClearUpload(); ctDone(r, 'Own certificate installed'); });
 $('#ct-reset').addEventListener('click', async () => { if (!confirm('Back to the automatic certificate? The uploaded pair is deleted.')) return;
 	const r = await act(() => api('/api/tls/reset', { method: 'POST' })); if (r) ctDone(r, 'Automatic certificate active'); });
 
