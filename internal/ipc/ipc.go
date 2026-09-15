@@ -1,6 +1,6 @@
 // Package ipc serves the HTTP mux on a unix socket (for the CLI) and provides a
 // client that dials it. The socket carries no authentication. Who may connect
-// is decided by the file system: the runtime directory (/run/ventula, created
+// is decided by the file system: the runtime directory (/run/n5-fangov, created
 // by systemd as root:root with RuntimeDirectoryMode=0750) and the socket
 // itself (0660, created under umask 0117 so it is never world-accessible,
 // not even between bind and chmod). In the shipped unit that means root only;
@@ -90,7 +90,7 @@ func Serve(ctx context.Context, socketPath string, handler http.Handler) error {
 }
 
 // Client returns an http.Client whose transport dials the unix socket. Request
-// URLs use any host, e.g. http://ventula/api/state.
+// URLs use any host, e.g. http://n5-fangov/api/state.
 func Client(socketPath string) *http.Client {
 	return &http.Client{
 		Timeout: 10 * time.Second,

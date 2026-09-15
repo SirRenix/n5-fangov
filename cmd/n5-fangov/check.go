@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/SirRenix/ventula/internal/hwmon"
+	"github.com/SirRenix/n5-fangov/internal/hwmon"
 )
 
 func init() {

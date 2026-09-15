@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/SirRenix/ventula/internal/hwmon"
+	"github.com/SirRenix/n5-fangov/internal/hwmon"
 )
 
 // N5ProHwmonName is the name the minisforum_n5_it5571 driver registers.

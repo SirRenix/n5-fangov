@@ -16,9 +16,9 @@ import (
 	"time"
 )
 
-// runDir returns the runtime directory: VENTULA_RUN_DIR or /run/ventula.
+// runDir returns the runtime directory: N5FANGOV_RUN_DIR or /run/n5-fangov.
 func runDir() string {
-	if d := os.Getenv("VENTULA_RUN_DIR"); d != "" {
+	if d := os.Getenv("N5FANGOV_RUN_DIR"); d != "" {
 		return d
 	}
 	return defaultRunDir
@@ -36,7 +36,7 @@ type api struct {
 func newAPI(dir string) *api {
 	c := ipcClient(socketPath(dir))
 	c.Timeout = 5 * time.Second
-	return &api{c: c, base: "http://ventula"}
+	return &api{c: c, base: "http://n5-fangov"}
 }
 
 // errNoDaemon is returned when the socket does not answer.

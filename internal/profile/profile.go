@@ -2,7 +2,7 @@
 // detected and driven through sysfs. Only n5pro is hardware-verified.
 package profile
 
-import "github.com/SirRenix/ventula/internal/hwmon"
+import "github.com/SirRenix/n5-fangov/internal/hwmon"
 
 // Channel describes one PWM output of a device.
 type Channel struct {

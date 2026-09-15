@@ -1,6 +1,0 @@
-[Unit]
-Description=ventula failure alert (real cause, restart status, cooldown)
-
-[Service]
-Type=oneshot
-ExecStart=/usr/libexec/ventula/ventula-onfailure

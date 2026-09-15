@@ -1,4 +1,4 @@
-# ventula — Design Contract
+# n5-fangov — Design Contract
 
 Guarded fan control for Proxmox VE and Debian. Single static Go binary: daemon
 (regulation + HTTP API + embedded web UI), CLI, hardware profiles. Hardware-verified
@@ -22,16 +22,16 @@ documented here first, then implemented.
 8. **Config errors never prevent start**: invalid values → built-in defaults + warning + alert.
 9. Go 1.25, `CGO_ENABLED=0`, dependencies: `github.com/BurntSushi/toml` only. No cgo, no
    systemd library (sd_notify is a 20-line unix datagram write).
-10. `/sys` root is overridable via `VENTULA_SYSFS` (tests use a fake tree under `testdata/`).
+10. `/sys` root is overridable via `N5FANGOV_SYSFS` (tests use a fake tree under `testdata/`).
 11. All user-facing strings English. Comments English. Logs to stdout (journald).
 
 ## Layout
 
 ```
-cmd/ventula/main.go            entry: subcommands serve|status|set|auto|curve|log|check|detect|version
-cmd/ventula/wiring.go          the only file in cmd that calls into internal/* (adapters, stores)
+cmd/n5-fangov/main.go          entry: subcommands serve|status|set|auto|curve|log|check|detect|version
+cmd/n5-fangov/wiring.go        the only file in cmd that calls into internal/* (adapters, stores)
 internal/config/               TOML config: load, validate (defaults on error), write, presets
-internal/hwmon/                sysfs discovery + read/write helpers (root from VENTULA_SYSFS)
+internal/hwmon/                sysfs discovery + read/write helpers (root from N5FANGOV_SYSFS)
 internal/profile/              Profile interface + n5pro, nct67xx, it87xx, monitor; Detect()
 internal/sensor/               sensor sources: k10temp, coretemp, nvme:max, drivetemp:max, ec:*, hwmon:<name>:tempN
 internal/control/              controller loop: curve, slew, override, critical, stall, plausibility, failsafe, history ring
@@ -46,7 +46,7 @@ tools/                         remote-go.ps1 (build/test via Docker on Builder)
 testdata/sysfs/n5pro/          fake /sys tree mirroring n5host (hwmon names, temp/fan/pwm files)
 ```
 
-## Config (`/etc/ventula/config.toml`)
+## Config (`/etc/n5-fangov/config.toml`)
 
 ```toml
 [daemon]
@@ -76,9 +76,9 @@ critical = 88           # temp → 255 immediately
 stop = "auto"           # "auto" (profile returns channel to EC/BIOS) or fixed duty 60..255; default "140" for drivetemp:max; n5pro pwm3 never "auto"
 ```
 
-Presets: `/etc/ventula/presets/<name>.toml` containing only `[[channel]]` tables.
-Runtime state: `/run/ventula/` (state.json, overrides, alert stamps). Unix socket:
-`/run/ventula/ventula.sock`.
+Presets: `/etc/n5-fangov/presets/<name>.toml` containing only `[[channel]]` tables.
+Runtime state: `/run/n5-fangov/` (state.json, overrides, alert stamps). Unix socket:
+`/run/n5-fangov/n5-fangov.sock`.
 
 ## Profile interface (internal/profile)
 
@@ -129,13 +129,13 @@ Safe duty of a channel = its fixed stop duty when configured (N5 Pro HDD: 140), 
 overrides do not apply while the temperature is unknown. Status becomes `sensor-error`
 only when every channel is affected. The `sensor` alert goes out on the transition
 into the bad state (cooldown applies), not every cycle — a sensor that is simply absent
-(no HDDs → no `drivetemp`) is one notification, and `ventula status` shows the mode.
+(no HDDs → no `drivetemp`) is one notification, and `n5-fangov status` shows the mode.
 Failsafe (write errors) = duty 255 on all managed channels. Stop = SafeStop per channel.
 Overrides via `Controller.SetOverride(ch, duty)` / `ClearOverride(ch)` (from API).
 Config reload: `Controller.Reload(cfg)` swaps curves/sensors atomically; channel set
 changes require restart (return error).
 
-State snapshot (JSON, also written to /run/ventula/state.json):
+State snapshot (JSON, also written to /run/n5-fangov/state.json):
 ```json
 {"ts":1789500000,"status":"ok","profile":"n5pro","verified":true,
  "channels":[{"name":"cpu","pwm":1,"temp":36.0,"duty":85,"rpm":2000,"mode":"auto","target":85}],
@@ -163,33 +163,33 @@ POST /api/presets/{name}/apply           → 200 {"ok","applied"} or 202 {"resta
 PUT  /api/presets/{name}                 → empty body; saves the current [[channel]] tables; 200 {"ok","saved"}
                                            name: ^[a-z0-9_-]{1,64}$ (same rule as config)
 GET  /api/sensors                        → [{"id","description","temp"?}] temp = live reading in °C when readable
-GET  /api/log?lines=100                  → {"lines": ["..."]} (journalctl -u ventula, newest last)
+GET  /api/log?lines=100                  → {"lines": ["..."]} (journalctl -u n5-fangov, newest last)
 GET  /api/profiles                       → [{"name","title","verified","notes","active"}]
-GET  /api/version                        → {"name":"ventula","version":"..."}
+GET  /api/version                        → {"name":"n5-fangov","version":"..."}
 ```
 Errors are `{"error": "..."}`; PUT /api/config adds `"errors": [...]` (parse warnings).
 413 on bodies over 256 KiB (config) / 4 KiB (override).
 
 TCP handler, in order: Host header must be an IP literal, `localhost`, the listen host
 or an `allowed_hosts` entry (else 421, DNS-rebinding guard); state-changing methods
-need `X-Ventula-Csrf: 1` (else 403); with `auth=basic`, state-changing methods plus
+need `X-N5-Fangov-Csrf: 1` (else 403); with `auth=basic`, state-changing methods plus
 `GET /api/config` and `GET /api/log` need basic auth (else 401, no challenge header;
 failures throttled per IP: 5 free, then 250 ms doubling to 2 s, reset after 10 min).
 Unix socket handler: none of the three checks; the hash is redacted there as well.
 Startup logs a warning when the TCP listener is non-loopback and auth is none.
 
-## CLI (cmd/ventula)
+## CLI (cmd/n5-fangov)
 
 ```
-ventula serve [--config PATH] [--dry-run]
-ventula status               table like n5fan status
-ventula set <ch> <duty|NN%>  ; ventula auto <ch|all>
-ventula curve                ; ventula log [n] ; ventula check ; ventula detect ; ventula version
-ventula test <ch>            channel verification run (like n5pro-ec 06 script), refuses while serve is regulating that channel unless --force;
+n5-fangov serve [--config PATH] [--dry-run]
+n5-fangov status             table like n5fan status
+n5-fangov set <ch> <duty|NN%>  ; n5-fangov auto <ch|all>
+n5-fangov curve              ; n5-fangov log [n] ; n5-fangov check ; n5-fangov detect ; n5-fangov version
+n5-fangov test <ch>          channel verification run (like n5pro-ec 06 script), refuses while serve is regulating that channel unless --force;
                              restores the channel with the stop of the sanitized channel set (n5pro pwm3 never "auto"), unowned pwm → "auto"
 ```
 
-`ventula check` (ExecStartPre) follows rule 8: **fatal** (exit 1) only when serve itself
+`n5-fangov check` (ExecStartPre) follows rule 8: **fatal** (exit 1) only when serve itself
 cannot run — config file exists but is unreadable, no device for the profile, a `pwmN`/
 `pwmN_enable` of a managed channel does not open for writing. Everything else is a
 `warn` line with exit 0: missing config, TOML syntax error (serve uses the defaults),
@@ -208,11 +208,11 @@ verified flag). Dark theme, layout inspired by ProxFansX; no framework; fetch + 
 
 ## Deploy
 
-`deploy/ventula.service`: Type=notify, NotifyAccess=main, WatchdogSec=60,
-ExecStartPre=/usr/bin/ventula check --quiet, ExecStopPost=/usr/bin/ventula failsafe,
-Restart=always, RestartSec=5, StartLimitBurst=5, OnFailure=ventula-onfailure.service,
-RuntimeDirectory=ventula, RuntimeDirectoryMode=0750 (the socket carries no auth).
-`ventula failsafe` = SafeStop all channels using the config,
+`deploy/n5-fangov.service`: Type=notify, NotifyAccess=main, WatchdogSec=60,
+ExecStartPre=/usr/bin/n5-fangov check --quiet, ExecStopPost=/usr/bin/n5-fangov failsafe,
+Restart=always, RestartSec=5, StartLimitBurst=5, OnFailure=n5-fangov-onfailure.service,
+RuntimeDirectory=n5-fangov, RuntimeDirectoryMode=0750 (the socket carries no auth).
+`n5-fangov failsafe` = SafeStop all channels using the config,
 works without the daemon.
 
 Watchdog: the loop sends WATCHDOG=1 at the start of every cycle; in addition serve
@@ -220,12 +220,12 @@ pings every 10 s from a ticker **only while the loop is alive** (`Controller.Las
 within 3×interval). `daemon.interval` is capped at 30 s so two cycles always fit into
 WatchdogSec=60; a stuck loop silences the ticker and the watchdog fires as intended.
 
-`ventula-onfailure` reads Result/ExecMainCode/ExecMainStatus first (they describe the
+`n5-fangov-onfailure` reads Result/ExecMainCode/ExecMainStatus first (they describe the
 new process once the restart began), sleeps 8 s (RestartSec=5), then polls `is-active`
 for up to 25 s while the unit is `activating` (ExecStartPre check + first cycle before
 READY=1). `active` → "restart" alert, still `activating` → "restart in progress" alert
 (same kind), anything else → "failed" alert. Cooldown 30 min per kind via
-`/run/ventula/alert.<kind>`.
+`/run/n5-fangov/alert.<kind>`.
 
 ## Testing
 
@@ -235,7 +235,7 @@ under `testdata/sysfs/n5pro` mirrors n5host. Controller tests use a fake Device.
 ## Integration notes (15.09.2026)
 
 Deviations between this contract and the merged packages, as found while wiring
-`cmd/ventula`. The code is the reference; this list says where the text above
+`cmd/n5-fangov`. The code is the reference; this list says where the text above
 is loose.
 
 - `config.Default()` has **no channels**; the N5 Pro set is `config.N5ProChannels()`.
@@ -277,7 +277,7 @@ is loose.
   controller's `Alerter` interface is satisfied by it. Cooldown lives in the
   controller (stamps `RunDir/alert.<kind>`); `serve` routes its start-up alerts
   (config/profile/start) through `sendAlertCooled`, which uses the same stamp files
-  (30 min), so a restart loop cannot spam PVE. `ventula alert` (onfailure) has no cooldown.
+  (30 min), so a restart loop cannot spam PVE. `n5-fangov alert` (onfailure) has no cooldown.
   `GET /api/config` redacts `password_hash` in both quote styles, with any spacing, in
   the dotted `web.password_hash` form, and — via the parsed value — wherever else a
   hash of 32+ characters appears in the text (inline table); `PUT` restores the stored
@@ -306,7 +306,7 @@ is loose.
   config **file**, marshals, saves and calls `Service.Reload` (which returns
   `ErrRestartRequired` when names/pwm changed → HTTP 202). The rewrite drops
   comments from the config file. `Save` stores the channels of the config file.
-- CLI socket/run-dir override: `VENTULA_RUN_DIR` (default `/run/ventula`) or
+- CLI socket/run-dir override: `N5FANGOV_RUN_DIR` (default `/run/n5-fangov`) or
   `serve --run-dir`; there is no separate socket variable.
-- `ventula check` opens `pwmN`/`pwmN_enable` O_WRONLY without writing (permission
+- `n5-fangov check` opens `pwmN`/`pwmN_enable` O_WRONLY without writing (permission
   probe); everything else in `check`/`detect` is read-only.

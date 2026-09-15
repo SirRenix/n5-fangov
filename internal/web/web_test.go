@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/SirRenix/ventula/internal/control"
+	"github.com/SirRenix/n5-fangov/internal/control"
 )
 
 // ---- fakes ---------------------------------------------------------------
@@ -755,18 +755,18 @@ func TestHostHeader(t *testing.T) {
 	}
 	// Default httptest client (Host = 127.0.0.1:port) passes.
 	wantCode(t, e.do(t, "GET", "/api/version", "", nil), 200)
-	// Socket handler has no Host check (ipc.Client uses http://ventula/).
+	// Socket handler has no Host check (ipc.Client uses http://n5-fangov/).
 	sock := httptest.NewServer(e.srv.SocketHandler())
 	defer sock.Close()
 	req, _ := http.NewRequest("GET", sock.URL+"/api/version", nil)
-	req.Host = "ventula"
+	req.Host = "n5-fangov"
 	res, err := sock.Client().Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	res.Body.Close()
 	if res.StatusCode != 200 {
-		t.Fatalf("socket with Host ventula = %d", res.StatusCode)
+		t.Fatalf("socket with Host n5-fangov = %d", res.StatusCode)
 	}
 	// "*" disables the check.
 	d := e.deps(AuthConfig{})
@@ -1024,7 +1024,7 @@ func TestProfilesVersionSensors(t *testing.T) {
 	wantCode(t, r, 200)
 	var v map[string]string
 	decode(t, r.body, &v)
-	if v["version"] != "1.2.3-test" || v["name"] != "ventula" {
+	if v["version"] != "1.2.3-test" || v["name"] != "n5-fangov" {
 		t.Fatalf("version = %v", v)
 	}
 	r = e.do(t, "GET", "/api/sensors", "", nil)
@@ -1066,7 +1066,7 @@ func TestStaticIndex(t *testing.T) {
 	if !strings.HasPrefix(r.hdr.Get("Content-Type"), "text/html") {
 		t.Errorf("content-type %q", r.hdr.Get("Content-Type"))
 	}
-	if !strings.Contains(r.body, "<title>ventula</title>") || !strings.Contains(r.body, `src="app.js"`) || !strings.Contains(r.body, `href="app.css"`) {
+	if !strings.Contains(r.body, "<title>n5-fangov</title>") || !strings.Contains(r.body, `src="app.js"`) || !strings.Contains(r.body, `href="app.css"`) {
 		t.Errorf("index.html content unexpected: %.200s", r.body)
 	}
 	if strings.Contains(r.body, "<script>") || strings.Contains(r.body, "onclick=") || strings.Contains(r.body, "style=") {
@@ -1077,7 +1077,7 @@ func TestStaticIndex(t *testing.T) {
 	}
 	r = e.do(t, "GET", "/app.js", "", nil)
 	wantCode(t, r, 200)
-	if !strings.HasPrefix(r.hdr.Get("Content-Type"), "text/javascript") || !strings.Contains(r.body, "X-Ventula-Csrf") {
+	if !strings.HasPrefix(r.hdr.Get("Content-Type"), "text/javascript") || !strings.Contains(r.body, "X-N5-Fangov-Csrf") {
 		t.Errorf("app.js: %q %.100s", r.hdr.Get("Content-Type"), r.body)
 	}
 	if len(r.body) > 40*1024 {

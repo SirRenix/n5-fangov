@@ -1,5 +1,5 @@
 // wiring.go isolates every call into a sibling package. All other files in
-// cmd/ventula use only the local types and functions defined here, so an API
+// cmd/n5-fangov use only the local types and functions defined here, so an API
 // change in an internal package is fixed in exactly one place.
 package main
 
@@ -16,16 +16,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/SirRenix/ventula/internal/alert"
-	"github.com/SirRenix/ventula/internal/config"
-	"github.com/SirRenix/ventula/internal/control"
-	"github.com/SirRenix/ventula/internal/hwmon"
-	"github.com/SirRenix/ventula/internal/ipc"
-	"github.com/SirRenix/ventula/internal/profile"
-	"github.com/SirRenix/ventula/internal/sdnotify"
-	"github.com/SirRenix/ventula/internal/sensor"
-	"github.com/SirRenix/ventula/internal/version"
-	"github.com/SirRenix/ventula/internal/web"
+	"github.com/SirRenix/n5-fangov/internal/alert"
+	"github.com/SirRenix/n5-fangov/internal/config"
+	"github.com/SirRenix/n5-fangov/internal/control"
+	"github.com/SirRenix/n5-fangov/internal/hwmon"
+	"github.com/SirRenix/n5-fangov/internal/ipc"
+	"github.com/SirRenix/n5-fangov/internal/profile"
+	"github.com/SirRenix/n5-fangov/internal/sdnotify"
+	"github.com/SirRenix/n5-fangov/internal/sensor"
+	"github.com/SirRenix/n5-fangov/internal/version"
+	"github.com/SirRenix/n5-fangov/internal/web"
 )
 
 // ---------------------------------------------------------------------------

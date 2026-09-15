@@ -1,22 +1,22 @@
 [Unit]
-Description=ventula guarded fan control (Proxmox VE / Debian)
-Documentation=https://github.com/SirRenix/ventula
+Description=n5-fangov guarded fan control (Proxmox VE / Debian)
+Documentation=https://github.com/SirRenix/n5-fangov
 After=systemd-modules-load.service
 # n5-fand is the predecessor; both must never regulate at the same time
 Conflicts=n5-fand.service
 # After 5 failed starts within 5 min the unit stays "failed" -> OnFailure alerts
 StartLimitIntervalSec=300
 StartLimitBurst=5
-OnFailure=ventula-onfailure.service
+OnFailure=n5-fangov-onfailure.service
 
 [Service]
 Type=notify
 NotifyAccess=main
 # Self-check fails LOUDLY when config/profile/sysfs are not usable
-ExecStartPre=/usr/bin/ventula check --quiet
-ExecStart=/usr/bin/ventula serve
+ExecStartPre=/usr/bin/n5-fangov check --quiet
+ExecStart=/usr/bin/n5-fangov serve
 # Runs after EVERY end, also after SIGKILL, watchdog kill or crash
-ExecStopPost=/usr/bin/ventula failsafe
+ExecStopPost=/usr/bin/n5-fangov failsafe
 # The daemon sends WATCHDOG=1 every cycle (interval 2..30 s) and every 10 s from a
 # ticker while the loop is alive (last cycle within 3x interval); a hung loop is restarted
 WatchdogSec=60
@@ -25,8 +25,8 @@ RestartSec=5
 KillSignal=SIGTERM
 TimeoutStopSec=20
 Nice=-5
-# /run/ventula holds the unauthenticated CLI socket: root only (M3)
-RuntimeDirectory=ventula
+# /run/n5-fangov holds the unauthenticated CLI socket: root only (M3)
+RuntimeDirectory=n5-fangov
 RuntimeDirectoryMode=0750
 RuntimeDirectoryPreserve=yes
 ProtectHome=yes

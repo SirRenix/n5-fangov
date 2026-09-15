@@ -1,5 +1,5 @@
 // Package hwmon provides sysfs hwmon discovery and read/write helpers.
-// The sysfs root is overridable via VENTULA_SYSFS so tests can use a fake tree
+// The sysfs root is overridable via N5FANGOV_SYSFS so tests can use a fake tree
 // (see testdata/sysfs/n5pro).
 package hwmon
 
@@ -10,9 +10,9 @@ type FS struct {
 	Root string
 }
 
-// New returns an FS rooted at VENTULA_SYSFS or /sys.
+// New returns an FS rooted at N5FANGOV_SYSFS or /sys.
 func New() *FS {
-	if r := os.Getenv("VENTULA_SYSFS"); r != "" {
+	if r := os.Getenv("N5FANGOV_SYSFS"); r != "" {
 		return &FS{Root: r}
 	}
 	return &FS{Root: "/sys"}

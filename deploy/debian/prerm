@@ -1,16 +1,16 @@
 #!/bin/sh
-# ventula prerm: stop the daemon before the files go away (ExecStopPost runs
+# n5-fangov prerm: stop the daemon before the files go away (ExecStopPost runs
 # the failsafe while the binary and config are still present). On upgrade
 # the daemon keeps running; postinst restarts it.
 set -e
 
 case "$1" in
     remove)
-        if systemctl is-active --quiet ventula.service 2>/dev/null; then
-            systemctl stop ventula.service || true
+        if systemctl is-active --quiet n5-fangov.service 2>/dev/null; then
+            systemctl stop n5-fangov.service || true
         fi
-        systemctl disable ventula.service 2>/dev/null || true
-        /usr/bin/ventula failsafe 2>/dev/null || true
+        systemctl disable n5-fangov.service 2>/dev/null || true
+        /usr/bin/n5-fangov failsafe 2>/dev/null || true
         ;;
 esac
 exit 0

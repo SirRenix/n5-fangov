@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"regexp"
 
-	"github.com/SirRenix/ventula/internal/hwmon"
+	"github.com/SirRenix/n5-fangov/internal/hwmon"
 )
 
 // generic covers Super-I/O chips driven by the standard hwmon pwm interface
@@ -28,7 +28,7 @@ func NCT67xx() Profile {
 		notes: "UNTESTED - from kernel documentation (Documentation/hwmon/nct6775.rst) only. " +
 			"pwmN_enable: 0=full speed, 1=manual, 2=thermal cruise, 3=fan speed cruise, 4=SmartFan III, 5=SmartFan IV. " +
 			"The value found at detection is restored on stop=\"auto\"; if it cannot be read, 5 (SmartFan IV) is used. " +
-			"Verify each channel with `ventula test` before trusting a curve.",
+			"Verify each channel with `n5-fangov test` before trusting a curve.",
 		match:    regexp.MustCompile(`^nct67\d\d$`),
 		fallback: "5",
 	}
@@ -44,7 +44,7 @@ func IT87xx() Profile {
 			"pwmN_enable: 0=off (full speed on most boards), 1=manual, 2=automatic (chip curve). " +
 			"The value found at detection is restored on stop=\"auto\"; if it cannot be read, 2 is used. " +
 			"Some boards need the module parameter ignore_resource_conflict=1. " +
-			"Verify each channel with `ventula test` before trusting a curve.",
+			"Verify each channel with `n5-fangov test` before trusting a curve.",
 		match:    regexp.MustCompile(`^it8[67]\d\d$`),
 		fallback: "2",
 	}

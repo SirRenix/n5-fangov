@@ -1,4 +1,4 @@
-# ventula configuration — /etc/ventula/config.toml
+# n5-fangov configuration — /etc/n5-fangov/config.toml
 #
 # Invalid values never prevent start: each bad field falls back to its
 # built-in default with a warning in the journal and a "config" alert.

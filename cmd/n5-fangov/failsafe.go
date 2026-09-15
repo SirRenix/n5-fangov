@@ -7,7 +7,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/SirRenix/ventula/internal/hwmon"
+	"github.com/SirRenix/n5-fangov/internal/hwmon"
 )
 
 func init() {
@@ -71,12 +71,12 @@ func cmdFailsafe(args []string) int {
 
 // cmdAlert is the hidden entry the onfailure unit uses:
 //
-//	ventula alert <type> <message...>
+//	n5-fangov alert <type> <message...>
 //
 // It delegates to internal/alert (PVE::Notify → mail → log) and always exits 0.
 func cmdAlert(args []string) int {
 	if len(args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: ventula alert <type> <message>")
+		fmt.Fprintln(os.Stderr, "usage: n5-fangov alert <type> <message>")
 		return exitUsage
 	}
 	sendAlert(newAlerter(), args[0], strings.Join(args[1:], " "))

@@ -33,12 +33,12 @@ func handler() http.Handler {
 func tempSock(t *testing.T) string {
 	t.Helper()
 	// Unix socket paths are limited (~108 bytes); keep it short.
-	dir, err := os.MkdirTemp("", "ventula-ipc")
+	dir, err := os.MkdirTemp("", "n5-fangov-ipc")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
-	return filepath.Join(dir, "sub", "ventula.sock")
+	return filepath.Join(dir, "sub", "n5-fangov.sock")
 }
 
 func waitFor(t *testing.T, path string) {
@@ -76,7 +76,7 @@ func TestServeClientRoundTrip(t *testing.T) {
 	}
 
 	c := Client(sock)
-	res, err := c.Get("http://ventula/api/version")
+	res, err := c.Get("http://n5-fangov/api/version")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestServeClientRoundTrip(t *testing.T) {
 		t.Fatalf("version = %v", v)
 	}
 
-	req, _ := http.NewRequest("PUT", "http://ventula/api/echo", strings.NewReader("hello"))
+	req, _ := http.NewRequest("PUT", "http://n5-fangov/api/echo", strings.NewReader("hello"))
 	res, err = c.Do(req)
 	if err != nil {
 		t.Fatal(err)

@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/SirRenix/ventula/internal/hwmon/hwmontest"
+	"github.com/SirRenix/n5-fangov/internal/hwmon/hwmontest"
 )
 
-// fakeN5 points VENTULA_SYSFS at a writable clone of the N5 Pro tree,
+// fakeN5 points N5FANGOV_SYSFS at a writable clone of the N5 Pro tree,
 // optionally without the drivetemp devices (no HDDs / module not loaded).
 func fakeN5(t *testing.T, dropDrivetemp bool) string {
 	t.Helper()
@@ -22,7 +22,7 @@ func fakeN5(t *testing.T, dropDrivetemp bool) string {
 			}
 		}
 	}
-	t.Setenv("VENTULA_SYSFS", root)
+	t.Setenv("N5FANGOV_SYSFS", root)
 	return root
 }
 

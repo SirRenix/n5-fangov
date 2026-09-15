@@ -1,4 +1,4 @@
-ventula - guarded fan control for Proxmox VE and Debian
+n5-fangov - guarded fan control for Proxmox VE and Debian
 Copyright (C) 2026 SirRenix
 
 This program is free software; you can redistribute it and/or modify it under the

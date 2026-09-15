@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Installs ventula from a checkout (binary in dist/ventula or ./ventula) on
+# Installs n5-fangov from a checkout (binary in dist/n5-fangov or ./n5-fangov) on
 # the local host. Idempotent. Run as root: ./deploy/install.sh
 #
-# Does NOT start the daemon: run `ventula check` first, then
-# `systemctl start ventula`. A running n5-fand.service (the Bash predecessor)
+# Does NOT start the daemon: run `n5-fangov check` first, then
+# `systemctl start n5-fangov`. A running n5-fand.service (the Bash predecessor)
 # is stopped and disabled here, because two regulators must never write the
 # same channels.
 set -euo pipefail
@@ -13,7 +13,7 @@ DEPLOY="$ROOT/deploy"
 [[ $EUID -eq 0 ]] || { echo "run as root"; exit 1; }
 
 BIN=""
-for c in "$ROOT/dist/ventula" "$ROOT/ventula"; do
+for c in "$ROOT/dist/n5-fangov" "$ROOT/n5-fangov"; do
     [[ -x "$c" ]] && { BIN="$c"; break; }
 done
 [[ -n "$BIN" ]] || { echo "binary missing: build first (make build / tools/remote-go.ps1 -Fetch)"; exit 1; }
@@ -29,48 +29,48 @@ if systemctl list-unit-files n5-fand.service >/dev/null 2>&1 \
         systemctl stop n5-fand.service
     fi
     if systemctl is-enabled --quiet n5-fand.service 2>/dev/null; then
-        echo "  n5-fand.service was enabled: disabling it. ventula replaces it."
+        echo "  n5-fand.service was enabled: disabling it. n5-fangov replaces it."
         systemctl disable n5-fand.service
     fi
-    echo "  n5-fand files stay installed; remove with n5pro-ec/deploy/uninstall.sh when ventula is proven."
+    echo "  n5-fand files stay installed; remove with n5pro-ec/deploy/uninstall.sh when n5-fangov is proven."
 else
     echo "  not installed, nothing to do"
 fi
 
 echo "--- files ---"
-install -m 0755 "$BIN" /usr/bin/ventula
-install -d -m 0755 /usr/libexec/ventula
-install -m 0755 "$DEPLOY/ventula-onfailure" /usr/libexec/ventula/ventula-onfailure
-install -m 0644 "$DEPLOY/ventula.service"           /etc/systemd/system/ventula.service
-install -m 0644 "$DEPLOY/ventula-onfailure.service" /etc/systemd/system/ventula-onfailure.service
-install -d -m 0755 /etc/ventula /etc/ventula/presets
-if [[ -f /etc/ventula/config.toml ]]; then
-    echo "  /etc/ventula/config.toml exists, not overwritten (template: deploy/config.example.toml)"
+install -m 0755 "$BIN" /usr/bin/n5-fangov
+install -d -m 0755 /usr/libexec/n5-fangov
+install -m 0755 "$DEPLOY/n5-fangov-onfailure" /usr/libexec/n5-fangov/n5-fangov-onfailure
+install -m 0644 "$DEPLOY/n5-fangov.service"             /etc/systemd/system/n5-fangov.service
+install -m 0644 "$DEPLOY/n5-fangov-onfailure.service"   /etc/systemd/system/n5-fangov-onfailure.service
+install -d -m 0755 /etc/n5-fangov /etc/n5-fangov/presets
+if [[ -f /etc/n5-fangov/config.toml ]]; then
+    echo "  /etc/n5-fangov/config.toml exists, not overwritten (template: deploy/config.example.toml)"
 else
-    install -m 0644 "$DEPLOY/config.example.toml" /etc/ventula/config.toml
-    echo "  /etc/ventula/config.toml created from the example (N5 Pro layout)"
+    install -m 0644 "$DEPLOY/config.example.toml" /etc/n5-fangov/config.toml
+    echo "  /etc/n5-fangov/config.toml created from the example (N5 Pro layout)"
 fi
-install -d -m 0755 /usr/share/ventula/pve-notification
-install -m 0644 "$DEPLOY"/pve-notification/*.hbs /usr/share/ventula/pve-notification/
+install -d -m 0755 /usr/share/n5-fangov/pve-notification
+install -m 0644 "$DEPLOY"/pve-notification/*.hbs /usr/share/n5-fangov/pve-notification/
 if [[ -d /etc/pve ]]; then
     # pmxcfs does not allow chmod -> cp instead of install
     mkdir -p /etc/pve/notification-templates/default
-    cp "$DEPLOY/pve-notification/ventula-subject.txt.hbs" /etc/pve/notification-templates/default/
-    cp "$DEPLOY/pve-notification/ventula-body.txt.hbs"    /etc/pve/notification-templates/default/
-    echo "  PVE notification template installed (alerts -> Proxmox notifications, template 'ventula')"
+    cp "$DEPLOY/pve-notification/n5-fangov-subject.txt.hbs"     /etc/pve/notification-templates/default/
+    cp "$DEPLOY/pve-notification/n5-fangov-body.txt.hbs"        /etc/pve/notification-templates/default/
+    echo "  PVE notification template installed (alerts -> Proxmox notifications, template 'n5-fangov')"
 fi
 
 echo "--- systemd ---"
 systemctl daemon-reload
-systemctl enable ventula.service
+systemctl enable n5-fangov.service
 echo "  enabled (not started)"
 
 cat <<EOF
 
 Installed $("$BIN" version). Next steps:
-  ventula detect                  # which profile/channels are seen (read-only)
-  ventula check                   # config, sysfs, sensors, dkms
-  systemctl start ventula && ventula status
-  ventula log 30
-Web UI: [web].listen in /etc/ventula/config.toml (default 127.0.0.1:8010).
+  n5-fangov detect               # which profile/channels are seen (read-only)
+  n5-fangov check                # config, sysfs, sensors, dkms
+  systemctl start n5-fangov && n5-fangov status
+  n5-fangov log 30
+Web UI: [web].listen in /etc/n5-fangov/config.toml (default 127.0.0.1:8010).
 EOF

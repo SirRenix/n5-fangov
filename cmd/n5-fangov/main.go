@@ -1,4 +1,4 @@
-// Command ventula is a guarded fan controller for Proxmox VE and Debian.
+// Command n5-fangov is a guarded fan controller for Proxmox VE and Debian.
 //
 // main.go only dispatches. Every subcommand lives in its own file and
 // registers itself from init(); every call into an internal package goes
@@ -10,7 +10,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/SirRenix/ventula/internal/version"
+	"github.com/SirRenix/n5-fangov/internal/version"
 )
 
 // Exit codes shared by all subcommands.
@@ -20,14 +20,14 @@ const (
 	exitUsage = 2
 )
 
-// Default paths; overridable per subcommand via flags or VENTULA_RUN_DIR.
+// Default paths; overridable per subcommand via flags or N5FANGOV_RUN_DIR.
 const (
-	defaultConfigPath = "/etc/ventula/config.toml"
-	defaultPresetDir  = "/etc/ventula/presets"
-	defaultRunDir     = "/run/ventula"
-	socketName        = "ventula.sock"
+	defaultConfigPath = "/etc/n5-fangov/config.toml"
+	defaultPresetDir  = "/etc/n5-fangov/presets"
+	defaultRunDir     = "/run/n5-fangov"
+	socketName        = "n5-fangov.sock"
 	stateFileName     = "state.json"
-	unitName          = "ventula"
+	unitName          = "n5-fangov"
 )
 
 // command is one subcommand: run returns the process exit code.
@@ -88,7 +88,7 @@ func run(args []string) int {
 	}
 	c, ok := commands[name]
 	if !ok {
-		fmt.Fprintf(os.Stderr, "ventula: unknown subcommand %q\n", name)
+		fmt.Fprintf(os.Stderr, "n5-fangov: unknown subcommand %q\n", name)
 		usage(os.Stderr)
 		return exitUsage
 	}
@@ -96,12 +96,12 @@ func run(args []string) int {
 }
 
 func cmdVersion([]string) int {
-	fmt.Println("ventula", version.Version)
+	fmt.Println("n5-fangov", version.Version)
 	return exitOK
 }
 
 func usage(w io.Writer) {
-	fmt.Fprintln(w, "usage: ventula <subcommand> [args]")
+	fmt.Fprintln(w, "usage: n5-fangov <subcommand> [args]")
 	fmt.Fprintln(w)
 	for _, n := range order {
 		if c, ok := commands[n]; ok && c.hidden {
@@ -110,5 +110,5 @@ func usage(w io.Writer) {
 		fmt.Fprintf(w, "  %-9s %s\n", n, helpText[n])
 	}
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Environment: VENTULA_RUN_DIR (default /run/ventula), VENTULA_SYSFS (default /sys)")
+	fmt.Fprintln(w, "Environment: N5FANGOV_RUN_DIR (default /run/n5-fangov), N5FANGOV_SYSFS (default /sys)")
 }

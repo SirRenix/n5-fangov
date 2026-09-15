@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/SirRenix/ventula/internal/hwmon"
-	"github.com/SirRenix/ventula/internal/hwmon/hwmontest"
-	"github.com/SirRenix/ventula/internal/profile"
-	"github.com/SirRenix/ventula/internal/sensor"
+	"github.com/SirRenix/n5-fangov/internal/hwmon"
+	"github.com/SirRenix/n5-fangov/internal/hwmon/hwmontest"
+	"github.com/SirRenix/n5-fangov/internal/profile"
+	"github.com/SirRenix/n5-fangov/internal/sensor"
 )
 
 func n5pro(t *testing.T) (*hwmon.FS, profile.Device) {

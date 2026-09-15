@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/SirRenix/ventula/internal/hwmon"
+	"github.com/SirRenix/n5-fangov/internal/hwmon"
 )
 
 func init() {
@@ -18,7 +18,7 @@ func init() {
 // Strictly read-only; it never enters manual mode or writes a duty.
 func cmdDetect(args []string) int {
 	if len(args) != 0 {
-		fmt.Fprintln(os.Stderr, "usage: ventula detect")
+		fmt.Fprintln(os.Stderr, "usage: n5-fangov detect")
 		return exitUsage
 	}
 	hw := hwmon.New()

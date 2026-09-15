@@ -3,7 +3,7 @@ package profile
 import (
 	"fmt"
 
-	"github.com/SirRenix/ventula/internal/hwmon"
+	"github.com/SirRenix/n5-fangov/internal/hwmon"
 )
 
 // monitor is the fallback profile: sensors only, no fan control at all.

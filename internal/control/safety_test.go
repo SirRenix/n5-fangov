@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/SirRenix/ventula/internal/config"
+	"github.com/SirRenix/n5-fangov/internal/config"
 )
 
 // cpuOnly is a config that lost ssd and hdd (dropped by the parser or never
@@ -22,7 +22,7 @@ func cpuOnly() config.Config {
 }
 
 // H1: on the N5 Pro the daemon manages pwm1..3 even when the config lacks
-// them, and `ventula failsafe` (control.Failsafe) always puts pwm3 to 140.
+// them, and `n5-fangov failsafe` (control.Failsafe) always puts pwm3 to 140.
 func TestH1N5ProMissingChannelsAdded(t *testing.T) {
 	h := newHarnessDev(t, cpuOnly(), newN5FakeDev(), nil)
 	if got := h.c.Channels(); strings.Join(got, ",") != "cpu,ssd,hdd" {

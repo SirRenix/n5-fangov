@@ -15,8 +15,8 @@ import (
 )
 
 // Template is the PVE notification template name; matches
-// deploy/pve-notification/ventula-{subject,body}.txt.hbs.
-const Template = "ventula"
+// deploy/pve-notification/n5-fangov-{subject,body}.txt.hbs.
+const Template = "n5-fangov"
 
 // Timeout bounds one delivery attempt (perl/mail may hang on a broken MTA).
 const Timeout = 30 * time.Second
@@ -77,7 +77,7 @@ func (l *Log) Alert(kind, msg string) {
 }
 
 // PVE feeds the alert into the Proxmox notification stack as severity
-// "warning" with template "ventula" and matcher fields type=ventula.
+// "warning" with template "n5-fangov" and matcher fields type=n5-fangov.
 type PVE struct {
 	Logger   Logger
 	Hostname string
@@ -90,10 +90,10 @@ func (p *PVE) Name() string { return "pve-notify" }
 // perlProgram reads its data from the environment so that no user text is
 // ever interpolated into Perl source. Note: the template field is "when",
 // not "timestamp" (reserved helper name in PVE templates).
-const perlProgram = `PVE::Notify::warning($ENV{VENTULA_TEMPLATE},
-  { title => $ENV{VENTULA_TITLE}, message => $ENV{VENTULA_MSG},
-    hostname => $ENV{VENTULA_HOST}, when => $ENV{VENTULA_WHEN} },
-  { type => "ventula", hostname => $ENV{VENTULA_HOST}, kind => $ENV{VENTULA_TITLE} });`
+const perlProgram = `PVE::Notify::warning($ENV{N5FANGOV_TEMPLATE},
+  { title => $ENV{N5FANGOV_TITLE}, message => $ENV{N5FANGOV_MSG},
+    hostname => $ENV{N5FANGOV_HOST}, when => $ENV{N5FANGOV_WHEN} },
+  { type => "n5-fangov", hostname => $ENV{N5FANGOV_HOST}, kind => $ENV{N5FANGOV_TITLE} });`
 
 func (p *PVE) Alert(kind, msg string) {
 	p.Logger.Printf("ALERT[%s]: %s", kind, msg)
@@ -105,11 +105,11 @@ func (p *PVE) Alert(kind, msg string) {
 	defer cancel()
 	cmd := command(ctx, perl, "-MPVE::Notify", "-e", perlProgram)
 	cmd.Env = append(os.Environ(),
-		"VENTULA_TEMPLATE="+Template,
-		"VENTULA_TITLE="+kind,
-		"VENTULA_MSG="+msg,
-		"VENTULA_HOST="+p.Hostname,
-		"VENTULA_WHEN="+time.Now().Format("2006-01-02 15:04:05"),
+		"N5FANGOV_TEMPLATE="+Template,
+		"N5FANGOV_TITLE="+kind,
+		"N5FANGOV_MSG="+msg,
+		"N5FANGOV_HOST="+p.Hostname,
+		"N5FANGOV_WHEN="+time.Now().Format("2006-01-02 15:04:05"),
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		p.Logger.Printf("alert: PVE::Notify failed: %v: %s", err, strings.TrimSpace(string(out)))
@@ -139,8 +139,8 @@ func (m *Mail) Alert(kind, msg string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), Timeout)
 	defer cancel()
-	cmd := command(ctx, bin, "-s", fmt.Sprintf("[%s] ventula: %s", m.Hostname, kind), to)
-	cmd.Stdin = strings.NewReader(fmt.Sprintf("ventula on %s reports:\n\n%s\n\nTime: %s\n",
+	cmd := command(ctx, bin, "-s", fmt.Sprintf("[%s] n5-fangov: %s", m.Hostname, kind), to)
+	cmd.Stdin = strings.NewReader(fmt.Sprintf("n5-fangov on %s reports:\n\n%s\n\nTime: %s\n",
 		m.Hostname, msg, time.Now().Format("2006-01-02 15:04:05")))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		m.Logger.Printf("alert: mail failed: %v: %s", err, strings.TrimSpace(string(out)))

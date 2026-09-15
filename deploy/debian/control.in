@@ -1,4 +1,4 @@
-Package: ventula
+Package: n5-fangov
 Version: @VERSION@
 Section: admin
 Priority: optional
@@ -7,7 +7,7 @@ Depends: lm-sensors, systemd
 Recommends: smartmontools
 Conflicts: n5-fand
 Maintainer: SirRenix <sirrenix@users.noreply.github.com>
-Homepage: https://github.com/SirRenix/ventula
+Homepage: https://github.com/SirRenix/n5-fangov
 Description: guarded fan control for Proxmox VE and Debian
  Single static daemon that regulates hwmon pwm channels from temperature
  curves with slew limiting, critical override, stall detection, read-back

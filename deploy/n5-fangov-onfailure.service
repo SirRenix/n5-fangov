@@ -1,0 +1,6 @@
+[Unit]
+Description=n5-fangov failure alert (real cause, restart status, cooldown)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/n5-fangov/n5-fangov-onfailure

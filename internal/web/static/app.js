@@ -1,4 +1,4 @@
-// ventula dashboard — vanilla JS, CSP-safe
+// n5-fangov dashboard — vanilla JS, CSP-safe
 'use strict';
 (() => {
 const $ = (s, r) => (r || document).querySelector(s);
@@ -26,8 +26,8 @@ const REF = { // N5 Pro duty→RPM (measured)
 
 // settings
 const S = { unit: 'C', interval: 5, theme: 'dark' };
-try { Object.assign(S, JSON.parse(localStorage.getItem('ventula') || '{}')); } catch (e) {}
-const saveS = () => { try { localStorage.setItem('ventula', JSON.stringify(S)); } catch (e) {} };
+try { Object.assign(S, JSON.parse(localStorage.getItem('n5-fangov') || '{}')); } catch (e) {}
+const saveS = () => { try { localStorage.setItem('n5-fangov', JSON.stringify(S)); } catch (e) {} };
 const tC = v => S.unit === 'F' ? v * 9 / 5 + 32 : v;
 const unit = () => S.unit === 'F' ? '°F' : '°C';
 const fmtT = (v, d) => v == null || !(v > -900) ? '—' : tC(v).toFixed(d === undefined ? 1 : d);
@@ -60,7 +60,7 @@ const api = async (path, opt) => {
 	opt = opt || {};
 	if (MOCK) return mock(path, opt);
 	const headers = Object.assign({}, opt.headers || {});
-	if (opt.method && opt.method !== 'GET') headers['X-Ventula-Csrf'] = '1';
+	if (opt.method && opt.method !== 'GET') headers['X-N5-Fangov-Csrf'] = '1';
 	if (opt.json !== undefined) { headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(opt.json); }
 	for (;;) {
 		if (auth) headers.Authorization = auth;
@@ -419,7 +419,7 @@ $('#cv-apply').addEventListener('click', async () => {
 	const body = stripChannels(cfgRaw) + edState.map(tomlChannel).join('\n');
 	try { const r = await api('/api/config', { method: 'PUT', body, headers: { 'Content-Type': 'application/toml' } });
 		const warn = r.body && Array.isArray(r.body.warnings) && r.body.warnings.length ? 'Daemon replaced invalid values by defaults:\n' + r.body.warnings.join('\n') : '';
-		n.hidden = r.status !== 202 && !warn; n.className = 'notice'; n.textContent = (r.status === 202 ? 'Saved — restart required (channel set or profile changed): systemctl restart ventula\n' : '') + warn;
+		n.hidden = r.status !== 202 && !warn; n.className = 'notice'; n.textContent = (r.status === 202 ? 'Saved — restart required (channel set or profile changed): systemctl restart n5-fangov\n' : '') + warn;
 		toast(r.status === 202 ? 'Config written, restart required' : warn ? 'Applied with warnings' : 'Curves applied', warn ? 'warn' : 'ok'); await loadConfig(); loadEditor();
 	} catch (e) { n.hidden = false; n.className = 'notice err'; n.textContent = e.message; toast('Rejected', 'err'); }
 });
@@ -460,7 +460,7 @@ async function loadPresets() {
 		for (const p of list) host.append(h('div', { class: 'card ps' }, h('span', { class: 'name' }, p.name), h('span', { class: 'sum' }, chanSummary(p.channels)),
 			h('button', { class: 'btn', onclick: async () => { if (!confirm(`Apply preset “${p.name}”? Curves change immediately.`)) return;
 				const r = await act(() => api(`/api/presets/${encodeURIComponent(p.name)}/apply`, { method: 'POST' }), `Preset ${p.name} applied`); if (!r) return;
-				const n = $('#ps-notice'); n.hidden = r.status !== 202; n.textContent = 'Preset written — restart required: systemctl restart ventula'; await loadConfig(); loadEditor(); } }, 'Apply')));
+				const n = $('#ps-notice'); n.hidden = r.status !== 202; n.textContent = 'Preset written — restart required: systemctl restart n5-fangov'; await loadConfig(); loadEditor(); } }, 'Apply')));
 	} catch (e) { clear(host).append(h('p', { class: 'empty' }, 'presets: ' + e.message)); }
 }
 $('#ps-save').addEventListener('submit', async ev => { ev.preventDefault(); const n = $('#ps-name').value.trim();

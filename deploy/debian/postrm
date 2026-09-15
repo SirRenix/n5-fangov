@@ -1,17 +1,17 @@
 #!/bin/sh
-# ventula postrm: reload systemd after the units are gone; purge removes the
+# n5-fangov postrm: reload systemd after the units are gone; purge removes the
 # config directory and the PVE templates.
 set -e
 
 case "$1" in
     remove)
         systemctl daemon-reload 2>/dev/null || true
-        rm -rf /run/ventula
+        rm -rf /run/n5-fangov
         ;;
     purge)
-        rm -rf /etc/ventula /run/ventula
-        rm -f /etc/pve/notification-templates/default/ventula-subject.txt.hbs \
-              /etc/pve/notification-templates/default/ventula-body.txt.hbs 2>/dev/null || true
+        rm -rf /etc/n5-fangov /run/n5-fangov
+        rm -f /etc/pve/notification-templates/default/n5-fangov-subject.txt.hbs \
+              /etc/pve/notification-templates/default/n5-fangov-body.txt.hbs 2>/dev/null || true
         systemctl daemon-reload 2>/dev/null || true
         ;;
 esac

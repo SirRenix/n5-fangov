@@ -10,13 +10,13 @@ import (
 )
 
 // DefaultPath is the config file location on a normal install.
-const DefaultPath = "/etc/ventula/config.toml"
+const DefaultPath = "/etc/n5-fangov/config.toml"
 
 // DefaultPresetDir holds preset files (<name>.toml with [[channel]] tables only).
-const DefaultPresetDir = "/etc/ventula/presets"
+const DefaultPresetDir = "/etc/n5-fangov/presets"
 
 // ErrUnreadable marks a Load error caused by the file itself (exists but
-// cannot be read), as opposed to a TOML syntax error. `ventula check`
+// cannot be read), as opposed to a TOML syntax error. `n5-fangov check`
 // treats only the former as fatal: with a syntax error serve runs on the
 // built-in defaults (rule 8), with an unreadable file the operator's
 // intent is unknown.

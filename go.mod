@@ -1,4 +1,4 @@
-module github.com/SirRenix/ventula
+module github.com/SirRenix/n5-fangov
 
 go 1.25
 

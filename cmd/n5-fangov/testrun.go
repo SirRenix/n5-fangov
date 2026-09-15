@@ -13,9 +13,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/SirRenix/ventula/internal/hwmon"
-	"github.com/SirRenix/ventula/internal/profile"
-	"github.com/SirRenix/ventula/internal/sensor"
+	"github.com/SirRenix/n5-fangov/internal/hwmon"
+	"github.com/SirRenix/n5-fangov/internal/profile"
+	"github.com/SirRenix/n5-fangov/internal/sensor"
 )
 
 func init() {
@@ -52,20 +52,20 @@ func cmdTest(args []string) int {
 		return exitUsage
 	}
 	if fs.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "usage: ventula test <channel|pwmN> [--force]")
+		fmt.Fprintln(os.Stderr, "usage: n5-fangov test <channel|pwmN> [--force]")
 		return exitUsage
 	}
 	want := fs.Arg(0)
 
-	if os.Geteuid() != 0 && os.Getenv("VENTULA_SYSFS") == "" {
+	if os.Geteuid() != 0 && os.Getenv("N5FANGOV_SYSFS") == "" {
 		fmt.Fprintln(os.Stderr, "test: must run as root (writes pwm via sysfs)")
 		return exitFail
 	}
 
 	dir := runDir()
 	if daemonRunning(dir) || unitActive(unitName) {
-		fmt.Fprintln(os.Stderr, "test: the ventula daemon is running. Two regulators must never write the same channel.")
-		fmt.Fprintln(os.Stderr, "      Stop it first:  systemctl stop ventula   (ExecStopPost puts the fans into the safe state)")
+		fmt.Fprintln(os.Stderr, "test: the n5-fangov daemon is running. Two regulators must never write the same channel.")
+		fmt.Fprintln(os.Stderr, "      Stop it first:  systemctl stop n5-fangov   (ExecStopPost puts the fans into the safe state)")
 		if !*force {
 			fmt.Fprintln(os.Stderr, "      Refusing. --force skips this check but does NOT stop the daemon for you.")
 			return exitFail
@@ -257,12 +257,12 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 
 func (t *testRun) run() (rc int) {
 	p := t.dev.Profile()
-	fmt.Printf("=== ventula test  channel %s (pwm%d, %s)  profile %s  %s ===\n\n",
+	fmt.Printf("=== n5-fangov test  channel %s (pwm%d, %s)  profile %s  %s ===\n\n",
 		t.spec.Name, t.ch.Index, t.ch.Label, p.Name(), time.Now().Format(time.RFC3339))
 	fmt.Println("This command WRITES duty values. It can slow down or stop a fan.")
 	fmt.Println("Confirm before continuing:")
 	fmt.Println("  - maintenance window: no scrubs, backups or large transfers")
-	fmt.Println("  - no other regulator active (ventula, n5-fand, fancontrol)")
+	fmt.Println("  - no other regulator active (n5-fangov, n5-fand, fancontrol)")
 	fmt.Println("  - a way back to the console exists (KVM) in case the fan does not recover")
 	if !t.ch.HasTach {
 		fmt.Printf("  - pwm%d has no tach: the expected finding is \"no tach changes\"\n", t.ch.Index)

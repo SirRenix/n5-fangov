@@ -1,4 +1,4 @@
-// Package config loads, validates and writes the ventula TOML configuration
+// Package config loads, validates and writes the n5-fangov TOML configuration
 // (see DESIGN.md "Config"). The guiding rule is DESIGN rule 8: config errors
 // never prevent start. Parse replaces every invalid value with its built-in
 // default and reports it as a Warning; only a TOML syntax error is returned as
