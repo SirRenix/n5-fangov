@@ -184,6 +184,86 @@ func TestWebBasicAuth(t *testing.T) {
 	}
 }
 
+// TestWebAuthFailOpen (H2): a broken auth setting must never leave the API
+// reachable from the network without auth — listen falls back to loopback.
+func TestWebAuthFailOpen(t *testing.T) {
+	cases := map[string]string{
+		"basic without hash":  "[web]\nlisten = \"0.0.0.0:8010\"\nauth = \"basic\"\nuser = \"admin\"\n",
+		"basic with bad hash": "[web]\nlisten = \"192.0.2.20:8010\"\nauth = \"basic\"\nuser = \"admin\"\npassword_hash = \"zz\"\n",
+		"typo in auth":        "[web]\nlisten = \"[::]:8010\"\nauth = \"Basic\"\nuser = \"admin\"\npassword_hash = \"" + strings.Repeat("ab", 32) + "\"\n",
+	}
+	for name, src := range cases {
+		cfg, warns, err := Parse([]byte(src))
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if cfg.Web.Auth != "none" {
+			t.Errorf("%s: auth = %q", name, cfg.Web.Auth)
+		}
+		if cfg.Web.Listen != "127.0.0.1:8010" {
+			t.Errorf("%s: listen = %q, want loopback", name, cfg.Web.Listen)
+		}
+		found := false
+		for _, w := range warns {
+			if w.Field == "web.listen" && strings.Contains(w.Msg, "auth misconfigured") {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%s: no loopback warning in %v", name, warns)
+		}
+	}
+	// auth = "none" on a LAN address is allowed (warned at startup, not here).
+	cfg, warns, _ := Parse([]byte("[web]\nlisten = \"0.0.0.0:8010\"\nauth = \"none\"\n"))
+	if cfg.Web.Listen != "0.0.0.0:8010" || len(warns) != 0 {
+		t.Errorf("explicit none must keep listen: %+v %v", cfg.Web, warns)
+	}
+	// valid basic on a LAN address keeps listen.
+	cfg, warns, _ = Parse([]byte("[web]\nlisten = \"0.0.0.0:8010\"\nauth = \"basic\"\nuser = \"admin\"\npassword_hash = \"" + strings.Repeat("ab", 32) + "\"\n"))
+	if cfg.Web.Listen != "0.0.0.0:8010" || cfg.Web.Auth != "basic" || len(warns) != 0 {
+		t.Errorf("valid basic must keep listen: %+v %v", cfg.Web, warns)
+	}
+	// broken auth on loopback: no extra warning about listen.
+	_, warns, _ = Parse([]byte("[web]\nlisten = \"localhost:8010\"\nauth = \"basic\"\n"))
+	for _, w := range warns {
+		if w.Field == "web.listen" {
+			t.Errorf("loopback listen must not be touched: %v", warns)
+		}
+	}
+	for _, l := range []string{"127.0.0.1:8010", "127.1.2.3:1", "[::1]:8010", "localhost:8010"} {
+		if !IsLoopbackListen(l) {
+			t.Errorf("%q should be loopback", l)
+		}
+	}
+	for _, l := range []string{"0.0.0.0:8010", ":8010", "[::]:8010", "192.0.2.20:8010", "n5host:8010", "nope"} {
+		if IsLoopbackListen(l) {
+			t.Errorf("%q should not be loopback", l)
+		}
+	}
+}
+
+func TestWebAllowedHosts(t *testing.T) {
+	cfg, warns, _ := Parse([]byte("[web]\nallowed_hosts = [\"n5.lan\", \" fans.example \", \"\"]\n"))
+	if len(warns) != 0 || !reflect.DeepEqual(cfg.Web.AllowedHosts, []string{"n5.lan", "fans.example"}) {
+		t.Errorf("allowed_hosts: %v %v", cfg.Web.AllowedHosts, warns)
+	}
+	cfg, warns, _ = Parse([]byte("[web]\nallowed_hosts = \"n5host\"\n"))
+	hasWarn(t, warns, "web.allowed_hosts")
+	if cfg.Web.AllowedHosts != nil {
+		t.Errorf("invalid allowed_hosts must be ignored: %v", cfg.Web.AllowedHosts)
+	}
+	cfg, _, _ = Parse([]byte("[web]\nallowed_hosts = []\n"))
+	if cfg.Web.AllowedHosts != nil {
+		t.Errorf("empty allowed_hosts must be nil: %v", cfg.Web.AllowedHosts)
+	}
+	cfg = Default()
+	cfg.Web.AllowedHosts = []string{"n5.lan"}
+	back, warns, err := Parse(Marshal(cfg))
+	if err != nil || len(warns) != 0 || !reflect.DeepEqual(cfg, back) {
+		t.Errorf("allowed_hosts round trip: %v %v\n%+v", err, warns, back)
+	}
+}
+
 func TestChannelWarnings(t *testing.T) {
 	src := `
 [[channel]]

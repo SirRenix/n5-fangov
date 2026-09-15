@@ -1,7 +1,6 @@
 // Package web serves the HTTP API (DESIGN.md "HTTP API") and the embedded
-// static UI. The same mux is served on TCP (with CSRF header + optional basic
-// auth on state-changing methods) and on the unix socket (no auth, see
-// SocketHandler).
+// static UI. The same mux is served on TCP (with Host check, CSRF header and
+// optional basic auth) and on the unix socket (no checks, see SocketHandler).
 package web
 
 import (
@@ -15,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"net"
 	"net/http"
 	"regexp"
@@ -32,14 +32,22 @@ var staticFS embed.FS
 // CSRFHeader must be present (value "1") on every state-changing request over TCP.
 const CSRFHeader = "X-Pvefand-Csrf"
 
-// maxBody bounds request bodies (config TOML, override JSON).
-const maxBody = 256 << 10
+// RedactedHash replaces password_hash in GET /api/config; a PUT carrying it
+// keeps the hash from the current file.
+const RedactedHash = "<unchanged>"
+
+// Body limits: config TOML and override JSON.
+const (
+	maxBody         = 256 << 10
+	maxOverrideBody = 4096
+)
 
 // ConfigStore is the daemon's config file access.
 type ConfigStore interface {
 	// Raw returns the current config file text.
 	Raw() ([]byte, error)
-	// Save validates and writes a new config file text.
+	// Save writes a new config file text. Validation happens before Save
+	// (Deps.Validate); Save may still refuse.
 	Save(raw []byte) error
 }
 
@@ -77,10 +85,12 @@ type ProfileInfo struct {
 	Active   bool   `json:"active"`
 }
 
-// SensorInfo is one selectable sensor source for the curve editor.
+// SensorInfo is one selectable sensor source for the curve editor. Temp is
+// the current reading in degrees C when the source is readable right now.
 type SensorInfo struct {
-	ID          string `json:"id"`
-	Description string `json:"description"`
+	ID          string   `json:"id"`
+	Description string   `json:"description"`
+	Temp        *float64 `json:"temp,omitempty"`
 }
 
 // AuthConfig mirrors the [web] auth settings.
@@ -94,41 +104,68 @@ type AuthConfig struct {
 // (Config, Presets, Log, Profiles, Sensors) make the corresponding endpoints
 // answer 501.
 type Deps struct {
-	Service  control.Service
-	Config   ConfigStore
+	Service control.Service
+	Config  ConfigStore
+	// Validate parses raw config text before it is saved. err refuses the
+	// PUT (400); warnings are returned to the client but do not block.
+	Validate func(raw []byte) (warnings []string, err error)
 	Presets  PresetStore
 	Log      LogSource
 	Profiles func() []ProfileInfo
 	Version  string
 	Auth     AuthConfig
 	Sensors  func() []SensorInfo
+	// AllowedHosts are Host header values (host or host:port) accepted on
+	// TCP besides IP literals and "localhost"; "*" disables the check.
+	AllowedHosts []string
+	// Logf receives auth failures and startup warnings; nil → log.Printf.
+	Logf func(format string, args ...any)
 }
 
 // Server holds the mux and serves it on TCP and on the unix socket.
 type Server struct {
-	deps   Deps
-	mux    *http.ServeMux
-	tcp    http.Handler
-	socket http.Handler
+	deps    Deps
+	mux     *http.ServeMux
+	tcp     http.Handler
+	socket  http.Handler
+	allowed map[string]bool
+	anyHost bool
+	limiter *authLimiter
+	logf    func(string, ...any)
 }
 
 // New builds a Server from deps.
 func New(deps Deps) *Server {
-	s := &Server{deps: deps, mux: http.NewServeMux()}
+	s := &Server{deps: deps, mux: http.NewServeMux(), allowed: map[string]bool{}, limiter: newAuthLimiter()}
+	s.logf = deps.Logf
+	if s.logf == nil {
+		s.logf = log.Printf
+	}
+	for _, h := range deps.AllowedHosts {
+		h = normalizeHost(h)
+		switch h {
+		case "":
+		case "*":
+			s.anyHost = true
+		default:
+			s.allowed[h] = true
+		}
+	}
 	s.routes()
 	s.socket = s.mux
 	s.tcp = s.guard(s.mux)
 	return s
 }
 
-// NewHandler returns the TCP handler (CSRF + auth enforced).
+// NewHandler returns the TCP handler (Host check, CSRF, auth enforced).
 func NewHandler(deps Deps) http.Handler { return New(deps).Handler() }
 
-// Handler is the TCP handler: CSRF header and (when Auth.Mode == "basic")
-// basic auth are required on state-changing methods.
+// Handler is the TCP handler: Host header validated on every request, CSRF
+// header on state-changing methods, and (when Auth.Mode == "basic") basic
+// auth on state-changing methods plus GET /api/config and GET /api/log.
 func (s *Server) Handler() http.Handler { return s.tcp }
 
-// SocketHandler is the same mux without CSRF/auth, for the unix socket.
+// SocketHandler is the same mux without Host/CSRF/auth checks, for the unix socket.
 func (s *Server) SocketHandler() http.Handler { return s.socket }
 
 // ListenAndServe serves the TCP handler on tcpAddr until ctx is done.
@@ -140,8 +177,13 @@ func (s *Server) ListenAndServe(ctx context.Context, tcpAddr string) error {
 	return s.Serve(ctx, ln)
 }
 
-// Serve serves the TCP handler on ln until ctx is done.
+// Serve serves the TCP handler on ln until ctx is done. A listener that is
+// reachable from the network without basic auth is logged loudly (H3): the
+// API can then change fan duties for anyone on the LAN.
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
+	if !strings.EqualFold(s.deps.Auth.Mode, "basic") && !listenerIsLoopback(ln) {
+		s.logf("WARNING: web listening on non-loopback %s without auth; anyone reaching this port can change fan duties. Set [web].auth = \"basic\" or bind to 127.0.0.1 behind a TLS reverse proxy.", ln.Addr())
+	}
 	srv := &http.Server{
 		Handler:           s.tcp,
 		ReadHeaderTimeout: 10 * time.Second,
@@ -166,6 +208,16 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 		return nil
 	}
 	return err
+}
+
+// listenerIsLoopback reports whether ln is bound to a loopback address.
+// Unknown address types count as non-loopback.
+func listenerIsLoopback(ln net.Listener) bool {
+	ta, ok := ln.Addr().(*net.TCPAddr)
+	if !ok || ta.IP == nil {
+		return false
+	}
+	return ta.IP.IsLoopback()
 }
 
 // ServeSocket serves the unauthenticated SocketHandler on the unix socket at
@@ -203,28 +255,77 @@ func (s *Server) routes() {
 	m.HandleFunc("/", s.static)
 }
 
-// guard enforces the CSRF header and basic auth on state-changing methods.
+// protectedRead lists the GET endpoints that need basic auth (when enabled):
+// the config carries the credential hash, the log may carry anything.
+func protectedRead(path string) bool {
+	return path == "/api/config" || path == "/api/log"
+}
+
+// guard enforces, in this order: Host header (DNS rebinding, M1), CSRF
+// header on state-changing methods, basic auth on state-changing methods
+// and protected reads.
 func (s *Server) guard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet, http.MethodHead, http.MethodOptions:
-			next.ServeHTTP(w, r)
+		if !s.hostAllowed(r.Host) {
+			writeError(w, http.StatusMisdirectedRequest, "host header not allowed; use the IP address, localhost or a configured allowed_hosts entry")
 			return
 		}
-		if r.Header.Get(CSRFHeader) != "1" {
+		write := true
+		switch r.Method {
+		case http.MethodGet, http.MethodHead, http.MethodOptions:
+			write = false
+		}
+		if write && r.Header.Get(CSRFHeader) != "1" {
 			writeError(w, http.StatusForbidden, "missing "+CSRFHeader+" header")
 			return
 		}
-		if strings.EqualFold(s.deps.Auth.Mode, "basic") {
+		if strings.EqualFold(s.deps.Auth.Mode, "basic") && (write || protectedRead(r.URL.Path)) {
 			if !s.authorized(r) {
+				ip := remoteIP(r)
+				user, _, _ := r.BasicAuth()
+				n, delay := s.limiter.fail(ip)
+				s.logf("web: auth failure from %s (user %q, %s %s, %d recent failures, delay %s)", ip, user, r.Method, r.URL.Path, n, delay)
 				// No WWW-Authenticate challenge on purpose: the UI shows its own
 				// login form and sends the Authorization header itself.
 				writeError(w, http.StatusUnauthorized, "authentication required")
 				return
 			}
+			s.limiter.reset(remoteIP(r))
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// hostAllowed accepts IP literals, localhost and the configured hosts (M1).
+func (s *Server) hostAllowed(host string) bool {
+	if s.anyHost {
+		return true
+	}
+	h := normalizeHost(host)
+	if h == "" {
+		return false
+	}
+	if h == "localhost" || net.ParseIP(h) != nil {
+		return true
+	}
+	return s.allowed[h]
+}
+
+// normalizeHost strips a port and IPv6 brackets and lowercases.
+func normalizeHost(host string) string {
+	h := strings.TrimSpace(host)
+	if hp, _, err := net.SplitHostPort(h); err == nil {
+		h = hp
+	}
+	h = strings.TrimSuffix(strings.TrimPrefix(h, "["), "]")
+	return strings.ToLower(strings.TrimSuffix(h, "."))
+}
+
+func remoteIP(r *http.Request) string {
+	if h, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return h
+	}
+	return r.RemoteAddr
 }
 
 // authorized checks basic auth in constant time against the configured hash.
@@ -278,11 +379,60 @@ func (s *Server) getHistory(w http.ResponseWriter, r *http.Request) {
 		}
 		minutes = n
 	}
-	pts := s.deps.Service.History(time.Duration(minutes) * time.Minute)
-	if pts == nil {
-		pts = []control.HistoryPoint{}
+	var since int64
+	if q := r.URL.Query().Get("since"); q != "" {
+		n, err := strconv.ParseInt(q, 10, 64)
+		if err != nil || n < 0 {
+			writeError(w, http.StatusBadRequest, "since must be a unix timestamp")
+			return
+		}
+		since = n
 	}
-	writeJSON(w, http.StatusOK, pts)
+	pts := s.deps.Service.History(time.Duration(minutes) * time.Minute)
+	out := make([]control.HistoryPoint, 0, len(pts))
+	for _, p := range pts {
+		if p.TS > since {
+			out = append(out, p)
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+var hashLine = regexp.MustCompile(`(?m)^([ \t]*password_hash[ \t]*=[ \t]*)"([^"\n]*)"`)
+
+// redactRaw replaces a non-empty password_hash value in TOML text (H1).
+func redactRaw(raw string) string {
+	return hashLine.ReplaceAllStringFunc(raw, func(m string) string {
+		sub := hashLine.FindStringSubmatch(m)
+		if sub[2] == "" || sub[2] == RedactedHash {
+			return m
+		}
+		return sub[1] + `"` + RedactedHash + `"`
+	})
+}
+
+// currentHash extracts password_hash from TOML text ("" when absent).
+func currentHash(raw string) string {
+	if sub := hashLine.FindStringSubmatch(raw); sub != nil {
+		return sub[2]
+	}
+	return ""
+}
+
+// redactParsed blanks web.password_hash in the parsed object when it is the
+// map layout produced by the daemon's config store.
+func redactParsed(cfg any) {
+	m, ok := cfg.(map[string]any)
+	if !ok {
+		return
+	}
+	web, ok := m["web"].(map[string]any)
+	if !ok {
+		return
+	}
+	if h, ok := web["password_hash"].(string); ok && h != "" {
+		web["password_hash"] = RedactedHash
+	}
 }
 
 func (s *Server) getConfig(w http.ResponseWriter, r *http.Request) {
@@ -295,9 +445,10 @@ func (s *Server) getConfig(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "read config: "+err.Error())
 		return
 	}
-	out := map[string]any{"raw": string(raw)}
+	out := map[string]any{"raw": redactRaw(string(raw))}
 	if p, ok := s.deps.Config.(ParsedConfigStore); ok {
 		if cfg, err := p.Parsed(); err == nil {
+			redactParsed(cfg)
 			out["config"] = cfg
 		} else {
 			out["parse_error"] = err.Error()
@@ -306,6 +457,9 @@ func (s *Server) getConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+// putConfig: read (413 on overflow) → restore a redacted hash → validate
+// (400, nothing written) → save → reload. Order matters (M2): a syntax
+// error never reaches the file.
 func (s *Server) putConfig(w http.ResponseWriter, r *http.Request) {
 	if s.deps.Config == nil || s.deps.Service == nil {
 		writeError(w, http.StatusNotImplemented, "no config store")
@@ -313,12 +467,40 @@ func (s *Server) putConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBody))
 	if err != nil {
-		writeError(w, http.StatusRequestEntityTooLarge, "body too large or unreadable")
+		if isTooLarge(err) {
+			writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("body exceeds %d bytes", maxBody))
+			return
+		}
+		writeError(w, http.StatusBadRequest, "unreadable body: "+err.Error())
 		return
 	}
 	if len(strings.TrimSpace(string(body))) == 0 {
 		writeError(w, http.StatusBadRequest, "empty config")
 		return
+	}
+	if strings.Contains(string(body), RedactedHash) {
+		cur, err := s.deps.Config.Raw()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "read current config: "+err.Error())
+			return
+		}
+		hash := currentHash(string(cur))
+		body = []byte(hashLine.ReplaceAllStringFunc(string(body), func(m string) string {
+			sub := hashLine.FindStringSubmatch(m)
+			if sub[2] != RedactedHash {
+				return m
+			}
+			return sub[1] + `"` + hash + `"`
+		}))
+	}
+	var warnings []string
+	if s.deps.Validate != nil {
+		warns, err := s.deps.Validate(body)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "config rejected: " + err.Error(), "errors": nonNil(warns)})
+			return
+		}
+		warnings = warns
 	}
 	if err := s.deps.Config.Save(body); err != nil {
 		writeError(w, http.StatusBadRequest, "config rejected: "+err.Error())
@@ -327,12 +509,25 @@ func (s *Server) putConfig(w http.ResponseWriter, r *http.Request) {
 	err = s.deps.Service.Reload(body)
 	switch {
 	case err == nil:
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "restart_required": false})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "restart_required": false, "warnings": nonNil(warnings)})
 	case errors.Is(err, control.ErrRestartRequired):
-		writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "restart_required": true, "message": err.Error()})
+		writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "restart_required": true, "message": err.Error(), "warnings": nonNil(warnings)})
 	default:
 		writeError(w, http.StatusInternalServerError, "config saved, reload failed: "+err.Error())
 	}
+}
+
+func nonNil(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
+}
+
+// isTooLarge reports whether err comes from http.MaxBytesReader (L3).
+func isTooLarge(err error) bool {
+	var mbe *http.MaxBytesError
+	return errors.As(err, &mbe)
 }
 
 // overrideBody accepts {"duty":191} or {"percent":75}.
@@ -343,13 +538,14 @@ type overrideBody struct {
 
 var channelName = regexp.MustCompile(`^[a-z0-9_]{1,32}$`)
 
-func (s *Server) channelExists(name string) bool {
+// channel returns the channel state from a fresh snapshot, or nil.
+func (s *Server) channel(name string) *control.ChannelState {
 	for _, c := range s.deps.Service.Snapshot().Channels {
 		if c.Name == name {
-			return true
+			return &c
 		}
 	}
-	return false
+	return nil
 }
 
 func (s *Server) putOverride(w http.ResponseWriter, r *http.Request) {
@@ -363,9 +559,13 @@ func (s *Server) putOverride(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var b overrideBody
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxOverrideBody))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&b); err != nil {
+		if isTooLarge(err) {
+			writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("body exceeds %d bytes", maxOverrideBody))
+			return
+		}
 		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
 		return
 	}
@@ -390,7 +590,7 @@ func (s *Server) putOverride(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "duty or percent required")
 		return
 	}
-	if !s.channelExists(name) {
+	if s.channel(name) == nil {
 		writeError(w, http.StatusNotFound, "unknown channel "+name)
 		return
 	}
@@ -398,7 +598,13 @@ func (s *Server) putOverride(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "channel": name, "duty": duty, "mode": control.ModeManual})
+	// The override is applied by the loop on its next cycle; mode reports
+	// what the channel is doing now (L4: critical/stall are not "manual").
+	mode := control.ModeManual
+	if c := s.channel(name); c != nil {
+		mode = c.Mode
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "channel": name, "duty": duty, "mode": mode})
 }
 
 func (s *Server) deleteOverride(w http.ResponseWriter, r *http.Request) {
@@ -411,7 +617,7 @@ func (s *Server) deleteOverride(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid channel name")
 		return
 	}
-	if !s.channelExists(name) {
+	if s.channel(name) == nil {
 		writeError(w, http.StatusNotFound, "unknown channel "+name)
 		return
 	}
@@ -419,10 +625,15 @@ func (s *Server) deleteOverride(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "channel": name, "mode": control.ModeAuto})
+	mode := control.ModeAuto
+	if c := s.channel(name); c != nil {
+		mode = c.Mode
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "channel": name, "mode": mode})
 }
 
-var presetName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
+// presetName mirrors config's preset rule ([a-z0-9_-], at most 64) (L1).
+var presetName = regexp.MustCompile(`^[a-z0-9_-]{1,64}$`)
 
 func (s *Server) getPresets(w http.ResponseWriter, r *http.Request) {
 	if s.deps.Presets == nil {

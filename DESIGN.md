@@ -65,6 +65,7 @@ listen = "127.0.0.1:8010"
 auth = "none"           # none | basic
 user = ""
 password_hash = ""      # bcrypt not available without deps → sha256 hex of "user:password" (documented limitation)
+allowed_hosts = []      # extra Host header values (reverse-proxy names); IP literals, localhost and the listen host always pass; "*" disables the check
 
 [[channel]]
 name = "cpu"            # unique, [a-z0-9_]
@@ -137,18 +138,38 @@ State snapshot (JSON, also written to /run/pvefand/state.json):
 ## HTTP API (internal/web) — served on TCP (web) and unix socket (CLI)
 
 ```
-GET  /api/state                → snapshot
-GET  /api/history?minutes=120  → [{ts, temps{}, duty{}, rpm{}}]
-GET  /api/config               → current TOML as JSON + raw text
-PUT  /api/config               → body: raw TOML text; validate; write file; reload (or "restart required")
-PUT  /api/override/{name}      → {"duty":191} ; DELETE → back to curve
-GET  /api/presets              → [{name, channels}] ; POST /api/presets/{name}/apply ; PUT /api/presets/{name} (save current)
-GET  /api/log?lines=100        → journal lines (journalctl -u pvefand -o json) or internal ring if unavailable
-GET  /api/profiles             → all profiles with verified flag + notes
-GET  /api/version
+GET  /api/state                          → snapshot (see above)
+GET  /api/history?minutes=120&since=TS   → [{ts, temp{}, duty{}, rpm{}}] maps by channel name; since (unix s, optional)
+                                           returns only points with ts > since (incremental polling)
+GET  /api/config                         → {"raw": "<toml>", "config": {daemon{}, web{}, channel[], warnings[]}}
+                                           password_hash is "<unchanged>" in both when set
+PUT  /api/config                         → body: raw TOML; "<unchanged>" restores the stored hash; validate
+                                           (syntax error → 400 {"error","errors":[...]}, nothing written) → write file
+                                           → reload: 200 {"ok","restart_required":false,"warnings":[...]} or
+                                           202 {"restart_required":true} when the channel set/profile changed
+PUT  /api/override/{name}                → {"duty":191} or {"percent":75} (0..100 → duty rounded);
+                                           200 {"ok","channel","duty","mode"} — mode is the channel's mode in the
+                                           current cycle (the override applies on the next one; critical/stall win)
+DELETE /api/override/{name}              → back to curve, 200 {"ok","channel","mode"}
+GET  /api/presets                        → [{"name","channels":[<channel names>]}]
+POST /api/presets/{name}/apply           → 200 {"ok","applied"} or 202 {"restart_required":true}
+PUT  /api/presets/{name}                 → empty body; saves the current [[channel]] tables; 200 {"ok","saved"}
+                                           name: ^[a-z0-9_-]{1,64}$ (same rule as config)
+GET  /api/sensors                        → [{"id","description","temp"?}] temp = live reading in °C when readable
+GET  /api/log?lines=100                  → {"lines": ["..."]} (journalctl -u pvefand, newest last)
+GET  /api/profiles                       → [{"name","title","verified","notes","active"}]
+GET  /api/version                        → {"name":"pvefand","version":"..."}
 ```
-Writes on TCP require auth when `auth=basic` and header `X-Pvefand-Csrf: 1`.
-Unix socket: no auth.
+Errors are `{"error": "..."}`; PUT /api/config adds `"errors": [...]` (parse warnings).
+413 on bodies over 256 KiB (config) / 4 KiB (override).
+
+TCP handler, in order: Host header must be an IP literal, `localhost`, the listen host
+or an `allowed_hosts` entry (else 421, DNS-rebinding guard); state-changing methods
+need `X-Pvefand-Csrf: 1` (else 403); with `auth=basic`, state-changing methods plus
+`GET /api/config` and `GET /api/log` need basic auth (else 401, no challenge header;
+failures throttled per IP: 5 free, then 250 ms doubling to 2 s, reset after 10 min).
+Unix socket handler: none of the three checks; the hash is redacted there as well.
+Startup logs a warning when the TCP listener is non-loopback and auth is none.
 
 ## CLI (cmd/pvefand)
 
@@ -172,7 +193,8 @@ verified flag). Dark theme, layout inspired by ProxFansX; no framework; fetch + 
 `deploy/pvefand.service`: Type=notify, NotifyAccess=main, WatchdogSec=60,
 ExecStartPre=/usr/bin/pvefand check --quiet, ExecStopPost=/usr/bin/pvefand failsafe,
 Restart=always, RestartSec=5, StartLimitBurst=5, OnFailure=pvefand-onfailure.service,
-RuntimeDirectory=pvefand. `pvefand failsafe` = SafeStop all channels using the config,
+RuntimeDirectory=pvefand, RuntimeDirectoryMode=0750 (the socket carries no auth).
+`pvefand failsafe` = SafeStop all channels using the config,
 works without the daemon.
 
 ## Testing
@@ -231,6 +253,17 @@ is loose.
 - `GET /api/log` answers `{"lines": [...]}`, `GET /api/config` answers
   `{"raw": "...", "config": {...}}` where `config` mirrors the TOML layout
   (lowercase keys, durations as strings, plus `warnings`).
+- `web.Deps` also takes `Validate func([]byte) ([]string, error)` (wired to
+  `config.Parse`; PUT /api/config refuses on error before anything is written),
+  `AllowedHosts []string` (listen host + `[web].allowed_hosts`) and `Logf`.
+  `SensorInfo.Temp *float64` is filled by wiring via `sensor.Parse(...).Read()`.
+- `[web]` is read once at start; `PUT /api/config` reloads daemon/channel values
+  only. Auth, listen and allowed_hosts changes need a restart.
+- `config.Parse` forces `listen` to loopback when auth is misconfigured (H2);
+  `config.IsLoopbackListen` is the shared predicate.
+- `ipc.Listen` sets umask 0117 around `net.Listen` (process-wide for a few
+  microseconds; a state.json written concurrently in that window gets 0660
+  instead of 0644 — harmless). Build tags: `umask_unix.go` / `umask_other.go`.
 - Presets: `Apply` loads `<dir>/<name>.toml`, replaces `Channels` of the parsed
   config **file**, marshals, saves and calls `Service.Reload` (which returns
   `ErrRestartRequired` when names/pwm changed → HTTP 202). The rewrite drops

@@ -54,6 +54,7 @@ type webSpec struct {
 	Auth         string // none | basic
 	User         string
 	PasswordHash string
+	AllowedHosts []string // extra Host header values; "*" disables the check
 }
 
 func warningStrings(warns []config.Warning) []string {
@@ -109,6 +110,7 @@ func webOf(cfg config.Config) webSpec {
 		Auth:         cfg.Web.Auth,
 		User:         cfg.Web.User,
 		PasswordHash: cfg.Web.PasswordHash,
+		AllowedHosts: append([]string(nil), cfg.Web.AllowedHosts...),
 	}
 }
 
@@ -297,22 +299,44 @@ func newWebServer(d webDeps) webServer {
 		}
 		return out
 	}
+	// sensors lists the selectable ids; concrete ids (no "<...>" pattern)
+	// carry a live reading so the curve editor can show it.
 	sensors := func() []web.SensorInfo {
 		var out []web.SensorInfo
 		for _, i := range sensor.Known(d.Sysfs, d.Device) {
-			out = append(out, web.SensorInfo{ID: i.ID, Description: i.Description})
+			info := web.SensorInfo{ID: i.ID, Description: i.Description}
+			if !strings.Contains(i.ID, "<") {
+				if src, err := sensor.Parse(i.ID, d.Sysfs, d.Device); err == nil {
+					if t, err := readTempC(src); err == nil {
+						info.Temp = &t
+					}
+				}
+			}
+			out = append(out, info)
 		}
 		return out
 	}
+	// Host header allow-list (DNS rebinding): the listen host itself plus
+	// [web].allowed_hosts; IP literals and localhost always pass.
+	allowed := append([]string(nil), d.Web.AllowedHosts...)
+	if h, _, err := net.SplitHostPort(d.Web.Listen); err == nil && h != "" {
+		allowed = append(allowed, h)
+	}
 	s := web.New(web.Deps{
-		Service:  d.Service,
-		Config:   fileConfigStore{path: d.ConfigPath},
-		Presets:  dirPresetStore{dir: d.PresetDir, cfgPath: d.ConfigPath, svc: d.Service},
-		Log:      func(n int) ([]string, error) { return journalLines(unitName, n) },
-		Profiles: profiles,
-		Version:  version.Version,
-		Auth:     web.AuthConfig{Mode: d.Web.Auth, User: d.Web.User, PasswordHash: d.Web.PasswordHash},
-		Sensors:  sensors,
+		Service: d.Service,
+		Config:  fileConfigStore{path: d.ConfigPath},
+		Validate: func(raw []byte) ([]string, error) {
+			_, warns, err := config.Parse(raw)
+			return warningStrings(warns), err
+		},
+		Presets:      dirPresetStore{dir: d.PresetDir, cfgPath: d.ConfigPath, svc: d.Service},
+		Log:          func(n int) ([]string, error) { return journalLines(unitName, n) },
+		Profiles:     profiles,
+		Version:      version.Version,
+		Auth:         web.AuthConfig{Mode: d.Web.Auth, User: d.Web.User, PasswordHash: d.Web.PasswordHash},
+		Sensors:      sensors,
+		AllowedHosts: allowed,
+		Logf:         log.Printf,
 	})
 	return webServer{TCP: s.Handler(), Socket: s.SocketHandler(), serve: s.Serve}
 }
@@ -376,11 +400,19 @@ func configJSON(cfg config.Config, warns []config.Warning) map[string]any {
 		},
 		"web": map[string]any{
 			"listen": cfg.Web.Listen, "auth": cfg.Web.Auth, "user": cfg.Web.User,
-			"password_hash": cfg.Web.PasswordHash,
+			"password_hash": cfg.Web.PasswordHash, // redacted by the web layer before it leaves the daemon
+			"allowed_hosts": nonNilStrings(cfg.Web.AllowedHosts),
 		},
 		"channel":  chans,
 		"warnings": warningStrings(warns),
 	}
+}
+
+func nonNilStrings(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
 }
 
 // dirPresetStore backs /api/presets with <dir>/<name>.toml files that hold

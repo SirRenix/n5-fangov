@@ -1,9 +1,12 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -22,6 +25,7 @@ type fakeService struct {
 	hist      []control.HistoryPoint
 	histSince time.Duration
 	overrides map[string]int
+	fixedMode map[string]control.Mode // wins over the override-derived mode
 	cleared   []string
 	reloadErr error
 	reloaded  [][]byte
@@ -44,10 +48,27 @@ func newFakeService() *fakeService {
 			{TS: 1789500000, Temp: map[string]float64{"cpu": 36.0}, Duty: map[string]int{"cpu": 85}, RPM: map[string]int{"cpu": 2000}},
 		},
 		overrides: map[string]int{},
+		fixedMode: map[string]control.Mode{},
 	}
 }
 
-func (f *fakeService) Snapshot() control.Snapshot { f.mu.Lock(); defer f.mu.Unlock(); return f.snap }
+// Snapshot mirrors the controller: an override shows as manual on the next
+// read, unless fixedMode pins the channel (critical/stall keep their mode).
+func (f *fakeService) Snapshot() control.Snapshot {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	s := f.snap
+	s.Channels = append([]control.ChannelState(nil), s.Channels...)
+	for i := range s.Channels {
+		if _, ok := f.overrides[s.Channels[i].Name]; ok {
+			s.Channels[i].Mode = control.ModeManual
+		}
+		if m, ok := f.fixedMode[s.Channels[i].Name]; ok {
+			s.Channels[i].Mode = m
+		}
+	}
+	return s
+}
 func (f *fakeService) History(since time.Duration) []control.HistoryPoint {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -96,7 +117,10 @@ func (c *fakeConfig) Save(b []byte) error {
 type fakeParsedConfig struct{ fakeConfig }
 
 func (c *fakeParsedConfig) Parsed() (any, error) {
-	return map[string]any{"daemon": map[string]any{"interval": "10s"}}, nil
+	return map[string]any{
+		"daemon": map[string]any{"interval": "10s"},
+		"web":    map[string]any{"auth": "basic", "user": "admin", "password_hash": currentHash(string(c.raw))},
+	}, nil
 }
 
 type fakePresets struct {
@@ -119,25 +143,27 @@ func (p *fakePresets) Save(name string) error { p.saved = append(p.saved, name);
 const sampleTOML = "[daemon]\ninterval = \"10s\"\n\n[web]\nlisten = \"127.0.0.1:8010\"\n\n[[channel]]\nname = \"cpu\"\npwm = 1\nsensor = \"k10temp\"\ncurve = [[45,85],[80,255]]\ncritical = 88\nstop = \"auto\"\n"
 
 type env struct {
-	svc     *fakeService
-	cfg     *fakeConfig
-	presets *fakePresets
-	logs    []string
-	srv     *Server
-	ts      *httptest.Server
+	svc      *fakeService
+	cfg      *fakeConfig
+	presets  *fakePresets
+	logs     []string
+	srv      *Server
+	ts       *httptest.Server
+	validate func([]byte) ([]string, error)
+	logged   []string
+	logMu    sync.Mutex
 }
 
-func newEnv(t *testing.T, auth AuthConfig) *env {
-	t.Helper()
-	e := &env{
-		svc:     newFakeService(),
-		cfg:     &fakeConfig{raw: []byte(sampleTOML)},
-		presets: &fakePresets{list: []Preset{{Name: "quiet", Channels: []string{"cpu", "hdd"}}}},
-		logs:    []string{"line1", "line2", "line3"},
-	}
-	e.srv = New(Deps{
+func (e *env) deps(auth AuthConfig) Deps {
+	return Deps{
 		Service: e.svc,
 		Config:  e.cfg,
+		Validate: func(raw []byte) ([]string, error) {
+			if e.validate != nil {
+				return e.validate(raw)
+			}
+			return nil, nil
+		},
 		Presets: e.presets,
 		Log: func(n int) ([]string, error) {
 			if n < len(e.logs) {
@@ -148,10 +174,30 @@ func newEnv(t *testing.T, auth AuthConfig) *env {
 		Profiles: func() []ProfileInfo {
 			return []ProfileInfo{{Name: "n5pro", Title: "Minisforum N5 Pro (IT5571 EC)", Verified: true, Active: true}, {Name: "nct67xx", Title: "Nuvoton NCT67xx", Notes: "untested"}}
 		},
-		Sensors: func() []SensorInfo { return []SensorInfo{{ID: "k10temp", Description: "AMD Tctl"}} },
-		Version: "1.2.3-test",
-		Auth:    auth,
-	})
+		Sensors: func() []SensorInfo {
+			t := 38.2
+			return []SensorInfo{{ID: "k10temp", Description: "AMD Tctl", Temp: &t}, {ID: "hwmon:<name>:tempN", Description: "pattern"}}
+		},
+		Version:      "1.2.3-test",
+		Auth:         auth,
+		AllowedHosts: []string{"n5.lan", "Fans.Example:8010"},
+		Logf: func(format string, args ...any) {
+			e.logMu.Lock()
+			e.logged = append(e.logged, fmt.Sprintf(format, args...))
+			e.logMu.Unlock()
+		},
+	}
+}
+
+func newEnv(t *testing.T, auth AuthConfig) *env {
+	t.Helper()
+	e := &env{
+		svc:     newFakeService(),
+		cfg:     &fakeConfig{raw: []byte(sampleTOML)},
+		presets: &fakePresets{list: []Preset{{Name: "quiet", Channels: []string{"cpu", "hdd"}}}},
+		logs:    []string{"line1", "line2", "line3"},
+	}
+	e.srv = New(e.deps(auth))
 	e.ts = httptest.NewServer(e.srv.Handler())
 	t.Cleanup(e.ts.Close)
 	return e
@@ -174,6 +220,10 @@ func (e *env) do(t *testing.T, method, path, body string, hdr map[string]string)
 		t.Fatal(err)
 	}
 	for k, v := range hdr {
+		if k == "Host" {
+			req.Host = v
+			continue
+		}
 		req.Header.Set(k, v)
 	}
 	res, err := e.ts.Client().Do(req)
@@ -186,6 +236,12 @@ func (e *env) do(t *testing.T, method, path, body string, hdr map[string]string)
 }
 
 var csrf = map[string]string{CSRFHeader: "1"}
+
+func basicAuth(u, p string) map[string]string {
+	req, _ := http.NewRequest("GET", "/", nil)
+	req.SetBasicAuth(u, p)
+	return map[string]string{CSRFHeader: "1", "Authorization": req.Header.Get("Authorization")}
+}
 
 func decode(t *testing.T, body string, v any) {
 	t.Helper()
@@ -204,10 +260,11 @@ func wantCode(t *testing.T, r resp, code int) {
 func wantError(t *testing.T, r resp, code int, contains string) {
 	t.Helper()
 	wantCode(t, r, code)
-	var m map[string]string
+	var m map[string]any
 	decode(t, r.body, &m)
-	if !strings.Contains(m["error"], contains) {
-		t.Fatalf("error %q does not contain %q", m["error"], contains)
+	msg, _ := m["error"].(string)
+	if !strings.Contains(msg, contains) {
+		t.Fatalf("error %q does not contain %q", msg, contains)
 	}
 }
 
@@ -277,6 +334,30 @@ func TestHistoryQuery(t *testing.T) {
 	}
 }
 
+// TestHistorySince: the UI polls incrementally with since=<last ts>; only
+// strictly newer points come back.
+func TestHistorySince(t *testing.T) {
+	e := newEnv(t, AuthConfig{})
+	r := e.do(t, "GET", "/api/history?minutes=120&since=1789499990", "", nil)
+	wantCode(t, r, 200)
+	var pts []map[string]any
+	decode(t, r.body, &pts)
+	if len(pts) != 1 || pts[0]["ts"].(float64) != 1789500000 {
+		t.Fatalf("since filter: %v", pts)
+	}
+	r = e.do(t, "GET", "/api/history?since=1789500000", "", nil)
+	if strings.TrimSpace(r.body) != "[]" {
+		t.Errorf("nothing newer → %q", r.body)
+	}
+	r = e.do(t, "GET", "/api/history?since=0", "", nil)
+	decode(t, r.body, &pts)
+	if len(pts) != 2 {
+		t.Errorf("since=0 → %d points", len(pts))
+	}
+	wantError(t, e.do(t, "GET", "/api/history?since=-1", "", nil), 400, "since")
+	wantError(t, e.do(t, "GET", "/api/history?since=x", "", nil), 400, "since")
+}
+
 func TestOverridePutDelete(t *testing.T) {
 	e := newEnv(t, AuthConfig{})
 	r := e.do(t, "PUT", "/api/override/cpu", `{"duty":191}`, csrf)
@@ -309,6 +390,29 @@ func TestOverridePutDelete(t *testing.T) {
 	if _, ok := e.svc.overrides["cpu"]; ok {
 		t.Fatal("override not cleared")
 	}
+	decode(t, r.body, &m)
+	if m["mode"] != "auto" {
+		t.Errorf("mode after clear = %v", m["mode"])
+	}
+}
+
+// TestOverrideModeFromSnapshot (L4): the response reports what the channel
+// is doing, not a constant "manual" — a critical channel stays critical.
+func TestOverrideModeFromSnapshot(t *testing.T) {
+	e := newEnv(t, AuthConfig{})
+	e.svc.fixedMode["cpu"] = control.ModeCritical
+	r := e.do(t, "PUT", "/api/override/cpu", `{"duty":10}`, csrf)
+	wantCode(t, r, 200)
+	var m map[string]any
+	decode(t, r.body, &m)
+	if m["mode"] != "critical" {
+		t.Fatalf("mode = %v, want critical", m["mode"])
+	}
+	r = e.do(t, "DELETE", "/api/override/cpu", "", csrf)
+	decode(t, r.body, &m)
+	if m["mode"] != "critical" {
+		t.Fatalf("mode after delete = %v, want critical", m["mode"])
+	}
 }
 
 func TestOverrideValidation(t *testing.T) {
@@ -339,13 +443,31 @@ func TestOverrideValidation(t *testing.T) {
 	}
 }
 
+// TestBodyTooLarge (L3): oversized bodies answer 413 on every body endpoint.
+func TestBodyTooLarge(t *testing.T) {
+	e := newEnv(t, AuthConfig{})
+	big := sampleTOML + "# " + strings.Repeat("x", maxBody) + "\n"
+	wantError(t, e.do(t, "PUT", "/api/config", big, csrf), 413, "exceeds")
+	if len(e.cfg.saved) != 0 || len(e.svc.reloaded) != 0 {
+		t.Fatal("oversized config was saved or reloaded")
+	}
+	pad := `{"duty":10,"percent":` + strings.Repeat("1", maxOverrideBody) + `}`
+	wantError(t, e.do(t, "PUT", "/api/override/cpu", pad, csrf), 413, "exceeds")
+	if len(e.svc.overrides) != 0 {
+		t.Fatal("oversized override was applied")
+	}
+	// Just under the limit is still fine.
+	wantCode(t, e.do(t, "PUT", "/api/override/cpu", `{"duty":10}`, csrf), 200)
+}
+
 func TestCSRFHeaderRequired(t *testing.T) {
 	e := newEnv(t, AuthConfig{})
 	wantError(t, e.do(t, "PUT", "/api/override/cpu", `{"duty":10}`, nil), 403, CSRFHeader)
 	wantError(t, e.do(t, "DELETE", "/api/override/cpu", "", map[string]string{CSRFHeader: "yes"}), 403, CSRFHeader)
 	wantError(t, e.do(t, "PUT", "/api/config", sampleTOML, nil), 403, CSRFHeader)
 	wantError(t, e.do(t, "POST", "/api/presets/quiet/apply", "", nil), 403, CSRFHeader)
-	if len(e.svc.overrides) != 0 || len(e.presets.applied) != 0 || len(e.cfg.saved) != 0 {
+	wantError(t, e.do(t, "PUT", "/api/presets/quiet", "", nil), 403, CSRFHeader)
+	if len(e.svc.overrides) != 0 || len(e.presets.applied) != 0 || len(e.presets.saved) != 0 || len(e.cfg.saved) != 0 {
 		t.Fatal("state changed without CSRF header")
 	}
 	// GET stays open.
@@ -367,7 +489,7 @@ func TestCSRFHeaderRequired(t *testing.T) {
 func TestBasicAuth(t *testing.T) {
 	hash := PasswordHash("admin", "s3cret")
 	e := newEnv(t, AuthConfig{Mode: "basic", User: "admin", PasswordHash: hash})
-	// GET open without auth.
+	// GET state open without auth.
 	wantCode(t, e.do(t, "GET", "/api/state", "", nil), 200)
 	// Write without auth → 401.
 	r := e.do(t, "PUT", "/api/override/cpu", `{"duty":10}`, csrf)
@@ -375,26 +497,21 @@ func TestBasicAuth(t *testing.T) {
 	if r.hdr.Get("WWW-Authenticate") != "" {
 		t.Error("unexpected WWW-Authenticate challenge (UI shows its own prompt)")
 	}
-	auth := func(u, p string) map[string]string {
-		req, _ := http.NewRequest("GET", "/", nil)
-		req.SetBasicAuth(u, p)
-		return map[string]string{CSRFHeader: "1", "Authorization": req.Header.Get("Authorization")}
-	}
-	wantError(t, e.do(t, "PUT", "/api/override/cpu", `{"duty":10}`, auth("admin", "wrong")), 401, "authentication")
-	wantError(t, e.do(t, "PUT", "/api/override/cpu", `{"duty":10}`, auth("other", "s3cret")), 401, "authentication")
+	wantError(t, e.do(t, "PUT", "/api/override/cpu", `{"duty":10}`, basicAuth("admin", "wrong")), 401, "authentication")
+	wantError(t, e.do(t, "PUT", "/api/override/cpu", `{"duty":10}`, basicAuth("other", "s3cret")), 401, "authentication")
 	wantError(t, e.do(t, "PUT", "/api/override/cpu", `{"duty":10}`, map[string]string{CSRFHeader: "1", "Authorization": "Bearer xyz"}), 401, "authentication")
 	// CSRF checked before auth.
-	wantError(t, e.do(t, "PUT", "/api/override/cpu", `{"duty":10}`, map[string]string{"Authorization": auth("admin", "s3cret")["Authorization"]}), 403, CSRFHeader)
+	wantError(t, e.do(t, "PUT", "/api/override/cpu", `{"duty":10}`, map[string]string{"Authorization": basicAuth("admin", "s3cret")["Authorization"]}), 403, CSRFHeader)
 	if len(e.svc.overrides) != 0 {
 		t.Fatal("override set without valid auth")
 	}
-	wantCode(t, e.do(t, "PUT", "/api/override/cpu", `{"duty":10}`, auth("admin", "s3cret")), 200)
+	wantCode(t, e.do(t, "PUT", "/api/override/cpu", `{"duty":10}`, basicAuth("admin", "s3cret")), 200)
 	if e.svc.overrides["cpu"] != 10 {
 		t.Fatal("override not set with valid auth")
 	}
 	// Mode is case-insensitive; misconfigured hash fails closed.
 	e2 := newEnv(t, AuthConfig{Mode: "Basic", User: "admin", PasswordHash: "nothex"})
-	wantError(t, e2.do(t, "PUT", "/api/override/cpu", `{"duty":10}`, auth("admin", "s3cret")), 401, "authentication")
+	wantError(t, e2.do(t, "PUT", "/api/override/cpu", `{"duty":10}`, basicAuth("admin", "s3cret")), 401, "authentication")
 	// Socket handler ignores auth.
 	sock := httptest.NewServer(e.srv.SocketHandler())
 	defer sock.Close()
@@ -406,6 +523,283 @@ func TestBasicAuth(t *testing.T) {
 	res.Body.Close()
 	if res.StatusCode != 200 {
 		t.Fatalf("socket delete = %d", res.StatusCode)
+	}
+}
+
+// TestAuthRequiredOnAllWrites: every state-changing endpoint answers 401
+// without credentials when auth = basic, and nothing changes.
+func TestAuthRequiredOnAllWrites(t *testing.T) {
+	e := newEnv(t, AuthConfig{Mode: "basic", User: "admin", PasswordHash: PasswordHash("admin", "pw")})
+	wantError(t, e.do(t, "DELETE", "/api/override/hdd", "", csrf), 401, "authentication")
+	wantError(t, e.do(t, "PUT", "/api/config", sampleTOML, csrf), 401, "authentication")
+	wantError(t, e.do(t, "POST", "/api/presets/quiet/apply", "", csrf), 401, "authentication")
+	wantError(t, e.do(t, "PUT", "/api/presets/quiet", "", csrf), 401, "authentication")
+	if len(e.svc.cleared) != 0 || len(e.cfg.saved) != 0 || len(e.svc.reloaded) != 0 || len(e.presets.applied) != 0 || len(e.presets.saved) != 0 {
+		t.Fatal("state changed without auth")
+	}
+	ok := basicAuth("admin", "pw")
+	wantCode(t, e.do(t, "DELETE", "/api/override/hdd", "", ok), 200)
+	wantCode(t, e.do(t, "PUT", "/api/config", sampleTOML, ok), 200)
+	wantCode(t, e.do(t, "POST", "/api/presets/quiet/apply", "", ok), 200)
+	wantCode(t, e.do(t, "PUT", "/api/presets/quiet", "", ok), 200)
+}
+
+// TestProtectedReadsNeedAuth (H1): with auth = basic the config (carries the
+// hash) and the log need credentials; state/history stay open for dashboards.
+func TestProtectedReadsNeedAuth(t *testing.T) {
+	e := newEnv(t, AuthConfig{Mode: "basic", User: "admin", PasswordHash: PasswordHash("admin", "pw")})
+	wantError(t, e.do(t, "GET", "/api/config", "", nil), 401, "authentication")
+	wantError(t, e.do(t, "GET", "/api/log", "", nil), 401, "authentication")
+	wantCode(t, e.do(t, "GET", "/api/state", "", nil), 200)
+	wantCode(t, e.do(t, "GET", "/api/history", "", nil), 200)
+	wantCode(t, e.do(t, "GET", "/api/presets", "", nil), 200)
+	wantCode(t, e.do(t, "GET", "/", "", nil), 200)
+	ok := basicAuth("admin", "pw")
+	wantCode(t, e.do(t, "GET", "/api/config", "", ok), 200)
+	wantCode(t, e.do(t, "GET", "/api/log", "", ok), 200)
+	// auth = none: everything readable.
+	e2 := newEnv(t, AuthConfig{})
+	wantCode(t, e2.do(t, "GET", "/api/config", "", nil), 200)
+	wantCode(t, e2.do(t, "GET", "/api/log", "", nil), 200)
+}
+
+// TestConfigHashRedaction (H1): the hash never leaves the daemon; a PUT that
+// carries the placeholder keeps the stored hash, a real value replaces it.
+func TestConfigHashRedaction(t *testing.T) {
+	hash := PasswordHash("admin", "pw")
+	withHash := strings.Replace(sampleTOML, "[web]\n", "[web]\nauth = \"basic\"\nuser = \"admin\"\npassword_hash = \""+hash+"\"\n", 1)
+	e := newEnv(t, AuthConfig{Mode: "basic", User: "admin", PasswordHash: hash})
+	pc := &fakeParsedConfig{fakeConfig{raw: []byte(withHash)}}
+	e.cfg = &pc.fakeConfig
+	d := e.deps(AuthConfig{Mode: "basic", User: "admin", PasswordHash: hash})
+	d.Config = pc
+	e.srv = New(d)
+	e.ts.Close()
+	e.ts = httptest.NewServer(e.srv.Handler())
+	defer e.ts.Close()
+	ok := basicAuth("admin", "pw")
+
+	r := e.do(t, "GET", "/api/config", "", ok)
+	wantCode(t, r, 200)
+	if strings.Contains(r.body, hash) {
+		t.Fatalf("hash leaked: %s", r.body)
+	}
+	var m map[string]any
+	decode(t, r.body, &m)
+	raw := m["raw"].(string)
+	if !strings.Contains(raw, `password_hash = "`+RedactedHash+`"`) {
+		t.Fatalf("raw not redacted: %s", raw)
+	}
+	if m["config"].(map[string]any)["web"].(map[string]any)["password_hash"] != RedactedHash {
+		t.Fatalf("parsed not redacted: %v", m["config"])
+	}
+	// Socket handler redacts as well (one code path).
+	sock := httptest.NewServer(e.srv.SocketHandler())
+	defer sock.Close()
+	res, err := http.Get(sock.URL + "/api/config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	if strings.Contains(string(b), hash) {
+		t.Fatalf("hash leaked over socket: %s", b)
+	}
+
+	// PUT the redacted text back (what the UI does): stored hash survives.
+	edited := strings.Replace(raw, "critical = 88", "critical = 90", 1)
+	wantCode(t, e.do(t, "PUT", "/api/config", edited, ok), 200)
+	saved := string(pc.saved[len(pc.saved)-1])
+	if !strings.Contains(saved, `password_hash = "`+hash+`"`) || strings.Contains(saved, RedactedHash) || !strings.Contains(saved, "critical = 90") {
+		t.Fatalf("placeholder not substituted: %s", saved)
+	}
+	if string(e.svc.reloaded[len(e.svc.reloaded)-1]) != saved {
+		t.Fatal("reload got a different text than the file")
+	}
+	// A new real hash is written as given.
+	newHash := PasswordHash("admin", "other")
+	wantCode(t, e.do(t, "PUT", "/api/config", strings.Replace(raw, RedactedHash, newHash, 1), ok), 200)
+	if !strings.Contains(string(pc.saved[len(pc.saved)-1]), newHash) {
+		t.Fatal("new hash not written")
+	}
+	// Empty hash is not redacted (nothing to hide) and round-trips as empty.
+	pc.raw = []byte(strings.Replace(sampleTOML, "[web]\n", "[web]\npassword_hash = \"\"\n", 1))
+	r = e.do(t, "GET", "/api/config", "", ok)
+	wantCode(t, r, 200)
+	if strings.Contains(r.body, RedactedHash) {
+		t.Fatalf("empty hash redacted: %s", r.body)
+	}
+	if redactRaw("password_hash = \"abc\" # x\n  password_hash=\"def\"\nother = \"abc\"\n") != "password_hash = \"<unchanged>\" # x\n  password_hash=\"<unchanged>\"\nother = \"abc\"\n" {
+		t.Fatal("redactRaw shape")
+	}
+}
+
+// TestConfigValidateBeforeSave (M2): a syntax error answers 400 with the
+// warnings under "errors" and nothing is written or reloaded; field
+// warnings do not block but are reported.
+func TestConfigValidateBeforeSave(t *testing.T) {
+	e := newEnv(t, AuthConfig{})
+	e.validate = func(raw []byte) ([]string, error) {
+		if strings.Contains(string(raw), "[[[") {
+			return []string{"toml: expected key"}, errors.New("toml: bare keys cannot contain '['")
+		}
+		if strings.Contains(string(raw), "critical = 999") {
+			return []string{"channel.cpu.critical: 999 outside 81..150, default 90 used"}, nil
+		}
+		return nil, nil
+	}
+	r := e.do(t, "PUT", "/api/config", "[[[", csrf)
+	wantCode(t, r, 400)
+	var m map[string]any
+	decode(t, r.body, &m)
+	if !strings.Contains(m["error"].(string), "bare keys") || len(m["errors"].([]any)) != 1 {
+		t.Fatalf("400 body = %v", m)
+	}
+	if len(e.cfg.saved) != 0 || len(e.svc.reloaded) != 0 {
+		t.Fatal("invalid config reached Save or Reload")
+	}
+	r = e.do(t, "PUT", "/api/config", strings.Replace(sampleTOML, "critical = 88", "critical = 999", 1), csrf)
+	wantCode(t, r, 200)
+	decode(t, r.body, &m)
+	if w := m["warnings"].([]any); len(w) != 1 || !strings.Contains(w[0].(string), "critical") {
+		t.Fatalf("warnings = %v", m["warnings"])
+	}
+	if len(e.cfg.saved) != 1 || len(e.svc.reloaded) != 1 {
+		t.Fatal("config with warnings must be saved and reloaded")
+	}
+	r = e.do(t, "PUT", "/api/config", sampleTOML, csrf)
+	decode(t, r.body, &m)
+	if w, ok := m["warnings"].([]any); !ok || len(w) != 0 {
+		t.Fatalf("clean config warnings = %v", m["warnings"])
+	}
+}
+
+// TestHostHeader (M1): DNS rebinding sends a foreign Host; only IP literals,
+// localhost and configured names are served.
+func TestHostHeader(t *testing.T) {
+	e := newEnv(t, AuthConfig{})
+	for _, h := range []string{"evil.example", "evil.example:8010", "n5.lan.evil", "fans.example.evil:8010", "127.0.0.1.evil"} {
+		r := e.do(t, "GET", "/api/state", "", map[string]string{"Host": h})
+		wantError(t, r, 421, "host header")
+		r = e.do(t, "PUT", "/api/override/cpu", `{"duty":10}`, map[string]string{"Host": h, CSRFHeader: "1"})
+		wantCode(t, r, 421)
+	}
+	if len(e.svc.overrides) != 0 {
+		t.Fatal("override applied with foreign Host")
+	}
+	// An absent Host (HTTP/1.0) cannot be sent through the Go client; check
+	// the predicate directly.
+	if e.srv.hostAllowed("") || e.srv.hostAllowed(":8010") || e.srv.hostAllowed("evil.example") {
+		t.Fatal("hostAllowed accepts empty or foreign host")
+	}
+	for _, h := range []string{"127.0.0.1", "127.0.0.1:8010", "192.0.2.20:8010", "[::1]:8010", "[fd00::1]", "localhost", "LOCALHOST:8010", "n5.lan", "N5HOST.LAN:8010", "n5.lan.", "fans.example", "fans.example:443"} {
+		wantCode(t, e.do(t, "GET", "/api/version", "", map[string]string{"Host": h}), 200)
+	}
+	// Default httptest client (Host = 127.0.0.1:port) passes.
+	wantCode(t, e.do(t, "GET", "/api/version", "", nil), 200)
+	// Socket handler has no Host check (ipc.Client uses http://pvefand/).
+	sock := httptest.NewServer(e.srv.SocketHandler())
+	defer sock.Close()
+	req, _ := http.NewRequest("GET", sock.URL+"/api/version", nil)
+	req.Host = "pvefand"
+	res, err := sock.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != 200 {
+		t.Fatalf("socket with Host pvefand = %d", res.StatusCode)
+	}
+	// "*" disables the check.
+	d := e.deps(AuthConfig{})
+	d.AllowedHosts = []string{"*"}
+	wild := httptest.NewServer(New(d).Handler())
+	defer wild.Close()
+	req, _ = http.NewRequest("GET", wild.URL+"/api/version", nil)
+	req.Host = "whatever.example"
+	res, err = wild.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != 200 {
+		t.Fatalf("wildcard allowed_hosts = %d", res.StatusCode)
+	}
+}
+
+// TestAuthRateLimit (M4): repeated failures from one IP are delayed with a
+// growing back-off, logged, and reset by a success.
+func TestAuthRateLimit(t *testing.T) {
+	e := newEnv(t, AuthConfig{Mode: "basic", User: "admin", PasswordHash: PasswordHash("admin", "pw")})
+	now := time.Unix(1789500000, 0)
+	var slept []time.Duration
+	var mu sync.Mutex
+	e.srv.limiter.now = func() time.Time { return now }
+	e.srv.limiter.sleep = func(d time.Duration) { mu.Lock(); slept = append(slept, d); mu.Unlock() }
+	for i := 0; i < 9; i++ {
+		wantCode(t, e.do(t, "PUT", "/api/override/cpu", `{"duty":10}`, basicAuth("admin", "wrong")), 401)
+	}
+	want := []time.Duration{250 * time.Millisecond, 500 * time.Millisecond, time.Second, 2 * time.Second}
+	mu.Lock()
+	got := append([]time.Duration(nil), slept...)
+	mu.Unlock()
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("delays = %v, want %v", got, want)
+	}
+	// Capped at 2 s.
+	wantCode(t, e.do(t, "PUT", "/api/override/cpu", `{"duty":10}`, basicAuth("admin", "wrong")), 401)
+	mu.Lock()
+	last := slept[len(slept)-1]
+	mu.Unlock()
+	if last != 2*time.Second {
+		t.Fatalf("cap = %v", last)
+	}
+	e.logMu.Lock()
+	nlog := len(e.logged)
+	sample := ""
+	if nlog > 0 {
+		sample = e.logged[nlog-1]
+	}
+	e.logMu.Unlock()
+	if nlog != 10 || !strings.Contains(sample, "auth failure") || !strings.Contains(sample, `user "admin"`) || strings.Contains(sample, "wrong") {
+		t.Fatalf("log = %d entries, last %q", nlog, sample)
+	}
+	// Success resets: the next failure is immediate again.
+	wantCode(t, e.do(t, "PUT", "/api/override/cpu", `{"duty":10}`, basicAuth("admin", "pw")), 200)
+	mu.Lock()
+	n := len(slept)
+	mu.Unlock()
+	wantCode(t, e.do(t, "PUT", "/api/override/cpu", `{"duty":10}`, basicAuth("admin", "wrong")), 401)
+	mu.Lock()
+	if len(slept) != n {
+		t.Fatalf("delay after reset: %v", slept[n:])
+	}
+	mu.Unlock()
+	// Quiet period resets too.
+	for i := 0; i < 6; i++ {
+		e.do(t, "PUT", "/api/override/cpu", `{"duty":10}`, basicAuth("admin", "wrong"))
+	}
+	now = now.Add(limitReset + time.Second)
+	mu.Lock()
+	n = len(slept)
+	mu.Unlock()
+	wantCode(t, e.do(t, "PUT", "/api/override/cpu", `{"duty":10}`, basicAuth("admin", "wrong")), 401)
+	mu.Lock()
+	if len(slept) != n {
+		t.Fatalf("delay after quiet period: %v", slept[n:])
+	}
+	mu.Unlock()
+	// Table stays bounded.
+	l := newAuthLimiter()
+	l.sleep = func(time.Duration) {}
+	for i := 0; i < limitEntries+100; i++ {
+		l.fail(fmt.Sprintf("10.0.%d.%d", i/256, i%256))
+	}
+	if len(l.byIP) > limitEntries {
+		t.Fatalf("limiter table grew to %d", len(l.byIP))
+	}
+	if delayFor(limitFree+1) != limitBase || delayFor(100) != limitMax || delayFor(0) != 0 {
+		t.Fatal("delayFor shape")
 	}
 }
 
@@ -518,12 +912,17 @@ func TestPresets(t *testing.T) {
 	if len(e.presets.applied) != 1 || e.presets.applied[0] != "quiet" {
 		t.Fatalf("applied = %v", e.presets.applied)
 	}
-	wantCode(t, e.do(t, "PUT", "/api/presets/night-1.0", "", csrf), 200)
-	if len(e.presets.saved) != 1 || e.presets.saved[0] != "night-1.0" {
+	// PUT with an empty body saves the current curves.
+	wantCode(t, e.do(t, "PUT", "/api/presets/night-1_0", "", csrf), 200)
+	if len(e.presets.saved) != 1 || e.presets.saved[0] != "night-1_0" {
 		t.Fatalf("saved = %v", e.presets.saved)
 	}
-	wantError(t, e.do(t, "PUT", "/api/presets/.hidden", "", csrf), 400, "invalid preset name")
-	wantError(t, e.do(t, "POST", "/api/presets/a%2Fb/apply", "", csrf), 400, "invalid preset name")
+	// Name rule equals config's ^[a-z0-9_-]{1,64}$ (L1).
+	for _, bad := range []string{".hidden", "a%2Fb", "Night", "night.1", "a b", strings.Repeat("a", 65)} {
+		wantError(t, e.do(t, "PUT", "/api/presets/"+bad, "", csrf), 400, "invalid preset name")
+		wantError(t, e.do(t, "POST", "/api/presets/"+bad+"/apply", "", csrf), 400, "invalid preset name")
+	}
+	wantCode(t, e.do(t, "PUT", "/api/presets/"+strings.Repeat("a", 64), "", csrf), 200)
 	e.presets.applyErr = errors.New("no such preset")
 	wantError(t, e.do(t, "POST", "/api/presets/missing/apply", "", csrf), 400, "no such preset")
 	e.presets.applyErr = control.ErrRestartRequired
@@ -572,10 +971,13 @@ func TestProfilesVersionSensors(t *testing.T) {
 	}
 	r = e.do(t, "GET", "/api/sensors", "", nil)
 	wantCode(t, r, 200)
-	var ss []SensorInfo
+	var ss []map[string]any
 	decode(t, r.body, &ss)
-	if len(ss) != 1 || ss[0].ID != "k10temp" {
+	if len(ss) != 2 || ss[0]["id"] != "k10temp" || ss[0]["temp"].(float64) != 38.2 {
 		t.Fatalf("sensors = %v", ss)
+	}
+	if _, has := ss[1]["temp"]; has {
+		t.Fatalf("pattern entry must not carry temp: %v", ss[1])
 	}
 }
 
@@ -609,7 +1011,10 @@ func TestStaticIndex(t *testing.T) {
 	if !strings.Contains(r.body, "<title>pvefand</title>") || !strings.Contains(r.body, `src="app.js"`) || !strings.Contains(r.body, `href="app.css"`) {
 		t.Errorf("index.html content unexpected: %.200s", r.body)
 	}
-	if csp := r.hdr.Get("Content-Security-Policy"); !strings.Contains(csp, "script-src 'self'") {
+	if strings.Contains(r.body, "<script>") || strings.Contains(r.body, "onclick=") || strings.Contains(r.body, "style=") {
+		t.Errorf("index.html carries inline script/style, which the CSP blocks")
+	}
+	if csp := r.hdr.Get("Content-Security-Policy"); !strings.Contains(csp, "script-src 'self'") || !strings.Contains(csp, "default-src 'none'") {
 		t.Errorf("CSP = %q", csp)
 	}
 	r = e.do(t, "GET", "/app.js", "", nil)
@@ -620,6 +1025,13 @@ func TestStaticIndex(t *testing.T) {
 	if len(r.body) > 40*1024 {
 		t.Errorf("app.js is %d bytes, budget 40 KB", len(r.body))
 	}
+	// UI assumptions the server honours: since-polling, {"lines"} log wrapper,
+	// "channel" key, "<unchanged>" hash placeholder passes through untouched.
+	for _, want := range []string{"since=", "b.lines", "cfg.channel", "warnings"} {
+		if !strings.Contains(r.body, want) {
+			t.Errorf("app.js lacks %q", want)
+		}
+	}
 	r = e.do(t, "GET", "/app.css", "", nil)
 	wantCode(t, r, 200)
 	if !strings.HasPrefix(r.hdr.Get("Content-Type"), "text/css") {
@@ -628,4 +1040,63 @@ func TestStaticIndex(t *testing.T) {
 	wantCode(t, e.do(t, "GET", "/index.html", "", nil), 200)
 	wantCode(t, e.do(t, "GET", "/other.txt", "", nil), 404)
 	wantCode(t, e.do(t, "GET", "/static/app.js", "", nil), 404)
+}
+
+// addrListener reports a different address than the wrapped listener, to
+// exercise the non-loopback warning without binding a LAN port in tests.
+type addrListener struct {
+	net.Listener
+	addr net.Addr
+}
+
+func (l addrListener) Addr() net.Addr { return l.addr }
+
+// TestServeWarnsNonLoopbackWithoutAuth (H3): binding a LAN address with
+// auth = none is allowed but logged loudly; basic auth or loopback are quiet.
+func TestServeWarnsNonLoopbackWithoutAuth(t *testing.T) {
+	run := func(auth AuthConfig, addr net.Addr) []string {
+		e := newEnv(t, auth)
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var l net.Listener = ln
+		if addr != nil {
+			l = addrListener{ln, addr}
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		errc := make(chan error, 1)
+		go func() { errc <- e.srv.Serve(ctx, l) }()
+		res, err := http.Get("http://" + ln.Addr().String() + "/api/version")
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		cancel()
+		<-errc
+		e.logMu.Lock()
+		defer e.logMu.Unlock()
+		return append([]string(nil), e.logged...)
+	}
+	has := func(logs []string, s string) bool {
+		for _, l := range logs {
+			if strings.Contains(l, s) {
+				return true
+			}
+		}
+		return false
+	}
+	lan := &net.TCPAddr{IP: net.IPv4zero, Port: 8010}
+	if logs := run(AuthConfig{}, lan); !has(logs, "non-loopback") || !has(logs, "without auth") {
+		t.Errorf("no warning for 0.0.0.0 without auth: %v", logs)
+	}
+	if logs := run(AuthConfig{}, &net.TCPAddr{IP: net.ParseIP("192.0.2.20"), Port: 8010}); !has(logs, "non-loopback") {
+		t.Errorf("no warning for LAN IP without auth: %v", logs)
+	}
+	if logs := run(AuthConfig{Mode: "basic", User: "a", PasswordHash: PasswordHash("a", "b")}, lan); has(logs, "non-loopback") {
+		t.Errorf("warning although basic auth: %v", logs)
+	}
+	if logs := run(AuthConfig{}, nil); has(logs, "non-loopback") {
+		t.Errorf("warning on loopback: %v", logs)
+	}
 }

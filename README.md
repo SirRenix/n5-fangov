@@ -63,9 +63,49 @@ pvefand log 50
 pvefand test 3                 channel verification run (daemon must be stopped)
 ```
 
-Web dashboard: `http://<host>:8010` (default binds to 127.0.0.1; set `[web].listen`
-and `auth = "basic"` for LAN access). Tabs: Overview, Curves, Manual, Presets, Log,
-Compatibility.
+Web dashboard: `http://<host>:8010` (default binds to 127.0.0.1). Tabs: Overview,
+Curves, Manual, Presets, Log, Compatibility. LAN access: see Security.
+
+## Security
+
+The API changes fan duties, so treat the port like a management interface.
+
+- **Default is loopback only** (`[web].listen = "127.0.0.1:8010"`, no auth). The CLI
+  uses the unix socket in `/run/pvefand` (root only, `RuntimeDirectoryMode=0750`).
+- **LAN access only behind a TLS reverse proxy** (Caddy, nginx, the PVE proxy). Basic
+  auth is sent in clear text on every request; without TLS anyone on the segment can
+  read it. Keep `listen` on loopback and let the proxy connect to it, or bind a LAN
+  address **and** set `auth = "basic"`:
+
+  ```toml
+  [web]
+  listen = "127.0.0.1:8010"
+  auth = "basic"
+  user = "admin"
+  password_hash = "<sha256 hex of 'admin:password'>"   # printf 'admin:password' | sha256sum
+  allowed_hosts = ["fans.example.internal"]            # names the proxy passes in Host
+  ```
+
+- **Fail closed.** `auth = "basic"` with a missing or unusable `password_hash`, or a
+  typo in `auth`, never degrades to an open LAN listener: the daemon forces
+  `listen` to `127.0.0.1:8010` and logs `auth misconfigured — web bound to loopback`.
+  `auth = "none"` on a non-loopback address is allowed but logged as a warning at
+  every start.
+- **What auth covers.** With `auth = "basic"`, every write (PUT/POST/DELETE) plus
+  `GET /api/config` and `GET /api/log` need credentials. State, history, presets,
+  profiles and the dashboard itself stay readable. Failed logins are throttled per
+  client IP (5 free, then 250 ms doubling to 2 s, reset after 10 min or a success)
+  and logged with user name and IP.
+- **The hash never leaves the daemon.** `GET /api/config` shows
+  `password_hash = "<unchanged>"`; sending that text back keeps the stored hash.
+- **Host header check (DNS rebinding).** Requests are only served for IP literals,
+  `localhost`, the listen host and `allowed_hosts`; anything else gets 421. A reverse
+  proxy must either rewrite `Host` to the upstream (nginx does by default, Caddy:
+  `header_up Host {upstream_hostport}`) or its public name must be listed in
+  `allowed_hosts`. `"*"` disables the check.
+- **CSRF.** Every write needs the header `X-Pvefand-Csrf: 1`; a browser form or
+  cross-site fetch cannot add it without CORS, which the API does not offer.
+- Changing `[web]` settings takes a restart; `PUT /api/config` reloads curves only.
 
 ## Configure
 

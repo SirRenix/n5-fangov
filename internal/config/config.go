@@ -70,10 +70,11 @@ type Daemon struct {
 
 // Web holds the HTTP listener settings.
 type Web struct {
-	Listen       string `toml:"listen"`
-	Auth         string `toml:"auth"` // none | basic
-	User         string `toml:"user"`
-	PasswordHash string `toml:"password_hash"` // sha256 hex of "user:password"
+	Listen       string   `toml:"listen"`
+	Auth         string   `toml:"auth"` // none | basic
+	User         string   `toml:"user"`
+	PasswordHash string   `toml:"password_hash"`           // sha256 hex of "user:password"
+	AllowedHosts []string `toml:"allowed_hosts,omitempty"` // extra Host header values besides IPs/localhost; "*" disables the check
 }
 
 // Channel is one regulated PWM output.
@@ -363,18 +364,22 @@ func (p *parser) daemon(sec map[string]toml.Primitive, d *Daemon) {
 
 func (p *parser) web(sec map[string]toml.Primitive, w *Web) {
 	const pre = "web"
-	p.unknown(pre, sec, "listen", "auth", "user", "password_hash")
+	p.unknown(pre, sec, "listen", "auth", "user", "password_hash", "allowed_hosts")
 	def := Default().Web
 	listen, _ := p.strField(pre, sec, "listen", def.Listen)
 	if _, _, err := net.SplitHostPort(listen); err != nil {
 		p.warn(pre+".listen", "%q is not host:port, default %q used", listen, def.Listen)
 		listen = def.Listen
 	}
-	w.Listen = listen
 	auth, _ := p.strField(pre, sec, "auth", def.Auth)
+	// authBroken: the operator asked for something other than plain "none"
+	// and did not get it. Such a config must not end up reachable from the
+	// network without auth (H2: no fail-open).
+	authBroken := false
 	if auth != "none" && auth != "basic" {
 		p.warn(pre+".auth", "%q unknown (none|basic), default %q used", auth, def.Auth)
 		auth = def.Auth
+		authBroken = true
 	}
 	w.User, _ = p.strField(pre, sec, "user", "")
 	w.PasswordHash, _ = p.strField(pre, sec, "password_hash", "")
@@ -382,12 +387,46 @@ func (p *parser) web(sec map[string]toml.Primitive, w *Web) {
 		if w.User == "" || w.PasswordHash == "" {
 			p.warn(pre+".auth", "basic requires user and password_hash, auth set to none")
 			auth = "none"
+			authBroken = true
 		} else if _, err := parseHex(w.PasswordHash); err != nil {
 			p.warn(pre+".password_hash", "not a 64-char sha256 hex digest, auth set to none")
 			auth = "none"
+			authBroken = true
 		}
 	}
+	if authBroken && !IsLoopbackListen(listen) {
+		p.warn(pre+".listen", "auth misconfigured — web bound to loopback (%q instead of %q)", def.Listen, listen)
+		listen = def.Listen
+	}
+	w.Listen = listen
 	w.Auth = auth
+	if prim, ok := sec["allowed_hosts"]; ok {
+		var hosts []string
+		if err := p.md.PrimitiveDecode(prim, &hosts); err != nil {
+			p.warn(pre+".allowed_hosts", "not an array of strings, ignored")
+		} else {
+			for _, h := range hosts {
+				if h = strings.TrimSpace(h); h != "" {
+					w.AllowedHosts = append(w.AllowedHosts, h)
+				}
+			}
+		}
+	}
+}
+
+// IsLoopbackListen reports whether a host:port binds only to the loopback
+// interface (127.0.0.0/8, ::1, localhost). An empty host means all
+// interfaces and is not loopback.
+func IsLoopbackListen(listen string) bool {
+	host, _, err := net.SplitHostPort(listen)
+	if err != nil {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func parseHex(s string) ([]byte, error) {

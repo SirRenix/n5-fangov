@@ -24,7 +24,9 @@ RestartSec=5
 KillSignal=SIGTERM
 TimeoutStopSec=20
 Nice=-5
+# /run/pvefand holds the unauthenticated CLI socket: root only (M3)
 RuntimeDirectory=pvefand
+RuntimeDirectoryMode=0750
 RuntimeDirectoryPreserve=yes
 ProtectHome=yes
 PrivateTmp=yes
