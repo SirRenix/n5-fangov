@@ -1,0 +1,354 @@
+package control
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/SirRenix/pvefand/internal/config"
+	"github.com/SirRenix/pvefand/internal/hwmon"
+	"github.com/SirRenix/pvefand/internal/profile"
+)
+
+// ---- fake profile / device -------------------------------------------------
+
+type fakeProfile struct{}
+
+func (fakeProfile) Name() string                             { return "fake" }
+func (fakeProfile) Title() string                            { return "Fake device" }
+func (fakeProfile) Verified() bool                           { return true }
+func (fakeProfile) Notes() string                            { return "" }
+func (fakeProfile) Detect(*hwmon.FS) (profile.Device, error) { return nil, errors.New("n/a") }
+
+type fakeDev struct {
+	mu        sync.Mutex
+	chans     []profile.Channel
+	duty      map[int]int
+	enable    map[int]int
+	rpm       map[int]int
+	failWrite map[int]bool // WriteDuty fails for this pwm
+	failEnter map[int]bool
+	calls     []string // "manual:1", "write:1=85", "stop:3=140"
+	extra     map[string]string
+}
+
+func newFakeDev() *fakeDev {
+	d := &fakeDev{
+		chans: []profile.Channel{
+			{Index: 1, Label: "CPU", HasTach: true},
+			{Index: 2, Label: "SSD", HasTach: true},
+			{Index: 3, Label: "HDD", HasTach: true},
+			{Index: 4, Label: "PCIe", HasTach: false},
+		},
+		duty:      map[int]int{},
+		enable:    map[int]int{1: 2, 2: 2, 3: 2, 4: 2},
+		rpm:       map[int]int{1: 2000, 2: 2100, 3: 1200, 4: 0},
+		failWrite: map[int]bool{},
+		failEnter: map[int]bool{},
+	}
+	return d
+}
+
+func (d *fakeDev) Profile() profile.Profile      { return fakeProfile{} }
+func (d *fakeDev) HwmonPath() string             { return "/sys/class/hwmon/hwmonX" }
+func (d *fakeDev) Channels() []profile.Channel   { return d.chans }
+func (d *fakeDev) ExtraTemps() map[string]string { return d.extra }
+
+func (d *fakeDev) ReadRPM(ch int) (int, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.rpm[ch], nil
+}
+
+func (d *fakeDev) ReadDuty(ch int) (int, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.duty[ch], nil
+}
+
+func (d *fakeDev) EnterManual(ch int) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.calls = append(d.calls, fmt.Sprintf("manual:%d", ch))
+	if d.failEnter[ch] {
+		return errors.New("enable write failed")
+	}
+	d.enable[ch] = 1
+	return nil
+}
+
+func (d *fakeDev) WriteDuty(ch int, duty int) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.calls = append(d.calls, fmt.Sprintf("write:%d=%d", ch, duty))
+	if d.failWrite[ch] {
+		return errors.New("readback mismatch")
+	}
+	if d.enable[ch] != 1 {
+		return errors.New("write without manual mode")
+	}
+	d.duty[ch] = duty
+	return nil
+}
+
+func (d *fakeDev) SafeStop(ch int, stop string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.calls = append(d.calls, fmt.Sprintf("stop:%d=%s", ch, stop))
+	return nil
+}
+
+func (d *fakeDev) setRPM(ch, rpm int) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.rpm[ch] = rpm
+}
+
+func (d *fakeDev) getDuty(ch int) int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.duty[ch]
+}
+
+func (d *fakeDev) setFailWrite(ch int, fail bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.failWrite[ch] = fail
+}
+
+func (d *fakeDev) countCalls(prefix string) int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	n := 0
+	for _, c := range d.calls {
+		if strings.HasPrefix(c, prefix) {
+			n++
+		}
+	}
+	return n
+}
+
+func (d *fakeDev) resetCalls() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.calls = nil
+}
+
+// ---- fake sensors -----------------------------------------------------------
+
+type fakeSensor struct {
+	mu  sync.Mutex
+	id  string
+	val int
+	err error
+}
+
+func (s *fakeSensor) ID() string { return s.id }
+func (s *fakeSensor) Read() (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.val, s.err
+}
+
+func (s *fakeSensor) set(milli int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.val, s.err = milli, nil
+}
+
+func (s *fakeSensor) fail(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.err = err
+}
+
+type fakeSensors struct {
+	mu       sync.Mutex
+	sensors  map[string]*fakeSensor
+	resolves int
+}
+
+func newFakeSensors() *fakeSensors {
+	return &fakeSensors{sensors: map[string]*fakeSensor{
+		"k10temp":       {id: "k10temp", val: 36000},
+		"nvme:max":      {id: "nvme:max", val: 44000},
+		"drivetemp:max": {id: "drivetemp:max", val: 33000},
+	}}
+}
+
+func (f *fakeSensors) factory(id string) (SensorReader, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.resolves++
+	s, ok := f.sensors[id]
+	if !ok {
+		return nil, fmt.Errorf("unknown sensor %q", id)
+	}
+	return s, nil
+}
+
+func (f *fakeSensors) add(id string, milli int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sensors[id] = &fakeSensor{id: id, val: milli}
+}
+
+func (f *fakeSensors) get(id string) *fakeSensor {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.sensors[id]
+}
+
+// ---- fake alerter, clock, logger -----------------------------------------
+
+type fakeAlerter struct {
+	mu    sync.Mutex
+	kinds []string
+	msgs  []string
+}
+
+func (a *fakeAlerter) Alert(kind, msg string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.kinds = append(a.kinds, kind)
+	a.msgs = append(a.msgs, msg)
+}
+
+func (a *fakeAlerter) count(kind string) int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	n := 0
+	for _, k := range a.kinds {
+		if k == kind {
+			n++
+		}
+	}
+	return n
+}
+
+type fakeClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func (c *fakeClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *fakeClock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.t = c.t.Add(d)
+}
+
+type testLogger struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (l *testLogger) Printf(f string, a ...any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.lines = append(l.lines, fmt.Sprintf(f, a...))
+}
+
+func (l *testLogger) contains(sub string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, s := range l.lines {
+		if strings.Contains(s, sub) {
+			return true
+		}
+	}
+	return false
+}
+
+// ---- harness ---------------------------------------------------------------
+
+type harness struct {
+	t       *testing.T
+	c       *Controller
+	dev     *fakeDev
+	sensors *fakeSensors
+	alerts  *fakeAlerter
+	clock   *fakeClock
+	log     *testLogger
+	cfg     config.Config
+	notify  int
+}
+
+func n5cfg() config.Config {
+	cfg := config.Default()
+	cfg.Channels = config.N5ProChannels()
+	return cfg
+}
+
+func newHarness(t *testing.T, cfg config.Config, mod func(*Options)) *harness {
+	t.Helper()
+	h := &harness{t: t, dev: newFakeDev(), sensors: newFakeSensors(), alerts: &fakeAlerter{},
+		clock: &fakeClock{t: time.Unix(1_789_500_000, 0)}, log: &testLogger{}, cfg: cfg}
+	opts := Options{
+		Logger:     h.log,
+		Now:        h.clock.now,
+		Notify:     func() { h.notify++ },
+		Status:     func(string) {},
+		SyncAlerts: true,
+		Wait: func(ctx context.Context, d time.Duration) bool {
+			h.clock.advance(d)
+			select {
+			case <-ctx.Done():
+				return false
+			default:
+				return true
+			}
+		},
+	}
+	if mod != nil {
+		mod(&opts)
+	}
+	c, err := New(cfg, h.dev, h.sensors.factory, h.alerts, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.c = c
+	return h
+}
+
+// cycles runs n cycles, advancing the clock by the interval after each.
+func (h *harness) cycles(n int) {
+	for i := 0; i < n; i++ {
+		h.c.cycle()
+		h.clock.advance(h.c.interval())
+	}
+}
+
+func (h *harness) state(name string) ChannelState {
+	h.t.Helper()
+	for _, cs := range h.c.Snapshot().Channels {
+		if cs.Name == name {
+			return cs
+		}
+	}
+	h.t.Fatalf("no channel %q in snapshot", name)
+	return ChannelState{}
+}
+
+func (h *harness) expectDuty(name string, want int) {
+	h.t.Helper()
+	if got := h.state(name).Duty; got != want {
+		h.t.Errorf("%s: duty %d, want %d (mode %s, target %d)", name, got, want, h.state(name).Mode, h.state(name).Target)
+	}
+}
+
+func (h *harness) expectMode(name string, want Mode) {
+	h.t.Helper()
+	if got := h.state(name).Mode; got != want {
+		h.t.Errorf("%s: mode %s, want %s", name, got, want)
+	}
+}

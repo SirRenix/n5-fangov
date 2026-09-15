@@ -1,40 +1,38 @@
-# pvefand configuration -- /etc/pvefand/config.toml
-# Invalid values never prevent start: they are replaced by built-in defaults
-# with a warning in the journal and an alert. `pvefand check` lists them.
+# pvefand configuration — /etc/pvefand/config.toml
+#
+# Invalid values never prevent start: each bad field falls back to its
+# built-in default with a warning in the journal and a "config" alert.
+# Values below are the Minisforum N5 Pro set measured on 14.09.2026
+# (duty -> RPM: CPU 85->2000 140->3120 255->5073; SSD 74->2130 255->4687;
+#  HDD 87->1237 105->1650 140->2250 179->2725 255->3540).
 
 [daemon]
 interval = "10s"        # regulation cycle, 2s..120s
 step_up = 40            # max duty increase per cycle (1..255)
 step_down = 15          # max duty decrease per cycle (1..255)
-stall_min_duty = 60     # rpm 0 at or above this duty counts as a stall
-stall_cycles = 2        # consecutive stall cycles before 255 + alert
-stale_cycles = 18       # identical raw sensor value this many cycles -> sensor frozen
-alert_cooldown = "30m"  # per alert type
+stall_min_duty = 60     # RPM 0 at or above this duty counts as a stall (1..255)
+stall_cycles = 2        # ... after this many consecutive cycles (1..20)
+stale_cycles = 18       # first channel's sensor bit-identical this many cycles -> frozen (3..600)
+alert_cooldown = "30m"  # minimum gap between alerts of the same kind
 log_every = 30          # status line every N cycles (0 = never)
 profile = "auto"        # auto | n5pro | nct67xx | it87xx | monitor
 
 [web]
-listen = "127.0.0.1:8010"   # empty = no TCP listener (CLI via unix socket still works)
-auth = "none"               # none | basic
+listen = "127.0.0.1:8010"
+auth = "none"           # none | basic
 user = ""
-password_hash = ""          # sha256 hex of "user:password" (no bcrypt without deps)
+password_hash = ""      # sha256 hex of "user:password" (bcrypt would need a dependency)
 
-# Channels below are the Minisforum N5 Pro layout verified on 14.09.2026
-# (pwm1 CPU, pwm2 SSD, pwm3 HDD group; pwm4 PCIe has no fan and no tach).
-# Curve points are [temp_c, duty]; ascending temperature, 2..8 points, linear
-# interpolation between them. "stop" is what the channel gets when the daemon
-# stops: "auto" hands it back to the EC/BIOS, a number is a fixed duty.
-# The N5 Pro EC no longer regulates the HDD channel after a write, so it gets
-# a fixed duty instead of "auto".
-
+# CPU fan (pwm1) <- k10temp Tctl. EC idle duty was 85.
 [[channel]]
-name = "cpu"
-pwm = 1
-sensor = "k10temp"
-curve = [[45, 85], [80, 255]]
-critical = 88
-stop = "auto"
+name = "cpu"            # unique, [a-z0-9_]+
+pwm = 1                 # pwmN of the profile's hwmon device (1..8)
+sensor = "k10temp"      # k10temp | coretemp | nvme:max | drivetemp:max | hwmon:<name>:tempN | ec:<label>
+curve = [[45, 85], [80, 255]]   # [temp_c, duty] points, ascending temp, 2..8 points, linear between
+critical = 88           # temp -> 255 immediately, no slew, even under manual override
+stop = "auto"           # "auto" = hand the channel back to the EC/BIOS on stop, or a fixed duty 0..255
 
+# SSD fan (pwm2) <- max NVMe composite (SN700 warns at 84 C); idle 44-46 C, EC idle 74.
 [[channel]]
 name = "ssd"
 pwm = 2
@@ -43,10 +41,14 @@ curve = [[48, 74], [65, 255]]
 critical = 72
 stop = "auto"
 
+# HDD group (pwm3) <- max drivetemp (WD: critical 60 C). Deliberately sharper than the EC:
+# rises from 36 C, 40 C -> ~165 (~2600 RPM), 46 C -> full. Goal: disks <= 39 C.
+# stop = 140: the EC no longer regulates this channel after the first manual write
+# (measured 14.09.2026), so "auto" would leave the disks at whatever duty was last set.
 [[channel]]
 name = "hdd"
 pwm = 3
 sensor = "drivetemp:max"
 curve = [[36, 105], [46, 255]]
 critical = 56
-stop = "140"
+stop = 140
