@@ -30,7 +30,7 @@ func ModuleRoot(t testing.TB) string {
 }
 
 // N5Pro returns the absolute path of the read-only fake tree
-// testdata/sysfs/n5pro (mirrors n5host).
+// testdata/sysfs/n5pro (mirrors the N5 Pro test host).
 func N5Pro(t testing.TB) string {
 	t.Helper()
 	p := filepath.Join(ModuleRoot(t), "testdata", "sysfs", "n5pro")

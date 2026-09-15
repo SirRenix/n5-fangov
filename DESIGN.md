@@ -42,8 +42,8 @@ internal/web/static/           index.html, app.js, app.css (no build step, vanil
 internal/sdnotify/             READY=1, WATCHDOG=1
 internal/version/              version string
 deploy/                        systemd unit, onfailure unit, failsafe script, postinst, config example
-tools/                         remote-go.ps1 (build/test via Docker on Builder)
-testdata/sysfs/n5pro/          fake /sys tree mirroring n5host (hwmon names, temp/fan/pwm files)
+tools/                         remote-go.ps1 (build/test via Docker on a Linux host over ssh)
+testdata/sysfs/n5pro/          fake /sys tree mirroring the N5 Pro test host (hwmon names, temp/fan/pwm files)
 ```
 
 ## Config (`/etc/n5-fangov/config.toml`)
@@ -230,7 +230,7 @@ READY=1). `active` → "restart" alert, still `activating` → "restart in progr
 ## Testing
 
 `go vet ./... && go test ./...` must pass in Docker (`tools/remote-go.ps1`). Fake sysfs
-under `testdata/sysfs/n5pro` mirrors n5host. Controller tests use a fake Device.
+under `testdata/sysfs/n5pro` mirrors the N5 Pro test host. Controller tests use a fake Device.
 
 ## Integration notes (15.09.2026)
 
@@ -255,7 +255,7 @@ is loose.
 - `sensor.Known` returns `[]sensor.Info{ID, Description}`, not `[]string`; the
   description carries the live reading and the list ends with the two generic
   patterns (`hwmon:<name>:tempN`, `ec:<label>`) which do not parse as ids.
-  `hwmon:<name>:tempN` always binds to the first device of that name (on n5host
+  `hwmon:<name>:tempN` always binds to the first device of that name (on the reference host
   `hwmon:nvme:temp1` is one SSD, `nvme:max` is the hottest).
 - `control.SensorFactory` returns `control.SensorReader`; `sensor.Source` satisfies
   it but the func types differ, so wiring adapts (nil-interface safe).

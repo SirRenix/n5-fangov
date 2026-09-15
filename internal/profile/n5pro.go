@@ -21,7 +21,7 @@ func (n5pro) Name() string   { return "n5pro" }
 func (n5pro) Title() string  { return "Minisforum N5 Pro (IT5571 EC)" }
 func (n5pro) Verified() bool { return true }
 func (n5pro) Notes() string {
-	return "Hardware-verified on n5host (BIOS 1.05, driver minisforum_n5_it5571). " +
+	return "Hardware-verified on a Minisforum N5 Pro (BIOS 1.05, driver minisforum_n5_it5571, 2026-09-14). " +
 		"Channels: pwm1 CPU, pwm2 SSD, pwm3 HDD, pwm4 PCIe (no tachometer). " +
 		"Writing pwmN_enable=1 makes the driver set the duty to 255 first. " +
 		"EC does not resume automatic regulation of the HDD channel (pwm3) after any write - " +

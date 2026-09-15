@@ -190,7 +190,7 @@ func TestWebBasicAuth(t *testing.T) {
 func TestWebAuthFailOpen(t *testing.T) {
 	cases := map[string]string{
 		"basic without hash":  "[web]\nlisten = \"0.0.0.0:8010\"\nauth = \"basic\"\nuser = \"admin\"\n",
-		"basic with bad hash": "[web]\nlisten = \"192.0.2.20:8010\"\nauth = \"basic\"\nuser = \"admin\"\npassword_hash = \"zz\"\n",
+		"basic with bad hash": "[web]\nlisten = \"198.51.100.20:8010\"\nauth = \"basic\"\nuser = \"admin\"\npassword_hash = \"zz\"\n",
 		"typo in auth":        "[web]\nlisten = \"[::]:8010\"\nauth = \"Basic\"\nuser = \"admin\"\npassword_hash = \"" + strings.Repeat("ab", 32) + "\"\n",
 	}
 	for name, src := range cases {
@@ -236,7 +236,7 @@ func TestWebAuthFailOpen(t *testing.T) {
 			t.Errorf("%q should be loopback", l)
 		}
 	}
-	for _, l := range []string{"0.0.0.0:8010", ":8010", "[::]:8010", "192.0.2.20:8010", "n5host:8010", "nope"} {
+	for _, l := range []string{"0.0.0.0:8010", ":8010", "[::]:8010", "198.51.100.20:8010", "n5host:8010", "nope"} {
 		if IsLoopbackListen(l) {
 			t.Errorf("%q should not be loopback", l)
 		}
@@ -244,8 +244,8 @@ func TestWebAuthFailOpen(t *testing.T) {
 }
 
 func TestWebAllowedHosts(t *testing.T) {
-	cfg, warns, _ := Parse([]byte("[web]\nallowed_hosts = [\"n5.lan\", \" fans.example \", \"\"]\n"))
-	if len(warns) != 0 || !reflect.DeepEqual(cfg.Web.AllowedHosts, []string{"n5.lan", "fans.example"}) {
+	cfg, warns, _ := Parse([]byte("[web]\nallowed_hosts = [\"n5host.lan\", \" fans.example \", \"\"]\n"))
+	if len(warns) != 0 || !reflect.DeepEqual(cfg.Web.AllowedHosts, []string{"n5host.lan", "fans.example"}) {
 		t.Errorf("allowed_hosts: %v %v", cfg.Web.AllowedHosts, warns)
 	}
 	cfg, warns, _ = Parse([]byte("[web]\nallowed_hosts = \"n5host\"\n"))
@@ -258,7 +258,7 @@ func TestWebAllowedHosts(t *testing.T) {
 		t.Errorf("empty allowed_hosts must be nil: %v", cfg.Web.AllowedHosts)
 	}
 	cfg = Default()
-	cfg.Web.AllowedHosts = []string{"n5.lan"}
+	cfg.Web.AllowedHosts = []string{"n5host.lan"}
 	back, warns, err := Parse(Marshal(cfg))
 	if err != nil || len(warns) != 0 || !reflect.DeepEqual(cfg, back) {
 		t.Errorf("allowed_hosts round trip: %v %v\n%+v", err, warns, back)

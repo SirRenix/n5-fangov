@@ -12,7 +12,7 @@ import (
 	"github.com/SirRenix/n5-fangov/internal/profile"
 )
 
-// n5proCopy returns a writable clone of the n5host tree plus its FS.
+// n5proCopy returns a writable clone of the N5 Pro test host tree plus its FS.
 func n5proCopy(t *testing.T) (string, *hwmon.FS) {
 	t.Helper()
 	root := hwmontest.Copy(t, hwmontest.N5Pro(t))

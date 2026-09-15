@@ -180,7 +180,7 @@ func (e *env) deps(auth AuthConfig) Deps {
 		},
 		Version:      "1.2.3-test",
 		Auth:         auth,
-		AllowedHosts: []string{"n5.lan", "Fans.Example:8010"},
+		AllowedHosts: []string{"n5host.lan", "Fans.Example:8010"},
 		Logf: func(format string, args ...any) {
 			e.logMu.Lock()
 			e.logged = append(e.logged, fmt.Sprintf(format, args...))
@@ -736,7 +736,7 @@ func TestConfigValidateBeforeSave(t *testing.T) {
 // localhost and configured names are served.
 func TestHostHeader(t *testing.T) {
 	e := newEnv(t, AuthConfig{})
-	for _, h := range []string{"evil.example", "evil.example:8010", "n5.lan.evil", "fans.example.evil:8010", "127.0.0.1.evil"} {
+	for _, h := range []string{"evil.example", "evil.example:8010", "n5host.lan.evil", "fans.example.evil:8010", "127.0.0.1.evil"} {
 		r := e.do(t, "GET", "/api/state", "", map[string]string{"Host": h})
 		wantError(t, r, 421, "host header")
 		r = e.do(t, "PUT", "/api/override/cpu", `{"duty":10}`, map[string]string{"Host": h, CSRFHeader: "1"})
@@ -750,7 +750,7 @@ func TestHostHeader(t *testing.T) {
 	if e.srv.hostAllowed("") || e.srv.hostAllowed(":8010") || e.srv.hostAllowed("evil.example") {
 		t.Fatal("hostAllowed accepts empty or foreign host")
 	}
-	for _, h := range []string{"127.0.0.1", "127.0.0.1:8010", "192.0.2.20:8010", "[::1]:8010", "[fd00::1]", "localhost", "LOCALHOST:8010", "n5.lan", "N5HOST.LAN:8010", "n5.lan.", "fans.example", "fans.example:443"} {
+	for _, h := range []string{"127.0.0.1", "127.0.0.1:8010", "198.51.100.20:8010", "[::1]:8010", "[fd00::1]", "localhost", "LOCALHOST:8010", "n5host.lan", "N5HOST.LAN:8010", "n5host.lan.", "fans.example", "fans.example:443"} {
 		wantCode(t, e.do(t, "GET", "/api/version", "", map[string]string{"Host": h}), 200)
 	}
 	// Default httptest client (Host = 127.0.0.1:port) passes.
@@ -1148,7 +1148,7 @@ func TestServeWarnsNonLoopbackWithoutAuth(t *testing.T) {
 	if logs := run(AuthConfig{}, lan); !has(logs, "non-loopback") || !has(logs, "without auth") {
 		t.Errorf("no warning for 0.0.0.0 without auth: %v", logs)
 	}
-	if logs := run(AuthConfig{}, &net.TCPAddr{IP: net.ParseIP("192.0.2.20"), Port: 8010}); !has(logs, "non-loopback") {
+	if logs := run(AuthConfig{}, &net.TCPAddr{IP: net.ParseIP("198.51.100.20"), Port: 8010}); !has(logs, "non-loopback") {
 		t.Errorf("no warning for LAN IP without auth: %v", logs)
 	}
 	if logs := run(AuthConfig{Mode: "basic", User: "a", PasswordHash: PasswordHash("a", "b")}, lan); has(logs, "non-loopback") {

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"os/exec"
@@ -30,17 +31,36 @@ func statePath(dir string) string  { return filepath.Join(dir, stateFileName) }
 // api is a thin client for the daemon's HTTP API over the unix socket.
 type api struct {
 	c    *http.Client
+	sock string
 	base string
 }
 
 func newAPI(dir string) *api {
-	c := ipcClient(socketPath(dir))
+	sock := socketPath(dir)
+	c := ipcClient(sock)
 	c.Timeout = 5 * time.Second
-	return &api{c: c, base: "http://n5-fangov"}
+	return &api{c: c, sock: sock, base: "http://n5-fangov"}
 }
 
-// errNoDaemon is returned when the socket does not answer.
+// errNoDaemon is returned when the socket does not answer (daemon not
+// running, socket missing, connection refused).
 var errNoDaemon = errors.New("daemon not reachable")
+
+// errPermission is returned when the socket exists but this process may not
+// open it. The runtime directory is 0750 root:root by design, so this is the
+// "not root" case and must not be mistaken for a stopped daemon.
+var errPermission = errors.New("permission denied")
+
+// classifyDialErr turns a transport error from the unix socket into one of
+// the two sentinels. EACCES/EPERM anywhere in the chain (net.OpError ->
+// os.SyscallError -> syscall.Errno) means "run as root"; everything else is
+// treated as "daemon not reachable" so callers can fall back to state.json.
+func classifyDialErr(sock string, err error) error {
+	if errors.Is(err, fs.ErrPermission) {
+		return fmt.Errorf("%w on %s — run as root (the socket is root-only by design)", errPermission, sock)
+	}
+	return fmt.Errorf("%w: %v", errNoDaemon, err)
+}
 
 // get decodes a JSON GET response into out.
 func (a *api) get(path string, out any) error {
@@ -66,7 +86,7 @@ func (a *api) do(method, path string, body, out any) error {
 	}
 	resp, err := a.c.Do(req)
 	if err != nil {
-		return fmt.Errorf("%w: %v", errNoDaemon, err)
+		return classifyDialErr(a.sock, err)
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))

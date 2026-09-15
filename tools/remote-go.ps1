@@ -1,18 +1,23 @@
-# remote-go.ps1 -- build/test a Go tree via Docker on Builder (no Go on Windows/n5host).
+# remote-go.ps1 -- build/test a Go tree via Docker on a Linux host with Docker reachable
+# via an ssh alias (default: builder). No Go toolchain is needed on the Windows side.
 # Usage:
-#   tools\remote-go.ps1 -Path <repo-or-worktree> -Id <unique-name> [-Cmd "go test ./..."] [-Fetch]
+#   tools\remote-go.ps1 -Path <repo-or-worktree> -Id <unique-name> [-Host <ssh-alias>] [-Cmd "go test ./..."] [-Fetch]
 # Default Cmd: go mod tidy, go vet, go test, go build -> n5-fangov (linux/amd64, static).
 # -Fetch copies the built binary back to <Path>\dist\n5-fangov.
 # Run with pwsh (PowerShell 7+). Windows PowerShell 5.1 corrupts the binary tar pipe.
 param(
     [Parameter(Mandatory=$true)][string]$Path,
     [Parameter(Mandatory=$true)][string]$Id,
+    # -Host on the command line; the variable is $BuildHost because $Host is a
+    # read-only automatic variable in PowerShell.
+    [Alias("Host")][string]$BuildHost = "builder",
     [string]$Cmd = "",
     [switch]$Fetch
 )
 $ErrorActionPreference = "Stop"
 $Path = (Resolve-Path $Path).Path
 if ($Id -notmatch '^[a-zA-Z0-9_-]+$') { throw "Id must be [a-zA-Z0-9_-]" }
+if ($BuildHost -notmatch '^[a-zA-Z0-9_.@-]+$') { throw "Host must be an ssh alias or hostname" }
 $remote = "gobuild/$Id"
 if ($Cmd -eq "") {
     $Cmd = "go mod tidy && go vet ./... && go test ./... && CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o n5-fangov ./cmd/n5-fangov && ls -la n5-fangov"
@@ -20,16 +25,16 @@ if ($Cmd -eq "") {
 # ship the tree (without .git and dist) as a tar stream
 Push-Location $Path
 try {
-    ssh builder "rm -rf ~/$remote && mkdir -p ~/$remote"
-    tar -cf - --exclude .git --exclude dist . | ssh builder "tar -xf - -C ~/$remote"
+    ssh $BuildHost "rm -rf ~/$remote && mkdir -p ~/$remote"
+    tar -cf - --exclude .git --exclude dist . | ssh $BuildHost "tar -xf - -C ~/$remote"
 } finally { Pop-Location }
 $escaped = $Cmd.Replace("'", "'\''")
 $docker = "docker run --rm -v `$HOME/${remote}:/src -w /src -v n5fangov-gomod:/go/pkg/mod -v n5fangov-gocache:/root/.cache/go-build -e CGO_ENABLED=0 golang:1.25-alpine sh -c '${escaped}'"
-ssh builder $docker
+ssh $BuildHost $docker
 $rc = $LASTEXITCODE
 if ($Fetch -and $rc -eq 0) {
     New-Item -ItemType Directory -Force (Join-Path $Path "dist") | Out-Null
-    scp -q "builder:$remote/n5-fangov" (Join-Path $Path "dist\n5-fangov")
+    scp -q "${BuildHost}:$remote/n5-fangov" (Join-Path $Path "dist\n5-fangov")
     Write-Host "fetched -> $(Join-Path $Path 'dist\n5-fangov')"
 }
 exit $rc
