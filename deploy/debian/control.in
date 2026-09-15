@@ -1,0 +1,16 @@
+Package: pvefand
+Version: @VERSION@
+Section: admin
+Priority: optional
+Architecture: amd64
+Depends: lm-sensors, systemd
+Recommends: smartmontools
+Conflicts: n5-fand
+Maintainer: SirRenix <pvefand@example.test>
+Homepage: https://github.com/SirRenix/pvefand
+Description: guarded fan control for Proxmox VE and Debian
+ Single static daemon that regulates hwmon pwm channels from temperature
+ curves with slew limiting, critical override, stall detection, read-back
+ verification and a profile-defined safe state on stop. Hardware-verified on
+ the Minisforum N5 Pro (IT5571 EC via minisforum_n5_it5571); generic NCT67xx
+ and IT87xx profiles ship untested. Includes CLI, HTTP API and web UI.

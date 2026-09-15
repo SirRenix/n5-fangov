@@ -1,0 +1,16 @@
+#!/bin/sh
+# pvefand prerm: stop the daemon before the files go away (ExecStopPost runs
+# the failsafe while the binary and config are still present). On upgrade
+# the daemon keeps running; postinst restarts it.
+set -e
+
+case "$1" in
+    remove)
+        if systemctl is-active --quiet pvefand.service 2>/dev/null; then
+            systemctl stop pvefand.service || true
+        fi
+        systemctl disable pvefand.service 2>/dev/null || true
+        /usr/bin/pvefand failsafe 2>/dev/null || true
+        ;;
+esac
+exit 0

@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# pvefand-onfailure -- runs when pvefand.service enters "failed" (also when an
+# automatic restart follows). Reports the REAL cause and whether the daemon is
+# running again. Cooldown 30 min per type so a crash loop does not send five
+# mails (StartLimitBurst). Sends via `pvefand alert`, which uses the same
+# alert path as the daemon (PVE::Notify -> mail -> log).
+set -u
+UNIT=pvefand
+RUN=/run/pvefand
+BIN=/usr/bin/pvefand
+COOLDOWN=1800
+mkdir -p "$RUN"
+
+# Read the cause IMMEDIATELY: after the restart, Result reflects the new process.
+result="$(systemctl show -p Result --value "$UNIT" 2>/dev/null)"
+code="$(systemctl show -p ExecMainCode --value "$UNIT" 2>/dev/null)"
+status="$(systemctl show -p ExecMainStatus --value "$UNIT" 2>/dev/null)"
+sleep 8    # RestartSec=5: after this we know whether the restart succeeded
+nrest="$(systemctl show -p NRestarts --value "$UNIT" 2>/dev/null)"
+active="$(systemctl is-active "$UNIT" 2>/dev/null)"
+
+case "$result" in
+    watchdog)        why="watchdog: the loop did not answer for 60 s (hung sensor read?)";;
+    signal)          why="process ended by signal (status $status, e.g. kill/OOM)";;
+    exit-code)       why="process exited with code $status";;
+    start-limit-hit) why="start limit reached: 5 failed starts within 5 min";;
+    *)               why="result '$result' (code $code, status $status)";;
+esac
+
+# Advisory: on the N5 Pro the EC driver comes from DKMS; a kernel update
+# without a rebuild is the most likely reason for a failed start.
+dk=""
+if command -v dkms >/dev/null 2>&1 && dkms status minisforum-n5-it5571 2>/dev/null | grep -q .; then
+    if dkms status minisforum-n5-it5571 2>/dev/null | grep -q "$(uname -r).*installed"; then
+        dk="DKMS minisforum-n5-it5571 for $(uname -r): installed"
+    else
+        dk="DKMS minisforum-n5-it5571 for $(uname -r): MISSING (kernel update without rebuild?)"
+    fi
+fi
+
+if [[ "$active" == "active" ]]; then
+    typ="restart"
+    msg="pvefand was down and has been restarted automatically (restart no. $nrest).
+Cause: $why
+Meanwhile the failsafe was active (channels in their configured safe state).
+Now: daemon running again. Check: pvefand status; pvefand log 50"
+else
+    typ="failed"
+    msg="pvefand is DOWN and is NOT running any more.
+Cause: $why
+${dk:+$dk
+}Fans: channels in their configured safe state (failsafe), no regulation.
+Fix: systemctl status pvefand; pvefand check; journalctl -u pvefand -n 50
+     systemctl reset-failed pvefand && systemctl start pvefand"
+fi
+
+now=$(date +%s); stamp=0
+[[ -r "$RUN/alert.$typ" ]] && stamp=$(<"$RUN/alert.$typ")
+if (( now - stamp < COOLDOWN )); then
+    logger -t pvefand-onfailure "[$typ] suppressed (cooldown): $why"
+    exit 0
+fi
+logger -t pvefand-onfailure "[$typ] $why"
+if [[ -x "$BIN" ]]; then
+    timeout 30 "$BIN" alert "$typ" "$msg" || logger -t pvefand-onfailure "pvefand alert failed (rc $?)"
+else
+    logger -t pvefand-onfailure "$BIN missing, alert not sent: $msg"
+fi
+# Stamp AFTER sending so the alert package's own cooldown (if file-based) does not
+# see a fresh stamp and suppress this very alert.
+echo "$now" > "$RUN/alert.$typ"
+exit 0
