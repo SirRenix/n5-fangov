@@ -13,9 +13,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/SirRenix/pvefand/internal/hwmon"
-	"github.com/SirRenix/pvefand/internal/profile"
-	"github.com/SirRenix/pvefand/internal/sensor"
+	"github.com/SirRenix/ventula/internal/hwmon"
+	"github.com/SirRenix/ventula/internal/profile"
+	"github.com/SirRenix/ventula/internal/sensor"
 )
 
 func init() {
@@ -52,20 +52,20 @@ func cmdTest(args []string) int {
 		return exitUsage
 	}
 	if fs.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "usage: pvefand test <channel|pwmN> [--force]")
+		fmt.Fprintln(os.Stderr, "usage: ventula test <channel|pwmN> [--force]")
 		return exitUsage
 	}
 	want := fs.Arg(0)
 
-	if os.Geteuid() != 0 && os.Getenv("PVEFAND_SYSFS") == "" {
+	if os.Geteuid() != 0 && os.Getenv("VENTULA_SYSFS") == "" {
 		fmt.Fprintln(os.Stderr, "test: must run as root (writes pwm via sysfs)")
 		return exitFail
 	}
 
 	dir := runDir()
 	if daemonRunning(dir) || unitActive(unitName) {
-		fmt.Fprintln(os.Stderr, "test: the pvefand daemon is running. Two regulators must never write the same channel.")
-		fmt.Fprintln(os.Stderr, "      Stop it first:  systemctl stop pvefand   (ExecStopPost puts the fans into the safe state)")
+		fmt.Fprintln(os.Stderr, "test: the ventula daemon is running. Two regulators must never write the same channel.")
+		fmt.Fprintln(os.Stderr, "      Stop it first:  systemctl stop ventula   (ExecStopPost puts the fans into the safe state)")
 		if !*force {
 			fmt.Fprintln(os.Stderr, "      Refusing. --force skips this check but does NOT stop the daemon for you.")
 			return exitFail
@@ -88,6 +88,7 @@ func cmdTest(args []string) int {
 		fmt.Fprintln(os.Stderr, "test:", err)
 		return exitFail
 	}
+	spec.Stop = testStopPolicy(dev.Profile().Name(), channelSpecs(cfg), chn.Index)
 
 	t := &testRun{
 		dev: dev, hw: hw, ch: chn, spec: spec,
@@ -98,7 +99,24 @@ func cmdTest(args []string) int {
 	return t.run()
 }
 
+// testStopPolicy picks the stop value the verification run restores pwm to.
+// It is the stop of the channel that owns the pwm after
+// control.SanitizeChannels: on the n5pro profile pwm3 is never "auto"
+// (the EC does not regulate it after a write, stop "140" from the built-in
+// defaults) and pwm1..3 missing from the config get their built-in stop.
+// A pwm no channel owns falls back to "auto".
+func testStopPolicy(profileName string, chans []chanSpec, pwm int) string {
+	for _, c := range sanitizeChannelSpecs(profileName, chans) {
+		if c.PWM == pwm {
+			return c.Stop
+		}
+	}
+	return "auto"
+}
+
 // resolveTestChannel accepts a channel name from the config or "pwmN"/"N".
+// The returned spec's Stop is the configured value (or "auto"); the caller
+// replaces it with testStopPolicy.
 func resolveTestChannel(dev profile.Device, chans []chanSpec, want string) (chanSpec, profile.Channel, error) {
 	idx := -1
 	spec := chanSpec{Stop: "auto"}
@@ -238,12 +256,12 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 
 func (t *testRun) run() (rc int) {
 	p := t.dev.Profile()
-	fmt.Printf("=== pvefand test  channel %s (pwm%d, %s)  profile %s  %s ===\n\n",
+	fmt.Printf("=== ventula test  channel %s (pwm%d, %s)  profile %s  %s ===\n\n",
 		t.spec.Name, t.ch.Index, t.ch.Label, p.Name(), time.Now().Format(time.RFC3339))
 	fmt.Println("This command WRITES duty values. It can slow down or stop a fan.")
 	fmt.Println("Confirm before continuing:")
 	fmt.Println("  - maintenance window: no scrubs, backups or large transfers")
-	fmt.Println("  - no other regulator active (pvefand, n5-fand, fancontrol)")
+	fmt.Println("  - no other regulator active (ventula, n5-fand, fancontrol)")
 	fmt.Println("  - a way back to the console exists (KVM) in case the fan does not recover")
 	if !t.ch.HasTach {
 		fmt.Printf("  - pwm%d has no tach: the expected finding is \"no tach changes\"\n", t.ch.Index)

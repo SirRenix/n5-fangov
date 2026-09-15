@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strconv"
 
-	"github.com/SirRenix/pvefand/internal/hwmon"
+	"github.com/SirRenix/ventula/internal/hwmon"
 )
 
 // ErrNotFound is returned by Detect when no matching hwmon device exists.

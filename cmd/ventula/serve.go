@@ -12,10 +12,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/SirRenix/pvefand/internal/control"
-	"github.com/SirRenix/pvefand/internal/hwmon"
-	"github.com/SirRenix/pvefand/internal/profile"
-	"github.com/SirRenix/pvefand/internal/version"
+	"github.com/SirRenix/ventula/internal/control"
+	"github.com/SirRenix/ventula/internal/hwmon"
+	"github.com/SirRenix/ventula/internal/profile"
+	"github.com/SirRenix/ventula/internal/version"
 )
 
 func init() {
@@ -44,7 +44,7 @@ func cmdServe(args []string) int {
 	// journald adds timestamps; keep the lines bare.
 	log.SetFlags(0)
 	log.SetOutput(os.Stdout)
-	log.Printf("pvefand %s starting (config %s, run-dir %s, dry-run %v)", version.Version, *cfgPath, *rdir, *dryRun)
+	log.Printf("ventula %s starting (config %s, run-dir %s, dry-run %v)", version.Version, *cfgPath, *rdir, *dryRun)
 
 	alerter := newAlerter()
 
@@ -95,7 +95,7 @@ func cmdServe(args []string) int {
 	ctrl, err := newController(cfg, dev, factory, alerter, controlOpts{DryRun: *dryRun, RunDir: *rdir})
 	if err != nil {
 		log.Printf("controller: %v", err)
-		sendAlertCooled(*rdir, alerter, "start", "pvefand could not start the controller: "+err.Error())
+		sendAlertCooled(*rdir, alerter, "start", "ventula could not start the controller: "+err.Error())
 		return exitFail
 	}
 

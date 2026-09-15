@@ -1,4 +1,4 @@
-# pvefand configuration — /etc/pvefand/config.toml
+# ventula configuration — /etc/ventula/config.toml
 #
 # Invalid values never prevent start: each bad field falls back to its
 # built-in default with a warning in the journal and a "config" alert.
@@ -22,6 +22,10 @@ listen = "127.0.0.1:8010"
 auth = "none"           # none | basic
 user = ""
 password_hash = ""      # sha256 hex of "user:password" (bcrypt would need a dependency)
+allowed_hosts = []      # extra Host header names to serve, e.g. the name a reverse proxy passes
+                        # through: ["fans.example.internal"]. IP literals, "localhost" and the
+                        # listen host always pass; anything else gets 421 (DNS-rebinding guard).
+                        # "*" disables the check. Changes need a restart, like all of [web].
 
 # CPU fan (pwm1) <- k10temp Tctl. EC idle duty was 85.
 [[channel]]

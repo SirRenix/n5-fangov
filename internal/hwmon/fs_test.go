@@ -7,16 +7,16 @@ import (
 	"regexp"
 	"testing"
 
-	"github.com/SirRenix/pvefand/internal/hwmon"
-	"github.com/SirRenix/pvefand/internal/hwmon/hwmontest"
+	"github.com/SirRenix/ventula/internal/hwmon"
+	"github.com/SirRenix/ventula/internal/hwmon/hwmontest"
 )
 
 func TestNewRootFromEnv(t *testing.T) {
-	t.Setenv("PVEFAND_SYSFS", "/tmp/fake")
+	t.Setenv("VENTULA_SYSFS", "/tmp/fake")
 	if got := hwmon.New().Root; got != "/tmp/fake" {
 		t.Fatalf("Root = %q, want /tmp/fake", got)
 	}
-	t.Setenv("PVEFAND_SYSFS", "")
+	t.Setenv("VENTULA_SYSFS", "")
 	if got := hwmon.New().Root; got != "/sys" {
 		t.Fatalf("Root = %q, want /sys", got)
 	}

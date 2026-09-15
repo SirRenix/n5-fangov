@@ -1,4 +1,4 @@
-// Package config loads, validates and writes the pvefand TOML configuration
+// Package config loads, validates and writes the ventula TOML configuration
 // (see DESIGN.md "Config"). The guiding rule is DESIGN rule 8: config errors
 // never prevent start. Parse replaces every invalid value with its built-in
 // default and reports it as a Warning; only a TOML syntax error is returned as
@@ -52,7 +52,7 @@ var Profiles = []string{"auto", "n5pro", "nct67xx", "it87xx", "monitor"}
 
 var (
 	nameRe   = regexp.MustCompile(`^[a-z0-9_]+$`)
-	presetRe = regexp.MustCompile(`^[a-z0-9_-]+$`)
+	presetRe = regexp.MustCompile(`^[a-z0-9_-]{1,64}$`) // same rule as web.presetName
 )
 
 // Daemon holds the regulation parameters.

@@ -15,9 +15,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/SirRenix/pvefand/internal/config"
-	"github.com/SirRenix/pvefand/internal/profile"
-	"github.com/SirRenix/pvefand/internal/sdnotify"
+	"github.com/SirRenix/ventula/internal/config"
+	"github.com/SirRenix/ventula/internal/profile"
+	"github.com/SirRenix/ventula/internal/sdnotify"
 )
 
 // SensorReader is what the controller needs from a temperature source.
@@ -45,7 +45,7 @@ type Logger interface {
 // Options tune a Controller. Zero values select production behaviour.
 type Options struct {
 	DryRun bool   // compute and log, never write hardware
-	RunDir string // /run/pvefand: state.json, override.<name>, alert.<kind>; "" = no files
+	RunDir string // /run/ventula: state.json, override.<name>, alert.<kind>; "" = no files
 	Logger Logger // default: log.New(os.Stdout, "", 0)
 
 	// Injection points for tests. nil = real time / real sd_notify.
@@ -314,7 +314,7 @@ func (c *Controller) reportNotes(notes []string) {
 //   - pwm1..3 (CPU, SSD, HDD) must be managed: a missing channel is added
 //     from config.N5ProChannels. A channel that was written once and is
 //     then ignored stays wherever the last write left it (the EC does not
-//     regulate pwm3 after a write at all), and `pvefand failsafe` would skip
+//     regulate pwm3 after a write at all), and `ventula failsafe` would skip
 //     it as well.
 //   - pwm3 with stop="auto" is forced to config.HDDStop for the same reason.
 //
@@ -483,7 +483,7 @@ func (c *Controller) cycle() error {
 
 	if !ok {
 		c.logOnce("sensor", "sensor error -> all channels 255 (%s)", c.sensorSummary(chans))
-		c.raise("sensor", "sensor unreadable/implausible/frozen -> fans at 255 (journalctl -u pvefand)")
+		c.raise("sensor", "sensor unreadable/implausible/frozen -> fans at 255 (journalctl -u ventula)")
 		c.reresolve(chans)
 		lost := c.noteFailsafe(c.failsafeAll(chans, ModeSensor))
 		c.finishCycle(chans, extra, "sensor-error", d)
@@ -555,7 +555,7 @@ func (c *Controller) cycle() error {
 		c.log.Printf("pwm write error (%d consecutive)", c.wrErr)
 		status = "write-error"
 		if c.wrErr >= writeErrorsBeforeFailsafe {
-			c.raise("write", "repeated pwm write errors -> all channels 255; check driver/EC (dmesg, journalctl -u pvefand)")
+			c.raise("write", "repeated pwm write errors -> all channels 255; check driver/EC (dmesg, journalctl -u ventula)")
 			c.reresolve(chans)
 			lost = c.noteFailsafe(c.failsafeAll(chans, ModeFailsafe))
 		}
@@ -802,7 +802,7 @@ func (c *Controller) Stop() {
 }
 
 // Failsafe puts every configured channel that exists on dev into its
-// configured safe state (SafeStop). Used by `pvefand failsafe`
+// configured safe state (SafeStop). Used by `ventula failsafe`
 // (ExecStopPost) without a running controller; continues after errors and
 // returns them joined. The channel list goes through SanitizeChannels, so
 // on the N5 Pro pwm1..3 are always handled (built-in defaults for channels

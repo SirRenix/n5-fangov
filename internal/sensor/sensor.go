@@ -11,8 +11,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/SirRenix/pvefand/internal/hwmon"
-	"github.com/SirRenix/pvefand/internal/profile"
+	"github.com/SirRenix/ventula/internal/hwmon"
+	"github.com/SirRenix/ventula/internal/profile"
 )
 
 // Plausibility window in millidegrees. Readings outside are reported as

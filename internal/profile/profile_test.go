@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/SirRenix/pvefand/internal/hwmon"
-	"github.com/SirRenix/pvefand/internal/hwmon/hwmontest"
-	"github.com/SirRenix/pvefand/internal/profile"
+	"github.com/SirRenix/ventula/internal/hwmon"
+	"github.com/SirRenix/ventula/internal/hwmon/hwmontest"
+	"github.com/SirRenix/ventula/internal/profile"
 )
 
 // n5proCopy returns a writable clone of the n5host tree plus its FS.

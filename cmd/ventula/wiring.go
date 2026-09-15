@@ -1,5 +1,5 @@
 // wiring.go isolates every call into a sibling package. All other files in
-// cmd/pvefand use only the local types and functions defined here, so an API
+// cmd/ventula use only the local types and functions defined here, so an API
 // change in an internal package is fixed in exactly one place.
 package main
 
@@ -16,16 +16,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/SirRenix/pvefand/internal/alert"
-	"github.com/SirRenix/pvefand/internal/config"
-	"github.com/SirRenix/pvefand/internal/control"
-	"github.com/SirRenix/pvefand/internal/hwmon"
-	"github.com/SirRenix/pvefand/internal/ipc"
-	"github.com/SirRenix/pvefand/internal/profile"
-	"github.com/SirRenix/pvefand/internal/sdnotify"
-	"github.com/SirRenix/pvefand/internal/sensor"
-	"github.com/SirRenix/pvefand/internal/version"
-	"github.com/SirRenix/pvefand/internal/web"
+	"github.com/SirRenix/ventula/internal/alert"
+	"github.com/SirRenix/ventula/internal/config"
+	"github.com/SirRenix/ventula/internal/control"
+	"github.com/SirRenix/ventula/internal/hwmon"
+	"github.com/SirRenix/ventula/internal/ipc"
+	"github.com/SirRenix/ventula/internal/profile"
+	"github.com/SirRenix/ventula/internal/sdnotify"
+	"github.com/SirRenix/ventula/internal/sensor"
+	"github.com/SirRenix/ventula/internal/version"
+	"github.com/SirRenix/ventula/internal/web"
 )
 
 // ---------------------------------------------------------------------------
@@ -95,6 +95,26 @@ func channelSpecs(cfg config.Config) []chanSpec {
 		})
 	}
 	return out
+}
+
+// sanitizeChannelSpecs applies control.SanitizeChannels to a channel list:
+// on the n5pro profile pwm1..3 missing from the config are added with the
+// built-in defaults and pwm3 never keeps stop="auto" (the EC does not
+// regulate it after a write). Other profiles come back unchanged.
+func sanitizeChannelSpecs(profileName string, chans []chanSpec) []chanSpec {
+	in := make([]config.Channel, 0, len(chans))
+	for _, c := range chans {
+		in = append(in, config.Channel{
+			Name:     c.Name,
+			PWM:      c.PWM,
+			Sensor:   c.Sensor,
+			Curve:    append([][2]int(nil), c.Curve...),
+			Critical: c.Critical,
+			Stop:     c.Stop,
+		})
+	}
+	out, _ := control.SanitizeChannels(profileName, in)
+	return channelSpecs(config.Config{Channels: out})
 }
 
 func daemonOf(cfg config.Config) daemonSpec {

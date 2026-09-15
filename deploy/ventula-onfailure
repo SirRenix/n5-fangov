@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# pvefand-onfailure -- runs when pvefand.service enters "failed" (also when an
+# ventula-onfailure -- runs when ventula.service enters "failed" (also when an
 # automatic restart follows). Reports the REAL cause and whether the daemon is
 # running again. Cooldown 30 min per type so a crash loop does not send five
-# mails (StartLimitBurst). Sends via `pvefand alert`, which uses the same
+# mails (StartLimitBurst). Sends via `ventula alert`, which uses the same
 # alert path as the daemon (PVE::Notify -> mail -> log).
 set -u
-UNIT=pvefand
-RUN=/run/pvefand
-BIN=/usr/bin/pvefand
+UNIT=ventula
+RUN=/run/ventula
+BIN=/usr/bin/ventula
 COOLDOWN=1800
 mkdir -p "$RUN"
 
@@ -40,31 +40,31 @@ fi
 
 if [[ "$active" == "active" ]]; then
     typ="restart"
-    msg="pvefand was down and has been restarted automatically (restart no. $nrest).
+    msg="ventula was down and has been restarted automatically (restart no. $nrest).
 Cause: $why
 Meanwhile the failsafe was active (channels in their configured safe state).
-Now: daemon running again. Check: pvefand status; pvefand log 50"
+Now: daemon running again. Check: ventula status; ventula log 50"
 else
     typ="failed"
-    msg="pvefand is DOWN and is NOT running any more.
+    msg="ventula is DOWN and is NOT running any more.
 Cause: $why
 ${dk:+$dk
 }Fans: channels in their configured safe state (failsafe), no regulation.
-Fix: systemctl status pvefand; pvefand check; journalctl -u pvefand -n 50
-     systemctl reset-failed pvefand && systemctl start pvefand"
+Fix: systemctl status ventula; ventula check; journalctl -u ventula -n 50
+     systemctl reset-failed ventula && systemctl start ventula"
 fi
 
 now=$(date +%s); stamp=0
 [[ -r "$RUN/alert.$typ" ]] && stamp=$(<"$RUN/alert.$typ")
 if (( now - stamp < COOLDOWN )); then
-    logger -t pvefand-onfailure "[$typ] suppressed (cooldown): $why"
+    logger -t ventula-onfailure "[$typ] suppressed (cooldown): $why"
     exit 0
 fi
-logger -t pvefand-onfailure "[$typ] $why"
+logger -t ventula-onfailure "[$typ] $why"
 if [[ -x "$BIN" ]]; then
-    timeout 30 "$BIN" alert "$typ" "$msg" || logger -t pvefand-onfailure "pvefand alert failed (rc $?)"
+    timeout 30 "$BIN" alert "$typ" "$msg" || logger -t ventula-onfailure "ventula alert failed (rc $?)"
 else
-    logger -t pvefand-onfailure "$BIN missing, alert not sent: $msg"
+    logger -t ventula-onfailure "$BIN missing, alert not sent: $msg"
 fi
 # Stamp AFTER sending so the alert package's own cooldown (if file-based) does not
 # see a fresh stamp and suppress this very alert.

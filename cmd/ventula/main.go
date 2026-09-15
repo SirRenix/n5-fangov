@@ -1,4 +1,4 @@
-// Command pvefand is a guarded fan controller for Proxmox VE and Debian.
+// Command ventula is a guarded fan controller for Proxmox VE and Debian.
 //
 // main.go only dispatches. Every subcommand lives in its own file and
 // registers itself from init(); every call into an internal package goes
@@ -10,7 +10,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/SirRenix/pvefand/internal/version"
+	"github.com/SirRenix/ventula/internal/version"
 )
 
 // Exit codes shared by all subcommands.
@@ -20,14 +20,14 @@ const (
 	exitUsage = 2
 )
 
-// Default paths; overridable per subcommand via flags or PVEFAND_RUN_DIR.
+// Default paths; overridable per subcommand via flags or VENTULA_RUN_DIR.
 const (
-	defaultConfigPath = "/etc/pvefand/config.toml"
-	defaultPresetDir  = "/etc/pvefand/presets"
-	defaultRunDir     = "/run/pvefand"
-	socketName        = "pvefand.sock"
+	defaultConfigPath = "/etc/ventula/config.toml"
+	defaultPresetDir  = "/etc/ventula/presets"
+	defaultRunDir     = "/run/ventula"
+	socketName        = "ventula.sock"
 	stateFileName     = "state.json"
-	unitName          = "pvefand"
+	unitName          = "ventula"
 )
 
 // command is one subcommand: run returns the process exit code.
@@ -88,7 +88,7 @@ func run(args []string) int {
 	}
 	c, ok := commands[name]
 	if !ok {
-		fmt.Fprintf(os.Stderr, "pvefand: unknown subcommand %q\n", name)
+		fmt.Fprintf(os.Stderr, "ventula: unknown subcommand %q\n", name)
 		usage(os.Stderr)
 		return exitUsage
 	}
@@ -96,12 +96,12 @@ func run(args []string) int {
 }
 
 func cmdVersion([]string) int {
-	fmt.Println("pvefand", version.Version)
+	fmt.Println("ventula", version.Version)
 	return exitOK
 }
 
 func usage(w io.Writer) {
-	fmt.Fprintln(w, "usage: pvefand <subcommand> [args]")
+	fmt.Fprintln(w, "usage: ventula <subcommand> [args]")
 	fmt.Fprintln(w)
 	for _, n := range order {
 		if c, ok := commands[n]; ok && c.hidden {
@@ -110,5 +110,5 @@ func usage(w io.Writer) {
 		fmt.Fprintf(w, "  %-9s %s\n", n, helpText[n])
 	}
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Environment: PVEFAND_RUN_DIR (default /run/pvefand), PVEFAND_SYSFS (default /sys)")
+	fmt.Fprintln(w, "Environment: VENTULA_RUN_DIR (default /run/ventula), VENTULA_SYSFS (default /sys)")
 }

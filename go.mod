@@ -1,4 +1,4 @@
-module github.com/SirRenix/pvefand
+module github.com/SirRenix/ventula
 
 go 1.25
 

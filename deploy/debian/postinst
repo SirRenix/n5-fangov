@@ -1,6 +1,6 @@
 #!/bin/sh
-# pvefand postinst: reload systemd, enable the unit, install PVE templates.
-# Never starts the daemon on a fresh install (run `pvefand check` first);
+# ventula postinst: reload systemd, enable the unit, install PVE templates.
+# Never starts the daemon on a fresh install (run `ventula check` first);
 # on upgrade a running daemon is restarted so the new binary takes over.
 set -e
 
@@ -9,27 +9,27 @@ case "$1" in
         # The Bash predecessor must not regulate in parallel.
         if [ -f /etc/systemd/system/n5-fand.service ] || [ -f /lib/systemd/system/n5-fand.service ]; then
             if systemctl is-active --quiet n5-fand.service 2>/dev/null; then
-                echo "pvefand: stopping n5-fand.service (predecessor); two regulators must never run at once"
+                echo "ventula: stopping n5-fand.service (predecessor); two regulators must never run at once"
                 systemctl stop n5-fand.service || true
             fi
             if systemctl is-enabled --quiet n5-fand.service 2>/dev/null; then
-                echo "pvefand: disabling n5-fand.service; remove it with n5pro-ec/deploy/uninstall.sh later"
+                echo "ventula: disabling n5-fand.service; remove it with n5pro-ec/deploy/uninstall.sh later"
                 systemctl disable n5-fand.service || true
             fi
         fi
         if [ -d /etc/pve ]; then
             mkdir -p /etc/pve/notification-templates/default
-            cp /usr/share/pvefand/pve-notification/pvefand-subject.txt.hbs /etc/pve/notification-templates/default/ 2>/dev/null || true
-            cp /usr/share/pvefand/pve-notification/pvefand-body.txt.hbs    /etc/pve/notification-templates/default/ 2>/dev/null || true
+            cp /usr/share/ventula/pve-notification/ventula-subject.txt.hbs /etc/pve/notification-templates/default/ 2>/dev/null || true
+            cp /usr/share/ventula/pve-notification/ventula-body.txt.hbs    /etc/pve/notification-templates/default/ 2>/dev/null || true
         fi
-        mkdir -p /etc/pvefand/presets
+        mkdir -p /etc/ventula/presets
         systemctl daemon-reload || true
-        systemctl enable pvefand.service || true
-        if [ -n "$2" ] && systemctl is-active --quiet pvefand.service 2>/dev/null; then
-            echo "pvefand: upgrade from $2, restarting the daemon"
-            systemctl restart pvefand.service || true
+        systemctl enable ventula.service || true
+        if [ -n "$2" ] && systemctl is-active --quiet ventula.service 2>/dev/null; then
+            echo "ventula: upgrade from $2, restarting the daemon"
+            systemctl restart ventula.service || true
         else
-            echo "pvefand: installed and enabled. Next: pvefand check && systemctl start pvefand"
+            echo "ventula: installed and enabled. Next: ventula check && systemctl start ventula"
         fi
         ;;
 esac

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/SirRenix/pvefand/internal/hwmon"
+	"github.com/SirRenix/ventula/internal/hwmon"
 )
 
 // All returns every profile in detection order: the verified one first, the

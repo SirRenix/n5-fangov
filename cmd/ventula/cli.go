@@ -11,7 +11,7 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/SirRenix/pvefand/internal/control"
+	"github.com/SirRenix/ventula/internal/control"
 )
 
 func init() {
@@ -50,7 +50,7 @@ func loadSnapshot(dir string) (snap control.Snapshot, source string, err error) 
 
 func cmdStatus(args []string) int {
 	if len(args) != 0 {
-		fmt.Fprintln(os.Stderr, "usage: pvefand status")
+		fmt.Fprintln(os.Stderr, "usage: ventula status")
 		return exitUsage
 	}
 	dir := runDir()
@@ -76,7 +76,7 @@ func printSnapshot(s control.Snapshot, source string, active bool) {
 	if s.DryRun {
 		extra = "  DRY-RUN"
 	}
-	fmt.Printf("pvefand: %s  profile %s (%s)  uptime %s  unit %s%s\n", s.Status, s.Profile, verified, fmtDuration(s.Uptime), unit, extra)
+	fmt.Printf("ventula: %s  profile %s (%s)  uptime %s  unit %s%s\n", s.Status, s.Profile, verified, fmtDuration(s.Uptime), unit, extra)
 	if s.HwmonPath != "" {
 		fmt.Printf("hwmon: %s\n", s.HwmonPath)
 	}
@@ -121,7 +121,7 @@ func printSnapshot(s control.Snapshot, source string, active bool) {
 
 func cmdSet(args []string) int {
 	if len(args) != 2 {
-		fmt.Fprintln(os.Stderr, "usage: pvefand set <channel> <duty|NN%>")
+		fmt.Fprintln(os.Stderr, "usage: ventula set <channel> <duty|NN%>")
 		return exitUsage
 	}
 	ch := args[0]
@@ -142,7 +142,7 @@ func cmdSet(args []string) int {
 
 func cmdAuto(args []string) int {
 	if len(args) != 1 {
-		fmt.Fprintln(os.Stderr, "usage: pvefand auto <channel|all>")
+		fmt.Fprintln(os.Stderr, "usage: ventula auto <channel|all>")
 		return exitUsage
 	}
 	a := newAPI(runDir())
@@ -175,7 +175,7 @@ func cmdAuto(args []string) int {
 
 func cmdCurve(args []string) int {
 	if len(args) != 0 {
-		fmt.Fprintln(os.Stderr, "usage: pvefand curve")
+		fmt.Fprintln(os.Stderr, "usage: ventula curve")
 		return exitUsage
 	}
 	raw, source, err := currentConfigRaw(runDir())
@@ -227,7 +227,7 @@ func currentConfigRaw(dir string) ([]byte, string, error) {
 func cmdLog(args []string) int {
 	n := 50
 	if len(args) > 1 {
-		fmt.Fprintln(os.Stderr, "usage: pvefand log [n]")
+		fmt.Fprintln(os.Stderr, "usage: ventula log [n]")
 		return exitUsage
 	}
 	if len(args) == 1 {

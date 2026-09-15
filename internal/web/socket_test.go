@@ -12,19 +12,19 @@ import (
 	"testing"
 	"time"
 
-	"github.com/SirRenix/pvefand/internal/ipc"
+	"github.com/SirRenix/ventula/internal/ipc"
 )
 
 // TestUnixSocketRoundTrip serves the Server on a temp unix socket and talks
 // to it with ipc.Client: GET /api/version, and a write without CSRF/auth
 // (the socket handler enforces neither).
 func TestUnixSocketRoundTrip(t *testing.T) {
-	dir, err := os.MkdirTemp("", "pvefand-web")
+	dir, err := os.MkdirTemp("", "ventula-web")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer os.RemoveAll(dir)
-	sock := filepath.Join(dir, "pvefand.sock")
+	sock := filepath.Join(dir, "ventula.sock")
 
 	e := newEnv(t, AuthConfig{Mode: "basic", User: "admin", PasswordHash: PasswordHash("admin", "pw")})
 	ctx, cancel := context.WithCancel(context.Background())
@@ -43,7 +43,7 @@ func TestUnixSocketRoundTrip(t *testing.T) {
 	}
 
 	c := ipc.Client(sock)
-	res, err := c.Get("http://pvefand/api/version")
+	res, err := c.Get("http://ventula/api/version")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +54,7 @@ func TestUnixSocketRoundTrip(t *testing.T) {
 		t.Fatalf("version over socket: %d %s (%v)", res.StatusCode, body, err)
 	}
 
-	req, _ := http.NewRequest("PUT", "http://pvefand/api/override/cpu", strings.NewReader(`{"duty":77}`))
+	req, _ := http.NewRequest("PUT", "http://ventula/api/override/cpu", strings.NewReader(`{"duty":77}`))
 	res, err = c.Do(req)
 	if err != nil {
 		t.Fatal(err)

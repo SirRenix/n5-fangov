@@ -22,7 +22,7 @@ func fakeExe(t *testing.T, name, out string) string {
 		t.Skip("shell scripts")
 	}
 	p := filepath.Join(t.TempDir(), name)
-	script := "#!/bin/sh\n{ echo \"ARGS: $*\"; echo \"STDIN:\"; cat; echo \"ENV:\"; env | grep '^PVEFAND_' | sort; } > " + out + "\n"
+	script := "#!/bin/sh\n{ echo \"ARGS: $*\"; echo \"STDIN:\"; cat; echo \"ENV:\"; env | grep '^VENTULA_' | sort; } > " + out + "\n"
 	if err := os.WriteFile(p, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -48,8 +48,8 @@ func TestPVESink(t *testing.T) {
 		t.Fatal(err)
 	}
 	txt := string(got)
-	for _, want := range []string{"ARGS: -MPVE::Notify -e ", "PVEFAND_TEMPLATE=pvefand", "PVEFAND_TITLE=sensor",
-		"PVEFAND_MSG=sensor unreadable -> 255", "PVEFAND_HOST=n5host", "PVEFAND_WHEN=20"} {
+	for _, want := range []string{"ARGS: -MPVE::Notify -e ", "VENTULA_TEMPLATE=ventula", "VENTULA_TITLE=sensor",
+		"VENTULA_MSG=sensor unreadable -> 255", "VENTULA_HOST=n5host", "VENTULA_WHEN=20"} {
 		if !strings.Contains(txt, want) {
 			t.Errorf("missing %q in:\n%s", want, txt)
 		}
@@ -84,7 +84,7 @@ func TestMailSink(t *testing.T) {
 		t.Fatal(err)
 	}
 	txt := string(got)
-	for _, want := range []string{"ARGS: -s [deb] pvefand: temp root", "pvefand on deb reports:", "cpu=90C", "Time: "} {
+	for _, want := range []string{"ARGS: -s [deb] ventula: temp root", "ventula on deb reports:", "cpu=90C", "Time: "} {
 		if !strings.Contains(txt, want) {
 			t.Errorf("missing %q in:\n%s", want, txt)
 		}

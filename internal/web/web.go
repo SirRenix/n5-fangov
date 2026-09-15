@@ -22,15 +22,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/SirRenix/pvefand/internal/control"
-	"github.com/SirRenix/pvefand/internal/ipc"
+	"github.com/SirRenix/ventula/internal/control"
+	"github.com/SirRenix/ventula/internal/ipc"
 )
 
 //go:embed static/index.html static/app.js static/app.css
 var staticFS embed.FS
 
 // CSRFHeader must be present (value "1") on every state-changing request over TCP.
-const CSRFHeader = "X-Pvefand-Csrf"
+const CSRFHeader = "X-Ventula-Csrf"
 
 // RedactedHash replaces password_hash in GET /api/config; a PUT carrying it
 // keeps the hash from the current file.
@@ -57,7 +57,7 @@ type ParsedConfigStore interface {
 	Parsed() (any, error)
 }
 
-// Preset is one entry of /etc/pvefand/presets.
+// Preset is one entry of /etc/ventula/presets.
 type Preset struct {
 	Name     string   `json:"name"`
 	Channels []string `json:"channels"` // channel names contained in the preset
@@ -732,7 +732,7 @@ func (s *Server) getProfiles(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getVersion(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"name": "pvefand", "version": s.deps.Version})
+	writeJSON(w, http.StatusOK, map[string]string{"name": "ventula", "version": s.deps.Version})
 }
 
 func (s *Server) getSensors(w http.ResponseWriter, r *http.Request) {

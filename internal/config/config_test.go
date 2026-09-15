@@ -584,7 +584,7 @@ func TestLowerBounds(t *testing.T) {
 // Preset names are file stems: no path separators or traversal.
 func TestPresetNameTraversal(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "presets")
-	for _, bad := range []string{"../x", "..", "a/b", "a\b", ".", "x.toml", ""} {
+	for _, bad := range []string{"../x", "..", "a/b", "a\b", ".", "x.toml", "", strings.Repeat("a", 65)} {
 		if ValidPresetName(bad) {
 			t.Errorf("ValidPresetName(%q) = true", bad)
 		}
@@ -600,5 +600,11 @@ func TestPresetNameTraversal(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(t.TempDir(), "x.toml")); err == nil {
 		t.Errorf("traversal wrote outside the preset dir")
+	}
+	// Same rule as web.presetName: [a-z0-9_-], 1..64 characters.
+	for _, good := range []string{"a", "quiet-night_2", strings.Repeat("a", 64)} {
+		if !ValidPresetName(good) {
+			t.Errorf("ValidPresetName(%q) = false", good)
+		}
 	}
 }

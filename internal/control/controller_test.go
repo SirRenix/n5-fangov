@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/SirRenix/pvefand/internal/config"
+	"github.com/SirRenix/ventula/internal/config"
 )
 
 func TestInterpolate(t *testing.T) {

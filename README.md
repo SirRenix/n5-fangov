@@ -1,7 +1,9 @@
-# pvefand
+# ventula — guarded fan control for Proxmox VE and Debian
 
-Guarded fan control for Proxmox VE and Debian — one static binary: regulation daemon,
-CLI and embedded web dashboard.
+One static binary: regulation daemon, CLI and embedded web dashboard.
+
+*ventula* is Dalmatian for "fan", from Latin *ventus*, wind (formerly pvefand
+during development).
 
 **Hardware-verified on the Minisforum N5 Pro** (ITE IT5571 embedded controller via the
 community driver [`ltdstudio/minisforum-n5-it5571`](https://github.com/ltdstudio/minisforum-n5-it5571)).
@@ -19,15 +21,15 @@ untested* — the dashboard says so, per profile.
   of four drives, the SSD fan the hottest of three NVMe.
 - The IT5571 EC **does not resume automatic regulation of the HDD channel after any
   write** (measured 2026-09-14). A controller that hands control back to the EC on exit
-  leaves the drives unregulated. pvefand knows that and stops to a fixed safe duty instead.
+  leaves the drives unregulated. ventula knows that and stops to a fixed safe duty instead.
 
 ## What it guards against
 
 | Failure | Response |
 |---|---|
 | Controller hangs | systemd watchdog (60 s) → kill → failsafe → restart |
-| Controller dies (crash, OOM, kill) | `ExecStopPost=pvefand failsafe` → profile-defined safe state |
-| Kernel update without the DKMS module | `ExecStartPre=pvefand check` fails loudly → alert; fans stay in EC/BIOS mode |
+| Controller dies (crash, OOM, kill) | `ExecStopPost=ventula failsafe` → profile-defined safe state |
+| Kernel update without the DKMS module | `ExecStartPre=ventula check` fails loudly → alert; fans stay in EC/BIOS mode |
 | Sensor unreadable, implausible or frozen | all channels 255, alert, re-resolve |
 | Fan stalls (0 RPM at duty ≥ threshold) | channel 255, alert, auto-recovery |
 | Write fails or read-back differs | 255, alert |
@@ -35,7 +37,7 @@ untested* — the dashboard says so, per profile.
 | Broken config | built-in defaults + warning + alert; daemon still starts |
 | Critical temperature | 255 immediately, also in manual mode |
 
-Alerts go to the Proxmox notification stack (`PVE::Notify`, template `pvefand`) when
+Alerts go to the Proxmox notification stack (`PVE::Notify`, template `ventula`) when
 running on PVE, otherwise `mail(1)`; always to the journal.
 
 ## Install
@@ -43,24 +45,24 @@ running on PVE, otherwise `mail(1)`; always to the journal.
 ```
 # Proxmox VE 9 / Debian 13, as root
 ./deploy/install.sh
-pvefand detect          # shows the profile that will be used, never writes
-pvefand check           # prerequisites
-systemctl start pvefand
-pvefand status
+ventula detect          # shows the profile that will be used, never writes
+ventula check           # prerequisites
+systemctl start ventula
+ventula status
 ```
 
 N5 Pro only: the kernel module must be installed first (DKMS package from the sibling
-repo, `experimental_write=1`). `pvefand check` tells you if it is missing.
+repo, `experimental_write=1`). `ventula check` tells you if it is missing.
 
 ## Use
 
 ```
-pvefand status                 temperatures, duty, RPM, mode per channel
-pvefand set hdd 70%            manual override (limits and stall guard still apply)
-pvefand auto hdd               back to the curve
-pvefand curve                  active curves
-pvefand log 50
-pvefand test 3                 channel verification run (daemon must be stopped)
+ventula status                 temperatures, duty, RPM, mode per channel
+ventula set hdd 70%            manual override (limits and stall guard still apply)
+ventula auto hdd               back to the curve
+ventula curve                  active curves
+ventula log 50
+ventula test 3                 channel verification run (daemon must be stopped)
 ```
 
 Web dashboard: `http://<host>:8010` (default binds to 127.0.0.1). Tabs: Overview,
@@ -71,7 +73,7 @@ Curves, Manual, Presets, Log, Compatibility. LAN access: see Security.
 The API changes fan duties, so treat the port like a management interface.
 
 - **Default is loopback only** (`[web].listen = "127.0.0.1:8010"`, no auth). The CLI
-  uses the unix socket in `/run/pvefand` (root only, `RuntimeDirectoryMode=0750`).
+  uses the unix socket in `/run/ventula` (root only, `RuntimeDirectoryMode=0750`).
 - **LAN access only behind a TLS reverse proxy** (Caddy, nginx, the PVE proxy). Basic
   auth is sent in clear text on every request; without TLS anyone on the segment can
   read it. Keep `listen` on loopback and let the proxy connect to it, or bind a LAN
@@ -103,13 +105,13 @@ The API changes fan duties, so treat the port like a management interface.
   proxy must either rewrite `Host` to the upstream (nginx does by default, Caddy:
   `header_up Host {upstream_hostport}`) or its public name must be listed in
   `allowed_hosts`. `"*"` disables the check.
-- **CSRF.** Every write needs the header `X-Pvefand-Csrf: 1`; a browser form or
+- **CSRF.** Every write needs the header `X-Ventula-Csrf: 1`; a browser form or
   cross-site fetch cannot add it without CORS, which the API does not offer.
 - Changing `[web]` settings takes a restart; `PUT /api/config` reloads curves only.
 
 ## Configure
 
-`/etc/pvefand/config.toml` — curves as point lists, sensor source per channel:
+`/etc/ventula/config.toml` — curves as point lists, sensor source per channel:
 
 ```toml
 [[channel]]
@@ -136,7 +138,7 @@ Sensor sources: `k10temp`, `coretemp`, `nvme:max`, `drivetemp:max`, `hwmon:<name
 ## Build
 
 No Go toolchain needed locally: `tools/remote-go.ps1` builds in a `golang:1.25-alpine`
-container (static, `CGO_ENABLED=0`). Or plainly: `CGO_ENABLED=0 go build ./cmd/pvefand`.
+container (static, `CGO_ENABLED=0`). Or plainly: `CGO_ENABLED=0 go build ./cmd/ventula`.
 
 ## License
 

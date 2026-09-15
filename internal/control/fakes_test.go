@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/SirRenix/pvefand/internal/config"
-	"github.com/SirRenix/pvefand/internal/hwmon"
-	"github.com/SirRenix/pvefand/internal/profile"
+	"github.com/SirRenix/ventula/internal/config"
+	"github.com/SirRenix/ventula/internal/hwmon"
+	"github.com/SirRenix/ventula/internal/profile"
 )
 
 // ---- fake profile / device -------------------------------------------------

@@ -10,10 +10,10 @@ import (
 )
 
 // DefaultPath is the config file location on a normal install.
-const DefaultPath = "/etc/pvefand/config.toml"
+const DefaultPath = "/etc/ventula/config.toml"
 
 // DefaultPresetDir holds preset files (<name>.toml with [[channel]] tables only).
-const DefaultPresetDir = "/etc/pvefand/presets"
+const DefaultPresetDir = "/etc/ventula/presets"
 
 // Load reads and parses path. The returned Config is always usable:
 //   - file missing: Default(), one warning, err == nil
@@ -72,7 +72,8 @@ func writeAtomic(path string, data []byte, perm os.FileMode) error {
 	return nil
 }
 
-// ValidPresetName reports whether name is usable as a preset file stem.
+// ValidPresetName reports whether name is usable as a preset file stem
+// ([a-z0-9_-], 1..64 characters; the web layer applies the same rule).
 func ValidPresetName(name string) bool { return presetRe.MatchString(name) }
 
 // LoadPresets reads every <name>.toml in dir. Files that do not parse are
@@ -124,7 +125,7 @@ func LoadPreset(dir, name string) ([]Channel, []Warning, error) {
 // SavePreset writes chans as <dir>/<name>.toml atomically.
 func SavePreset(dir, name string, chans []Channel) error {
 	if !ValidPresetName(name) {
-		return fmt.Errorf("preset: invalid name %q (use [a-z0-9_-]+)", name)
+		return fmt.Errorf("preset: invalid name %q (use [a-z0-9_-], 1..64 characters)", name)
 	}
 	return writeAtomic(filepath.Join(dir, name+".toml"), MarshalChannels(chans), 0o644)
 }

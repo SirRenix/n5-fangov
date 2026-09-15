@@ -1,17 +1,17 @@
 #!/bin/sh
-# pvefand postrm: reload systemd after the units are gone; purge removes the
+# ventula postrm: reload systemd after the units are gone; purge removes the
 # config directory and the PVE templates.
 set -e
 
 case "$1" in
     remove)
         systemctl daemon-reload 2>/dev/null || true
-        rm -rf /run/pvefand
+        rm -rf /run/ventula
         ;;
     purge)
-        rm -rf /etc/pvefand /run/pvefand
-        rm -f /etc/pve/notification-templates/default/pvefand-subject.txt.hbs \
-              /etc/pve/notification-templates/default/pvefand-body.txt.hbs 2>/dev/null || true
+        rm -rf /etc/ventula /run/ventula
+        rm -f /etc/pve/notification-templates/default/ventula-subject.txt.hbs \
+              /etc/pve/notification-templates/default/ventula-body.txt.hbs 2>/dev/null || true
         systemctl daemon-reload 2>/dev/null || true
         ;;
 esac
