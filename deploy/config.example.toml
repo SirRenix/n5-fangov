@@ -1,0 +1,52 @@
+# pvefand configuration -- /etc/pvefand/config.toml
+# Invalid values never prevent start: they are replaced by built-in defaults
+# with a warning in the journal and an alert. `pvefand check` lists them.
+
+[daemon]
+interval = "10s"        # regulation cycle, 2s..120s
+step_up = 40            # max duty increase per cycle (1..255)
+step_down = 15          # max duty decrease per cycle (1..255)
+stall_min_duty = 60     # rpm 0 at or above this duty counts as a stall
+stall_cycles = 2        # consecutive stall cycles before 255 + alert
+stale_cycles = 18       # identical raw sensor value this many cycles -> sensor frozen
+alert_cooldown = "30m"  # per alert type
+log_every = 30          # status line every N cycles (0 = never)
+profile = "auto"        # auto | n5pro | nct67xx | it87xx | monitor
+
+[web]
+listen = "127.0.0.1:8010"   # empty = no TCP listener (CLI via unix socket still works)
+auth = "none"               # none | basic
+user = ""
+password_hash = ""          # sha256 hex of "user:password" (no bcrypt without deps)
+
+# Channels below are the Minisforum N5 Pro layout verified on 14.09.2026
+# (pwm1 CPU, pwm2 SSD, pwm3 HDD group; pwm4 PCIe has no fan and no tach).
+# Curve points are [temp_c, duty]; ascending temperature, 2..8 points, linear
+# interpolation between them. "stop" is what the channel gets when the daemon
+# stops: "auto" hands it back to the EC/BIOS, a number is a fixed duty.
+# The N5 Pro EC no longer regulates the HDD channel after a write, so it gets
+# a fixed duty instead of "auto".
+
+[[channel]]
+name = "cpu"
+pwm = 1
+sensor = "k10temp"
+curve = [[45, 85], [80, 255]]
+critical = 88
+stop = "auto"
+
+[[channel]]
+name = "ssd"
+pwm = 2
+sensor = "nvme:max"
+curve = [[48, 74], [65, 255]]
+critical = 72
+stop = "auto"
+
+[[channel]]
+name = "hdd"
+pwm = 3
+sensor = "drivetemp:max"
+curve = [[36, 105], [46, 255]]
+critical = 56
+stop = "140"
