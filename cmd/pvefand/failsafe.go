@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 
@@ -41,32 +42,27 @@ func cmdFailsafe(args []string) int {
 	for _, w := range warns {
 		fmt.Printf("failsafe: config: %s\n", w)
 	}
-	chans := channelSpecs(cfg)
-	if len(chans) == 0 {
-		fmt.Println("failsafe: no channels configured, nothing to do")
-		return exitOK
-	}
 
+	// Detect before looking at the channel list: on the N5 Pro the safe
+	// state covers pwm1..3 even when the config has no or fewer channels
+	// (the daemon manages them regardless, see control.SanitizeChannels).
 	hw := hwmon.New()
 	dev, err := detectDevice(hw, daemonOf(cfg).Profile)
 	if err != nil {
 		fmt.Printf("failsafe: no fan controller (%v): driver unloaded or absent, the EC/BIOS has control\n", err)
 		return exitOK
 	}
-
-	parts := make([]string, 0, len(chans))
-	for _, c := range chans {
-		if !hasChannel(dev, c.PWM) {
-			parts = append(parts, fmt.Sprintf("%s=pwm%d not exposed", c.Name, c.PWM))
-			continue
-		}
-		if err := dev.SafeStop(c.PWM, c.Stop); err != nil {
-			parts = append(parts, fmt.Sprintf("%s=ERROR(%v)", c.Name, err))
-			continue
-		}
-		parts = append(parts, fmt.Sprintf("%s=%s", c.Name, c.Stop))
+	if len(channelSpecs(cfg)) == 0 && dev.Profile().Name() != "n5pro" {
+		fmt.Println("failsafe: no channels configured, nothing to do")
+		return exitOK
 	}
-	fmt.Printf("failsafe: safe state set on %s: %s\n", dev.Profile().Name(), strings.Join(parts, " "))
+
+	logger := log.New(os.Stdout, "", 0)
+	if err := failsafeDevice(dev, cfg, logger); err != nil {
+		fmt.Printf("failsafe: safe state on %s INCOMPLETE: %v\n", dev.Profile().Name(), err)
+	} else {
+		fmt.Printf("failsafe: safe state set on %s\n", dev.Profile().Name())
+	}
 
 	// The daemon's snapshot no longer describes reality.
 	_ = os.Remove(statePath(runDir()))

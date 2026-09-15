@@ -48,12 +48,19 @@ func cmdServe(args []string) int {
 
 	alerter := newAlerter()
 
+	// The run dir first: the start-up alerts below keep their cooldown
+	// stamps there (a restart loop must not send one notification per try).
+	if err := os.MkdirAll(*rdir, 0o755); err != nil {
+		log.Printf("run-dir %s: %v", *rdir, err)
+		return exitFail
+	}
+
 	cfg, warns, err := loadConfig(*cfgPath)
 	for _, w := range warns {
 		log.Printf("config: %s", w)
 	}
 	if len(warns) > 0 {
-		sendAlert(alerter, "config", fmt.Sprintf("%d config problem(s), built-in defaults in effect:\n%s",
+		sendAlertCooled(*rdir, alerter, "config", fmt.Sprintf("%d config problem(s), built-in defaults in effect:\n%s",
 			len(warns), strings.Join(warns, "\n")))
 	}
 	if err != nil {
@@ -63,19 +70,14 @@ func cmdServe(args []string) int {
 	dspec := daemonOf(cfg)
 	chans := channelSpecs(cfg)
 	if len(chans) == 0 {
-		log.Printf("config: no [[channel]] tables; nothing to regulate (monitoring only)")
-	}
-
-	if err := os.MkdirAll(*rdir, 0o755); err != nil {
-		log.Printf("run-dir %s: %v", *rdir, err)
-		return exitFail
+		log.Printf("config: no [[channel]] tables; nothing to regulate (monitoring only, N5 Pro: built-in channels)")
 	}
 
 	hw := hwmon.New()
 	dev, err := detectDevice(hw, dspec.Profile)
 	if err != nil {
 		log.Printf("profile %q: %v", dspec.Profile, err)
-		sendAlert(alerter, "profile", fmt.Sprintf("fan controller not detected (profile %q): %v\nNo regulation is running; fans stay in BIOS/EC control.", dspec.Profile, err))
+		sendAlertCooled(*rdir, alerter, "profile", fmt.Sprintf("fan controller not detected (profile %q): %v\nNo regulation is running; fans stay in BIOS/EC control.", dspec.Profile, err))
 		return exitFail
 	}
 	p := dev.Profile()
@@ -93,7 +95,7 @@ func cmdServe(args []string) int {
 	ctrl, err := newController(cfg, dev, factory, alerter, controlOpts{DryRun: *dryRun, RunDir: *rdir})
 	if err != nil {
 		log.Printf("controller: %v", err)
-		sendAlert(alerter, "start", "pvefand could not start the controller: "+err.Error())
+		sendAlertCooled(*rdir, alerter, "start", "pvefand could not start the controller: "+err.Error())
 		return exitFail
 	}
 

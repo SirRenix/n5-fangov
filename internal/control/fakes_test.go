@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -16,26 +17,39 @@ import (
 
 // ---- fake profile / device -------------------------------------------------
 
-type fakeProfile struct{}
+type fakeProfile struct{ name string }
 
-func (fakeProfile) Name() string                             { return "fake" }
+func (p fakeProfile) Name() string {
+	if p.name == "" {
+		return "fake"
+	}
+	return p.name
+}
 func (fakeProfile) Title() string                            { return "Fake device" }
 func (fakeProfile) Verified() bool                           { return true }
 func (fakeProfile) Notes() string                            { return "" }
 func (fakeProfile) Detect(*hwmon.FS) (profile.Device, error) { return nil, errors.New("n/a") }
 
+// fakeDev mirrors the real pwmDevice: WriteDuty enters manual mode itself,
+// ReadEnable exists (enableReader), SafeStop is recorded.
 type fakeDev struct {
 	mu        sync.Mutex
+	prof      fakeProfile
 	chans     []profile.Channel
 	duty      map[int]int
 	enable    map[int]int
 	rpm       map[int]int
 	failWrite map[int]bool // WriteDuty fails for this pwm
 	failEnter map[int]bool
-	calls     []string // "manual:1", "write:1=85", "stop:3=140"
+	failRead  map[int]bool // ReadDuty fails for this pwm
+	failRPM   map[int]bool // ReadRPM fails for this pwm
+	failStop  bool         // SafeStop fails for every pwm
+	calls     []string     // "manual:1", "write:1=85", "stop:3=140"
 	extra     map[string]string
 }
 
+// newFakeDev returns a device whose channels sit at the N5 Pro EC idle
+// duties (what ReadDuty reports at start).
 func newFakeDev() *fakeDev {
 	d := &fakeDev{
 		chans: []profile.Channel{
@@ -44,16 +58,25 @@ func newFakeDev() *fakeDev {
 			{Index: 3, Label: "HDD", HasTach: true},
 			{Index: 4, Label: "PCIe", HasTach: false},
 		},
-		duty:      map[int]int{},
+		duty:      map[int]int{1: 85, 2: 74, 3: 105, 4: 0},
 		enable:    map[int]int{1: 2, 2: 2, 3: 2, 4: 2},
 		rpm:       map[int]int{1: 2000, 2: 2100, 3: 1200, 4: 0},
 		failWrite: map[int]bool{},
 		failEnter: map[int]bool{},
+		failRead:  map[int]bool{},
+		failRPM:   map[int]bool{},
 	}
 	return d
 }
 
-func (d *fakeDev) Profile() profile.Profile      { return fakeProfile{} }
+// newN5FakeDev is newFakeDev reporting profile name "n5pro".
+func newN5FakeDev() *fakeDev {
+	d := newFakeDev()
+	d.prof = fakeProfile{name: "n5pro"}
+	return d
+}
+
+func (d *fakeDev) Profile() profile.Profile      { return d.prof }
 func (d *fakeDev) HwmonPath() string             { return "/sys/class/hwmon/hwmonX" }
 func (d *fakeDev) Channels() []profile.Channel   { return d.chans }
 func (d *fakeDev) ExtraTemps() map[string]string { return d.extra }
@@ -61,18 +84,34 @@ func (d *fakeDev) ExtraTemps() map[string]string { return d.extra }
 func (d *fakeDev) ReadRPM(ch int) (int, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if d.failRPM[ch] {
+		return 0, errors.New("fan input unreadable")
+	}
 	return d.rpm[ch], nil
 }
 
 func (d *fakeDev) ReadDuty(ch int) (int, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if d.failRead[ch] {
+		return 0, errors.New("pwm unreadable")
+	}
 	return d.duty[ch], nil
+}
+
+func (d *fakeDev) ReadEnable(ch int) (string, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return strconv.Itoa(d.enable[ch]), nil
 }
 
 func (d *fakeDev) EnterManual(ch int) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	return d.enterManualLocked(ch)
+}
+
+func (d *fakeDev) enterManualLocked(ch int) error {
 	d.calls = append(d.calls, fmt.Sprintf("manual:%d", ch))
 	if d.failEnter[ch] {
 		return errors.New("enable write failed")
@@ -84,12 +123,12 @@ func (d *fakeDev) EnterManual(ch int) error {
 func (d *fakeDev) WriteDuty(ch int, duty int) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if err := d.enterManualLocked(ch); err != nil {
+		return err
+	}
 	d.calls = append(d.calls, fmt.Sprintf("write:%d=%d", ch, duty))
 	if d.failWrite[ch] {
 		return errors.New("readback mismatch")
-	}
-	if d.enable[ch] != 1 {
-		return errors.New("write without manual mode")
 	}
 	d.duty[ch] = duty
 	return nil
@@ -99,6 +138,9 @@ func (d *fakeDev) SafeStop(ch int, stop string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.calls = append(d.calls, fmt.Sprintf("stop:%d=%s", ch, stop))
+	if d.failStop {
+		return errors.New("device gone")
+	}
 	return nil
 }
 
@@ -106,6 +148,12 @@ func (d *fakeDev) setRPM(ch, rpm int) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.rpm[ch] = rpm
+}
+
+func (d *fakeDev) setDuty(ch, duty int) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.duty[ch] = duty
 }
 
 func (d *fakeDev) getDuty(ch int) int {
@@ -118,6 +166,16 @@ func (d *fakeDev) setFailWrite(ch int, fail bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.failWrite[ch] = fail
+}
+
+// setFailAll makes every write and SafeStop fail (device vanished).
+func (d *fakeDev) setFailAll(fail bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for _, c := range d.chans {
+		d.failWrite[c.Index] = fail
+	}
+	d.failStop = fail
 }
 
 func (d *fakeDev) countCalls(prefix string) int {
@@ -141,16 +199,21 @@ func (d *fakeDev) resetCalls() {
 // ---- fake sensors -----------------------------------------------------------
 
 type fakeSensor struct {
-	mu  sync.Mutex
-	id  string
-	val int
-	err error
+	mu        sync.Mutex
+	id        string
+	val       int
+	err       error
+	panicOnce bool // next Read panics (once)
 }
 
 func (s *fakeSensor) ID() string { return s.id }
 func (s *fakeSensor) Read() (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.panicOnce {
+		s.panicOnce = false
+		panic("fake sensor exploded")
+	}
 	return s.val, s.err
 }
 
@@ -258,6 +321,19 @@ func (l *testLogger) Printf(f string, a ...any) {
 	l.lines = append(l.lines, fmt.Sprintf(f, a...))
 }
 
+// count returns how many log lines contain sub.
+func (l *testLogger) count(sub string) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	n := 0
+	for _, s := range l.lines {
+		if strings.Contains(s, sub) {
+			n++
+		}
+	}
+	return n
+}
+
 func (l *testLogger) contains(sub string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -291,7 +367,13 @@ func n5cfg() config.Config {
 
 func newHarness(t *testing.T, cfg config.Config, mod func(*Options)) *harness {
 	t.Helper()
-	h := &harness{t: t, dev: newFakeDev(), sensors: newFakeSensors(), alerts: &fakeAlerter{},
+	return newHarnessDev(t, cfg, newFakeDev(), mod)
+}
+
+// newHarnessDev is newHarness with a caller-provided device.
+func newHarnessDev(t *testing.T, cfg config.Config, dev *fakeDev, mod func(*Options)) *harness {
+	t.Helper()
+	h := &harness{t: t, dev: dev, sensors: newFakeSensors(), alerts: &fakeAlerter{},
 		clock: &fakeClock{t: time.Unix(1_789_500_000, 0)}, log: &testLogger{}, cfg: cfg}
 	opts := Options{
 		Logger:     h.log,

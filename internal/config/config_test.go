@@ -409,3 +409,116 @@ func TestClone(t *testing.T) {
 		t.Errorf("Clone shares curve storage")
 	}
 }
+
+// M1: stop parsing — sensor-aware default, invalid values warn, fixed
+// stop duties below MinFixedStop are raised.
+func TestStopParsing(t *testing.T) {
+	src := `
+[[channel]]
+name = "hdd_missing"
+pwm = 1
+sensor = "drivetemp:max"
+
+[[channel]]
+name = "hdd_bogus"
+pwm = 2
+sensor = "drivetemp:max"
+stop = "bogus"
+
+[[channel]]
+name = "zero"
+pwm = 3
+sensor = "k10temp"
+stop = 0
+
+[[channel]]
+name = "low_str"
+pwm = 4
+sensor = "k10temp"
+stop = "30"
+
+[[channel]]
+name = "fine"
+pwm = 5
+sensor = "k10temp"
+stop = 200
+
+[[channel]]
+name = "auto_hdd"
+pwm = 6
+sensor = "drivetemp:max"
+stop = "auto"
+
+[[channel]]
+name = "cpu_missing"
+pwm = 7
+sensor = "k10temp"
+`
+	cfg, warns, err := Parse([]byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"hdd_missing": "140", "hdd_bogus": "140", "zero": "60", "low_str": "60",
+		"fine": "200", "auto_hdd": "auto", "cpu_missing": "auto",
+	}
+	for name, stop := range want {
+		if got := cfg.Channel(name).Stop; got != stop {
+			t.Errorf("%s: stop %q, want %q", name, got, stop)
+		}
+	}
+	hasWarn(t, warns, "channel.hdd_bogus.stop")
+	hasWarn(t, warns, "channel.zero.stop")
+	hasWarn(t, warns, "channel.low_str.stop")
+	for _, w := range warns {
+		if w.Field == "channel.hdd_missing.stop" || w.Field == "channel.fine.stop" || w.Field == "channel.auto_hdd.stop" {
+			t.Errorf("unexpected warning %v", w)
+		}
+	}
+	if DefaultStop("drivetemp:max") != HDDStop || DefaultStop("nvme:max") != "auto" {
+		t.Errorf("DefaultStop")
+	}
+}
+
+// M3 / L6: stale_cycles below 6 and alert_cooldown below 60 s fall back
+// to the defaults.
+func TestLowerBounds(t *testing.T) {
+	cfg, warns, err := Parse([]byte("[daemon]\nstale_cycles = 5\nalert_cooldown = \"10s\"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hasWarn(t, warns, "daemon.stale_cycles")
+	hasWarn(t, warns, "daemon.alert_cooldown")
+	if cfg.Daemon.StaleCycles != 18 || cfg.Daemon.AlertCooldown != 30*time.Minute {
+		t.Errorf("defaults not restored: %+v", cfg.Daemon)
+	}
+	cfg, warns, _ = Parse([]byte("[daemon]\nstale_cycles = 6\nalert_cooldown = \"60s\"\n"))
+	if len(warns) != 0 || cfg.Daemon.StaleCycles != 6 || cfg.Daemon.AlertCooldown != time.Minute {
+		t.Errorf("lower bounds must be accepted: %v %+v", warns, cfg.Daemon)
+	}
+	if MinStaleCycle != 6 || MinCooldown != time.Minute {
+		t.Errorf("limits: stale %d cooldown %s", MinStaleCycle, MinCooldown)
+	}
+}
+
+// Preset names are file stems: no path separators or traversal.
+func TestPresetNameTraversal(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "presets")
+	for _, bad := range []string{"../x", "..", "a/b", "a\b", ".", "x.toml", ""} {
+		if ValidPresetName(bad) {
+			t.Errorf("ValidPresetName(%q) = true", bad)
+		}
+		if err := SavePreset(dir, bad, N5ProChannels()); err == nil {
+			t.Errorf("SavePreset(%q) accepted", bad)
+		}
+		if _, _, err := LoadPreset(dir, bad); err == nil {
+			t.Errorf("LoadPreset(%q) accepted", bad)
+		}
+		if err := DeletePreset(dir, bad); err == nil {
+			t.Errorf("DeletePreset(%q) accepted", bad)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(t.TempDir(), "x.toml")); err == nil {
+		t.Errorf("traversal wrote outside the preset dir")
+	}
+}

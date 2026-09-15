@@ -1,12 +1,14 @@
 package alert
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 type recLogger struct{ lines []string }
@@ -104,5 +106,17 @@ func TestMultiAndNew(t *testing.T) {
 		if s := New(l); s.Name() == "pve-notify" {
 			t.Errorf("PVE sink chosen without %s", pveNotifyPM)
 		}
+	}
+}
+
+// L5: every delivery command carries WaitDelay so a grandchild holding the
+// pipes cannot block the alert goroutine after the timeout.
+func TestCommandWaitDelay(t *testing.T) {
+	cmd := command(context.Background(), "perl", "-e", "1")
+	if cmd.WaitDelay != 5*time.Second || WaitDelay != 5*time.Second {
+		t.Errorf("WaitDelay = %s", cmd.WaitDelay)
+	}
+	if len(cmd.Args) != 3 || cmd.Args[1] != "-e" {
+		t.Errorf("args: %v", cmd.Args)
 	}
 }

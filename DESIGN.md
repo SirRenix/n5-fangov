@@ -55,8 +55,8 @@ step_up = 40            # max duty increase per cycle (1..255)
 step_down = 15          # max duty decrease per cycle (1..255)
 stall_min_duty = 60     # RPM 0 at or above this duty counts as stall
 stall_cycles = 2
-stale_cycles = 18       # identical raw sensor value this many cycles → sensor frozen
-alert_cooldown = "30m"
+stale_cycles = 18       # identical raw sensor value this many cycles → sensor frozen (6..600; only checked when the first channel's sensor is k10temp)
+alert_cooldown = "30m"  # 60s..24h
 log_every = 30          # status line every N cycles (0 = never)
 profile = "auto"        # auto | n5pro | nct67xx | it87xx | monitor
 
@@ -72,7 +72,7 @@ pwm = 1                 # pwmN index in the profile's hwmon device
 sensor = "k10temp"      # see sensor sources
 curve = [[45,85],[80,255]]   # points [temp_c, duty], ascending temp, 2..8 points, linear between
 critical = 88           # temp → 255 immediately
-stop = "auto"           # "auto" (profile returns channel to EC/BIOS) or fixed duty 0..255
+stop = "auto"           # "auto" (profile returns channel to EC/BIOS) or fixed duty 60..255; default "140" for drivetemp:max; n5pro pwm3 never "auto"
 ```
 
 Presets: `/etc/pvefand/presets/<name>.toml` containing only `[[channel]]` tables.
@@ -187,7 +187,11 @@ Deviations between this contract and the merged packages, as found while wiring
 is loose.
 
 - `config.Default()` has **no channels**; the N5 Pro set is `config.N5ProChannels()`.
-  A missing config file therefore starts the daemon in monitoring-only mode (rule 8).
+  A missing config file therefore starts the daemon in monitoring-only mode (rule 8) —
+  **except on the N5 Pro**: `control.SanitizeChannels` adds pwm1..3 from `N5ProChannels()`
+  when the config lacks them and forces `stop=140` on pwm3 (warning + `config` alert),
+  in `control.New`, `Apply` and `control.Failsafe` alike. A channel the daemon wrote once
+  and then ignored would stay at its last duty (the EC does not regulate pwm3 after a write).
 - `config.Load` returns `(Config, []Warning, error)`: missing file → defaults + one
   warning + `err == nil`; read error or TOML syntax error → defaults + warning + `err`.
   `config.Parse` also returns an error (syntax only). `Warning` is `{Field, Msg}`.
@@ -200,16 +204,24 @@ is loose.
 - `control.SensorFactory` returns `control.SensorReader`; `sensor.Source` satisfies
   it but the func types differ, so wiring adapts (nil-interface safe).
 - `control.Options.Notify`/`Status` default to sd_notify already; wiring sets them
-  explicitly. `Run(ctx)` calls `Stop()` itself; `Stop()` is idempotent (sync.Once).
+  explicitly. `Run(ctx)` calls `Stop()` itself (also after a recovered panic, which
+  Run returns as an error); `Stop()` is idempotent (sync.Once), takes only the
+  hardware mutex (never the loop mutex) and makes a running cycle skip its writes.
   serve waits for `Run` to return (15 s cap) before calling `Stop` again.
+  `Run` returns `control.ErrDeviceLost` after 6 consecutive cycles in which the
+  failsafe could not write a single channel (driver reload → hwmonN renumbered);
+  serve exits 1, systemd restarts (ExecStopPost failsafe, fresh detection).
 - The controller's initial snapshot already has `ts > 0` with `status: "starting"`;
   READY=1 waits for `status != "starting"` (or 2×interval+5 s).
 - In dry-run the snapshot `status` is `"dry-run"`, not `"ok"`. Duty in the
-  snapshot is the computed target (the controller assumes 255 at start and writes
-  nothing), not the hardware `pwmN` value.
+  snapshot is the hardware `pwmN` value (`ReadDuty`, refreshed every cycle); the
+  computed value is `target`. In normal mode duty starts from `ReadDuty` as well and
+  is `-1` while unknown (a write failed; the channel is rewritten next cycle).
 - `alert.New(logger)` returns `alert.Sink` (`Alert(kind, msg)`, `Name()`); the
   controller's `Alerter` interface is satisfied by it. Cooldown lives in the
-  controller; alerts sent directly from `serve`/`alert` bypass it.
+  controller (stamps `RunDir/alert.<kind>`); `serve` routes its start-up alerts
+  (config/profile/start) through `sendAlertCooled`, which uses the same stamp files
+  (30 min), so a restart loop cannot spam PVE. `pvefand alert` (onfailure) has no cooldown.
 - `web.Deps` takes closures (`Profiles func() []ProfileInfo`, `Sensors func()
   []SensorInfo`, `Log func(int) ([]string, error)`), `AuthConfig` (not `Auth`),
   and `PresetStore{List() ([]Preset, error); Apply(name) error; Save(name) error}`

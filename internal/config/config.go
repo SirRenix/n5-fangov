@@ -29,9 +29,22 @@ const (
 	MaxCritical   = 150
 	MaxPWM        = 8
 	MaxStallCycle = 20
-	MinStaleCycle = 3
+	// MinStaleCycle: the stale check only runs on k10temp (sub-degree
+	// resolution); even there a quiet system can hold one value for a
+	// while, so fewer than 6 identical cycles must never count as frozen.
+	MinStaleCycle = 6
 	MaxStaleCycle = 600
-	MaxCooldown   = 24 * time.Hour
+	// MinCooldown keeps a restart loop or a flapping sensor from producing
+	// one notification per cycle.
+	MinCooldown = time.Minute
+	MaxCooldown = 24 * time.Hour
+	// MinFixedStop is the lowest fixed stop duty. A fixed stop is used
+	// exactly where the chip does not regulate the channel itself any more
+	// (N5 Pro pwm3): a stop duty of 0 would leave those fans off for good.
+	MinFixedStop = 60
+	// HDDStop is the stop duty used when a channel fed by drivetemp:max has
+	// no or an invalid stop value (~2250 RPM on the N5 Pro HDD channel).
+	HDDStop = "140"
 )
 
 // Profiles accepted in daemon.profile.
@@ -338,7 +351,7 @@ func (p *parser) daemon(sec map[string]toml.Primitive, d *Daemon) {
 	d.StallMinDuty = p.intField(pre, sec, "stall_min_duty", def.StallMinDuty, 1, 255)
 	d.StallCycles = p.intField(pre, sec, "stall_cycles", def.StallCycles, 1, MaxStallCycle)
 	d.StaleCycles = p.intField(pre, sec, "stale_cycles", def.StaleCycles, MinStaleCycle, MaxStaleCycle)
-	d.AlertCooldown = p.durField(pre, sec, "alert_cooldown", def.AlertCooldown, 0, MaxCooldown)
+	d.AlertCooldown = p.durField(pre, sec, "alert_cooldown", def.AlertCooldown, MinCooldown, MaxCooldown)
 	d.LogEvery = p.intField(pre, sec, "log_every", def.LogEvery, 0, 1000000)
 	prof, _ := p.strField(pre, sec, "profile", def.Profile)
 	if !contains(Profiles, prof) {
@@ -439,7 +452,7 @@ func (p *parser) channels(secs []map[string]toml.Primitive) []Channel {
 		if _, has := sec["critical"]; !has {
 			p.warn(pre+".critical", "missing, default %d used", defCrit)
 		}
-		ch.Stop = p.stop(pre, sec)
+		ch.Stop = p.stop(pre, sec, ch.Sensor)
 		names[name] = true
 		pwms[ch.PWM] = true
 		out = append(out, ch)
@@ -497,27 +510,45 @@ func ValidateCurve(pts [][]int64) ([][2]int, error) {
 	return out, nil
 }
 
-func (p *parser) stop(pre string, sec map[string]toml.Primitive) string {
+// DefaultStop is the stop value used when a channel has none or an invalid
+// one: "auto" hands the channel back to the chip, except for channels fed by
+// drivetemp:max, whose fans must keep turning even when nobody regulates
+// them (HDDStop).
+func DefaultStop(sensor string) string {
+	if sensor == "drivetemp:max" {
+		return HDDStop
+	}
+	return "auto"
+}
+
+// stop parses the stop value: "auto", a duty string or an integer. Invalid
+// values fall back to DefaultStop(sensor) with a warning; a fixed duty
+// below MinFixedStop is raised to MinFixedStop with a warning.
+func (p *parser) stop(pre string, sec map[string]toml.Primitive, sensor string) string {
+	def := DefaultStop(sensor)
 	prim, ok := sec["stop"]
 	if !ok {
-		return "auto"
+		return def
 	}
+	var n int64
 	var s string
 	if err := p.md.PrimitiveDecode(prim, &s); err == nil {
 		if s == "auto" {
 			return s
 		}
-		n, perr := strconv.Atoi(strings.TrimSpace(s))
-		if perr != nil || n < 0 || n > 255 {
-			p.warn(pre+".stop", "%q is neither \"auto\" nor 0..255, \"auto\" used", s)
-			return "auto"
+		v, perr := strconv.Atoi(strings.TrimSpace(s))
+		if perr != nil || v < 0 || v > 255 {
+			p.warn(pre+".stop", "%q is neither \"auto\" nor 0..255, %q used", s, def)
+			return def
 		}
-		return strconv.Itoa(n)
+		n = int64(v)
+	} else if err := p.md.PrimitiveDecode(prim, &n); err != nil || n < 0 || n > 255 {
+		p.warn(pre+".stop", "neither \"auto\" nor 0..255, %q used", def)
+		return def
 	}
-	var n int64
-	if err := p.md.PrimitiveDecode(prim, &n); err != nil || n < 0 || n > 255 {
-		p.warn(pre+".stop", "neither \"auto\" nor 0..255, \"auto\" used")
-		return "auto"
+	if n < MinFixedStop {
+		p.warn(pre+".stop", "fixed stop duty %d below %d (fans would stay off after stop), %d used", n, MinFixedStop, MinFixedStop)
+		n = MinFixedStop
 	}
 	return strconv.FormatInt(n, 10)
 }

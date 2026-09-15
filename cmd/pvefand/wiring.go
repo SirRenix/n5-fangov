@@ -11,6 +11,9 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/SirRenix/pvefand/internal/alert"
@@ -176,9 +179,57 @@ func knownSensors(fs *hwmon.FS, dev profile.Device) []sensorInfo {
 
 func newAlerter() alert.Sink { return alert.New(log.Default()) }
 
-// sendAlert delivers one alert immediately (no cooldown; the controller
-// applies the per-kind cooldown for alerts raised from the loop).
+// sendAlert delivers one alert immediately (no cooldown). Used by the
+// hidden `alert` subcommand (onfailure unit); serve uses sendAlertCooled.
 func sendAlert(a alert.Sink, kind, msg string) { a.Alert(kind, msg) }
+
+// startAlertCooldown is the minimum gap between two start-up alerts of the
+// same kind. A daemon caught in a restart loop (Restart=always, RestartSec=5)
+// would otherwise send one PVE notification per attempt.
+const startAlertCooldown = 30 * time.Minute
+
+// sendAlertCooled delivers an alert unless one of the same kind went out
+// within startAlertCooldown. The stamp lives in <runDir>/alert.<kind> in the
+// same format the controller uses (unix seconds), so the two cooldowns are
+// one: a "config" alert from serve also silences the controller's "config"
+// alert for the period and vice versa. An unusable run dir means no
+// cooldown (alert always sent).
+func sendAlertCooled(runDir string, a alert.Sink, kind, msg string) {
+	if runDir != "" {
+		stamp := filepath.Join(runDir, "alert."+kind)
+		now := time.Now().Unix()
+		if b, err := os.ReadFile(stamp); err == nil {
+			if last, err := strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64); err == nil && now-last >= 0 && now-last < int64(startAlertCooldown.Seconds()) {
+				log.Printf("ALERT[%s] suppressed (last one %s ago, cooldown %s): %s", kind,
+					(time.Duration(now-last) * time.Second).String(), startAlertCooldown, firstLine(msg))
+				return
+			}
+		}
+		if err := os.WriteFile(stamp, []byte(strconv.FormatInt(now, 10)+"\n"), 0o644); err != nil {
+			log.Printf("alert stamp %s: %v", stamp, err)
+		}
+	}
+	a.Alert(kind, msg)
+}
+
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
+}
+
+// failsafeDevice puts every channel into its safe state without a
+// controller (ExecStopPost). The channel list is completed and corrected
+// the same way the daemon does it (N5 Pro: pwm1..3 always, pwm3 never
+// "auto"); one log line per channel goes to logger.
+func failsafeDevice(dev profile.Device, cfg config.Config, logger *log.Logger) error {
+	var l control.Logger
+	if logger != nil {
+		l = logger
+	}
+	return control.Failsafe(dev, cfg, l)
+}
 
 // controlOpts is what serve passes to the controller besides config/device.
 type controlOpts struct {

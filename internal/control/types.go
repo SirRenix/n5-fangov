@@ -21,7 +21,7 @@ type ChannelState struct {
 	PWM    int     `json:"pwm"`
 	Sensor string  `json:"sensor"`
 	Temp   float64 `json:"temp"`   // degrees C, NaN-free (-999 when unknown)
-	Duty   int     `json:"duty"`   // last written / current
+	Duty   int     `json:"duty"`   // last written / current; -1 = unknown (write failed)
 	Target int     `json:"target"` // curve/override target before slew
 	RPM    int     `json:"rpm"`    // -1 when no tach
 	Mode   Mode    `json:"mode"`

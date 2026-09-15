@@ -106,6 +106,10 @@ func TestPeriodicRewrite(t *testing.T) {
 	if h.dev.enable[1] != 1 {
 		t.Errorf("manual mode not re-asserted after interference")
 	}
+	// L7: the re-assert is logged once
+	if n := h.log.count("pwm1_enable was \"2\""); n != 1 {
+		t.Errorf("interference log lines: %d\n%s", n, strings.Join(h.log.lines, "\n"))
+	}
 }
 
 func TestOverride(t *testing.T) {
@@ -309,6 +313,7 @@ func TestWriteErrorFailsafe(t *testing.T) {
 	if s := h.c.Snapshot(); s.Status != "write-error" {
 		t.Errorf("status %q", s.Status)
 	}
+	h.expectDuty("cpu", -1) // H2: duty unknown after a failed write
 	h.expectDuty("ssd", 74)
 	if h.alerts.count("write") != 0 {
 		t.Errorf("write alert too early")
@@ -326,8 +331,9 @@ func TestWriteErrorFailsafe(t *testing.T) {
 	if s := h.c.Snapshot(); s.Status != "ok" {
 		t.Errorf("status %q", s.Status)
 	}
-	// the failing cycles must not have advanced cur (85): slew resumes from there
-	if h.state("cpu").Duty != 125 || h.dev.getDuty(1) != 125 {
+	// the duty was unknown (-1) after the failures: the target is written
+	// directly (no slew from an unknown value), like on the first cycle
+	if h.state("cpu").Duty != 158 || h.dev.getDuty(1) != 158 {
 		t.Errorf("cpu after recovery: %+v device=%d", h.state("cpu"), h.dev.getDuty(1))
 	}
 }
@@ -458,6 +464,7 @@ func TestStopCallsSafeStop(t *testing.T) {
 
 func TestDryRun(t *testing.T) {
 	h := newHarness(t, n5cfg(), func(o *Options) { o.DryRun = true })
+	h.sensors.get("k10temp").set(60000)
 	h.cycles(7)
 	if n := h.dev.countCalls("write:") + h.dev.countCalls("manual:"); n != 0 {
 		t.Errorf("dry-run wrote hardware: %v", h.dev.calls)
@@ -465,7 +472,14 @@ func TestDryRun(t *testing.T) {
 	if s := h.c.Snapshot(); s.Status != "dry-run" || !s.DryRun {
 		t.Errorf("status %q", s.Status)
 	}
-	h.expectDuty("cpu", 85) // computed anyway
+	// integrator note 2: duty is what the chip does (85), target is computed
+	h.expectDuty("cpu", 85)
+	if h.state("cpu").Target != 158 {
+		t.Errorf("dry-run target: %+v", h.state("cpu"))
+	}
+	h.dev.setDuty(1, 120) // someone else (EC) moved the fan
+	h.cycles(1)
+	h.expectDuty("cpu", 120)
 	h.c.Stop()
 	if h.dev.countCalls("stop:") != 0 {
 		t.Errorf("dry-run must not SafeStop")
@@ -559,7 +573,7 @@ func TestFailsafeHelper(t *testing.T) {
 	dev := newFakeDev()
 	cfg := n5cfg()
 	cfg.Channels = append(cfg.Channels, config.Channel{Name: "x", PWM: 7, Sensor: "s", Stop: "auto"})
-	if err := Failsafe(dev, cfg); err != nil {
+	if err := Failsafe(dev, cfg, nil); err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{"stop:1=auto", "stop:2=auto", "stop:3=140"} {

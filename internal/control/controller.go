@@ -8,9 +8,11 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/SirRenix/pvefand/internal/config"
@@ -64,12 +66,36 @@ const (
 )
 
 // MinHDDOverride is the lowest duty a manual override may set on a channel
-// whose sensor is drivetemp:max. Rationale: on the N5 Pro the EC stops
-// regulating the HDD channel after the first manual write, so a low manual
-// duty is a permanent low duty for spinning disks whose temperature reacts
-// with a lag of many minutes; 60 (~900 RPM) keeps some airflow. Critical
-// still applies on top of any override.
+// that the chip no longer regulates by itself (see hddLike): a channel with
+// a fixed stop duty, or pwm3 on the N5 Pro. Rationale: on the N5 Pro the EC
+// stops regulating the HDD channel after the first manual write, so a low
+// manual duty is a permanent low duty for spinning disks whose temperature
+// reacts with a lag of many minutes; 60 (~900 RPM) keeps some airflow.
+// Critical still applies on top of any override.
 const MinHDDOverride = 60
+
+// deviceLostCycles consecutive cycles in which the all-channel failsafe
+// could not write a single channel mean the device is gone (typically a
+// driver reload re-enumerated hwmonN). The loop then returns ErrDeviceLost
+// so that systemd restarts the daemon: ExecStopPost runs the failsafe and
+// the fresh process detects the device again.
+const deviceLostCycles = 6
+
+// ErrDeviceLost is returned by Run when the device stopped accepting writes.
+var ErrDeviceLost = errors.New("control: device unreachable, restart required")
+
+// staleSensor is the only sensor id the stale check runs on: k10temp reports
+// with sub-degree resolution and never stays bit-identical for minutes on a
+// live system. Whole-degree sources (nvme:max, drivetemp:max, coretemp, ec:*)
+// legitimately do, so the check would produce false failsafes there.
+const staleSensor = "k10temp"
+
+// enableReader is implemented by devices that can report pwmN_enable (the
+// hwmon-backed profiles). The controller uses it only for a diagnostic log
+// line; the interface stays optional.
+type enableReader interface {
+	ReadEnable(ch int) (string, error)
+}
 
 // rewriteEvery re-applies unchanged duties every N cycles to undo external
 // writes to pwmN (port of the Bash "n % 6" rule, one minute at 10 s).
@@ -95,12 +121,13 @@ type channel struct {
 	hasTach bool
 	sensor  SensorReader // nil while unresolved
 
-	cur    int // last duty written (or assumed at start)
-	rpm    int // -1 when no tach / unreadable
-	temp   int // millidegrees; valid when tempOK
-	tempOK bool
-	target int
-	mode   Mode
+	cur     int  // last duty written (ReadDuty at start); -1 = unknown after a failed write
+	written bool // at least one successful write by this process (stall detection gate)
+	rpm     int  // -1 when no tach / unreadable
+	temp    int  // millidegrees; valid when tempOK
+	tempOK  bool
+	target  int
+	mode    Mode
 
 	stallCnt int
 	stalled  bool
@@ -129,9 +156,17 @@ type Controller struct {
 	logMu   sync.Mutex
 	lastMsg map[string]string
 
+	// hwMu serializes hardware writes between the loop (write phase,
+	// failsafe) and Stop (SafeStop). It is never held together with c.mu
+	// by Stop, so a panic inside a c.mu section cannot deadlock the
+	// deferred Stop. Lock order where both are taken: c.mu, then hwMu.
+	hwMu    sync.Mutex
+	stopped atomic.Bool // set by Stop: the loop skips all further writes
+
 	// loop-only state (touched by the Run goroutine only)
 	n        int
 	wrErr    int
+	fsFail   int // consecutive cycles in which failsafeAll wrote nothing
 	lastRaw  int
 	sameRaw  int
 	haveRaw  bool
@@ -143,7 +178,10 @@ type Controller struct {
 // sensors; a sensor that cannot be resolved now is retried every cycle (the
 // channel meanwhile runs the sensor-error path, i.e. 255). Channels whose
 // pwm does not exist on dev are dropped with a log line (rule 8: config
-// errors never prevent start).
+// errors never prevent start). On the N5 Pro, pwm1..3 missing from the
+// config are added with the built-in defaults (SanitizeChannels), because
+// a channel the daemon touched once and then ignores stays wherever the
+// last write left it.
 func New(cfg config.Config, dev profile.Device, sensors SensorFactory, alerter Alerter, opts Options) (*Controller, error) {
 	if dev == nil {
 		return nil, errors.New("control: nil device")
@@ -190,6 +228,9 @@ func New(cfg config.Config, dev profile.Device, sensors SensorFactory, alerter A
 			c.loadAlertStamps()
 		}
 	}
+	var notes []string
+	c.cfg.Channels, notes = SanitizeChannels(dev.Profile().Name(), c.cfg.Channels)
+	c.reportNotes(notes)
 	c.chans = c.buildChannels(c.cfg)
 	if c.opts.RunDir != "" {
 		c.loadOverrides()
@@ -239,10 +280,77 @@ func (c *Controller) buildChannels(cfg config.Config) []*channel {
 			continue
 		}
 		ch := &channel{cfg: cc, hasTach: dc.HasTach, cur: 255, rpm: -1, mode: ModeAuto, target: 255}
+		// The real duty at start; 255 only when unreadable. Slew starts from
+		// what the chip is actually doing, dry-run shows the real value.
+		switch v, err := c.dev.ReadDuty(cc.PWM); {
+		case err != nil:
+			c.log.Printf("%s: pwm%d not readable at start (%v), assuming 255", cc.Name, cc.PWM, err)
+		case v < 0 || v > 255:
+			c.log.Printf("%s: pwm%d reads %d at start (outside 0..255), assuming 255", cc.Name, cc.PWM, v)
+		default:
+			ch.cur = v
+		}
 		ch.sensor = c.resolveSensor(cc)
 		out = append(out, ch)
 	}
 	return out
+}
+
+// reportNotes logs config corrections made by SanitizeChannels and raises
+// one "config" alert for them.
+func (c *Controller) reportNotes(notes []string) {
+	if len(notes) == 0 {
+		return
+	}
+	for _, n := range notes {
+		c.log.Printf("config: %s", n)
+	}
+	c.raise("config", "config corrected at start:\n"+strings.Join(notes, "\n"))
+}
+
+// SanitizeChannels applies the profile-specific safety corrections that a
+// config file cannot express on its own (the config package does not know
+// the detected profile). For n5pro:
+//   - pwm1..3 (CPU, SSD, HDD) must be managed: a missing channel is added
+//     from config.N5ProChannels. A channel that was written once and is
+//     then ignored stays wherever the last write left it (the EC does not
+//     regulate pwm3 after a write at all), and `pvefand failsafe` would skip
+//     it as well.
+//   - pwm3 with stop="auto" is forced to config.HDDStop for the same reason.
+//
+// It returns the corrected list and one note per correction. Other
+// profiles are returned unchanged.
+func SanitizeChannels(profileName string, chans []config.Channel) ([]config.Channel, []string) {
+	out := config.CloneChannels(chans)
+	if profileName != "n5pro" {
+		return out, nil
+	}
+	var notes []string
+	names := map[string]bool{}
+	byPWM := map[int]int{}
+	for i, ch := range out {
+		names[ch.Name] = true
+		byPWM[ch.PWM] = i
+	}
+	for _, def := range config.N5ProChannels() {
+		i, ok := byPWM[def.PWM]
+		if !ok {
+			if names[def.Name] {
+				def.Name = fmt.Sprintf("pwm%d", def.PWM)
+			}
+			notes = append(notes, fmt.Sprintf("n5pro: pwm%d (%s) not in config, built-in channel %q added (sensor %s, stop %s)",
+				def.PWM, def.Name, def.Name, def.Sensor, def.Stop))
+			out = append(out, def)
+			names[def.Name] = true
+			continue
+		}
+		if def.PWM == 3 && out[i].Stop == "auto" {
+			notes = append(notes, fmt.Sprintf("n5pro: channel %q (pwm3) has stop=\"auto\", but the EC does not regulate pwm3 after a write; stop=%s used",
+				out[i].Name, config.HDDStop))
+			out[i].Stop = config.HDDStop
+		}
+	}
+	return out, notes
 }
 
 func (c *Controller) resolveSensor(cc config.Channel) SensorReader {
@@ -276,14 +384,24 @@ func (c *Controller) Config() config.Config {
 // ---- loop -------------------------------------------------------------------
 
 // Run executes the regulation loop until ctx is done, then calls Stop.
-// It returns ctx.Err() (or nil when ctx was never cancelled, which cannot
-// happen in practice).
-func (c *Controller) Run(ctx context.Context) error {
-	defer c.Stop()
+// It returns ctx.Err() when cancelled, ErrDeviceLost when the device stopped
+// accepting writes for deviceLostCycles cycles, or a panic error: a panic
+// anywhere in the loop is recovered here so that Stop (SafeStop) still
+// runs and the daemon exits non-zero for systemd to restart it.
+func (c *Controller) Run(ctx context.Context) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			c.log.Printf("PANIC in regulation loop: %v\n%s", r, debug.Stack())
+			err = fmt.Errorf("control: panic in regulation loop: %v", r)
+		}
+		c.Stop()
+	}()
 	c.log.Printf("start: profile=%s hwmon=%s channels=%s interval=%s dryrun=%v",
 		c.dev.Profile().Name(), c.dev.HwmonPath(), strings.Join(c.Channels(), ","), c.interval(), c.opts.DryRun)
 	for {
-		c.cycle()
+		if err := c.cycle(); err != nil {
+			return err
+		}
 		if !c.opts.Wait(ctx, c.interval()) {
 			return ctx.Err()
 		}
@@ -296,8 +414,10 @@ func (c *Controller) interval() time.Duration {
 	return c.cfg.Daemon.Interval
 }
 
-// cycle is one regulation step (port of the Bash loop body).
-func (c *Controller) cycle() {
+// cycle is one regulation step (port of the Bash loop body). It returns
+// ErrDeviceLost when the failsafe could not write any channel for
+// deviceLostCycles consecutive cycles.
+func (c *Controller) cycle() error {
 	c.opts.Notify()
 	n := c.n
 
@@ -341,10 +461,10 @@ func (c *Controller) cycle() {
 		}
 		ch.temp, ch.tempOK = v, true
 	}
-	if ok && len(chans) > 0 {
-		// stale detection on the first channel's sensor (the CPU sensor on the
-		// N5 Pro: it never stays bit-identical for minutes on a live system;
-		// NVMe/HDD sensors legitimately do).
+	if ok && len(chans) > 0 && chans[0].cfg.Sensor == staleSensor {
+		// stale detection on the first channel's sensor, and only when that
+		// is k10temp (see staleSensor): whole-degree sources legitimately
+		// report the same value for a long time.
 		raw := chans[0].temp
 		if c.haveRaw && raw == c.lastRaw {
 			c.sameRaw++
@@ -365,9 +485,9 @@ func (c *Controller) cycle() {
 		c.logOnce("sensor", "sensor error -> all channels 255 (%s)", c.sensorSummary(chans))
 		c.raise("sensor", "sensor unreadable/implausible/frozen -> fans at 255 (journalctl -u pvefand)")
 		c.reresolve(chans)
-		c.failsafeAll(chans, ModeSensor)
+		lost := c.noteFailsafe(c.failsafeAll(chans, ModeSensor))
 		c.finishCycle(chans, extra, "sensor-error", d)
-		return
+		return lost
 	}
 	c.logClear("sensor")
 	c.logClear("stale")
@@ -411,7 +531,9 @@ func (c *Controller) cycle() {
 				c.log.Printf("%s: fan spinning again (%d RPM), regulation resumed", ch.cfg.Name, ch.rpm)
 				// keep 255 for this cycle; the curve takes over next cycle with slew
 			}
-		} else if ch.rpm == 0 && ch.cur >= d.StallMinDuty {
+		} else if ch.rpm == 0 && ch.written && ch.cur >= d.StallMinDuty {
+			// counted only after our first successful write: before that
+			// cur is the chip's own value and 0 RPM may be its idle policy
 			ch.stallCnt++
 			if ch.stallCnt >= d.StallCycles {
 				ch.stalled = true
@@ -425,22 +547,9 @@ func (c *Controller) cycle() {
 	}
 
 	// -- slew + write -----------------------------------------------------
-	werr := false
-	for _, ch := range chans {
-		next := ch.target
-		if n > 0 && ch.mode == ModeAuto {
-			next = Slew(ch.cur, ch.target, d.StepUp, d.StepDown)
-		}
-		if next != ch.cur || n%rewriteEvery == 0 {
-			if err := c.write(ch, next); err != nil {
-				c.log.Printf("%s: write pwm%d=%d failed: %v", ch.cfg.Name, ch.cfg.PWM, next, err)
-				werr = true
-			} else {
-				ch.cur = next
-			}
-		}
-	}
+	werr, wrote := c.writePhase(chans, d, n)
 	status := "ok"
+	var lost error
 	if werr {
 		c.wrErr++
 		c.log.Printf("pwm write error (%d consecutive)", c.wrErr)
@@ -448,12 +557,73 @@ func (c *Controller) cycle() {
 		if c.wrErr >= writeErrorsBeforeFailsafe {
 			c.raise("write", "repeated pwm write errors -> all channels 255; check driver/EC (dmesg, journalctl -u pvefand)")
 			c.reresolve(chans)
-			c.failsafeAll(chans, ModeFailsafe)
+			lost = c.noteFailsafe(c.failsafeAll(chans, ModeFailsafe))
 		}
 	} else {
-		c.wrErr = 0
+		c.fsFail = 0
+		if wrote {
+			// only a successful write proves the device is back; a cycle
+			// without any write attempt says nothing
+			c.wrErr = 0
+		}
 	}
 	c.finishCycle(chans, extra, status, d)
+	return lost
+}
+
+// writePhase slews every channel towards its target and writes it. A
+// channel whose write fails has an unknown duty (cur = -1) and is written
+// again next cycle, so a persistent failure surfaces even when the target
+// never changes. Returns whether any write failed and whether any write
+// succeeded. Hardware access is serialized with Stop through hwMu; after
+// Stop nothing is written any more.
+func (c *Controller) writePhase(chans []*channel, d config.Daemon, n int) (werr, wrote bool) {
+	c.hwMu.Lock()
+	defer c.hwMu.Unlock()
+	if c.stopped.Load() {
+		return false, false
+	}
+	for _, ch := range chans {
+		if c.opts.DryRun {
+			// the snapshot shows what the chip really does, not what we would write
+			if v, err := c.dev.ReadDuty(ch.cfg.PWM); err == nil && v >= 0 && v <= 255 {
+				ch.cur = v
+			}
+			continue
+		}
+		next := ch.target
+		if n > 0 && ch.mode == ModeAuto && ch.cur >= 0 {
+			next = Slew(ch.cur, ch.target, d.StepUp, d.StepDown)
+		}
+		if next != ch.cur || n%rewriteEvery == 0 {
+			if err := c.write(ch, next, n); err != nil {
+				c.log.Printf("%s: write pwm%d=%d failed: %v", ch.cfg.Name, ch.cfg.PWM, next, err)
+				ch.cur = -1
+				werr = true
+			} else {
+				ch.cur = next
+				ch.written = true
+				wrote = true
+			}
+		}
+	}
+	return werr, wrote
+}
+
+// noteFailsafe tracks consecutive cycles in which the failsafe wrote
+// nothing at all; after deviceLostCycles it returns ErrDeviceLost.
+func (c *Controller) noteFailsafe(allFailed bool) error {
+	if !allFailed {
+		c.fsFail = 0
+		return nil
+	}
+	c.fsFail++
+	if c.fsFail < deviceLostCycles {
+		return nil
+	}
+	c.log.Printf("device unreachable: failsafe could not write any channel for %d cycles (driver reloaded / hwmon re-enumerated?) -> exiting for restart; ExecStopPost runs the failsafe, the new process re-detects the device", c.fsFail)
+	c.raise("device", fmt.Sprintf("fan controller at %s unreachable for %d cycles, daemon restarts to re-detect it", c.dev.HwmonPath(), c.fsFail))
+	return ErrDeviceLost
 }
 
 // finishCycle publishes the snapshot, appends history and logs periodically.
@@ -513,7 +683,14 @@ func (c *Controller) readRPMs(chans []*channel) {
 		if !ch.hasTach {
 			continue
 		}
-		if r, err := c.dev.ReadRPM(ch.cfg.PWM); err == nil && r >= 0 {
+		r, err := c.dev.ReadRPM(ch.cfg.PWM)
+		if err != nil {
+			// no RPM means no stall detection for this channel; say so once
+			c.logOnce("rpm."+ch.cfg.Name, "%s: fan%d_input unreadable (%v), stall detection inactive", ch.cfg.Name, ch.cfg.PWM, err)
+			continue
+		}
+		c.logClear("rpm." + ch.cfg.Name)
+		if r >= 0 {
 			ch.rpm = r
 		}
 	}
@@ -547,38 +724,65 @@ func (c *Controller) reresolve(chans []*channel) {
 	}
 }
 
-// write puts the channel in manual mode and writes duty (verified by the
-// device). Dry-run only pretends.
-func (c *Controller) write(ch *channel, duty int) error {
+// write writes duty to the channel (the device enters manual mode itself
+// and verifies by read-back, rules 2 and 3). Dry-run only pretends. Caller
+// holds hwMu. After the first cycle a pwmN_enable that is not "1" any more
+// means something else wrote the enable file; it is logged once per
+// occurrence because the device silently re-asserts manual mode.
+func (c *Controller) write(ch *channel, duty int, n int) error {
 	if c.opts.DryRun {
 		return nil
 	}
-	if err := c.dev.EnterManual(ch.cfg.PWM); err != nil {
-		return fmt.Errorf("enter manual: %w", err)
+	if er, ok := c.dev.(enableReader); ok && n > 0 && ch.written {
+		if en, err := er.ReadEnable(ch.cfg.PWM); err == nil && en != "1" {
+			c.logOnce("enable."+ch.cfg.Name, "%s: pwm%d_enable was %q, re-asserting manual mode (external interference?)", ch.cfg.Name, ch.cfg.PWM, en)
+		} else if err == nil {
+			c.logClear("enable." + ch.cfg.Name)
+		}
 	}
 	return c.dev.WriteDuty(ch.cfg.PWM, duty)
 }
 
-// failsafeAll drives every managed channel to 255 (rule 4).
-func (c *Controller) failsafeAll(chans []*channel, mode Mode) {
+// failsafeAll drives every managed channel to 255 (rule 4). It returns
+// true when not a single write succeeded (device gone). Serialized with
+// Stop through hwMu; a no-op after Stop.
+func (c *Controller) failsafeAll(chans []*channel, mode Mode) (allFailed bool) {
+	c.hwMu.Lock()
+	defer c.hwMu.Unlock()
+	if c.stopped.Load() || len(chans) == 0 {
+		return false
+	}
+	allFailed = true
 	for _, ch := range chans {
 		ch.mode = mode
 		ch.target = 255
-		if err := c.write(ch, 255); err != nil {
+		if err := c.write(ch, 255, c.n); err != nil {
 			c.log.Printf("%s: failsafe write pwm%d=255 failed: %v", ch.cfg.Name, ch.cfg.PWM, err)
+			ch.cur = -1
 			continue
 		}
-		ch.cur = 255
+		allFailed = false
+		if !c.opts.DryRun {
+			ch.cur = 255
+			ch.written = true
+		}
 	}
+	return allFailed
 }
 
 // Stop returns every channel to its configured safe state (rule 7) and
-// removes the state file. Safe to call more than once.
+// removes the state file. Safe to call more than once and concurrently
+// with a running cycle: it takes only hwMu (never c.mu, so a panic inside
+// a locked section cannot block it) and sets the stopped flag first, so a
+// cycle that is in progress skips its write phase.
 func (c *Controller) Stop() {
 	c.stopOnce.Do(func() {
-		c.mu.Lock()
+		c.stopped.Store(true)
+		c.hwMu.Lock()
+		defer c.hwMu.Unlock()
+		// c.chans is immutable after New; ch.cfg is only swapped by
+		// applyPendingLocked, which also holds hwMu.
 		chans := c.chans
-		c.mu.Unlock()
 		var parts []string
 		for _, ch := range chans {
 			parts = append(parts, fmt.Sprintf("%s=%s", ch.cfg.Name, ch.cfg.Stop))
@@ -600,19 +804,38 @@ func (c *Controller) Stop() {
 // Failsafe puts every configured channel that exists on dev into its
 // configured safe state (SafeStop). Used by `pvefand failsafe`
 // (ExecStopPost) without a running controller; continues after errors and
-// returns them joined.
-func Failsafe(dev profile.Device, cfg config.Config) error {
+// returns them joined. The channel list goes through SanitizeChannels, so
+// on the N5 Pro pwm1..3 are always handled (built-in defaults for channels
+// the config lacks) and pwm3 never gets "auto". logger may be nil; it
+// receives one line per channel.
+func Failsafe(dev profile.Device, cfg config.Config, logger Logger) error {
 	present := map[int]bool{}
 	for _, dc := range dev.Channels() {
 		present[dc.Index] = true
 	}
+	chans, notes := SanitizeChannels(dev.Profile().Name(), cfg.Channels)
+	if logger != nil {
+		for _, n := range notes {
+			logger.Printf("failsafe: config: %s", n)
+		}
+	}
 	var errs []error
-	for _, ch := range cfg.Channels {
+	for _, ch := range chans {
 		if !present[ch.PWM] {
+			if logger != nil {
+				logger.Printf("failsafe: %s: pwm%d not exposed by %s, skipped", ch.Name, ch.PWM, dev.Profile().Name())
+			}
 			continue
 		}
 		if err := dev.SafeStop(ch.PWM, ch.Stop); err != nil {
 			errs = append(errs, fmt.Errorf("%s (pwm%d, stop=%s): %w", ch.Name, ch.PWM, ch.Stop, err))
+			if logger != nil {
+				logger.Printf("failsafe: %s: pwm%d stop=%s FAILED: %v", ch.Name, ch.PWM, ch.Stop, err)
+			}
+			continue
+		}
+		if logger != nil {
+			logger.Printf("failsafe: %s: pwm%d stop=%s ok", ch.Name, ch.PWM, ch.Stop)
 		}
 	}
 	return errors.Join(errs...)
@@ -715,8 +938,8 @@ func (c *Controller) History(since time.Duration) []HistoryPoint {
 }
 
 // SetOverride pins a channel to duty (manual mode) until ClearOverride.
-// Critical temperature and stall handling still apply. Channels fed by
-// drivetemp:max refuse duties below MinHDDOverride (see there).
+// Critical temperature and stall handling still apply. Channels the chip
+// does not regulate by itself (hddLike) refuse duties below MinHDDOverride.
 func (c *Controller) SetOverride(name string, duty int) error {
 	if duty < 0 || duty > 255 {
 		return fmt.Errorf("duty %d outside 0..255", duty)
@@ -727,8 +950,8 @@ func (c *Controller) SetOverride(name string, duty int) error {
 	if ch == nil {
 		return fmt.Errorf("unknown channel %q", name)
 	}
-	if ch.cfg.Sensor == "drivetemp:max" && duty < MinHDDOverride {
-		return fmt.Errorf("channel %q (drivetemp:max): manual duty must be at least %d", name, MinHDDOverride)
+	if c.hddLike(ch.cfg) && duty < MinHDDOverride {
+		return fmt.Errorf("channel %q (fixed stop duty / not chip-regulated): manual duty must be at least %d", name, MinHDDOverride)
 	}
 	c.overrides[name] = duty
 	c.log.Printf("%s: manual override %d", name, duty)
@@ -780,6 +1003,16 @@ func (c *Controller) Reload(rawTOML []byte) error {
 
 // Apply is Reload for an already parsed config.
 func (c *Controller) Apply(cfg config.Config) error {
+	// The same profile corrections as at start, so a config that lacks an
+	// N5 Pro channel matches the completed set (no spurious restart).
+	var notes []string
+	cfg.Channels, notes = SanitizeChannels(c.dev.Profile().Name(), cfg.Channels)
+	if len(notes) > 0 {
+		for _, n := range notes {
+			c.log.Printf("reload: config: %s", n)
+		}
+		c.raise("config", "config corrected on reload:\n"+strings.Join(notes, "\n"))
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	base := c.cfg
@@ -812,6 +1045,8 @@ func (c *Controller) applyPendingLocked() {
 		byName[cc.Name] = cc
 	}
 	firstSensorChanged := false
+	// ch.cfg is read by Stop (stop values) under hwMu only.
+	c.hwMu.Lock()
 	for i, ch := range c.chans {
 		cc := byName[ch.cfg.Name]
 		if cc.Sensor != ch.cfg.Sensor {
@@ -822,6 +1057,7 @@ func (c *Controller) applyPendingLocked() {
 		}
 		ch.cfg = cc
 	}
+	c.hwMu.Unlock()
 	if firstSensorChanged {
 		c.haveRaw, c.sameRaw = false, 0
 	}
@@ -849,6 +1085,17 @@ func sameChannelSet(a, b []config.Channel) bool {
 		}
 	}
 	return true
+}
+
+// hddLike reports whether a channel must never run at a low manual duty:
+// it has a fixed stop duty (the chip is not expected to regulate it on
+// its own), or it is pwm3 on the N5 Pro (the EC does not regulate it after
+// a write regardless of the configured stop).
+func (c *Controller) hddLike(cc config.Channel) bool {
+	if _, fixed := cc.StopDuty(); fixed {
+		return true
+	}
+	return c.dev.Profile().Name() == "n5pro" && cc.PWM == 3
 }
 
 func (c *Controller) findLocked(name string) *channel {
@@ -916,7 +1163,8 @@ func (c *Controller) pushHistoryLocked(chans []*channel, now time.Time) {
 }
 
 func (c *Controller) writeState(s Snapshot) {
-	if c.opts.RunDir == "" {
+	if c.opts.RunDir == "" || c.stopped.Load() {
+		// after Stop the file is gone and must not come back
 		return
 	}
 	b, err := json.Marshal(s)
@@ -947,7 +1195,7 @@ func (c *Controller) loadOverrides() {
 			continue
 		}
 		v, err := strconv.Atoi(strings.TrimSpace(string(b)))
-		if err != nil || v < 0 || v > 255 || (ch.cfg.Sensor == "drivetemp:max" && v < MinHDDOverride) {
+		if err != nil || v < 0 || v > 255 || (c.hddLike(ch.cfg) && v < MinHDDOverride) {
 			c.log.Printf("%s: override file invalid (%q), removed", ch.cfg.Name, strings.TrimSpace(string(b)))
 			_ = os.Remove(filepath.Join(c.opts.RunDir, "override."+ch.cfg.Name))
 			continue

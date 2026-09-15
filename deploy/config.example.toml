@@ -12,8 +12,8 @@ step_up = 40            # max duty increase per cycle (1..255)
 step_down = 15          # max duty decrease per cycle (1..255)
 stall_min_duty = 60     # RPM 0 at or above this duty counts as a stall (1..255)
 stall_cycles = 2        # ... after this many consecutive cycles (1..20)
-stale_cycles = 18       # first channel's sensor bit-identical this many cycles -> frozen (3..600)
-alert_cooldown = "30m"  # minimum gap between alerts of the same kind
+stale_cycles = 18       # first channel's sensor bit-identical this many cycles -> frozen (6..600); only checked when that sensor is k10temp
+alert_cooldown = "30m"  # minimum gap between alerts of the same kind (60s..24h)
 log_every = 30          # status line every N cycles (0 = never)
 profile = "auto"        # auto | n5pro | nct67xx | it87xx | monitor
 
@@ -30,7 +30,7 @@ pwm = 1                 # pwmN of the profile's hwmon device (1..8)
 sensor = "k10temp"      # k10temp | coretemp | nvme:max | drivetemp:max | hwmon:<name>:tempN | ec:<label>
 curve = [[45, 85], [80, 255]]   # [temp_c, duty] points, ascending temp, 2..8 points, linear between
 critical = 88           # temp -> 255 immediately, no slew, even under manual override
-stop = "auto"           # "auto" = hand the channel back to the EC/BIOS on stop, or a fixed duty 0..255
+stop = "auto"           # "auto" = hand the channel back to the EC/BIOS on stop, or a fixed duty 60..255 (n5pro pwm3: never "auto", forced to 140)
 
 # SSD fan (pwm2) <- max NVMe composite (SN700 warns at 84 C); idle 44-46 C, EC idle 74.
 [[channel]]

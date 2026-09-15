@@ -21,6 +21,18 @@ const Template = "pvefand"
 // Timeout bounds one delivery attempt (perl/mail may hang on a broken MTA).
 const Timeout = 30 * time.Second
 
+// WaitDelay is how long Wait keeps waiting for the child's stdout/stderr
+// pipes after the timeout killed it. Without it a grandchild that inherited
+// the pipes (sendmail spawned by mail) can block CombinedOutput forever.
+const WaitDelay = 5 * time.Second
+
+// command builds the delivery command with the timeout and WaitDelay set.
+func command(ctx context.Context, name string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.WaitDelay = WaitDelay
+	return cmd
+}
+
 // pveNotifyPM is the file whose presence selects the PVE sink.
 const pveNotifyPM = "/usr/share/perl5/PVE/Notify.pm"
 
@@ -91,7 +103,7 @@ func (p *PVE) Alert(kind, msg string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), Timeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, perl, "-MPVE::Notify", "-e", perlProgram)
+	cmd := command(ctx, perl, "-MPVE::Notify", "-e", perlProgram)
 	cmd.Env = append(os.Environ(),
 		"PVEFAND_TEMPLATE="+Template,
 		"PVEFAND_TITLE="+kind,
@@ -127,7 +139,7 @@ func (m *Mail) Alert(kind, msg string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), Timeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, bin, "-s", fmt.Sprintf("[%s] pvefand: %s", m.Hostname, kind), to)
+	cmd := command(ctx, bin, "-s", fmt.Sprintf("[%s] pvefand: %s", m.Hostname, kind), to)
 	cmd.Stdin = strings.NewReader(fmt.Sprintf("pvefand on %s reports:\n\n%s\n\nTime: %s\n",
 		m.Hostname, msg, time.Now().Format("2006-01-02 15:04:05")))
 	if out, err := cmd.CombinedOutput(); err != nil {
