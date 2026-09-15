@@ -22,7 +22,8 @@ try {
     ssh builder "rm -rf ~/$remote && mkdir -p ~/$remote"
     tar -cf - --exclude .git --exclude dist . | ssh builder "tar -xf - -C ~/$remote"
 } finally { Pop-Location }
-$docker = "docker run --rm -v `$HOME/$remote:/src -w /src -v pvefand-gomod:/go/pkg/mod -v pvefand-gocache:/root/.cache/go-build -e CGO_ENABLED=0 golang:1.25-alpine sh -c '$($Cmd.Replace("'", "'\''"))'"
+$escaped = $Cmd.Replace("'", "'\''")
+$docker = "docker run --rm -v `$HOME/${remote}:/src -w /src -v pvefand-gomod:/go/pkg/mod -v pvefand-gocache:/root/.cache/go-build -e CGO_ENABLED=0 golang:1.25-alpine sh -c '${escaped}'"
 ssh builder $docker
 $rc = $LASTEXITCODE
 if ($Fetch -and $rc -eq 0) {
