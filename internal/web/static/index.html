@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>pvefand</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header id="hdr">
+  <div class="hdr-left">
+    <span class="logo">pvefand</span>
+    <span id="hdr-profile" class="hdr-sub">detecting…</span>
+    <span id="hdr-status" class="badge">offline</span>
+  </div>
+  <div id="hdr-live" class="hdr-live"></div>
+</header>
+
+<nav id="tabs">
+  <button class="tab active" data-tab="overview">Overview</button>
+  <button class="tab" data-tab="curves">Curves</button>
+  <button class="tab" data-tab="manual">Manual</button>
+  <button class="tab" data-tab="presets">Presets</button>
+  <button class="tab" data-tab="log">Log</button>
+  <button class="tab" data-tab="compat">Compatibility</button>
+</nav>
+
+<main>
+  <section id="tab-overview" class="pane active">
+    <div id="cards" class="cards"></div>
+    <div id="charts" class="charts"></div>
+    <div class="row2">
+      <div class="panel">
+        <h3>Hardware</h3>
+        <dl id="hw" class="kv"></dl>
+      </div>
+      <div class="panel">
+        <h3>Last alerts</h3>
+        <table class="tbl"><thead><tr><th>Type</th><th>Time</th></tr></thead><tbody id="alerts"></tbody></table>
+        <p id="alerts-none" class="muted">No alerts recorded.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="tab-curves" class="pane">
+    <div id="curves-note" class="note" hidden></div>
+    <div id="curves" class="curves"></div>
+    <div class="actions">
+      <button id="curves-apply" class="btn primary">Apply curves</button>
+      <button id="curves-reload" class="btn">Reload from daemon</button>
+    </div>
+    <details class="panel">
+      <summary>Raw config (TOML)</summary>
+      <textarea id="raw" spellcheck="false"></textarea>
+      <div class="actions">
+        <button id="raw-save" class="btn primary">Save raw config</button>
+        <button id="raw-from-form" class="btn">Regenerate from form</button>
+      </div>
+    </details>
+  </section>
+
+  <section id="tab-manual" class="pane">
+    <p class="muted">Manual override holds a fixed duty until cleared. Critical temperature and stall protection stay active.</p>
+    <div id="manual" class="manual"></div>
+  </section>
+
+  <section id="tab-presets" class="pane">
+    <table class="tbl"><thead><tr><th>Name</th><th>Channels</th><th></th></tr></thead><tbody id="presets"></tbody></table>
+    <p id="presets-none" class="muted">No presets saved.</p>
+    <div class="actions">
+      <input id="preset-name" type="text" placeholder="new preset name" maxlength="64" autocomplete="off">
+      <button id="preset-save" class="btn primary">Save current curves as preset</button>
+    </div>
+  </section>
+
+  <section id="tab-log" class="pane">
+    <div class="actions">
+      <label>Lines <select id="log-lines"><option>50</option><option selected>100</option><option>300</option><option>1000</option></select></label>
+      <button id="log-refresh" class="btn">Refresh</button>
+    </div>
+    <pre id="log" class="log"></pre>
+  </section>
+
+  <section id="tab-compat" class="pane">
+    <table class="tbl"><thead><tr><th>Profile</th><th>Title</th><th>Status</th><th>Notes</th></tr></thead><tbody id="profiles"></tbody></table>
+  </section>
+</main>
+
+<div id="toast" class="toast" hidden></div>
+
+<div id="login" class="modal" hidden>
+  <form id="login-form" class="modal-box">
+    <h3>Sign in</h3>
+    <p class="muted">Changes require authentication.</p>
+    <label>User <input id="login-user" type="text" autocomplete="username" required></label>
+    <label>Password <input id="login-pass" type="password" autocomplete="current-password" required></label>
+    <div class="actions">
+      <button type="submit" class="btn primary">Sign in</button>
+      <button type="button" id="login-cancel" class="btn">Cancel</button>
+    </div>
+  </form>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
