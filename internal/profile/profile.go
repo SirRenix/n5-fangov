@@ -13,10 +13,10 @@ type Channel struct {
 
 // Profile knows how to detect and instantiate a Device.
 type Profile interface {
-	Name() string    // short id: n5pro, nct67xx, it87xx, monitor
-	Title() string   // human readable
-	Verified() bool  // true only when validated on real hardware
-	Notes() string   // caveats shown in the UI
+	Name() string   // short id: n5pro, nct67xx, it87xx, monitor
+	Title() string  // human readable
+	Verified() bool // true only when validated on real hardware
+	Notes() string  // caveats shown in the UI
 	Detect(fs *hwmon.FS) (Device, error)
 }
 

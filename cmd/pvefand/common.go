@@ -1,5 +1,3 @@
-//go:build integrate
-
 package main
 
 import (

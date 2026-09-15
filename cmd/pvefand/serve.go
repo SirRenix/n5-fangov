@@ -1,15 +1,11 @@
-//go:build integrate
-
 package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"log"
 	"net"
-	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -61,7 +57,7 @@ func cmdServe(args []string) int {
 			len(warns), strings.Join(warns, "\n")))
 	}
 	if err != nil {
-		// I/O error other than "not found": defaults are in cfg, keep going (rule 8).
+		// Read or syntax error: defaults are in cfg, keep going (rule 8).
 		log.Printf("config: continuing with built-in defaults: %v", err)
 	}
 	dspec := daemonOf(cfg)
@@ -101,12 +97,12 @@ func cmdServe(args []string) int {
 		return exitFail
 	}
 
-	handler := newWebHandler(webDeps{
+	ws := newWebServer(webDeps{
 		Service:    ctrl,
 		ConfigPath: *cfgPath,
 		PresetDir:  defaultPresetDir,
-		Profiles:   allProfiles(),
-		Sensors:    knownSensors(hw, dev),
+		Device:     dev,
+		Sysfs:      hw,
 		Web:        webOf(cfg),
 	})
 
@@ -115,9 +111,9 @@ func cmdServe(args []string) int {
 
 	errc := make(chan error, 3)
 
-	// Unix socket (CLI, no auth).
+	// Unix socket (CLI, no auth/CSRF).
 	sock := socketPath(*rdir)
-	go func() { errc <- wrapErr("ipc", serveIPC(ctx, sock, handler)) }()
+	go func() { errc <- wrapErr("ipc", serveIPC(ctx, sock, ws.Socket)) }()
 
 	// TCP (web UI), optional.
 	addr := webOf(cfg).Listen
@@ -127,25 +123,24 @@ func cmdServe(args []string) int {
 	if addr == "none" {
 		addr = ""
 	}
-	var srv *http.Server
 	if addr != "" {
 		ln, err := net.Listen("tcp", addr)
 		if err != nil {
 			log.Printf("web: listen %s: %v (web UI disabled, socket still works)", addr, err)
 			sendAlert(alerter, "web", "web UI listener failed on "+addr+": "+err.Error())
 		} else {
-			srv = &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 			log.Printf("web: listening on %s", ln.Addr())
-			go func() {
-				if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-					errc <- wrapErr("web", err)
-				}
-			}()
+			go func() { errc <- wrapErr("web", ws.ServeTCP(ctx, ln)) }()
 		}
 	}
 
-	// Regulation loop.
-	go func() { errc <- wrapErr("controller", runController(ctx, ctrl)) }()
+	// Regulation loop. Run performs the SafeStop itself when it returns.
+	ctrlDone := make(chan error, 1)
+	go func() {
+		err := wrapErr("controller", runController(ctx, ctrl))
+		ctrlDone <- err
+		errc <- err
+	}()
 
 	// READY=1 once the first cycle produced a snapshot (or after a grace
 	// period, so a stuck first read still lets systemd's watchdog take over
@@ -173,25 +168,28 @@ func cmdServe(args []string) int {
 		}
 		cancel()
 	}
+	notifyStopping()
 
-	// SafeStop every channel (profile-defined), then close listeners.
-	stopController(ctrl)
-	if srv != nil {
-		sctx, scancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_ = srv.Shutdown(sctx)
-		scancel()
+	// Wait for the loop to leave its cycle and run its own SafeStop; if it
+	// does not come back in time, stop from here (idempotent).
+	select {
+	case <-ctrlDone:
+	case <-time.After(15 * time.Second):
+		log.Printf("controller did not stop within 15s, forcing safe stop")
 	}
+	stopController(ctrl)
 	log.Printf("stopped (exit %d)", exit)
 	return exit
 }
 
-// waitFirstCycle polls the snapshot until it carries a timestamp.
+// waitFirstCycle polls the snapshot until the first cycle replaced the
+// initial "starting" snapshot (which already carries a timestamp).
 func waitFirstCycle(ctx context.Context, s control.Service, max time.Duration) bool {
 	deadline := time.Now().Add(max)
 	t := time.NewTicker(200 * time.Millisecond)
 	defer t.Stop()
 	for {
-		if s.Snapshot().TS > 0 {
+		if snap := s.Snapshot(); snap.TS > 0 && snap.Status != "starting" {
 			return true
 		}
 		select {

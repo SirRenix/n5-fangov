@@ -1,17 +1,16 @@
-//go:build integrate
-
-// wiring.go isolates every call into a sibling package whose exact signature
-// was not fixed in DESIGN.md. All other files in cmd/pvefand use only the
-// local types and functions defined here, so an API mismatch at integration
-// time is fixed in exactly one place. Every assumption is marked INTEGRATE.
+// wiring.go isolates every call into a sibling package. All other files in
+// cmd/pvefand use only the local types and functions defined here, so an API
+// change in an internal package is fixed in exactly one place.
 package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log"
+	"net"
 	"net/http"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/SirRenix/pvefand/internal/alert"
@@ -54,52 +53,40 @@ type webSpec struct {
 	PasswordHash string
 }
 
-// loadConfig reads the config file. Per DESIGN rule 8 a broken file never
-// prevents start: the returned Config is always usable (defaults filled in),
-// warnings describe what was replaced. err is only set for I/O problems
-// other than "file does not exist".
-func loadConfig(path string) (config.Config, []string, error) {
-	// INTEGRATE: assumed config.Load(path) (config.Config, []config.Warning, error).
-	cfg, warns, err := config.Load(path)
+func warningStrings(warns []config.Warning) []string {
 	msgs := make([]string, 0, len(warns))
 	for _, w := range warns {
-		msgs = append(msgs, fmt.Sprint(w))
+		msgs = append(msgs, w.String())
 	}
-	if err != nil {
-		if os.IsNotExist(err) {
-			return config.Default(), append(msgs, "config file "+path+" not found, using built-in defaults"), nil
-		}
-		return config.Default(), append(msgs, "config file "+path+": "+err.Error()+", using built-in defaults"), err
-	}
-	return cfg, msgs, nil
+	return msgs
 }
 
-// parseConfig validates raw TOML text without touching the file system.
+// loadConfig reads the config file. Per DESIGN rule 8 a broken file never
+// prevents start: the returned Config is always usable (defaults filled in),
+// warnings describe what was replaced. A missing file yields the defaults
+// plus one warning and no error; err is only set for read errors and TOML
+// syntax errors (defaults are in cfg in both cases).
+func loadConfig(path string) (config.Config, []string, error) {
+	cfg, warns, err := config.Load(path)
+	return cfg, warningStrings(warns), err
+}
+
+// parseConfig validates raw TOML text without touching the file system. A
+// syntax error is reported as a warning and yields the defaults.
 func parseConfig(raw []byte) (config.Config, []string) {
-	// INTEGRATE: assumed config.Parse(raw []byte) (config.Config, []config.Warning).
-	cfg, warns := config.Parse(raw)
-	msgs := make([]string, 0, len(warns))
-	for _, w := range warns {
-		msgs = append(msgs, fmt.Sprint(w))
-	}
-	return cfg, msgs
+	cfg, warns, _ := config.Parse(raw)
+	return cfg, warningStrings(warns)
 }
 
 func channelSpecs(cfg config.Config) []chanSpec {
-	// INTEGRATE: assumed config.Channel{Name string; PWM int; Sensor string;
-	// Curve [][2]int; Critical int; Stop string} in cfg.Channels.
 	out := make([]chanSpec, 0, len(cfg.Channels))
 	for _, c := range cfg.Channels {
-		curve := make([][2]int, 0, len(c.Curve))
-		for _, p := range c.Curve {
-			curve = append(curve, [2]int{int(p[0]), int(p[1])})
-		}
 		out = append(out, chanSpec{
 			Name:     c.Name,
-			PWM:      int(c.PWM),
+			PWM:      c.PWM,
 			Sensor:   c.Sensor,
-			Curve:    curve,
-			Critical: int(c.Critical),
+			Curve:    append([][2]int(nil), c.Curve...),
+			Critical: c.Critical,
 			Stop:     c.Stop,
 		})
 	}
@@ -107,16 +94,13 @@ func channelSpecs(cfg config.Config) []chanSpec {
 }
 
 func daemonOf(cfg config.Config) daemonSpec {
-	// INTEGRATE: assumed cfg.Daemon.Interval has an int64 underlying type
-	// (time.Duration or a TOML duration wrapper) and cfg.Daemon.Profile string.
 	return daemonSpec{
-		Interval: time.Duration(cfg.Daemon.Interval),
+		Interval: cfg.Daemon.Interval,
 		Profile:  cfg.Daemon.Profile,
 	}
 }
 
 func webOf(cfg config.Config) webSpec {
-	// INTEGRATE: assumed cfg.Web{Listen, Auth, User, PasswordHash string}.
 	return webSpec{
 		Listen:       cfg.Web.Listen,
 		Auth:         cfg.Web.Auth,
@@ -128,51 +112,41 @@ func webOf(cfg config.Config) webSpec {
 // ---------------------------------------------------------------------------
 // Profiles and sensors (agent A).
 
-func allProfiles() []profile.Profile {
-	// INTEGRATE: assumed profile.All() []profile.Profile.
-	return profile.All()
-}
+func allProfiles() []profile.Profile { return profile.All() }
 
 // detectDevice resolves want ("auto" or a profile name) to a Device.
 func detectDevice(fs *hwmon.FS, want string) (profile.Device, error) {
-	// INTEGRATE: assumed profile.Detect(fs *hwmon.FS, want string) (profile.Device, error).
 	return profile.Detect(fs, want)
 }
 
 // listHwmon returns every hwmon device directory (read-only).
-func listHwmon(fs *hwmon.FS) ([]hwmon.Device, error) {
-	// INTEGRATE: assumed (*hwmon.FS).List() ([]hwmon.Device, error).
-	return fs.List()
-}
-
-// findHwmon returns the hwmon device with the given name or an error.
-func findHwmon(fs *hwmon.FS, name string) (hwmon.Device, error) {
-	// INTEGRATE: assumed (*hwmon.FS).FindByName(name) (hwmon.Device, error).
-	return fs.FindByName(name)
-}
+func listHwmon(fs *hwmon.FS) ([]hwmon.Device, error) { return fs.List() }
 
 // readIntPath reads an integer sysfs attribute by absolute path.
-func readIntPath(fs *hwmon.FS, path string) (int, error) {
-	// INTEGRATE: assumed (*hwmon.FS).ReadInt(path string) (int, error).
-	return fs.ReadInt(path)
-}
-
-// readHwmonInt reads an integer attribute of a hwmon device (e.g. "fan1_input").
-func readHwmonInt(fs *hwmon.FS, dev hwmon.Device, attr string) (int, error) {
-	return readIntPath(fs, filepath.Join(dev.Path, attr))
-}
+func readIntPath(fs *hwmon.FS, path string) (int, error) { return fs.ReadInt(path) }
 
 // sensorFactory creates a sensor.Source from its id ("k10temp", "nvme:max", ...).
 type sensorFactory func(id string) (sensor.Source, error)
 
 func newSensorFactory(fs *hwmon.FS, dev profile.Device) sensorFactory {
-	// INTEGRATE: assumed sensor.Parse(id string, fs *hwmon.FS, dev profile.Device) (sensor.Source, error).
 	return func(id string) (sensor.Source, error) { return sensor.Parse(id, fs, dev) }
+}
+
+// controlFactory adapts sensorFactory to the controller's interface type.
+// A nil sensor.Source must not become a non-nil SensorReader, hence the
+// explicit error branch.
+func (f sensorFactory) controlFactory() control.SensorFactory {
+	return func(id string) (control.SensorReader, error) {
+		s, err := f(id)
+		if err != nil {
+			return nil, err
+		}
+		return s, nil
+	}
 }
 
 // readTempC reads a source and returns degrees Celsius.
 func readTempC(src sensor.Source) (float64, error) {
-	// INTEGRATE: assumed sensor.Source has Read() (int, error) returning millidegrees.
 	mc, err := src.Read()
 	if err != nil {
 		return 0, err
@@ -180,54 +154,58 @@ func readTempC(src sensor.Source) (float64, error) {
 	return float64(mc) / 1000, nil
 }
 
-// knownSensors lists the sensor ids that resolve on this machine.
-func knownSensors(fs *hwmon.FS, dev profile.Device) []string {
-	// INTEGRATE: assumed sensor.Known(fs *hwmon.FS, dev profile.Device) []string.
-	return sensor.Known(fs, dev)
+// sensorInfo is one selectable sensor id with a description.
+type sensorInfo struct {
+	ID          string
+	Description string
+}
+
+// knownSensors lists the sensor ids that resolve on this machine plus the
+// generic patterns (hwmon:<name>:tempN, ec:<label>) at the end.
+func knownSensors(fs *hwmon.FS, dev profile.Device) []sensorInfo {
+	infos := sensor.Known(fs, dev)
+	out := make([]sensorInfo, 0, len(infos))
+	for _, i := range infos {
+		out = append(out, sensorInfo{ID: i.ID, Description: i.Description})
+	}
+	return out
 }
 
 // ---------------------------------------------------------------------------
 // Alerts, controller, sd_notify (agent B).
 
-func newAlerter() alert.Alerter {
-	return alert.New()
-}
+func newAlerter() alert.Sink { return alert.New(log.Default()) }
 
-// sendAlert delivers one alert; the alert package applies the per-type cooldown.
-func sendAlert(a alert.Alerter, typ, msg string) {
-	// INTEGRATE: assumed alert.Alerter has Send(typ, msg string).
-	a.Send(typ, msg)
-}
+// sendAlert delivers one alert immediately (no cooldown; the controller
+// applies the per-kind cooldown for alerts raised from the loop).
+func sendAlert(a alert.Sink, kind, msg string) { a.Alert(kind, msg) }
 
 // controlOpts is what serve passes to the controller besides config/device.
 type controlOpts struct {
 	DryRun bool
-	RunDir string // state.json, alert stamps
+	RunDir string // state.json, override.<name>, alert stamps
 }
 
-func newController(cfg config.Config, dev profile.Device, f sensorFactory, a alert.Alerter, o controlOpts) (*control.Controller, error) {
-	// INTEGRATE: assumed control.New(cfg config.Config, dev profile.Device,
-	// f func(string) (sensor.Source, error), a alert.Alerter, opts control.Options)
-	// (*control.Controller, error) with Options{DryRun bool; RunDir string}.
-	return control.New(cfg, dev, f, a, control.Options{DryRun: o.DryRun, RunDir: o.RunDir})
+func newController(cfg config.Config, dev profile.Device, f sensorFactory, a alert.Sink, o controlOpts) (*control.Controller, error) {
+	return control.New(cfg, dev, f.controlFactory(), a, control.Options{
+		DryRun: o.DryRun,
+		RunDir: o.RunDir,
+		Logger: log.Default(),
+		Notify: func() { _ = sdnotify.Watchdog() },
+		Status: func(s string) { _ = sdnotify.Status(s) },
+	})
 }
 
-// runController blocks until ctx is done or the loop fails fatally.
-func runController(ctx context.Context, c *control.Controller) error {
-	// INTEGRATE: assumed (*control.Controller).Run(ctx) error.
-	return c.Run(ctx)
-}
+// runController blocks until ctx is done or the loop fails fatally. The
+// controller performs its own SafeStop when Run returns.
+func runController(ctx context.Context, c *control.Controller) error { return c.Run(ctx) }
 
 // stopController performs the profile-defined SafeStop on every channel.
-func stopController(c *control.Controller) {
-	// INTEGRATE: assumed (*control.Controller).Stop() (idempotent, blocking).
-	c.Stop()
-}
+// Idempotent; a no-op when Run already did it.
+func stopController(c *control.Controller) { c.Stop() }
 
-func notifyReady() {
-	// INTEGRATE: assumed sdnotify.Ready() (no return value used).
-	sdnotify.Ready()
-}
+func notifyReady()    { _ = sdnotify.Ready() }
+func notifyStopping() { _ = sdnotify.Stopping() }
 
 // ---------------------------------------------------------------------------
 // Web handler and IPC (agent C).
@@ -237,71 +215,194 @@ type webDeps struct {
 	Service    control.Service
 	ConfigPath string
 	PresetDir  string
-	Profiles   []profile.Profile
-	Sensors    []string
+	Device     profile.Device // detected device; its profile is "active"
+	Sysfs      *hwmon.FS
 	Web        webSpec
 }
 
-func newWebHandler(d webDeps) http.Handler {
-	// INTEGRATE: assumed web.Deps{Service control.Service; Config web.ConfigStore;
-	// Presets web.PresetStore; Log web.LogSource; Profiles []profile.Profile;
-	// Version string; Auth web.Auth{Mode, User, PasswordHash string}; Sensors []string}
-	// and the store interfaces below (method sets guessed from the API table).
-	return web.NewHandler(web.Deps{
+// webServer exposes the two handler flavours of internal/web: the TCP one
+// enforces CSRF and optional basic auth, the socket one does not.
+type webServer struct {
+	TCP    http.Handler
+	Socket http.Handler
+	serve  func(ctx context.Context, ln net.Listener) error
+}
+
+// ServeTCP serves the TCP handler on ln until ctx is done.
+func (s webServer) ServeTCP(ctx context.Context, ln net.Listener) error { return s.serve(ctx, ln) }
+
+func newWebServer(d webDeps) webServer {
+	active := ""
+	if d.Device != nil {
+		active = d.Device.Profile().Name()
+	}
+	profiles := func() []web.ProfileInfo {
+		var out []web.ProfileInfo
+		for _, p := range profile.All() {
+			out = append(out, web.ProfileInfo{
+				Name: p.Name(), Title: p.Title(), Verified: p.Verified(), Notes: p.Notes(),
+				Active: p.Name() == active,
+			})
+		}
+		return out
+	}
+	sensors := func() []web.SensorInfo {
+		var out []web.SensorInfo
+		for _, i := range sensor.Known(d.Sysfs, d.Device) {
+			out = append(out, web.SensorInfo{ID: i.ID, Description: i.Description})
+		}
+		return out
+	}
+	s := web.New(web.Deps{
 		Service:  d.Service,
 		Config:   fileConfigStore{path: d.ConfigPath},
-		Presets:  dirPresetStore{dir: d.PresetDir},
-		Log:      journalLog{unit: unitName},
-		Profiles: d.Profiles,
+		Presets:  dirPresetStore{dir: d.PresetDir, cfgPath: d.ConfigPath, svc: d.Service},
+		Log:      func(n int) ([]string, error) { return journalLines(unitName, n) },
+		Profiles: profiles,
 		Version:  version.Version,
-		Auth:     web.Auth{Mode: d.Web.Auth, User: d.Web.User, PasswordHash: d.Web.PasswordHash},
-		Sensors:  d.Sensors,
+		Auth:     web.AuthConfig{Mode: d.Web.Auth, User: d.Web.User, PasswordHash: d.Web.PasswordHash},
+		Sensors:  sensors,
 	})
+	return webServer{TCP: s.Handler(), Socket: s.SocketHandler(), serve: s.Serve}
 }
 
 // fileConfigStore backs GET/PUT /api/config with the TOML file.
 type fileConfigStore struct{ path string }
 
-// Raw returns the current file content.
-func (s fileConfigStore) Raw() ([]byte, error) { return os.ReadFile(s.path) }
-
-// Save validates and writes raw TOML; warnings are returned, not fatal.
-func (s fileConfigStore) Save(raw []byte) ([]string, error) {
-	// INTEGRATE: assumed config.Save(path string, raw []byte) error.
-	_, warns := parseConfig(raw)
-	return warns, config.Save(s.path, raw)
+// Raw returns the current file content; a missing file reads as the
+// built-in defaults so the editor has something to start from.
+func (s fileConfigStore) Raw() ([]byte, error) {
+	raw, err := os.ReadFile(s.path)
+	if errors.Is(err, os.ErrNotExist) {
+		return config.Marshal(config.Default()), nil
+	}
+	return raw, err
 }
 
-// dirPresetStore backs /api/presets with /etc/pvefand/presets/*.toml.
-type dirPresetStore struct{ dir string }
-
-// List returns preset names with their channel tables.
-func (s dirPresetStore) List() ([]config.Preset, error) {
-	// INTEGRATE: assumed config.LoadPresets(dir) ([]config.Preset, error).
-	return config.LoadPresets(s.dir)
+// Save rejects TOML syntax errors and writes raw atomically. Per-field
+// warnings do not block the write (rule 8); they are logged here and again
+// by the controller's Reload.
+func (s fileConfigStore) Save(raw []byte) error {
+	_, warns, err := config.Parse(raw)
+	if err != nil {
+		return err
+	}
+	for _, w := range warns {
+		log.Printf("config save: %s", w)
+	}
+	return config.Save(s.path, raw)
 }
 
-// Save stores the given channels under name.
-func (s dirPresetStore) Save(name string, channels []config.Channel) error {
-	// INTEGRATE: assumed config.SavePreset(dir, name string, ch []config.Channel) error.
-	return config.SavePreset(s.dir, name, channels)
+// Parsed makes GET /api/config also carry the validated config in TOML
+// layout (lowercase keys, durations as strings) plus the parse warnings.
+func (s fileConfigStore) Parsed() (any, error) {
+	raw, err := s.Raw()
+	if err != nil {
+		return nil, err
+	}
+	cfg, warns, err := config.Parse(raw)
+	if err != nil {
+		return nil, err
+	}
+	return configJSON(cfg, warns), nil
 }
 
-// journalLog backs GET /api/log with journalctl.
-type journalLog struct{ unit string }
+// configJSON renders cfg the way the TOML file is laid out.
+func configJSON(cfg config.Config, warns []config.Warning) map[string]any {
+	d := cfg.Daemon
+	chans := make([]map[string]any, 0, len(cfg.Channels))
+	for _, c := range cfg.Channels {
+		chans = append(chans, map[string]any{
+			"name": c.Name, "pwm": c.PWM, "sensor": c.Sensor, "curve": c.Curve,
+			"critical": c.Critical, "stop": c.Stop,
+		})
+	}
+	return map[string]any{
+		"daemon": map[string]any{
+			"interval": d.Interval.String(), "step_up": d.StepUp, "step_down": d.StepDown,
+			"stall_min_duty": d.StallMinDuty, "stall_cycles": d.StallCycles, "stale_cycles": d.StaleCycles,
+			"alert_cooldown": d.AlertCooldown.String(), "log_every": d.LogEvery, "profile": d.Profile,
+		},
+		"web": map[string]any{
+			"listen": cfg.Web.Listen, "auth": cfg.Web.Auth, "user": cfg.Web.User,
+			"password_hash": cfg.Web.PasswordHash,
+		},
+		"channel":  chans,
+		"warnings": warningStrings(warns),
+	}
+}
 
-// Lines returns the last n journal lines of the unit.
-func (j journalLog) Lines(n int) ([]string, error) { return journalLines(j.unit, n) }
+// dirPresetStore backs /api/presets with <dir>/<name>.toml files that hold
+// only [[channel]] tables.
+type dirPresetStore struct {
+	dir     string
+	cfgPath string
+	svc     control.Service
+}
+
+// List returns every preset with the channel names it contains.
+func (s dirPresetStore) List() ([]web.Preset, error) {
+	all := config.LoadPresets(s.dir)
+	out := make([]web.Preset, 0, len(all))
+	for _, name := range config.PresetNames(s.dir) {
+		chans, ok := all[name]
+		if !ok {
+			continue // did not parse; LoadPresets skipped it
+		}
+		names := make([]string, 0, len(chans))
+		for _, c := range chans {
+			names = append(names, c.Name)
+		}
+		out = append(out, web.Preset{Name: name, Channels: names})
+	}
+	return out, nil
+}
+
+// Apply replaces the [[channel]] tables of the config file with the preset,
+// writes the file and reloads the daemon. The file is rewritten from the
+// parsed config, so comments in it are lost. control.ErrRestartRequired
+// passes through unchanged (the web layer answers 202 for it).
+func (s dirPresetStore) Apply(name string) error {
+	chans, warns, err := config.LoadPreset(s.dir, name)
+	if err != nil {
+		return err
+	}
+	for _, w := range warns {
+		log.Printf("preset %s: %s", name, w)
+	}
+	if len(chans) == 0 {
+		return fmt.Errorf("preset %q contains no usable [[channel]] table", name)
+	}
+	cfg, _, err := config.Load(s.cfgPath)
+	if err != nil {
+		return fmt.Errorf("current config: %w", err)
+	}
+	cfg.Channels = config.CloneChannels(chans)
+	raw := config.Marshal(cfg)
+	if err := config.Save(s.cfgPath, raw); err != nil {
+		return err
+	}
+	log.Printf("preset %s applied to %s (%d channels)", name, s.cfgPath, len(chans))
+	return s.svc.Reload(raw)
+}
+
+// Save stores the channel tables of the current config file as preset name.
+func (s dirPresetStore) Save(name string) error {
+	cfg, _, err := config.Load(s.cfgPath)
+	if err != nil {
+		return fmt.Errorf("current config: %w", err)
+	}
+	if len(cfg.Channels) == 0 {
+		return errors.New("current config has no channels to save")
+	}
+	return config.SavePreset(s.dir, name, cfg.Channels)
+}
 
 // serveIPC serves handler on the unix socket until ctx is done.
 func serveIPC(ctx context.Context, sock string, h http.Handler) error {
-	// INTEGRATE: assumed ipc.Serve(ctx, sock string, h http.Handler) error (blocking).
 	return ipc.Serve(ctx, sock, h)
 }
 
 // ipcClient returns an http.Client that dials the unix socket; any host in
 // the URL is accepted.
-func ipcClient(sock string) *http.Client {
-	// INTEGRATE: assumed ipc.Client(sock string) *http.Client.
-	return ipc.Client(sock)
-}
+func ipcClient(sock string) *http.Client { return ipc.Client(sock) }

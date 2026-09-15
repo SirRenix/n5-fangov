@@ -29,6 +29,7 @@ documented here first, then implemented.
 
 ```
 cmd/pvefand/main.go            entry: subcommands serve|status|set|auto|curve|log|check|detect|version
+cmd/pvefand/wiring.go          the only file in cmd that calls into internal/* (adapters, stores)
 internal/config/               TOML config: load, validate (defaults on error), write, presets
 internal/hwmon/                sysfs discovery + read/write helpers (root from PVEFAND_SYSFS)
 internal/profile/              Profile interface + n5pro, nct67xx, it87xx, monitor; Detect()
@@ -36,10 +37,10 @@ internal/sensor/               sensor sources: k10temp, coretemp, nvme:max, driv
 internal/control/              controller loop: curve, slew, override, critical, stall, plausibility, failsafe, history ring
 internal/alert/                alert sink: PVE::Notify (perl) → mail(1) → log; cooldown per type
 internal/ipc/                  unix socket server/client for CLI (same HTTP mux as web, no auth)
-internal/web/                  HTTP API + embedded static UI (web/static/*), basic auth, CSRF
+internal/web/                  HTTP API, basic auth, CSRF; embeds static/ via go:embed
+internal/web/static/           index.html, app.js, app.css (no build step, vanilla JS, canvas charts)
 internal/sdnotify/             READY=1, WATCHDOG=1
 internal/version/              version string
-web/static/                    index.html, app.js, app.css (no build step, vanilla JS, canvas charts)
 deploy/                        systemd unit, onfailure unit, failsafe script, postinst, config example
 tools/                         remote-go.ps1 (build/test via Docker on Builder)
 testdata/sysfs/n5pro/          fake /sys tree mirroring n5host (hwmon names, temp/fan/pwm files)
@@ -159,7 +160,7 @@ pvefand curve                ; pvefand log [n] ; pvefand check ; pvefand detect 
 pvefand test <ch>            channel verification run (like n5pro-ec 06 script), refuses while serve is regulating that channel unless --force
 ```
 
-## Web UI (web/static)
+## Web UI (internal/web/static)
 
 Tabs: Overview (cards per channel, live canvas charts, hardware details, last alerts),
 Curves (points editor + chart per channel, sensor dropdown, critical, apply),
@@ -178,3 +179,51 @@ works without the daemon.
 
 `go vet ./... && go test ./...` must pass in Docker (`tools/remote-go.ps1`). Fake sysfs
 under `testdata/sysfs/n5pro` mirrors n5host. Controller tests use a fake Device.
+
+## Integration notes (15.09.2026)
+
+Deviations between this contract and the merged packages, as found while wiring
+`cmd/pvefand`. The code is the reference; this list says where the text above
+is loose.
+
+- `config.Default()` has **no channels**; the N5 Pro set is `config.N5ProChannels()`.
+  A missing config file therefore starts the daemon in monitoring-only mode (rule 8).
+- `config.Load` returns `(Config, []Warning, error)`: missing file → defaults + one
+  warning + `err == nil`; read error or TOML syntax error → defaults + warning + `err`.
+  `config.Parse` also returns an error (syntax only). `Warning` is `{Field, Msg}`.
+- `hwmon.FS.FindByName` returns `[]Device` (may be empty), not `(Device, error)`.
+- `sensor.Known` returns `[]sensor.Info{ID, Description}`, not `[]string`; the
+  description carries the live reading and the list ends with the two generic
+  patterns (`hwmon:<name>:tempN`, `ec:<label>`) which do not parse as ids.
+  `hwmon:<name>:tempN` always binds to the first device of that name (on n5host
+  `hwmon:nvme:temp1` is one SSD, `nvme:max` is the hottest).
+- `control.SensorFactory` returns `control.SensorReader`; `sensor.Source` satisfies
+  it but the func types differ, so wiring adapts (nil-interface safe).
+- `control.Options.Notify`/`Status` default to sd_notify already; wiring sets them
+  explicitly. `Run(ctx)` calls `Stop()` itself; `Stop()` is idempotent (sync.Once).
+  serve waits for `Run` to return (15 s cap) before calling `Stop` again.
+- The controller's initial snapshot already has `ts > 0` with `status: "starting"`;
+  READY=1 waits for `status != "starting"` (or 2×interval+5 s).
+- In dry-run the snapshot `status` is `"dry-run"`, not `"ok"`. Duty in the
+  snapshot is the computed target (the controller assumes 255 at start and writes
+  nothing), not the hardware `pwmN` value.
+- `alert.New(logger)` returns `alert.Sink` (`Alert(kind, msg)`, `Name()`); the
+  controller's `Alerter` interface is satisfied by it. Cooldown lives in the
+  controller; alerts sent directly from `serve`/`alert` bypass it.
+- `web.Deps` takes closures (`Profiles func() []ProfileInfo`, `Sensors func()
+  []SensorInfo`, `Log func(int) ([]string, error)`), `AuthConfig` (not `Auth`),
+  and `PresetStore{List() ([]Preset, error); Apply(name) error; Save(name) error}`
+  where `Preset.Channels` is a list of channel **names**. `web.New` yields two
+  handlers: `Handler()` (TCP, CSRF + auth) and `SocketHandler()` (unix socket,
+  none); the socket must not get the TCP handler or the CLI's PUT/DELETE fail 403.
+- `GET /api/log` answers `{"lines": [...]}`, `GET /api/config` answers
+  `{"raw": "...", "config": {...}}` where `config` mirrors the TOML layout
+  (lowercase keys, durations as strings, plus `warnings`).
+- Presets: `Apply` loads `<dir>/<name>.toml`, replaces `Channels` of the parsed
+  config **file**, marshals, saves and calls `Service.Reload` (which returns
+  `ErrRestartRequired` when names/pwm changed → HTTP 202). The rewrite drops
+  comments from the config file. `Save` stores the channels of the config file.
+- CLI socket/run-dir override: `PVEFAND_RUN_DIR` (default `/run/pvefand`) or
+  `serve --run-dir`; there is no separate socket variable.
+- `pvefand check` opens `pwmN`/`pwmN_enable` O_WRONLY without writing (permission
+  probe); everything else in `check`/`detect` is read-only.

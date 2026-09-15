@@ -1,5 +1,3 @@
-//go:build integrate
-
 package main
 
 import (
@@ -84,20 +82,11 @@ func cmdDetect(args []string) int {
 				fmt.Printf("           %-18s %s  (%s)\n", k, val, extra[k])
 			}
 		}
+		// Known lists only ids that resolve now (description carries the
+		// current reading) plus the two generic patterns at the end.
 		fmt.Println("           sensors:")
-		factory := newSensorFactory(hw, dev)
-		for _, id := range knownSensors(hw, dev) {
-			val := "?"
-			if src, err := factory(id); err == nil {
-				if t, err := readTempC(src); err == nil {
-					val = fmt.Sprintf("%.1f C", t)
-				} else {
-					val = "read error: " + err.Error()
-				}
-			} else {
-				val = "error: " + err.Error()
-			}
-			fmt.Printf("             %-22s %s\n", id, val)
+		for _, s := range knownSensors(hw, dev) {
+			fmt.Printf("             %-22s %s\n", s.ID, s.Description)
 		}
 	}
 	if rc != exitOK {

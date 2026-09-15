@@ -1,5 +1,3 @@
-//go:build integrate
-
 package main
 
 import (
@@ -205,7 +203,7 @@ func cmdCurve(args []string) int {
 // currentConfigRaw returns the TOML text the daemon runs with, falling back
 // to the config file when the daemon does not answer.
 func currentConfigRaw(dir string) ([]byte, string, error) {
-	// INTEGRATE: GET /api/config is assumed to return {"raw": "<toml text>", ...}.
+	// GET /api/config answers {"raw": "<toml text>", "config": {...}}.
 	var resp struct {
 		Raw string `json:"raw"`
 	}
@@ -248,30 +246,16 @@ func cmdLog(args []string) int {
 		return exitOK
 	}
 	// journalctl unavailable (no systemd, no permission): ask the daemon.
-	// INTEGRATE: GET /api/log is assumed to return a JSON array of strings or
-	// of objects carrying "message" (journalctl -o json) or "msg".
-	var items []json.RawMessage
-	if aerr := newAPI(runDir()).get("/api/log?lines="+strconv.Itoa(n), &items); aerr != nil {
+	// GET /api/log answers {"lines": ["..."]}.
+	var resp struct {
+		Lines []string `json:"lines"`
+	}
+	if aerr := newAPI(runDir()).get("/api/log?lines="+strconv.Itoa(n), &resp); aerr != nil {
 		fmt.Fprintf(os.Stderr, "log: journalctl: %v; api: %v\n", err, aerr)
 		return exitFail
 	}
-	for _, it := range items {
-		var s string
-		if json.Unmarshal(it, &s) == nil {
-			fmt.Println(s)
-			continue
-		}
-		var o map[string]any
-		if json.Unmarshal(it, &o) == nil {
-			for _, k := range []string{"MESSAGE", "message", "msg"} {
-				if v, ok := o[k]; ok {
-					fmt.Println(v)
-					break
-				}
-			}
-			continue
-		}
-		fmt.Println(string(it))
+	for _, l := range resp.Lines {
+		fmt.Println(l)
 	}
 	return exitOK
 }

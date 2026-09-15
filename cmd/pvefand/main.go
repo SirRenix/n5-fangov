@@ -1,10 +1,8 @@
 // Command pvefand is a guarded fan controller for Proxmox VE and Debian.
 //
 // main.go only dispatches. Every subcommand lives in its own file and
-// registers itself from init(). The files that wire the internal packages
-// together (serve, status, set, auto, curve, log, check, detect, test,
-// failsafe, alert) carry the build tag "integrate" until all packages are
-// merged; without the tag those subcommands report "not available".
+// registers itself from init(); every call into an internal package goes
+// through wiring.go.
 package main
 
 import (
@@ -45,15 +43,13 @@ var commands = map[string]command{}
 // register adds a subcommand. Called from init() only.
 func register(name string, c command) { commands[name] = c }
 
-// order lists every public subcommand in usage order. A name that appears
-// here but is not registered belongs to a file excluded by build tag.
+// order lists every public subcommand in usage order.
 var order = []string{
 	"serve", "status", "set", "auto", "curve", "log",
 	"check", "detect", "test", "failsafe", "version",
 }
 
-// helpText is the usage line per subcommand (kept here so usage is complete
-// even when the implementation file is excluded by the build tag).
+// helpText is the usage line per subcommand.
 var helpText = map[string]string{
 	"serve":    "[--config PATH] [--dry-run] [--run-dir DIR] [--listen ADDR]  run the daemon",
 	"status":   "                       show channels, temperatures, duty, rpm, mode",
@@ -92,10 +88,6 @@ func run(args []string) int {
 	}
 	c, ok := commands[name]
 	if !ok {
-		if _, known := helpText[name]; known {
-			fmt.Fprintf(os.Stderr, "pvefand: subcommand %q is not available in this build (compiled without the integrate tag)\n", name)
-			return exitUsage
-		}
 		fmt.Fprintf(os.Stderr, "pvefand: unknown subcommand %q\n", name)
 		usage(os.Stderr)
 		return exitUsage
