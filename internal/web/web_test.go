@@ -997,15 +997,18 @@ func TestLog(t *testing.T) {
 	e := newEnv(t, AuthConfig{})
 	r := e.do(t, "GET", "/api/log", "", nil)
 	wantCode(t, r, 200)
-	var m map[string][]string
+	var m struct {
+		Lines  []string `json:"lines"`
+		Source string   `json:"source"`
+	}
 	decode(t, r.body, &m)
-	if len(m["lines"]) != 3 {
-		t.Fatalf("lines = %v", m["lines"])
+	if len(m.Lines) != 3 || m.Source != "journal" {
+		t.Fatalf("lines = %v source %q", m.Lines, m.Source)
 	}
 	r = e.do(t, "GET", "/api/log?lines=2", "", nil)
 	decode(t, r.body, &m)
-	if len(m["lines"]) != 2 || m["lines"][0] != "line2" {
-		t.Fatalf("lines=2 → %v", m["lines"])
+	if len(m.Lines) != 2 || m.Lines[0] != "line2" {
+		t.Fatalf("lines=2 → %v", m.Lines)
 	}
 	wantError(t, e.do(t, "GET", "/api/log?lines=0", "", nil), 400, "lines")
 	wantError(t, e.do(t, "GET", "/api/log?lines=x", "", nil), 400, "lines")
@@ -1022,9 +1025,9 @@ func TestProfilesVersionSensors(t *testing.T) {
 	}
 	r = e.do(t, "GET", "/api/version", "", nil)
 	wantCode(t, r, 200)
-	var v map[string]string
+	var v map[string]any
 	decode(t, r.body, &v)
-	if v["version"] != "1.2.3-test" || v["name"] != "n5-fangov" {
+	if v["version"] != "1.2.3-test" || v["name"] != "n5-fangov" || v["tls"] != false {
 		t.Fatalf("version = %v", v)
 	}
 	r = e.do(t, "GET", "/api/sensors", "", nil)
@@ -1080,12 +1083,13 @@ func TestStaticIndex(t *testing.T) {
 	if !strings.HasPrefix(r.hdr.Get("Content-Type"), "text/javascript") || !strings.Contains(r.body, "X-N5-Fangov-Csrf") {
 		t.Errorf("app.js: %q %.100s", r.hdr.Get("Content-Type"), r.body)
 	}
-	if len(r.body) > 40*1024 {
-		t.Errorf("app.js is %d bytes, budget 40 KB", len(r.body))
+	if len(r.body) > 46*1024 {
+		t.Errorf("app.js is %d bytes, budget 46 KB", len(r.body))
 	}
 	// UI assumptions the server honours: since-polling, {"lines"} log wrapper,
-	// "channel" key, "<unchanged>" hash placeholder passes through untouched.
-	for _, want := range []string{"since=", "b.lines", "cfg.channel", "warnings"} {
+	// "channel" key, "<unchanged>" hash placeholder passes through untouched,
+	// v0.2 endpoints (log export/clear, settings export/import, tls flag).
+	for _, want := range []string{"since=", "b.lines", "cfg.channel", "warnings", "/api/log/export", "/api/config/export", "/api/config/import", "b.source", ".tls"} {
 		if !strings.Contains(r.body, want) {
 			t.Errorf("app.js lacks %q", want)
 		}

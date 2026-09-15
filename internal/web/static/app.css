@@ -59,7 +59,15 @@ main{padding:16px;max-width:1500px;margin:0 auto}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
 .popover{position:absolute;right:16px;top:calc(100% + 4px);background:var(--bg2);border:1px solid var(--line2);border-radius:var(--r);box-shadow:0 8px 24px rgba(0,0,0,.35);padding:12px;display:grid;gap:10px;min-width:220px}
 .popover label{display:flex;justify-content:space-between;align-items:center;gap:12px;font-size:13px;color:var(--fg2)}
+.popover hr{border:0;border-top:1px solid var(--line);margin:2px 0}
+.popover .btn{text-align:left}
+.hint.sm{font-size:12px;color:var(--fg3)}
+.sec{font-weight:600;letter-spacing:.02em}
+.sec.ok{color:var(--ok)}
+.sec.warn{color:var(--warn)}
 .banner{background:color-mix(in srgb,var(--crit) 18%,var(--bg2));color:var(--fg);border-bottom:1px solid var(--crit);padding:8px 16px;font-size:13px}
+.banner.warn{background:color-mix(in srgb,var(--warn) 16%,var(--bg2));border-bottom-color:var(--warn);white-space:pre-wrap;font-family:inherit}
+.banner.warn code{font-size:12px}
 .login{display:flex;flex-wrap:wrap;gap:10px;align-items:end;padding:12px 16px;background:var(--bg2);border-bottom:1px solid var(--line)}
 .login label{display:grid;gap:4px;font-size:12px;color:var(--fg2)}
 

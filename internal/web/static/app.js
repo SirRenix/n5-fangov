@@ -63,11 +63,13 @@ const api = async (path, opt) => {
 	if (opt.method && opt.method !== 'GET') headers['X-N5-Fangov-Csrf'] = '1';
 	if (opt.json !== undefined) { headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(opt.json); }
 	for (;;) {
-		if (auth) headers.Authorization = auth;
+		const used = auth; if (used) headers.Authorization = used; else delete headers.Authorization;
 		let r;
 		try { r = await fetch(path, { method: opt.method || 'GET', headers, body: opt.body, cache: 'no-store' }); }
 		catch (e) { failures++; connState(); throw new Error('network: ' + e.message); }
-		if (r.status === 401) { await needLogin(); continue; }
+		// 401: first one is anonymous (silent on the daemon side) → login card; the
+		// request is re-sent once credentials exist. A rejected credential is dropped.
+		if (r.status === 401) { if (used && used === auth) { auth = null; toast('Sign-in failed — check user and password', 'err'); } await needLogin(); continue; }
 		failures = r.status < 500 ? 0 : failures + 1; connState();
 		const ct = r.headers.get('content-type') || '';
 		const body = ct.includes('json') ? await r.json().catch(() => null) : await r.text();
@@ -96,6 +98,18 @@ $('#login').addEventListener('submit', ev => {
 const connState = () => {
 	$('#banner').hidden = failures < 2;
 	$('#h-live').classList.toggle('err', failures >= 2);
+};
+// downloads go through fetch (the in-memory credential rides along) and a blob anchor — CSP-safe
+const saveBlob = (b, name) => { const u = URL.createObjectURL(b), a = h('a', { href: u, download: name }); document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(u), 30000); };
+const download = async (path, fallback) => {
+	if (MOCK) { const r = await mock(path, {}); return saveBlob(new Blob([typeof r.body === 'string' ? r.body : JSON.stringify(r.body, null, 2)]), r.filename || fallback); }
+	for (;;) {
+		const used = auth, r = await fetch(path, { headers: used ? { Authorization: used } : {}, cache: 'no-store' });
+		if (r.status === 401) { if (used && used === auth) auth = null; await needLogin(); continue; }
+		if (!r.ok) { const b = await r.json().catch(() => null); throw new Error(b && b.error || `HTTP ${r.status}`); }
+		const m = /filename="?([^";]+)/.exec(r.headers.get('content-disposition') || '');
+		return saveBlob(await r.blob(), m ? m[1] : fallback);
+	}
 };
 
 // mock backend
@@ -141,13 +155,19 @@ const mock = (() => {
 		if (p === '/api/presets') return wait({ status: 200, body: Object.keys(presets).map(k => ({ name: k, channels: presets[k] })) });
 		if (p.startsWith('/api/presets/')) { const n = p.split('/')[3]; if (m === 'PUT') { presets[n] = cfg.channel; return wait({ status: 201, body: { ok: true } }); }
 			return wait({ status: n === 'summer' ? 202 : 200, body: { ok: true } }); }
-		if (p === '/api/log') return wait({ status: 200, body: logs.slice(-(+u.searchParams.get('lines') || 100)) });
+		if (p === '/api/log' && m === 'DELETE') { logs.length = 0; return wait({ status: 200, body: { cleared: true, note: 'journal untouched' } }); }
+		if (p === '/api/log') return wait({ status: 200, body: { lines: logs.slice(-(+u.searchParams.get('lines') || 100)), source: 'file' } });
+		if (p === '/api/log/export') return wait({ status: 200, body: logs.join('\n') + '\n', filename: 'n5-fangov-mock-20260915-120000.log' });
+		if (p === '/api/config/export') return wait({ status: 200, body: { format: 1, version: '0.2.0-mock', exported: Math.floor(t0), config: raw().replace(/password_hash = "[^"]+"/, 'password_hash = "<unchanged>"'), presets: Object.fromEntries(Object.entries(presets).map(([k, v]) => [k, v.map(tomlChannel).join('\n')])) }, filename: 'n5-fangov-settings-20260915-120000.json' });
+		if (p === '/api/config/import') { let j; try { j = JSON.parse(opt.body); } catch (e) { j = null; }
+			if (!j || j.format !== 1) return Promise.reject(Object.assign(new Error('import rejected: bundle format missing\nexpected "format": 1'), { status: 400 }));
+			return wait({ status: /restart/.test(opt.body) ? 202 : 200, body: { ok: true } }); }
 		if (p === '/api/profiles') return wait({ status: 200, body: [
 			{ name: 'n5pro', title: 'Minisforum N5 Pro (IT5571 EC)', verified: true, notes: 'EC does not resume HDD regulation after a write; stop = fixed duty.' },
 			{ name: 'nct67xx', title: 'Nuvoton NCT67xx (SmartFan IV)', verified: false, notes: 'Auto = pwmN_enable 5; original restored on stop.' },
 			{ name: 'it87xx', title: 'ITE IT86xx/IT87xx', verified: false, notes: 'Original pwmN_enable restored on stop.' },
 			{ name: 'monitor', title: 'Monitoring only (no PWM)', verified: false, notes: 'Sensors only, never writes.' }] });
-		if (p === '/api/version') return wait({ status: 200, body: { version: '0.1.0-mock', go: 'go1.25' } });
+		if (p === '/api/version') return wait({ status: 200, body: { version: '0.2.0-mock', tls: new URLSearchParams(location.search).get('tls') === '1' } });
 		return Promise.reject(Object.assign(new Error('mock: not found ' + p), { status: 404 }));
 	};
 })();
@@ -241,7 +261,11 @@ const nearest = (data, t) => { if (!data.length) return null; let lo = 0, hi = d
 const redrawAll = () => { for (const w of charts) w._st && w._st.draw(); for (const e of Object.values(ED)) e.draw(); };
 
 // state
-let snap = null, cfg = null, cfgRaw = '', profiles = [], sensors = [], version = '';
+let snap = null, cfg = null, cfgRaw = '', profiles = [], sensors = [], version = '', tls = null;
+const LOOPBACK = /^(localhost|127\.\d+\.\d+\.\d+|\[::1\])$/i.test(location.hostname);
+const secState = () => { const e = $('#h-sec'), on = tls === null ? location.protocol === 'https:' : !!tls;
+	e.textContent = on ? '🔒 TLS' : '🔓 HTTP'; e.className = 'meta sec ' + (on ? 'ok' : LOOPBACK ? '' : 'warn');
+	e.title = on ? 'TLS-encrypted connection' : LOOPBACK ? 'plain HTTP on loopback' : 'plain HTTP on a non-loopback address — credentials and settings travel unencrypted'; };
 let hist = [], lastTs = 0, fanMetric = 'rpm';
 const critOf = name => { const c = cfg && chList().find(x => x.name === name); return c && +c.critical > 0 ? +c.critical : null; };
 const chList = () => (cfg && (cfg.channel || cfg.channels)) || [];
@@ -473,8 +497,16 @@ const logLine = l => { if (typeof l === 'string') return l; const ts = l.ts || (
 async function loadLog() {
 	try { const r = await api('/api/log?lines=200'); const b = r.body;
 		logLines = (Array.isArray(b) ? b : b && b.lines ? b.lines : String(b || '').split('\n').filter(Boolean)).map(logLine); renderLog();
+		const src = b && b.source || ''; $('#lg-src').textContent = src ? 'source: ' + src : ''; $('#lg-clear').disabled = src === 'journal';
+		$('#lg-clear').title = src === 'journal' ? 'Log file disabled — the journal cannot be cleared from here' : 'Truncate the current log file (rotated files and journal untouched)';
 	} catch (e) { $('#log').textContent = 'log: ' + e.message; }
 }
+$('#lg-export').addEventListener('click', () => act(() => download('/api/log/export', 'n5-fangov.log')));
+$('#lg-clear').addEventListener('click', async () => {
+	if (!confirm('Clear the current log file? Rotated files and the systemd journal are untouched.')) return;
+	const r = await act(() => api('/api/log', { method: 'DELETE' })); if (!r) return;
+	toast('Log cleared — ' + (r.body && r.body.note || 'journal untouched'), 'ok'); loadLog();
+});
 function renderLog() {
 	const q = $('#lg-filter').value.toLowerCase(), pre = clear($('#log'));
 	for (const l of logLines) { if (q && !l.toLowerCase().includes(q)) continue;
@@ -545,12 +577,30 @@ $('#s-interval').addEventListener('change', ev => { S.interval = +ev.target.valu
 $('#s-theme').addEventListener('change', ev => { S.theme = ev.target.value; saveS(); document.documentElement.dataset.theme = S.theme; redrawAll(); });
 matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => { if (S.theme === 'system') redrawAll(); });
 document.documentElement.dataset.theme = S.theme;
+// settings bundle: export = download, import = file → POST (config + presets replaced after server-side validation)
+const gNotice = msg => { const n = $('#g-notice'); n.hidden = !msg; n.textContent = msg || ''; };
+$('#s-export').addEventListener('click', () => { showS(false); act(() => download('/api/config/export', 'n5-fangov-settings.json')); });
+$('#s-import').addEventListener('click', () => $('#s-file').click());
+$('#s-file').addEventListener('change', async () => {
+	const inp = $('#s-file'), f = inp.files[0]; inp.value = ''; if (!f) return;
+	if (f.size > 1 << 20) return toast('Settings file exceeds 1 MiB', 'err');
+	const text = await f.text(); let j = null; try { j = JSON.parse(text); } catch (e) {}
+	if (!j || typeof j !== 'object' || Array.isArray(j)) return toast(`${f.name}: not a JSON settings bundle`, 'err');
+	if (!confirm(`Import settings from “${f.name}”?\nConfig and presets on the daemon are replaced (after validation).`)) return;
+	showS(false);
+	try { const r = await api('/api/config/import', { method: 'POST', body: text, headers: { 'Content-Type': 'application/json' } });
+		if (r.status === 202) { gNotice('Settings imported — restart required: systemctl restart n5-fangov'); toast('Imported, restart required', 'warn', 12000); }
+		else { toast('Settings imported', 'ok'); }
+		await loadConfig(); edState = null; if (curTab === 'curves') loadEditor(); if (curTab === 'presets') loadPresets(); poll();
+	} catch (e) { toast(e.message, 'err', 15000); }
+});
 
 // boot
 (async () => {
 	if (MOCK) toast('Mock mode', 'warn', 8000);
 	api('/api/profiles').then(r => { profiles = Array.isArray(r.body) ? r.body : r.body.profiles || []; renderHeader(); if (snap) renderCards(); }).catch(() => {});
-	api('/api/version').then(r => { version = typeof r.body === 'string' ? r.body.trim() : r.body.version || ''; renderHeader(); }).catch(() => {});
+	secState();
+	api('/api/version').then(r => { version = typeof r.body === 'string' ? r.body.trim() : r.body.version || ''; if (typeof r.body.tls === 'boolean') tls = r.body.tls; secState(); renderHeader(); }).catch(() => {});
 	await loadConfig();
 	if (document.hidden) { poll(); loadHistory(); }
 	schedule();

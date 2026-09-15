@@ -49,7 +49,7 @@ func TestUnixSocketRoundTrip(t *testing.T) {
 	}
 	body, _ := io.ReadAll(res.Body)
 	res.Body.Close()
-	var v map[string]string
+	var v map[string]any
 	if err := json.Unmarshal(body, &v); err != nil || v["version"] != "1.2.3-test" {
 		t.Fatalf("version over socket: %d %s (%v)", res.StatusCode, body, err)
 	}

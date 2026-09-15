@@ -18,6 +18,7 @@
     <span class="chip" id="h-status" role="status">…</span>
     <span class="meta" id="h-uptime" title="daemon uptime">up —</span>
     <span class="meta" id="h-version">v —</span>
+    <span class="meta sec" id="h-sec" title="transport">—</span>
     <span class="live" id="h-live" aria-live="polite"><i></i>live</span>
     <button class="btn icon" id="h-settings" aria-expanded="false" aria-controls="settings" title="Settings">⚙<span class="sr">Settings</span></button>
   </div>
@@ -28,10 +29,16 @@
       <select id="s-interval"><option value="5">5 s</option><option value="10">10 s</option><option value="30">30 s</option></select></label>
     <label>Theme
       <select id="s-theme"><option value="dark">dark</option><option value="light">light</option><option value="system">system</option></select></label>
+    <hr>
+    <button class="btn" id="s-export" type="button">Export settings</button>
+    <button class="btn" id="s-import" type="button">Import settings…</button>
+    <input type="file" id="s-file" accept=".json,application/json" hidden>
+    <span class="hint sm">Config + presets as one JSON file.</span>
   </div>
 </header>
 
 <div class="banner" id="banner" role="alert" hidden>Connection to the daemon lost — retrying. Fans keep running on the daemon side.</div>
+<div class="banner warn" id="g-notice" role="status" hidden></div>
 
 <form class="login" id="login" hidden>
   <strong>Sign in</strong>
@@ -100,7 +107,10 @@
   <div class="bar">
     <label class="grow">Filter <input id="lg-filter" type="search" placeholder="substring…"></label>
     <label class="chk"><input id="lg-auto" type="checkbox" checked> auto-scroll</label>
+    <span class="meta" id="lg-src" title="log source">—</span>
     <button class="btn" id="lg-refresh">Refresh</button>
+    <button class="btn" id="lg-export" title="Download the whole log file">Export</button>
+    <button class="btn danger" id="lg-clear" title="Truncate the current log file (rotated files and journal untouched)">Clear</button>
   </div>
   <pre class="log" id="log" tabindex="0" aria-label="Daemon log"></pre>
 </section>

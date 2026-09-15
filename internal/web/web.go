@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
+	"crypto/tls"
 	"embed"
 	"encoding/hex"
 	"encoding/json"
@@ -17,6 +18,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -37,11 +39,18 @@ const CSRFHeader = "X-N5-Fangov-Csrf"
 // keeps the hash from the current file.
 const RedactedHash = "<unchanged>"
 
-// Body limits: config TOML and override JSON.
+// Body limits: config TOML, override JSON, settings bundle JSON.
 const (
 	maxBody         = 256 << 10
 	maxOverrideBody = 4096
+	maxImportBody   = 1 << 20
 )
+
+// HSTS is sent on every response that arrived over TLS (ServeTLS).
+const hstsValue = "max-age=31536000"
+
+// exportLines is how many lines a journal-only log source exports.
+const exportLines = 5000
 
 // ConfigStore is the daemon's config file access.
 type ConfigStore interface {
@@ -75,7 +84,70 @@ type PresetStore interface {
 }
 
 // LogSource returns the last n log lines.
+//
+// Deprecated: pass a LogStore in Deps.Log. A LogSource is still accepted for
+// one release (v0.2) and adapted: /api/log answers with source "journal",
+// /api/log/export streams the newest exportLines lines, DELETE /api/log
+// answers 501.
 type LogSource func(lines int) ([]string, error)
+
+// LogStore is the daemon's log file (implemented by internal/logfile).
+type LogStore interface {
+	// Lines returns the newest n lines (from the journal when the file is disabled).
+	Lines(n int) ([]string, error)
+	// Export streams the whole current file to w.
+	Export(w io.Writer) error
+	// Clear truncates the current file; rotated files and the journal stay.
+	// errors.ErrUnsupported → 501.
+	Clear() error
+	// Path is the log file path, "" when the file is disabled (journal only).
+	Path() string
+}
+
+// Bundle exports and imports the settings bundle (config + presets) as JSON:
+// {"format":1,"version":..,"exported":ts,"config":rawTOML,"presets":{name:rawTOML}}.
+type Bundle interface {
+	Export() ([]byte, error)
+	// Import validates every part before writing anything; password_hash
+	// "<unchanged>" keeps the current hash. restartRequired → 202.
+	Import(b []byte) (restartRequired bool, err error)
+}
+
+// funcLogStore adapts a LogSource to LogStore (journal only).
+type funcLogStore struct{ f LogSource }
+
+func (s funcLogStore) Lines(n int) ([]string, error) { return s.f(n) }
+func (s funcLogStore) Export(w io.Writer) error {
+	lines, err := s.f(exportLines)
+	if err != nil {
+		return err
+	}
+	for _, l := range lines {
+		if _, err := io.WriteString(w, l+"\n"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+func (s funcLogStore) Clear() error {
+	return fmt.Errorf("journal-only log source: %w", errors.ErrUnsupported)
+}
+func (s funcLogStore) Path() string { return "" }
+
+// logStoreOf accepts the two supported Deps.Log forms; nil for anything else.
+func logStoreOf(v any) LogStore {
+	switch l := v.(type) {
+	case nil:
+		return nil
+	case LogStore:
+		return l
+	case LogSource:
+		return funcLogStore{l}
+	case func(int) ([]string, error):
+		return funcLogStore{l}
+	}
+	return nil
+}
 
 // ProfileInfo describes one hardware profile for /api/profiles.
 type ProfileInfo struct {
@@ -102,8 +174,8 @@ type AuthConfig struct {
 }
 
 // Deps wires the handler to the rest of the daemon. Nil optional members
-// (Config, Presets, Log, Profiles, Sensors) make the corresponding endpoints
-// answer 501.
+// (Config, Presets, Log, Bundle, Profiles, Sensors) make the corresponding
+// endpoints answer 501.
 type Deps struct {
 	Service control.Service
 	Config  ConfigStore
@@ -111,7 +183,13 @@ type Deps struct {
 	// PUT (400); warnings are returned to the client but do not block.
 	Validate func(raw []byte) (warnings []string, err error)
 	Presets  PresetStore
-	Log      LogSource
+	// Log is the log backend: a LogStore (file: lines, export, clear) or —
+	// accepted for one more release — a LogSource / func(int) ([]string,
+	// error) (journal only, see LogSource). Any other value counts as nil
+	// and is logged once at New.
+	Log any
+	// Bundle backs GET /api/config/export and POST /api/config/import.
+	Bundle   Bundle
 	Profiles func() []ProfileInfo
 	Version  string
 	Auth     AuthConfig
@@ -119,6 +197,10 @@ type Deps struct {
 	// AllowedHosts are Host header values (host or host:port) accepted on
 	// TCP besides IP literals and "localhost"; "*" disables the check.
 	AllowedHosts []string
+	// TLS is informational: true when the TCP listener is TLS-terminated,
+	// exposed as "tls" in GET /api/version for the UI indicator. ServeTLS
+	// sets it itself; a TLS reverse proxy in front of plain Serve may set it.
+	TLS bool
 	// Logf receives auth failures and startup warnings; nil → log.Printf.
 	Logf func(format string, args ...any)
 }
@@ -126,6 +208,7 @@ type Deps struct {
 // Server holds the mux and serves it on TCP and on the unix socket.
 type Server struct {
 	deps    Deps
+	logs    LogStore
 	mux     *http.ServeMux
 	tcp     http.Handler
 	socket  http.Handler
@@ -141,6 +224,10 @@ func New(deps Deps) *Server {
 	s.logf = deps.Logf
 	if s.logf == nil {
 		s.logf = log.Printf
+	}
+	s.logs = logStoreOf(deps.Log)
+	if s.logs == nil && deps.Log != nil {
+		s.logf("web: Deps.Log has unsupported type %T; log endpoints answer 501", deps.Log)
 	}
 	for _, h := range deps.AllowedHosts {
 		h = normalizeHost(h)
@@ -163,7 +250,8 @@ func NewHandler(deps Deps) http.Handler { return New(deps).Handler() }
 
 // Handler is the TCP handler: Host header validated on every request, CSRF
 // header on state-changing methods, and (when Auth.Mode == "basic") basic
-// auth on state-changing methods plus GET /api/config and GET /api/log.
+// auth on state-changing methods plus the protected reads (GET /api/config,
+// /api/config/export, /api/log, /api/log/export).
 func (s *Server) Handler() http.Handler { return s.tcp }
 
 // SocketHandler is the same mux without Host/CSRF/auth checks, for the unix socket.
@@ -185,6 +273,38 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	if !strings.EqualFold(s.deps.Auth.Mode, "basic") && !listenerIsLoopback(ln) {
 		s.logf("WARNING: web listening on non-loopback %s without auth; anyone reaching this port can change fan duties. Set [web].auth = \"basic\" or bind to 127.0.0.1 behind a TLS reverse proxy.", ln.Addr())
 	}
+	return s.serve(ctx, ln)
+}
+
+// ServeTLS serves the TCP handler on ln with TLS terminated by cert (the
+// automatic pair from internal/tlscert or a configured file pair): TLS 1.2
+// minimum, X25519/P-256/P-384, AEAD suites only, HTTP/2 offered. Every
+// response carries Strict-Transport-Security. Sets Deps.TLS for
+// /api/version.
+func (s *Server) ServeTLS(ctx context.Context, ln net.Listener, cert tls.Certificate) error {
+	cfg := &tls.Config{
+		Certificates:     []tls.Certificate{cert},
+		MinVersion:       tls.VersionTLS12,
+		CurvePreferences: []tls.CurveID{tls.X25519, tls.CurveP256, tls.CurveP384},
+		CipherSuites: []uint16{ // TLS 1.2 only; 1.3 suites are fixed
+			tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+			tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,
+			tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
+		},
+		NextProtos: []string{"h2", "http/1.1"},
+	}
+	s.deps.TLS = true // before serving: handlers read it without a lock
+	if !strings.EqualFold(s.deps.Auth.Mode, "basic") && !listenerIsLoopback(ln) {
+		s.logf("WARNING: web listening on non-loopback %s with TLS but without auth; anyone reaching this port can change fan duties. Set [web].auth = \"basic\".", ln.Addr())
+	}
+	return s.serve(ctx, tls.NewListener(ln, cfg))
+}
+
+// serve runs the http.Server on ln until ctx is done.
+func (s *Server) serve(ctx context.Context, ln net.Listener) error {
 	srv := &http.Server{
 		Handler:           s.tcp,
 		ReadHeaderTimeout: 10 * time.Second,
@@ -247,6 +367,10 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/presets/{name}/apply", s.applyPreset)
 	m.HandleFunc("PUT /api/presets/{name}", s.savePreset)
 	m.HandleFunc("GET /api/log", s.getLog)
+	m.HandleFunc("GET /api/log/export", s.exportLog)
+	m.HandleFunc("DELETE /api/log", s.clearLog)
+	m.HandleFunc("GET /api/config/export", s.exportConfig)
+	m.HandleFunc("POST /api/config/import", s.importConfig)
 	m.HandleFunc("GET /api/profiles", s.getProfiles)
 	m.HandleFunc("GET /api/version", s.getVersion)
 	m.HandleFunc("GET /api/sensors", s.getSensors)
@@ -257,16 +381,24 @@ func (s *Server) routes() {
 }
 
 // protectedRead lists the GET endpoints that need basic auth (when enabled):
-// the config carries the credential hash, the log may carry anything.
+// the config (and its export) carries the credential hash, the log (and its
+// export) may carry anything.
 func protectedRead(path string) bool {
-	return path == "/api/config" || path == "/api/log"
+	switch path {
+	case "/api/config", "/api/config/export", "/api/log", "/api/log/export":
+		return true
+	}
+	return false
 }
 
 // guard enforces, in this order: Host header (DNS rebinding, M1), CSRF
 // header on state-changing methods, basic auth on state-changing methods
-// and protected reads.
+// and protected reads. Over TLS every answer carries HSTS.
 func (s *Server) guard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.TLS != nil {
+			w.Header().Set("Strict-Transport-Security", hstsValue)
+		}
 		if !s.hostAllowed(r.Host) {
 			writeError(w, http.StatusMisdirectedRequest, "host header not allowed; use the IP address, localhost or a configured allowed_hosts entry")
 			return
@@ -282,10 +414,15 @@ func (s *Server) guard(next http.Handler) http.Handler {
 		}
 		if strings.EqualFold(s.deps.Auth.Mode, "basic") && (write || protectedRead(r.URL.Path)) {
 			if !s.authorized(r) {
-				ip := remoteIP(r)
-				user, _, _ := r.BasicAuth()
-				n, delay := s.limiter.fail(ip)
-				s.logf("web: auth failure from %s (user %q, %s %s, %d recent failures, delay %s)", ip, user, r.Method, r.URL.Path, n, delay)
+				// Only a presented credential is a failure: the UI's first
+				// request arrives anonymous and gets a silent 401 that opens
+				// the login form (no log line, no rate-limit count).
+				if r.Header.Get("Authorization") != "" {
+					ip := remoteIP(r)
+					user, _, _ := r.BasicAuth()
+					n, delay := s.limiter.fail(ip)
+					s.logf("web: auth failure from %s (user %q, %s %s, %d recent failures, delay %s)", ip, user, r.Method, r.URL.Path, n, delay)
+				}
 				// No WWW-Authenticate challenge on purpose: the UI shows its own
 				// login form and sends the Authorization header itself.
 				writeError(w, http.StatusUnauthorized, "authentication required")
@@ -730,8 +867,16 @@ func (s *Server) savePreset(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "saved": name})
 }
 
+// logSource names where the lines come from: "file" or "journal".
+func (s *Server) logSource() string {
+	if s.logs.Path() == "" {
+		return "journal"
+	}
+	return "file"
+}
+
 func (s *Server) getLog(w http.ResponseWriter, r *http.Request) {
-	if s.deps.Log == nil {
+	if s.logs == nil {
 		writeError(w, http.StatusNotImplemented, "no log source")
 		return
 	}
@@ -744,7 +889,7 @@ func (s *Server) getLog(w http.ResponseWriter, r *http.Request) {
 		}
 		lines = n
 	}
-	out, err := s.deps.Log(lines)
+	out, err := s.logs.Lines(lines)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "read log: "+err.Error())
 		return
@@ -752,7 +897,151 @@ func (s *Server) getLog(w http.ResponseWriter, r *http.Request) {
 	if out == nil {
 		out = []string{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"lines": out})
+	writeJSON(w, http.StatusOK, map[string]any{"lines": out, "source": s.logSource()})
+}
+
+// exportLog streams the whole log file as a text attachment
+// n5-fangov-<host>-<ts>.log (a journal-only source: newest exportLines lines).
+func (s *Server) exportLog(w http.ResponseWriter, r *http.Request) {
+	if s.logs == nil {
+		writeError(w, http.StatusNotImplemented, "no log source")
+		return
+	}
+	name := fmt.Sprintf("n5-fangov-%s-%s.log", hostLabel(), time.Now().UTC().Format("20060102-150405"))
+	attachment(w, "text/plain; charset=utf-8", name)
+	w.WriteHeader(http.StatusOK)
+	if err := s.logs.Export(w); err != nil {
+		// Headers are out; the client sees a truncated file. Say so in the log.
+		s.logf("web: log export: %v", err)
+	}
+}
+
+// clearLog truncates the current log file. Rotated files and the journal
+// stay; a journal-only source answers 501.
+func (s *Server) clearLog(w http.ResponseWriter, r *http.Request) {
+	if s.logs == nil {
+		writeError(w, http.StatusNotImplemented, "no log store")
+		return
+	}
+	if err := s.logs.Clear(); err != nil {
+		if errors.Is(err, errors.ErrUnsupported) {
+			writeError(w, http.StatusNotImplemented, "log clear not supported: "+err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "clear log: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"cleared": true, "note": "journal untouched"})
+}
+
+// exportConfig answers the settings bundle as a JSON attachment
+// n5-fangov-settings-<ts>.json with password_hash redacted inside "config".
+func (s *Server) exportConfig(w http.ResponseWriter, r *http.Request) {
+	if s.deps.Bundle == nil {
+		writeError(w, http.StatusNotImplemented, "no settings bundle")
+		return
+	}
+	raw, err := s.deps.Bundle.Export()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "export settings: "+err.Error())
+		return
+	}
+	out, err := redactBundle(raw)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "export settings: "+err.Error())
+		return
+	}
+	name := "n5-fangov-settings-" + time.Now().UTC().Format("20060102-150405") + ".json"
+	attachment(w, "application/json; charset=utf-8", name)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(out)
+}
+
+// redactBundle rewrites the "config" string of a bundle document with
+// redactRaw; every other member passes through untouched.
+func redactBundle(raw []byte) ([]byte, error) {
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return nil, fmt.Errorf("bundle is not a JSON object: %w", err)
+	}
+	if c, ok := doc["config"]; ok {
+		var cfg string
+		if err := json.Unmarshal(c, &cfg); err != nil {
+			return nil, fmt.Errorf("bundle config is not a string: %w", err)
+		}
+		b, err := json.Marshal(redactRaw(cfg))
+		if err != nil {
+			return nil, err
+		}
+		doc["config"] = b
+	}
+	out, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(out, '\n'), nil
+}
+
+// importConfig: read (413 over maxImportBody) → must be a JSON object (400)
+// → Bundle.Import (400 with the error lines under "errors") → 200 or 202.
+func (s *Server) importConfig(w http.ResponseWriter, r *http.Request) {
+	if s.deps.Bundle == nil {
+		writeError(w, http.StatusNotImplemented, "no settings bundle")
+		return
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxImportBody))
+	if err != nil {
+		if isTooLarge(err) {
+			writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("body exceeds %d bytes", maxImportBody))
+			return
+		}
+		writeError(w, http.StatusBadRequest, "unreadable body: "+err.Error())
+		return
+	}
+	trimmed := strings.TrimSpace(string(body))
+	if !strings.HasPrefix(trimmed, "{") || !json.Valid(body) {
+		writeError(w, http.StatusBadRequest, "body must be a JSON settings bundle")
+		return
+	}
+	restart, err := s.deps.Bundle.Import(body)
+	if err != nil {
+		lines := strings.Split(strings.TrimSpace(err.Error()), "\n")
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "import rejected: " + lines[0], "errors": lines})
+		return
+	}
+	if restart {
+		writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "restart_required": true, "message": "restart required: systemctl restart n5-fangov"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "restart_required": false})
+}
+
+// attachment sets the download headers for an export.
+func attachment(w http.ResponseWriter, ctype, filename string) {
+	h := w.Header()
+	h.Set("Content-Type", ctype)
+	h.Set("Content-Disposition", `attachment; filename="`+filename+`"`)
+	h.Set("Cache-Control", "no-store")
+	h.Set("X-Content-Type-Options", "nosniff")
+}
+
+// hostLabel is the short host name reduced to [A-Za-z0-9.-], "host" when unknown.
+func hostLabel() string {
+	hn, err := os.Hostname()
+	if err != nil || hn == "" {
+		return "host"
+	}
+	var b strings.Builder
+	for _, c := range hn {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '-', c == '.':
+			b.WriteRune(c)
+		}
+	}
+	if b.Len() == 0 {
+		return "host"
+	}
+	return b.String()
 }
 
 func (s *Server) getProfiles(w http.ResponseWriter, r *http.Request) {
@@ -768,7 +1057,7 @@ func (s *Server) getProfiles(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getVersion(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"name": "n5-fangov", "version": s.deps.Version})
+	writeJSON(w, http.StatusOK, map[string]any{"name": "n5-fangov", "version": s.deps.Version, "tls": s.deps.TLS})
 }
 
 func (s *Server) getSensors(w http.ResponseWriter, r *http.Request) {
