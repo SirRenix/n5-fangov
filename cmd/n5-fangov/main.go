@@ -45,22 +45,28 @@ func register(name string, c command) { commands[name] = c }
 
 // order lists every public subcommand in usage order.
 var order = []string{
-	"serve", "status", "set", "auto", "curve", "log",
-	"check", "detect", "test", "failsafe", "version",
+	"setup", "serve", "status", "set", "auto", "curve", "log",
+	"check", "detect", "test", "failsafe",
+	"passwd", "cert", "export", "import", "version",
 }
 
 // helpText is the usage line per subcommand.
 var helpText = map[string]string{
+	"setup":    "[--listen local|lan|HOST:PORT] [--user U] [--password P] [--yes]  write the config for this machine",
 	"serve":    "[--config PATH] [--dry-run] [--run-dir DIR] [--listen ADDR]  run the daemon",
 	"status":   "                       show channels, temperatures, duty, rpm, mode",
 	"set":      "<ch> <duty|NN%>        manual override for one channel",
 	"auto":     "<ch|all>               return channel(s) to the curve",
 	"curve":    "                       print the configured curves",
-	"log":      "[n]                    last n journal lines (default 50)",
-	"check":    "[--quiet]              self-check: config, profile, sysfs, socket, dkms",
+	"log":      "[-n N] [--export FILE] [--clear]  log file (journal when no file is configured)",
+	"check":    "[--quiet] [--after-update]  self-check; --after-update: DKMS module for every kernel (apt hook)",
 	"detect":   "                       list profiles with detection result (read-only)",
 	"test":     "<ch> [--force]         channel verification run (writes duty, daemon must be stopped)",
 	"failsafe": "                       put all configured channels into their safe state",
+	"passwd":   "[--user U]             set the web user/password (auth = basic), restart to apply",
+	"cert":     "export [FILE] | regen  auto TLS certificate: print PEM to trust it, or replace it",
+	"export":   "[FILE]                 settings bundle (config + presets, hash redacted) as JSON",
+	"import":   "FILE                   restore a settings bundle (validated first), reload the daemon",
 	"version":  "                       print version",
 }
 

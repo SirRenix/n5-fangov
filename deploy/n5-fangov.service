@@ -25,12 +25,37 @@ RestartSec=5
 KillSignal=SIGTERM
 TimeoutStopSec=20
 Nice=-5
+
+# --- directories ---------------------------------------------------------
 # /run/n5-fangov holds the unauthenticated CLI socket: root only (M3)
 RuntimeDirectory=n5-fangov
 RuntimeDirectoryMode=0750
 RuntimeDirectoryPreserve=yes
+# /var/log/n5-fangov: rotating log file ([log].file); journal stays primary
+LogsDirectory=n5-fangov
+LogsDirectoryMode=0750
+UMask=0077
+
+# --- sandbox (DESIGN v0.2; verify on the real box after every change) ----
+# The daemon writes pwmN/pwmN_enable under /sys: ProtectKernelTunables MUST
+# stay "no" and /sys/class/hwmon + /sys/devices MUST be in ReadWritePaths.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/etc/n5-fangov /run/n5-fangov /var/log/n5-fangov /sys/class/hwmon /sys/devices
 ProtectHome=yes
 PrivateTmp=yes
+ProtectKernelTunables=no
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service @module
+# CAP_SYS_MODULE: module presence checks; CAP_DAC_OVERRIDE/CHOWN/FOWNER: sysfs
+# attributes and the config/preset/tls files written on behalf of the UI
+CapabilityBoundingSet=CAP_SYS_MODULE CAP_DAC_OVERRIDE CAP_CHOWN CAP_FOWNER
 
 [Install]
 WantedBy=multi-user.target

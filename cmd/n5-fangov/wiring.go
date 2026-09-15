@@ -5,8 +5,10 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -21,6 +23,7 @@ import (
 	"github.com/SirRenix/n5-fangov/internal/control"
 	"github.com/SirRenix/n5-fangov/internal/hwmon"
 	"github.com/SirRenix/n5-fangov/internal/ipc"
+	"github.com/SirRenix/n5-fangov/internal/logfile"
 	"github.com/SirRenix/n5-fangov/internal/profile"
 	"github.com/SirRenix/n5-fangov/internal/sdnotify"
 	"github.com/SirRenix/n5-fangov/internal/sensor"
@@ -55,6 +58,77 @@ type webSpec struct {
 	User         string
 	PasswordHash string
 	AllowedHosts []string // extra Host header values; "*" disables the check
+	TLS          string   // auto | off | file
+	CertFile     string
+	KeyFile      string
+}
+
+// logSpec is the [log] section.
+type logSpec struct {
+	File      string // "" = journal only
+	MaxSizeMB int
+	MaxFiles  int
+}
+
+func logOf(cfg config.Config) logSpec {
+	return logSpec{File: cfg.Log.File, MaxSizeMB: cfg.Log.MaxSizeMB, MaxFiles: cfg.Log.MaxFiles}
+}
+
+// defaultTLSMode is the tls mode for a listen address without an explicit
+// setting: "off" on loopback, "auto" elsewhere.
+func defaultTLSMode(listen string) string { return config.DefaultTLS(listen) }
+
+// passwordHash computes the [web].password_hash value for user/password
+// (sha256 hex of "user:password", the only scheme without a dependency).
+func passwordHash(user, password string) string { return web.PasswordHash(user, password) }
+
+// redactedHash is the placeholder the API and bundles use for the stored
+// password hash.
+const redactedHash = web.RedactedHash
+
+// setConfigKey edits one key of a top-level table in raw TOML text without
+// touching comments or other keys (passwd, setup on an existing file).
+func setConfigKey(raw []byte, section, key, value string) []byte {
+	return config.SetKey(raw, section, key, value)
+}
+
+// tomlString quotes s as a TOML basic string.
+func tomlString(s string) string { return strconv.Quote(s) }
+
+// saveConfig writes raw atomically.
+func saveConfig(path string, raw []byte) error { return config.Save(path, raw) }
+
+// n5proChannels is the verified N5 Pro channel set.
+func n5proChannels() []chanSpec { return channelSpecs(config.Config{Channels: config.N5ProChannels()}) }
+
+// renderConfig builds a fresh config (built-in defaults, the given profile,
+// channels and [web] settings) and renders it as TOML (setup).
+func renderConfig(profileName string, chans []chanSpec, w webSpec) []byte {
+	cfg := config.Default()
+	cfg.Daemon.Profile = profileName
+	for _, c := range chans {
+		cfg.Channels = append(cfg.Channels, config.Channel{
+			Name: c.Name, PWM: c.PWM, Sensor: c.Sensor,
+			Curve: append([][2]int(nil), c.Curve...), Critical: c.Critical, Stop: c.Stop,
+		})
+	}
+	cfg.Web = config.Web{
+		Listen: w.Listen, Auth: w.Auth, User: w.User, PasswordHash: w.PasswordHash,
+		AllowedHosts: append([]string(nil), w.AllowedHosts...),
+		TLS:          w.TLS, CertFile: w.CertFile, KeyFile: w.KeyFile,
+	}
+	return config.Marshal(cfg)
+}
+
+// Preset directory helpers (bundle export/import works on the raw files).
+func presetNames(dir string) []string    { return config.PresetNames(dir) }
+func validPresetName(name string) bool   { return config.ValidPresetName(name) }
+func presetPath(dir, name string) string { return filepath.Join(dir, name+".toml") }
+
+// parsePresetRaw validates preset text and returns its channel count.
+func parsePresetRaw(raw []byte) (int, error) {
+	chans, _, err := config.ParseChannels(raw)
+	return len(chans), err
 }
 
 func warningStrings(warns []config.Warning) []string {
@@ -80,6 +154,13 @@ func loadConfig(path string) (config.Config, []string, error) {
 func parseConfig(raw []byte) (config.Config, []string) {
 	cfg, warns, _ := config.Parse(raw)
 	return cfg, warningStrings(warns)
+}
+
+// parseConfigErr is parseConfig with the syntax error exposed (bundle
+// import refuses on it).
+func parseConfigErr(raw []byte) (config.Config, []string, error) {
+	cfg, warns, err := config.Parse(raw)
+	return cfg, warningStrings(warns), err
 }
 
 func channelSpecs(cfg config.Config) []chanSpec {
@@ -149,6 +230,9 @@ func webOf(cfg config.Config) webSpec {
 		User:         cfg.Web.User,
 		PasswordHash: cfg.Web.PasswordHash,
 		AllowedHosts: append([]string(nil), cfg.Web.AllowedHosts...),
+		TLS:          cfg.Web.TLS,
+		CertFile:     cfg.Web.CertFile,
+		KeyFile:      cfg.Web.KeyFile,
 	}
 }
 
@@ -315,18 +399,42 @@ type webDeps struct {
 	Device     profile.Device // detected device; its profile is "active"
 	Sysfs      *hwmon.FS
 	Web        webSpec
+	Log        logStore // file store when [log].file is set, else the journal
+	Bundle     bundle   // settings export/import
+	TLS        bool     // the TCP listener serves HTTPS (HSTS)
+}
+
+// logStore is the log read side (DESIGN v0.2 "Log store"): implemented by
+// *logfile.Writer for the file and by journalLogStore without one.
+type logStore interface {
+	Lines(n int) ([]string, error)
+	Export(w io.Writer) error
+	Clear() error
+	Path() string
+}
+
+// bundle is the settings bundle (DESIGN v0.2 "Settings bundle").
+type bundle interface {
+	Export() ([]byte, error)
+	Import(b []byte) (restartRequired bool, err error)
 }
 
 // webServer exposes the two handler flavours of internal/web: the TCP one
 // enforces CSRF and optional basic auth, the socket one does not.
 type webServer struct {
-	TCP    http.Handler
-	Socket http.Handler
-	serve  func(ctx context.Context, ln net.Listener) error
+	TCP      http.Handler
+	Socket   http.Handler
+	serve    func(ctx context.Context, ln net.Listener) error
+	serveTLS func(ctx context.Context, ln net.Listener, cert tls.Certificate) error
 }
 
 // ServeTCP serves the TCP handler on ln until ctx is done.
 func (s webServer) ServeTCP(ctx context.Context, ln net.Listener) error { return s.serve(ctx, ln) }
+
+// ServeTLS serves the TCP handler over TLS with cert until ctx is done.
+func (s webServer) ServeTLS(ctx context.Context, ln net.Listener, cert tls.Certificate) error {
+	return s.serveTLS(ctx, ln, cert)
+}
 
 func newWebServer(d webDeps) webServer {
 	active := ""
@@ -366,7 +474,7 @@ func newWebServer(d webDeps) webServer {
 	if h, _, err := net.SplitHostPort(d.Web.Listen); err == nil && h != "" {
 		allowed = append(allowed, h)
 	}
-	s := web.New(web.Deps{
+	deps := web.Deps{
 		Service: d.Service,
 		Config:  fileConfigStore{path: d.ConfigPath},
 		Validate: func(raw []byte) ([]string, error) {
@@ -374,16 +482,68 @@ func newWebServer(d webDeps) webServer {
 			return warningStrings(warns), err
 		},
 		Presets:      dirPresetStore{dir: d.PresetDir, cfgPath: d.ConfigPath, svc: d.Service},
-		Log:          func(n int) ([]string, error) { return journalLines(unitName, n) },
 		Profiles:     profiles,
 		Version:      version.Version,
 		Auth:         web.AuthConfig{Mode: d.Web.Auth, User: d.Web.User, PasswordHash: d.Web.PasswordHash},
 		Sensors:      sensors,
 		AllowedHosts: allowed,
 		Logf:         log.Printf,
-	})
-	return webServer{TCP: s.Handler(), Socket: s.SocketHandler(), serve: s.Serve}
+	}
+	if d.Log == nil {
+		d.Log = journalLogStore{}
+	}
+	// Log, Bundle and TLS are the v0.2 members of web.Deps; see wiring_v2.go.
+	applyV2Deps(&deps, d)
+	s := web.New(deps)
+	return webServer{TCP: s.Handler(), Socket: s.SocketHandler(), serve: s.Serve, serveTLS: serveTLSFunc(s)}
 }
+
+// journalLogStore is the logStore without a log file: Lines and Export
+// come from journalctl, Clear is refused (the journal is never touched).
+type journalLogStore struct{}
+
+func (journalLogStore) Lines(n int) ([]string, error) { return journalLines(unitName, n) }
+
+func (journalLogStore) Export(w io.Writer) error {
+	lines, err := journalLines(unitName, 100000)
+	if err != nil {
+		return err
+	}
+	for _, l := range lines {
+		if _, err := io.WriteString(w, l+"\n"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (journalLogStore) Clear() error {
+	return errors.New("no log file configured ([log].file is empty); the journal is not cleared")
+}
+
+func (journalLogStore) Path() string { return "" }
+
+// newLogFile opens the rotating log file of [log].
+func newLogFile(l logSpec) (*logfile.Writer, error) {
+	return logfile.New(l.File, l.MaxSizeMB, l.MaxFiles)
+}
+
+// teeLog makes the standard logger write to stdout (journald) and, stamped
+// with the local time, to w.
+func teeLog(w io.Writer) { log.SetOutput(io.MultiWriter(os.Stdout, logfile.Timestamped(w))) }
+
+// Read-side helpers for the CLI on a file the daemon owns.
+func readLogLines(path string, n int) ([]string, error) { return logfile.ReadLines(path, n) }
+func exportLogFile(path string, w io.Writer) error      { return logfile.ExportFile(path, w) }
+func truncateLogFile(path string) error                 { return logfile.Truncate(path) }
+
+// Restart sentinel of Service.Reload (channel set / profile changed).
+func isRestartRequired(err error) bool { return errors.Is(err, control.ErrRestartRequired) }
+func errRestartRequired() error        { return control.ErrRestartRequired }
+
+// Config text helpers for bundles and setup.
+func defaultConfigRaw() []byte                         { return config.Marshal(config.Default()) }
+func savePresetRaw(dir, name string, raw []byte) error { return config.SavePresetRaw(dir, name, raw) }
 
 // fileConfigStore backs GET/PUT /api/config with the TOML file.
 type fileConfigStore struct{ path string }
@@ -446,6 +606,10 @@ func configJSON(cfg config.Config, warns []config.Warning) map[string]any {
 			"listen": cfg.Web.Listen, "auth": cfg.Web.Auth, "user": cfg.Web.User,
 			"password_hash": cfg.Web.PasswordHash, // redacted by the web layer before it leaves the daemon
 			"allowed_hosts": nonNilStrings(cfg.Web.AllowedHosts),
+			"tls":           cfg.Web.TLS, "cert_file": cfg.Web.CertFile, "key_file": cfg.Web.KeyFile,
+		},
+		"log": map[string]any{
+			"file": cfg.Log.File, "max_size_mb": cfg.Log.MaxSizeMB, "max_files": cfg.Log.MaxFiles,
 		},
 		"channel":  chans,
 		"warnings": warningStrings(warns),

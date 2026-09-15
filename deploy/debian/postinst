@@ -1,8 +1,11 @@
 #!/bin/sh
-# n5-fangov postinst: reload systemd, enable the unit, install PVE templates.
-# Never starts the daemon on a fresh install (run `n5-fangov check` first);
-# on upgrade a running daemon is restarted so the new binary takes over.
+# n5-fangov postinst: reload systemd, enable the unit, install the PVE
+# templates and the apt kernel-gate hook. Never starts the daemon on a fresh
+# install (run `n5-fangov setup` first); on upgrade a running daemon is
+# restarted so the new binary takes over.
 set -e
+
+APT_HOOK=/etc/apt/apt.conf.d/90n5-fangov
 
 case "$1" in
     configure)
@@ -23,13 +26,21 @@ case "$1" in
             cp /usr/share/n5-fangov/pve-notification/n5-fangov-body.txt.hbs    /etc/pve/notification-templates/default/ 2>/dev/null || true
         fi
         mkdir -p /etc/n5-fangov/presets
+        mkdir -p /var/log/n5-fangov
+        chmod 0750 /var/log/n5-fangov || true
+        if [ -d /etc/apt/apt.conf.d ]; then
+            cp /usr/share/n5-fangov/apt-90n5-fangov.conf "$APT_HOOK"
+            chmod 0644 "$APT_HOOK"
+        fi
         systemctl daemon-reload || true
         systemctl enable n5-fangov.service || true
         if [ -n "$2" ] && systemctl is-active --quiet n5-fangov.service 2>/dev/null; then
             echo "n5-fangov: upgrade from $2, restarting the daemon"
             systemctl restart n5-fangov.service || true
-        else
+        elif [ -f /etc/n5-fangov/config.toml ]; then
             echo "n5-fangov: installed and enabled. Next: n5-fangov check && systemctl start n5-fangov"
+        else
+            echo "n5-fangov: installed and enabled. Next: n5-fangov setup"
         fi
         ;;
 esac

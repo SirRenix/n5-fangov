@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
-# Removes n5-fangov (daemon, units, helper, templates). Keeps /etc/n5-fangov.
-# The channels are put into their configured safe state before the binary
-# goes away. Run as root.
+# Removes n5-fangov (daemon, units, helper, templates, apt hook). Keeps
+# /etc/n5-fangov (config, presets, TLS certificate) and /var/log/n5-fangov
+# unless --purge is given. The channels are put into their configured safe
+# state before the binary goes away. Run as root.
 set -u
 [[ $EUID -eq 0 ]] || { echo "run as root"; exit 1; }
+PURGE=0
+[[ "${1:-}" == "--purge" ]] && PURGE=1
 
 echo "--- stop (ExecStopPost runs the failsafe) ---"
 systemctl disable --now n5-fangov.service 2>/dev/null || true
@@ -20,11 +23,17 @@ echo "--- files ---"
 rm -f /etc/systemd/system/n5-fangov.service /etc/systemd/system/n5-fangov-onfailure.service
 systemctl daemon-reload
 rm -f /usr/bin/n5-fangov
-rm -rf /usr/libexec/n5-fangov /usr/share/n5-fangov
+rm -rf /usr/libexec/n5-fangov /usr/share/n5-fangov /usr/share/doc/n5-fangov
+rm -f /etc/apt/apt.conf.d/90n5-fangov
 rm -f /etc/pve/notification-templates/default/n5-fangov-subject.txt.hbs \
       /etc/pve/notification-templates/default/n5-fangov-body.txt.hbs 2>/dev/null || true
 rm -rf /run/n5-fangov
-echo "  /etc/n5-fangov (config, presets) kept; delete by hand if no longer needed"
+if [[ $PURGE -eq 1 ]]; then
+    rm -rf /etc/n5-fangov /var/log/n5-fangov
+    echo "  --purge: /etc/n5-fangov and /var/log/n5-fangov removed"
+else
+    echo "  /etc/n5-fangov (config, presets, tls/) and /var/log/n5-fangov kept; --purge removes them"
+fi
 
 echo
 echo "Done. Fans are in the configured safe state; on the N5 Pro the HDD channel"

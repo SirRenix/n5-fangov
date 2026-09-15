@@ -69,29 +69,43 @@ func (a *api) get(path string, out any) error {
 
 // do performs a request with an optional JSON body and decodes into out (may be nil).
 func (a *api) do(method, path string, body, out any) error {
-	var rd io.Reader
+	var raw []byte
+	ctype := ""
 	if body != nil {
 		b, err := json.Marshal(body)
 		if err != nil {
 			return err
 		}
-		rd = bytes.NewReader(b)
+		raw, ctype = b, "application/json"
+	}
+	_, err := a.doRaw(method, path, ctype, raw, out)
+	return err
+}
+
+// doRaw performs a request with a raw body (nil for none) and decodes a
+// JSON response into out (may be nil). The status code is returned for
+// callers that distinguish 200 from 202. A non-2xx status is an error
+// carrying the server's "error" text.
+func (a *api) doRaw(method, path, contentType string, body []byte, out any) (int, error) {
+	var rd io.Reader
+	if body != nil {
+		rd = bytes.NewReader(body)
 	}
 	req, err := http.NewRequest(method, a.base+path, rd)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
 	}
 	resp, err := a.c.Do(req)
 	if err != nil {
-		return classifyDialErr(a.sock, err)
+		return 0, classifyDialErr(a.sock, err)
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
-		return err
+		return resp.StatusCode, err
 	}
 	if resp.StatusCode/100 != 2 {
 		msg := strings.TrimSpace(string(data))
@@ -101,12 +115,12 @@ func (a *api) do(method, path string, body, out any) error {
 		if json.Unmarshal(data, &je) == nil && je.Error != "" {
 			msg = je.Error
 		}
-		return fmt.Errorf("%s %s: HTTP %d: %s", method, path, resp.StatusCode, msg)
+		return resp.StatusCode, fmt.Errorf("%s %s: HTTP %d: %s", method, path, resp.StatusCode, msg)
 	}
 	if out == nil || len(data) == 0 {
-		return nil
+		return resp.StatusCode, nil
 	}
-	return json.Unmarshal(data, out)
+	return resp.StatusCode, json.Unmarshal(data, out)
 }
 
 // daemonRunning reports whether the socket answers /api/version.
