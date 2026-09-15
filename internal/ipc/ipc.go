@@ -1,6 +1,10 @@
 // Package ipc serves the HTTP mux on a unix socket (for the CLI) and provides a
-// client that dials it. The socket carries no authentication: access is governed
-// by file permissions (0660) on the socket path.
+// client that dials it. The socket carries no authentication. Who may connect
+// is decided by the file system: the runtime directory (/run/pvefand, created
+// by systemd as root:root with RuntimeDirectoryMode=0750) and the socket
+// itself (0660, created under umask 0117 so it is never world-accessible,
+// not even between bind and chmod). In the shipped unit that means root only;
+// there is no dedicated group.
 package ipc
 
 import (
@@ -21,7 +25,7 @@ func Listen(socketPath string) (net.Listener, error) {
 	if socketPath == "" {
 		return nil, errors.New("ipc: empty socket path")
 	}
-	if err := os.MkdirAll(filepath.Dir(socketPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(socketPath), 0o750); err != nil {
 		return nil, fmt.Errorf("ipc: create socket dir: %w", err)
 	}
 	if fi, err := os.Lstat(socketPath); err == nil {
@@ -36,7 +40,11 @@ func Listen(socketPath string) (net.Listener, error) {
 			return nil, fmt.Errorf("ipc: remove stale socket: %w", err)
 		}
 	}
+	// The socket node is created by bind(2) with mode 0777 &^ umask; a
+	// process-wide umask of 0117 closes the window before Chmod (M3).
+	old := setUmask(0o117)
 	ln, err := net.Listen("unix", socketPath)
+	setUmask(old)
 	if err != nil {
 		return nil, fmt.Errorf("ipc: listen: %w", err)
 	}
@@ -57,7 +65,10 @@ func Serve(ctx context.Context, socketPath string, handler http.Handler) error {
 	srv := &http.Server{
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    16 << 10,
 	}
 	done := make(chan struct{})
 	go func() {

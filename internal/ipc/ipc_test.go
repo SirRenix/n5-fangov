@@ -118,6 +118,35 @@ func TestServeClientRoundTrip(t *testing.T) {
 	}
 }
 
+// TestListenRestoresUmask (M3): Listen narrows the umask only around bind
+// and puts the caller's value back, also on the error path.
+func TestListenRestoresUmask(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no umask on windows")
+	}
+	orig := setUmask(0o027)
+	defer setUmask(orig)
+	sock := tempSock(t)
+	ln, err := Listen(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln.Close()
+	if got := setUmask(0o027); got != 0o027 {
+		t.Fatalf("umask after Listen = %04o, want 0027", got)
+	}
+	plain := filepath.Join(filepath.Dir(sock), "plain")
+	if err := os.WriteFile(plain, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Listen(plain); err == nil {
+		t.Fatal("Listen replaced a regular file")
+	}
+	if got := setUmask(0o027); got != 0o027 {
+		t.Fatalf("umask after failed Listen = %04o, want 0027", got)
+	}
+}
+
 func TestListenRemovesStaleSocket(t *testing.T) {
 	sock := tempSock(t)
 	ln, err := Listen(sock)

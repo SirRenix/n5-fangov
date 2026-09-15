@@ -1,613 +1,558 @@
-/* pvefand web UI - vanilla JS, no build step, no external resources. */
-(function () {
-  'use strict';
+// pvefand dashboard — vanilla JS, CSP-safe
+'use strict';
+(() => {
+const $ = (s, r) => (r || document).querySelector(s);
+const $$ = s => [...document.querySelectorAll(s)];
+const h = (tag, attrs, ...kids) => {
+	const e = document.createElement(tag);
+	if (attrs) for (const k in attrs) {
+		const v = attrs[k];
+		if (k === 'class') e.className = v;
+		else if (k.startsWith('on')) e.addEventListener(k.slice(2), v);
+		else if (v != null && v !== false) e.setAttribute(k, v === true ? '' : v);
+	}
+	for (const c of kids.flat()) if (c != null) e.append(c.nodeType ? c : String(c));
+	return e;
+};
+const clear = e => { while (e.firstChild) e.removeChild(e.firstChild); return e; };
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const SERIES = Array.from({ length: 8 }, (_, i) => '--s' + (i + 1));
+const cssVar = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const MOCK = new URLSearchParams(location.search).get('mock') === '1';
+const REF = { // N5 Pro duty→RPM (measured)
+	cpu: [[85, 2000], [140, 3120], [179, 3830], [217, 4445], [255, 5073]],
+	ssd: [[74, 2130], [140, 3280], [179, 3790], [217, 4230], [255, 4687]],
+	hdd: [[87, 1237], [105, 1650], [140, 2250], [179, 2725], [217, 3160], [255, 3540]] };
 
-  var $ = function (id) { return document.getElementById(id); };
-  var REFRESH_MS = 5000;
-  var HISTORY_MIN = 120;
-  var state = null;      // last /api/state
-  var history = [];      // last /api/history
-  var sensors = [];      // /api/sensors
-  var curveForm = [];    // parsed [[channel]] blocks for the Curves tab
-  var tomlBlocks = null; // split raw TOML
-  var auth = null;       // base64 "user:pass" once signed in
-  var pendingLogin = null;
+// settings
+const S = { unit: 'C', interval: 5, theme: 'dark' };
+try { Object.assign(S, JSON.parse(localStorage.getItem('pvefand') || '{}')); } catch (e) {}
+const saveS = () => { try { localStorage.setItem('pvefand', JSON.stringify(S)); } catch (e) {} };
+const tC = v => S.unit === 'F' ? v * 9 / 5 + 32 : v;
+const unit = () => S.unit === 'F' ? '°F' : '°C';
+const fmtT = (v, d) => v == null || !(v > -900) ? '—' : tC(v).toFixed(d === undefined ? 1 : d);
+const pct = d => Math.round(d / 255 * 100);
+const rel = ts => { const s = Math.max(0, Date.now() / 1000 - ts | 0);
+	return s < 60 ? s + ' s ago' : s < 3600 ? (s / 60 | 0) + ' min ago' : s < 86400 ? `${s / 3600 | 0} h ${s % 3600 / 60 | 0} min ago` : `${s / 86400 | 0} d ${s % 86400 / 3600 | 0} h ago`; };
+const fmtUp = s => { const d = s / 86400 | 0, hh = s % 86400 / 3600 | 0, m = s % 3600 / 60 | 0; return d ? `${d}d ${hh}h` : hh ? `${hh}h ${m}m` : `${m}m`; };
+const hm = ts => { const d = new Date(ts * 1000); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); };
+const interp = (curve, t) => {
+	if (!curve.length) return 0;
+	if (t <= curve[0][0]) return curve[0][1];
+	for (let i = 1; i < curve.length; i++) if (t <= curve[i][0]) {
+		const [t0, d0] = curve[i - 1], [t1, d1] = curve[i];
+		return t1 === t0 ? d1 : d0 + (d1 - d0) * (t - t0) / (t1 - t0);
+	}
+	return curve[curve.length - 1][1];
+};
 
-  try { auth = sessionStorage.getItem('pvefand.auth'); } catch (e) { auth = null; }
+// toasts
+const toast = (msg, kind, ms) => {
+	const t = h('div', { class: 'toast ' + (kind || '') }, msg,
+		h('button', { type: 'button', 'aria-label': 'Dismiss', onclick: () => t.remove() }, '×'));
+	$('#toasts').append(t);
+	setTimeout(() => t.remove(), ms || (kind === 'err' ? 12000 : 5000));
+};
 
-  /* ---------- helpers ---------- */
-  function el(tag, cls, text) {
-    var e = document.createElement(tag);
-    if (cls) e.className = cls;
-    if (text !== undefined && text !== null) e.textContent = text;
-    return e;
-  }
-  function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
-  function pct(duty) { return Math.round(duty * 100 / 255); }
-  function fmtTemp(t) { return (t === null || t === undefined || t <= -900) ? 'n/a' : t.toFixed(1) + ' °C'; }
-  function tempClass(t) {
-    if (t === null || t === undefined || t <= -900) return 't-na';
-    if (t < 45) return 't-cool';
-    if (t < 65) return 't-ok';
-    if (t < 80) return 't-warm';
-    return 't-hot';
-  }
-  function modeClass(m) {
-    if (m === 'auto') return 'ok';
-    if (m === 'manual') return 'info';
-    if (m === 'critical' || m === 'failsafe' || m === 'stall') return 'crit';
-    return 'warn';
-  }
-  function fmtTime(ts) {
-    if (!ts) return '-';
-    var d = new Date(ts * 1000);
-    return d.toLocaleString();
-  }
-  function fmtUptime(s) {
-    if (s === undefined || s === null) return '-';
-    var d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
-    return (d ? d + 'd ' : '') + h + 'h ' + m + 'm';
-  }
-  var toastTimer = null;
-  function toast(msg, kind) {
-    var t = $('toast');
-    t.textContent = msg;
-    t.className = 'toast' + (kind ? ' ' + kind : '');
-    t.hidden = false;
-    clearTimeout(toastTimer);
-    toastTimer = setTimeout(function () { t.hidden = true; }, kind === 'err' ? 8000 : 4000);
-  }
+// API
+let auth = null, failures = 0, pendingLogin = null;
+const api = async (path, opt) => {
+	opt = opt || {};
+	if (MOCK) return mock(path, opt);
+	const headers = Object.assign({}, opt.headers || {});
+	if (opt.method && opt.method !== 'GET') headers['X-Pvefand-Csrf'] = '1';
+	if (opt.json !== undefined) { headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(opt.json); }
+	for (;;) {
+		if (auth) headers.Authorization = auth;
+		let r;
+		try { r = await fetch(path, { method: opt.method || 'GET', headers, body: opt.body, cache: 'no-store' }); }
+		catch (e) { failures++; connState(); throw new Error('network: ' + e.message); }
+		if (r.status === 401) { await needLogin(); continue; }
+		failures = r.status < 500 ? 0 : failures + 1; connState();
+		const ct = r.headers.get('content-type') || '';
+		const body = ct.includes('json') ? await r.json().catch(() => null) : await r.text();
+		if (!r.ok) {
+			const msg = body && typeof body === 'object'
+				? (body.error || body.message || '') + (Array.isArray(body.errors) ? '\n' + body.errors.join('\n') : '')
+				: String(body || r.statusText);
+			const err = new Error(msg || `HTTP ${r.status}`); err.status = r.status; throw err;
+		}
+		return { status: r.status, body };
+	}
+};
+const needLogin = () => {
+	if (pendingLogin) return pendingLogin;
+	const f = $('#login'); f.hidden = false; $('#l-user').focus();
+	pendingLogin = new Promise(res => { f._resolve = res; });
+	return pendingLogin;
+};
+$('#login').addEventListener('submit', ev => {
+	ev.preventDefault();
+	const u = $('#l-user').value, p = $('#l-pass').value;
+	auth = 'Basic ' + btoa(unescape(encodeURIComponent(u + ':' + p)));
+	$('#l-pass').value = ''; $('#login').hidden = true;
+	const r = $('#login')._resolve; pendingLogin = null; if (r) r();
+});
+const connState = () => {
+	$('#banner').hidden = failures < 2;
+	$('#h-live').classList.toggle('err', failures >= 2);
+};
 
-  /* ---------- API ---------- */
-  function api(method, path, body, raw) {
-    var headers = { 'X-Pvefand-Csrf': '1' };
-    if (auth) headers['Authorization'] = 'Basic ' + auth;
-    if (body !== undefined) headers['Content-Type'] = raw ? 'text/plain; charset=utf-8' : 'application/json';
-    return fetch(path, {
-      method: method, headers: headers, cache: 'no-store', credentials: 'same-origin',
-      body: body === undefined ? undefined : (raw ? body : JSON.stringify(body))
-    }).then(function (res) {
-      if (res.status === 401) {
-        return login().then(function () { return api(method, path, body, raw); });
-      }
-      return res.text().then(function (txt) {
-        var data = null;
-        try { data = txt ? JSON.parse(txt) : null; } catch (e) { data = { error: txt }; }
-        if (!res.ok) {
-          var err = new Error((data && data.error) || ('HTTP ' + res.status));
-          err.status = res.status;
-          throw err;
-        }
-        return { status: res.status, data: data };
-      });
-    });
-  }
-  function get(path) { return api('GET', path).then(function (r) { return r.data; }); }
+// mock backend
+const mock = (() => {
+	const t0 = Date.now() / 1000;
+	const cfg = { daemon: { interval: '10s', step_up: 40, step_down: 15, stall_min_duty: 60, stall_cycles: 2, profile: 'auto' },
+		web: { listen: '0.0.0.0:8010', auth: 'none' },
+		channel: [
+			{ name: 'cpu', pwm: 1, sensor: 'k10temp', curve: [[45, 85], [80, 255]], critical: 88, stop: 'auto' },
+			{ name: 'ssd', pwm: 2, sensor: 'nvme:max', curve: [[40, 74], [70, 255]], critical: 75, stop: 'auto' },
+			{ name: 'hdd', pwm: 3, sensor: 'drivetemp:max', curve: [[36, 105], [46, 255]], critical: 56, stop: 87 }] };
+	const presets = { quiet: cfg.channel, summer: cfg.channel.map(c => Object.assign({}, c, { curve: c.curve.map(p => [p[0] - 4, p[1]]) })) };
+	const overrides = {};
+	const temp = (name, t) => ({ cpu: 38 + 9 * Math.sin(t / 900) + 3 * Math.sin(t / 130), ssd: 41 + 4 * Math.sin(t / 1400 + 1), hdd: 39 + 2.5 * Math.sin(t / 2600 + 2) })[name];
+	const rpmOf = (name, d) => Math.round(interp(REF[name], d) + 20 * Math.sin(d));
+	const point = t => { const p = { ts: Math.floor(t), temp: {}, duty: {}, rpm: {} };
+		for (const c of cfg.channel) { const tv = temp(c.name, t); const d = c.name in overrides ? overrides[c.name] : Math.round(interp(c.curve, tv));
+			p.temp[c.name] = +tv.toFixed(1); p.duty[c.name] = d; p.rpm[c.name] = rpmOf(c.name, d); } return p; };
+	const sec = n => `[${n}]\n` + Object.entries(cfg[n]).map(([k, v]) => `${k} = ${typeof v === 'string' ? `"${v}"` : v}`).join('\n') + '\n\n';
+	const raw = () => sec('daemon') + sec('web') + cfg.channel.map(tomlChannel).join('\n');
+	const logs = [];
+	for (let i = 0; i < 200; i++) { const t = t0 - (200 - i) * 300; const p = point(t);
+		logs.push(`${new Date(t * 1000).toISOString().slice(0, 19)} ${i % 37 === 5 ? 'WARN stall: hdd rpm=0 at duty=105 → 255' : i % 53 === 7 ? 'ERROR sensor drivetemp:max: no devices' : 'INFO'} ` + cfg.channel.map(c => `${c.name} ${p.temp[c.name]}/${p.duty[c.name]}`).join(' ')); }
+	const wait = v => new Promise(r => setTimeout(() => r(v), 120));
+	return (path, opt) => {
+		const m = opt.method || 'GET', u = new URL(path, location.origin), p = u.pathname;
+		if (p === '/api/state') { const now = Date.now() / 1000, pt = point(now), stall = (now | 0) % 40 < 3;
+			return wait({ status: 200, body: { ts: pt.ts, status: 'ok', profile: 'n5pro', verified: true, hwmon_path: '/sys/class/hwmon/hwmon14', dry_run: false, uptime_s: 435723,
+				channels: cfg.channel.map(c => { const n = c.name, st = n === 'hdd' && stall; return { name: n, pwm: c.pwm, sensor: c.sensor, temp: pt.temp[n], duty: pt.duty[n], target: n === 'cpu' ? pt.duty.cpu + 22 : pt.duty[n], rpm: st ? 0 : pt.rpm[n],
+					mode: n in overrides ? 'manual' : st ? 'stall' : 'auto' }; }),
+				extra_temps: { 'ec:cpu': +(pt.temp.cpu + 1.5).toFixed(1), 'ec:system': 32.0, 'ec:ssd': 40.5, 'ec:hdd': 37.0 },
+				alerts: { stall: Math.floor(now - 12 * 60), sensor: Math.floor(now - 3 * 3600 - 420) } } }); }
+		if (p === '/api/history') { const since = +u.searchParams.get('since') || 0, now = Date.now() / 1000, out = [];
+			for (let t = now - 7200; t <= now; t += 10) if (t > since) out.push(point(t)); return wait({ status: 200, body: out }); }
+		if (p === '/api/config' && m === 'GET') return wait({ status: 200, body: { config: cfg, raw: raw() } });
+		if (p === '/api/config' && m === 'PUT') { if (/critical = 9\d\d/.test(opt.body)) return Promise.reject(Object.assign(new Error('validation failed\nchannel cpu: critical out of range 30..110'), { status: 400 }));
+			const n = (opt.body.match(/\[\[channel\]\]/g) || []).length; return wait({ status: n === cfg.channel.length ? 200 : 202, body: { ok: true } }); }
+		if (p === '/api/sensors') return wait({ status: 200, body: [{ id: 'k10temp', temp: 38.2 }, { id: 'nvme:max', temp: 41 }, { id: 'drivetemp:max', temp: 39.5 }, { id: 'ec:cpu', temp: 39.7 }, { id: 'ec:system', temp: 32 }] });
+		if (p.startsWith('/api/override/')) { const n = p.split('/')[3];
+			if (m === 'DELETE') { delete overrides[n]; return wait({ status: 200, body: { ok: true } }); }
+			if (n === 'hdd' && opt.json.duty < 60) return Promise.reject(Object.assign(new Error('duty 40 below stall_min_duty 60 for hdd'), { status: 400 }));
+			overrides[n] = opt.json.duty; return wait({ status: 200, body: { ok: true } }); }
+		if (p === '/api/presets') return wait({ status: 200, body: Object.keys(presets).map(k => ({ name: k, channels: presets[k] })) });
+		if (p.startsWith('/api/presets/')) { const n = p.split('/')[3]; if (m === 'PUT') { presets[n] = cfg.channel; return wait({ status: 201, body: { ok: true } }); }
+			return wait({ status: n === 'summer' ? 202 : 200, body: { ok: true } }); }
+		if (p === '/api/log') return wait({ status: 200, body: logs.slice(-(+u.searchParams.get('lines') || 100)) });
+		if (p === '/api/profiles') return wait({ status: 200, body: [
+			{ name: 'n5pro', title: 'Minisforum N5 Pro (IT5571 EC)', verified: true, notes: 'EC does not resume HDD regulation after a write; stop = fixed duty.' },
+			{ name: 'nct67xx', title: 'Nuvoton NCT67xx (SmartFan IV)', verified: false, notes: 'Auto = pwmN_enable 5; original restored on stop.' },
+			{ name: 'it87xx', title: 'ITE IT86xx/IT87xx', verified: false, notes: 'Original pwmN_enable restored on stop.' },
+			{ name: 'monitor', title: 'Monitoring only (no PWM)', verified: false, notes: 'Sensors only, never writes.' }] });
+		if (p === '/api/version') return wait({ status: 200, body: { version: '0.1.0-mock', go: 'go1.25' } });
+		return Promise.reject(Object.assign(new Error('mock: not found ' + p), { status: 404 }));
+	};
+})();
 
-  function login() {
-    if (pendingLogin) return pendingLogin;
-    pendingLogin = new Promise(function (resolve, reject) {
-      var box = $('login'), form = $('login-form');
-      box.hidden = false;
-      $('login-pass').value = '';
-      setTimeout(function () { ($('login-user').value ? $('login-pass') : $('login-user')).focus(); }, 0);
-      function done(ok) {
-        form.onsubmit = null; $('login-cancel').onclick = null;
-        box.hidden = true; pendingLogin = null;
-        ok ? resolve() : reject(new Error('sign-in cancelled'));
-      }
-      form.onsubmit = function (ev) {
-        ev.preventDefault();
-        auth = btoa(unescape(encodeURIComponent($('login-user').value + ':' + $('login-pass').value)));
-        try { sessionStorage.setItem('pvefand.auth', auth); } catch (e) { /* ignore */ }
-        done(true);
-      };
-      $('login-cancel').onclick = function () { auth = null; done(false); };
-    });
-    return pendingLogin;
-  }
+// chart engine (line + area, ticks, last-value label, hover)
+const charts = [];
+function chart(wrap, series, opt) {
+	// series: [{name, color, data: [[ts, value]...]}], opt: {fmt, yMin, yMax, minSpan}
+	const cv = $('canvas', wrap), tip = $('.tip', wrap);
+	const st = wrap._st || (wrap._st = { hover: null });
+	st.series = series; st.opt = opt;
+	const draw = () => {
+		const dpr = window.devicePixelRatio || 1, W = wrap.clientWidth, H = wrap.clientHeight;
+		if (!W || !H) return;
+		cv.width = W * dpr; cv.height = H * dpr;
+		const ctx = cv.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+		const fg2 = cssVar('--fg2'), fg3 = cssVar('--fg3'), line = cssVar('--line');
+		const pad = { l: 40, r: 58, t: 8, b: 22 }, pw = W - pad.l - pad.r, ph = H - pad.t - pad.b;
+		const all = series.flatMap(s => s.data);
+		if (!all.length) { ctx.fillStyle = fg3; ctx.font = '12px system-ui'; ctx.fillText('no history', pad.l, H / 2); return; }
+		const now = Date.now() / 1000, x0 = Math.min(now - 7200, all[0][0]), x1 = now;
+		let yMin = opt.yMin, yMax = opt.yMax;
+		if (yMin === undefined || yMax === undefined) {
+			let lo = Infinity, hi = -Infinity; for (const [, v] of all) { if (v < lo) lo = v; if (v > hi) hi = v; }
+			if (!isFinite(lo)) { lo = 0; hi = 1; }
+			const span = Math.max(hi - lo, opt.minSpan || 10), m = span * .15;
+			if (yMin === undefined) yMin = Math.floor((lo - m) / 5) * 5; if (yMax === undefined) yMax = Math.ceil((hi + m) / 5) * 5;
+		}
+		const X = t => pad.l + (t - x0) / (x1 - x0) * pw, Y = v => pad.t + (1 - (v - yMin) / (yMax - yMin)) * ph;
+		st.X = X; st.pad = pad; st.pw = pw;
+		// grid + y ticks
+		ctx.font = '11px system-ui'; ctx.textBaseline = 'middle'; ctx.textAlign = 'right';
+		const step = niceStep((yMax - yMin) / 4);
+		for (let v = Math.ceil(yMin / step) * step; v <= yMax + 1e-9; v += step) {
+			const y = Math.round(Y(v)) + .5; ctx.strokeStyle = line; seg(ctx, pad.l, y, W - pad.r, y);
+			ctx.fillStyle = fg3; ctx.fillText(opt.fmt(v, true), pad.l - 6, y);
+		}
+		// x ticks every 30 min
+		ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+		for (let t = Math.ceil(x0 / 1800) * 1800; t <= x1; t += 1800) {
+			const x = Math.round(X(t)) + .5; ctx.strokeStyle = line; seg(ctx, x, pad.t, x, pad.t + ph);
+			ctx.fillStyle = fg3; ctx.fillText(hm(t), x, pad.t + ph + 6);
+		}
+		// series
+		const labels = [];
+		for (const s of series) {
+			if (!s.data.length) continue;
+			const col = cssVar(s.color);
+			ctx.beginPath(); s.data.forEach(([t, v], i) => { const x = X(t), y = Y(clamp(v, yMin, yMax)); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+			ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.lineJoin = 'round'; ctx.stroke();
+			const last = s.data[s.data.length - 1];
+			ctx.lineTo(X(last[0]), pad.t + ph); ctx.lineTo(X(s.data[0][0]), pad.t + ph); ctx.closePath();
+			ctx.globalAlpha = .08; ctx.fillStyle = col; ctx.fill(); ctx.globalAlpha = 1;
+			labels.push({ y: Y(clamp(last[1], yMin, yMax)), col, txt: opt.fmt(last[1]) });
+		}
+		// last-value labels, spread to avoid overlap
+		labels.sort((a, b) => a.y - b.y); for (let i = 1; i < labels.length; i++) if (labels[i].y - labels[i - 1].y < 13) labels[i].y = labels[i - 1].y + 13;
+		ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.font = '600 11px system-ui';
+		for (const l of labels) { ctx.fillStyle = l.col; ctx.fillText(l.txt, W - pad.r + 6, l.y); }
+		// hover crosshair
+		if (st.hover !== null) {
+			const t = st.hover; const x = Math.round(X(t)) + .5; ctx.strokeStyle = fg2; seg(ctx, x, pad.t, x, pad.t + ph, [3, 3]);
+			for (const s of series) { const p = nearest(s.data, t); if (p) dot(ctx, X(p[0]), Y(clamp(p[1], yMin, yMax)), cssVar(s.color)); }
+		}
+	};
+	st.draw = draw;
+	if (!wrap._bound) {
+		wrap._bound = true; charts.push(wrap);
+		const move = ev => {
+			const r = cv.getBoundingClientRect(), x = ev.clientX - r.left, s = wrap._st;
+			if (!s.X || x < s.pad.l || x > s.pad.l + s.pw) return leave();
+			const now = Date.now() / 1000, x0 = now - 7200; s.hover = x0 + (x - s.pad.l) / s.pw * 7200; s.draw();
+			clear(tip); tip.append(h('div', { class: 't' }, hm(s.hover)));
+			for (const sr of s.series) { const p = nearest(sr.data, s.hover); if (!p) continue;
+				const key = h('i'); key.style.background = cssVar(sr.color);
+				tip.append(h('div', null, h('span', null, key, sr.name), h('b', null, s.opt.fmt(p[1])))); }
+			tip.hidden = false; const tw = tip.offsetWidth; tip.style.left = (x + 12 + tw > r.width ? x - tw - 12 : x + 12) + 'px'; tip.style.top = Math.min(ev.clientY - r.top + 12, r.height - tip.offsetHeight - 4) + 'px';
+		};
+		const leave = () => { const s = wrap._st; if (s.hover === null) return; s.hover = null; tip.hidden = true; s.draw(); };
+		cv.addEventListener('pointermove', move); cv.addEventListener('pointerleave', leave);
+		new ResizeObserver(() => wrap._st.draw()).observe(wrap);
+	}
+	draw();
+}
+const seg = (ctx, x0, y0, x1, y1, dash) => { ctx.setLineDash(dash || []); ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke(); ctx.setLineDash([]); };
+const niceStep = r => { const p = Math.pow(10, Math.floor(Math.log10(r || 1))), f = r / p; return (f < 1.5 ? 1 : f < 3.5 ? 2 : f < 7.5 ? 5 : 10) * p; };
+const dot = (ctx, x, y, col) => { ctx.beginPath(); ctx.arc(x, y, 4.5, 0, 7); ctx.fillStyle = col; ctx.fill(); ctx.strokeStyle = cssVar('--bg2'); ctx.lineWidth = 2; ctx.stroke(); };
+const nearest = (data, t) => { if (!data.length) return null; let lo = 0, hi = data.length - 1;
+	while (hi - lo > 1) { const m = (lo + hi) >> 1; data[m][0] < t ? lo = m : hi = m; }
+	return Math.abs(data[lo][0] - t) < Math.abs(data[hi][0] - t) ? data[lo] : data[hi]; };
+const redrawAll = () => { for (const w of charts) w._st && w._st.draw(); for (const e of Object.values(ED)) e.draw(); };
 
-  /* ---------- tabs ---------- */
-  var tabs = document.querySelectorAll('#tabs .tab');
-  function showTab(name) {
-    for (var i = 0; i < tabs.length; i++) tabs[i].classList.toggle('active', tabs[i].dataset.tab === name);
-    var panes = document.querySelectorAll('main .pane');
-    for (var j = 0; j < panes.length; j++) panes[j].classList.toggle('active', panes[j].id === 'tab-' + name);
-    try { localStorage.setItem('pvefand.tab', name); } catch (e) { /* ignore */ }
-    if (name === 'curves' && !tomlBlocks) loadCurves();
-    if (name === 'presets') loadPresets();
-    if (name === 'log') loadLog();
-    if (name === 'compat') loadProfiles();
-    if (name === 'manual') renderManual();
-    if (name === 'overview') renderCharts();
-  }
-  for (var ti = 0; ti < tabs.length; ti++) {
-    tabs[ti].addEventListener('click', function () { showTab(this.dataset.tab); });
-  }
+// state
+let snap = null, cfg = null, cfgRaw = '', profiles = [], sensors = [], version = '';
+let hist = [], lastTs = 0, fanMetric = 'rpm';
+const critOf = name => { const c = cfg && chList().find(x => x.name === name); return c && +c.critical > 0 ? +c.critical : null; };
+const chList = () => (cfg && (cfg.channel || cfg.channels)) || [];
+const tempClass = (t, crit) => { if (t === null || t <= -900) return 'na';
+	const r = crit ? t / crit : t / 75; return r < .6 ? 't-ok' : r < .85 ? 't-warm' : r < 1 ? 't-hot' : 't-crit'; };
+const isHdd = c => /hdd|drive|disk/.test(c.name) || /^drivetemp/.test(c.sensor || '');
+const minDuty = c => isHdd(c) ? ((cfg && cfg.daemon && +cfg.daemon.stall_min_duty) || 60) : 0;
+const seriesColor = i => SERIES[i % SERIES.length];
+const modeBadge = (el, m) => { el.className = 'mode m-' + (m || 'unknown'); el.textContent = m || 'unknown'; };
+const chanHead = (c, ...pre) => h('span', null, ...pre, h('span', { class: 'name' }, c.name), h('span', { class: 'sub' }, `pwm${c.pwm} · ${c.sensor || '?'}`));
+const act = async (fn, ok) => { try { const r = await fn(); if (ok) toast(ok, 'ok'); return r; } catch (e) { toast(e.message, 'err'); } };
 
-  /* ---------- overview ---------- */
-  function renderHeader() {
-    var s = state;
-    var st = $('hdr-status');
-    if (!s) { st.textContent = 'offline'; st.className = 'badge crit'; return; }
-    st.textContent = s.dry_run ? 'dry-run' : s.status;
-    st.className = 'badge ' + (s.status === 'ok' ? (s.dry_run ? 'warn' : 'ok') : 'crit');
-    $('hdr-profile').textContent = s.profile ? s.profile + (s.verified ? ' · verified' : ' · untested') : 'no profile';
-    var live = $('hdr-live');
-    clear(live);
-    s.channels.forEach(function (c) {
-      var sp = el('span');
-      sp.appendChild(el('b', null, c.name));
-      sp.appendChild(document.createTextNode(' ' + fmtTemp(c.temp) + ' · ' + pct(c.duty) + '%' + (c.rpm >= 0 ? ' · ' + c.rpm + ' rpm' : '')));
-      live.appendChild(sp);
-    });
-  }
+// header
+function renderHeader() {
+	if (!snap) return;
+	const pr = profiles.find(p => p.name === snap.profile);
+	$('#h-profile').textContent = pr ? pr.title : snap.profile || '—';
+	const b = $('#h-verified'); b.hidden = false;
+	b.className = 'badge ' + (snap.verified ? 'ok' : 'warn'); b.textContent = snap.verified ? 'verified on hardware' : 'from documentation · untested';
+	const st = snap.dry_run ? 'dry-run' : snap.status || 'unknown';
+	const c = $('#h-status'); c.className = 'chip ' + st; c.textContent = st;
+	$('#h-uptime').textContent = 'up ' + fmtUp(snap.uptime_s || 0);
+	if (version) $('#h-version').textContent = 'v' + version.replace(/^v/, '');
+}
 
-  function renderCards() {
-    var box = $('cards');
-    clear(box);
-    if (!state) { box.appendChild(el('p', 'muted', 'Daemon not reachable.')); return; }
-    state.channels.forEach(function (c) {
-      var card = el('div', 'card');
-      var head = el('div', 'card-head');
-      head.appendChild(el('span', 'card-name', c.name));
-      head.appendChild(el('span', 'badge ' + modeClass(c.mode), c.mode));
-      card.appendChild(head);
-      var vals = el('div', 'card-vals');
-      var v1 = el('div'); v1.appendChild(el('div', 'lbl', 'Temp'));
-      v1.appendChild(el('div', 'val ' + tempClass(c.temp), fmtTemp(c.temp))); vals.appendChild(v1);
-      var v2 = el('div'); v2.appendChild(el('div', 'lbl', 'Duty'));
-      var dv = el('div', 'val', String(c.duty)); dv.appendChild(el('small', null, pct(c.duty) + '%')); v2.appendChild(dv); vals.appendChild(v2);
-      var v3 = el('div'); v3.appendChild(el('div', 'lbl', 'RPM'));
-      v3.appendChild(el('div', 'val', c.rpm >= 0 ? String(c.rpm) : 'n/a')); vals.appendChild(v3);
-      card.appendChild(vals);
-      card.appendChild(el('div', 'card-sub', 'pwm' + c.pwm + ' · ' + (c.sensor || '-') + ' · target ' + c.target));
-      box.appendChild(card);
-    });
-    var extras = Object.keys(state.extra_temps || {});
-    if (extras.length) {
-      var card = el('div', 'card');
-      var head = el('div', 'card-head'); head.appendChild(el('span', 'card-name', 'other sensors')); card.appendChild(head);
-      var kv = el('dl', 'kv');
-      extras.sort().forEach(function (k) {
-        kv.appendChild(el('dt', null, k));
-        kv.appendChild(el('dd', tempClass(state.extra_temps[k]), fmtTemp(state.extra_temps[k])));
-      });
-      card.appendChild(kv);
-      box.appendChild(card);
-    }
-  }
+// overview
+const cards = {};
+function renderCards() {
+	const host = $('#cards');
+	const names = snap.channels.map(c => c.name);
+	for (const k of Object.keys(cards)) if (!names.includes(k)) { cards[k].el.remove(); delete cards[k]; }
+	snap.channels.forEach((c, i) => {
+		let k = cards[c.name];
+		if (!k) {
+			k = cards[c.name] = { el: h('div', { class: 'card ch' }) };
+			k.mode = h('span', { class: 'mode' }); k.dot = h('i', { class: 'dot' });
+			k.temp = h('div', { class: 'temp' }); k.duty = h('span', { class: 'v' }); k.bar = h('i'); k.tgt = h('b', { hidden: true }); k.rpm = h('span', { class: 'v' });
+			k.el.append(h('div', { class: 'top' }, chanHead(c, k.dot), k.mode), k.temp,
+				h('div', { class: 'row' }, h('span', { class: 'k' }, 'duty'), h('div', { class: 'bar-h' }, k.bar, k.tgt), k.duty),
+				h('div', { class: 'row' }, h('span', { class: 'k' }, 'fan'), h('span'), k.rpm));
+			host.append(k.el);
+		}
+		k.dot.style.background = `var(${seriesColor(i)})`;
+		const crit = critOf(c.name);
+		modeBadge(k.mode, c.mode);
+		k.temp.className = 'temp ' + tempClass(c.temp, crit);
+		clear(k.temp).append(fmtT(c.temp), h('small', null, unit() + (crit ? ` · crit ${fmtT(crit, 0)}` : '')));
+		k.bar.style.width = pct(c.duty) + '%'; k.bar.className = c.mode === 'critical' || c.mode === 'failsafe' ? 'crit' : c.mode === 'stall' ? 'stall' : c.mode === 'auto' ? 'auto' : '';
+		const slewing = c.target !== undefined && c.target !== c.duty && c.mode !== 'stall';
+		k.tgt.hidden = !slewing; k.tgt.style.left = `calc(${pct(c.target)}% - 1px)`;
+		clear(k.duty).append(`${pct(c.duty)} % `, h('span', { class: 'tg' }, `(${c.duty}${slewing ? ' → ' + c.target : ''})`));
+		k.rpm.textContent = c.rpm < 0 ? 'no tach' : c.rpm.toLocaleString('en') + ' rpm';
+	});
+	// extra sensors
+	const ex = clear($('#extra')); const et = Object.entries(snap.extra_temps || {});
+	if (!et.length) ex.append(h('span', { class: 'empty' }, 'none')); for (const [n, v] of et) ex.append(h('span', null, n, h('b', null, fmtT(v) + ' ' + unit())));
+	// hardware
+	const pr = profiles.find(p => p.name === snap.profile) || {};
+	const hw = clear($('#hw'));
+	for (const [k, v] of [['profile', `${snap.profile || '?'}${pr.title ? ' — ' + pr.title : ''}`], ['hwmon', snap.hwmon_path || '—'], ['verified', snap.verified ? 'yes, on real hardware' : 'no — from documentation'],
+		['notes', pr.notes || '—']]) hw.append(h('dt', null, k), h('dd', null, v));
+	// alerts
+	const al = clear($('#alerts')); const alerts = Object.entries(snap.alerts || {}).sort((a, b) => b[1] - a[1]);
+	if (!alerts.length) al.append(h('li', { class: 'empty' }, 'no alerts'));
+	for (const [t, ts] of alerts) al.append(h('li', null, h('span', { class: 'k ' + t }, t), h('time', { datetime: new Date(ts * 1000).toISOString(), title: new Date(ts * 1000).toLocaleString() }, rel(ts))));
+}
+function renderCharts() {
+	if (!snap) return;
+	const names = snap.channels.map(c => c.name);
+	const mk = (key, f) => names.map((n, i) => ({ name: n, color: seriesColor(i), data: hist.filter(p => p[key] && p[key][n] > -900).map(p => [p.ts, f ? f(p[key][n]) : p[key][n]]) }));
+	const legend = (el, ss) => { clear(el); for (const s of ss) { const i = h('i'); i.style.background = `var(${s.color})`; el.append(h('span', null, i, s.name)); } };
+	const ts = mk('temp', tC); legend($('#lg-temp'), ts);
+	chart($('#ch-temp'), ts, { fmt: (v, ax) => v.toFixed(ax ? 0 : 1) + (ax ? '' : ' ' + unit()), minSpan: 15 });
+	const fs = mk(fanMetric); legend($('#lg-fan'), fs);
+	$('#ch-fan-title').textContent = (fanMetric === 'rpm' ? 'Fan speed' : 'Duty') + ' · last 2 h';
+	chart($('#ch-fan'), fs, fanMetric === 'rpm' ? { fmt: (v, ax) => ax ? String(Math.round(v)) : Math.round(v) + ' rpm', yMin: 0, minSpan: 1000 } : { fmt: (v, ax) => ax ? String(Math.round(v)) : `${Math.round(v)} (${pct(v)} %)`, yMin: 0, yMax: 255 });
+}
+$$('.seg button').forEach(b => b.addEventListener('click', () => { fanMetric = b.dataset.metric; $$('.seg button').forEach(x => { x.classList.toggle('on', x === b); x.setAttribute('aria-pressed', x === b); }); renderCharts(); }));
 
-  function renderHardware(version) {
-    var dl = $('hw');
-    clear(dl);
-    var s = state || {};
-    var rows = [
-      ['Profile', s.profile || '-'],
-      ['Verification', s.verified ? 'verified on hardware' : 'from documentation - untested'],
-      ['hwmon path', s.hwmon_path || '-'],
-      ['Status', s.status || '-'],
-      ['Uptime', fmtUptime(s.uptime_s)],
-      ['Version', version || '-']
-    ];
-    rows.forEach(function (r) {
-      dl.appendChild(el('dt', null, r[0]));
-      var dd = el('dd');
-      if (r[0] === 'Verification') dd.appendChild(el('span', 'badge ' + (s.verified ? 'ok' : 'warn'), r[1]));
-      else dd.textContent = r[1];
-      dl.appendChild(dd);
-    });
-    var tb = $('alerts');
-    clear(tb);
-    var al = Object.keys(s.alerts || {});
-    $('alerts-none').hidden = al.length > 0;
-    al.sort(function (a, b) { return s.alerts[b] - s.alerts[a]; }).forEach(function (k) {
-      var tr = el('tr');
-      var td = el('td'); td.appendChild(el('span', 'badge crit', k)); tr.appendChild(td);
-      tr.appendChild(el('td', 'mono', fmtTime(s.alerts[k])));
-      tb.appendChild(tr);
-    });
-  }
+// curves
+const ED = {}; let edState = null, cvSensors = [];
+const tomlChannel = c => `[[channel]]\nname = "${c.name}"\npwm = ${c.pwm}\nsensor = "${c.sensor}"\ncurve = [${c.curve.map(p => `[${p[0]}, ${p[1]}]`).join(', ')}]\ncritical = ${c.critical}\nstop = ${c.stop === 'auto' || c.stop === '' || c.stop === undefined ? '"auto"' : c.stop}\n`;
+const stripChannels = raw => { const out = []; let skip = false;
+	for (const ln of raw.split('\n')) { const t = ln.trim();
+		if (/^\[\[channel\]\]/.test(t)) { skip = true; continue; }
+		if (/^\[[^\[]/.test(t)) skip = false;
+		if (!skip) out.push(ln); } return out.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd() + '\n\n'; };
+function loadEditor() {
+	edState = chList().map(c => ({ name: c.name, pwm: c.pwm, sensor: c.sensor, curve: (c.curve || []).map(p => [+p[0], +p[1]]), critical: +c.critical, stop: c.stop === undefined || c.stop === 'auto' ? 'auto' : String(c.stop) }));
+	const host = clear($('#editors')); for (const k in ED) delete ED[k];
+	$('#cv-notice').hidden = true;
+	edState.forEach((c, i) => {
+		const ed = ED[c.name] = { c, i };
+		const cv = h('canvas', { role: 'img', 'aria-label': `curve ${c.name}` });
+		const sel = h('select', { onchange: () => { c.sensor = sel.value; } });
+		const crit = h('input', { type: 'number', min: 30, max: 120, value: c.critical, oninput: () => { c.critical = +crit.value; ed.draw(); } });
+		const stop = h('input', { type: 'text', value: c.stop, placeholder: 'auto', oninput: () => { c.stop = stop.value.trim(); } });
+		const tbody = h('tbody');
+		const ref = REF[c.name] && snap && snap.profile === 'n5pro' ? h('p', { class: 'ref' }, 'Duty → RPM (measured): ', ...REF[c.name].flatMap(([d, r], j) => [j ? ' · ' : '', h('b', null, `${d}→${r}`)])) : null;
+		ed.sel = sel; ed.cv = cv; ed.tbody = tbody;
+		const fillTable = () => {
+			clear(tbody); c.curve.forEach((p, j) => tbody.append(h('tr', null,
+				h('td', null, h('input', { type: 'number', min: 0, max: 120, value: p[0], 'aria-label': `point ${j + 1} temp`, oninput: ev => { p[0] = +ev.target.value; ed.draw(); } })),
+				h('td', null, h('input', { type: 'number', min: 0, max: 255, value: p[1], 'aria-label': `point ${j + 1} duty`, oninput: ev => { p[1] = clamp(+ev.target.value, 0, 255); ed.draw(); } })),
+				h('td', null, h('button', { type: 'button', class: 'btn sm', disabled: c.curve.length <= 2, onclick: () => { c.curve.splice(j, 1); fillTable(); ed.draw(); } }, 'remove')))));
+			addBtn.disabled = c.curve.length >= 8;
+		};
+		const addBtn = h('button', { type: 'button', class: 'btn sm', onclick: () => { const l = c.curve[c.curve.length - 1]; c.curve.push([l[0] + 5, Math.min(255, l[1] + 20)]); fillTable(); ed.draw(); } }, '+ add point');
+		host.append(h('div', { class: 'card ed' },
+			h('div', { class: 'top' }, chanHead(c),
+				h('label', null, 'sensor', sel), h('label', null, 'critical °C', crit), h('label', null, 'stop', stop)),
+			h('div', { class: 'cvs' }, cv),
+			h('div', { class: 'pts' }, h('table', null, h('thead', null, h('tr', null, h('th', null, '°C'), h('th', null, 'duty'), h('th'))), tbody), addBtn),
+			ref));
+		fillTable();
+		ed.draw = () => drawCurve(ed);
+		bindCurveDrag(ed);
+		new ResizeObserver(ed.draw).observe(cv.parentNode);
+	});
+	fillSensorSelects();
+}
+function fillSensorSelects() {
+	for (const k in ED) { const { c, sel } = ED[k]; const ids = new Set(cvSensors.map(s => s.id || s)); ids.add(c.sensor); clear(sel);
+		for (const id of ids) { const s = cvSensors.find(x => (x.id || x) === id); sel.append(h('option', { value: id, selected: id === c.sensor }, id + (s && s.temp !== undefined ? ` (${fmtT(s.temp)} ${unit()})` : ''))); } }
+}
+const curveGeom = ed => { const W = ed.cv.clientWidth, H = ed.cv.clientHeight, pad = { l: 34, r: 12, t: 10, b: 22 };
+	const xmax = Math.max(100, (ed.c.critical || 0) + 10);
+	return { W, H, pad, xmax, X: t => pad.l + t / xmax * (W - pad.l - pad.r), Y: d => pad.t + (1 - d / 255) * (H - pad.t - pad.b),
+		T: x => (x - pad.l) / (W - pad.l - pad.r) * xmax, D: y => (1 - (y - pad.t) / (H - pad.t - pad.b)) * 255 }; };
+function drawCurve(ed) {
+	const { cv, c } = ed, dpr = window.devicePixelRatio || 1, g = curveGeom(ed); if (!g.W) return;
+	cv.width = g.W * dpr; cv.height = g.H * dpr; const ctx = cv.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+	ctx.fillStyle = cssVar('--bg'); ctx.fillRect(0, 0, g.W, g.H);
+	ctx.font = '11px system-ui'; ctx.fillStyle = cssVar('--fg3'); ctx.strokeStyle = cssVar('--line'); ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+	for (let d = 0; d <= 255; d += 51) { const y = Math.round(g.Y(d)) + .5; seg(ctx, g.pad.l, y, g.W - g.pad.r, y); ctx.fillText(pct(d) + '%', g.pad.l - 5, y); }
+	ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+	for (let t = 0; t <= g.xmax; t += 20) { const x = Math.round(g.X(t)) + .5; seg(ctx, x, g.pad.t, x, g.H - g.pad.b); ctx.fillText(fmtT(t, 0) + '°', x, g.H - g.pad.b + 5); }
+	if (c.critical) { const x = Math.round(g.X(c.critical)) + .5; ctx.strokeStyle = cssVar('--crit'); seg(ctx, x, g.pad.t, x, g.H - g.pad.b, [4, 3]);
+		ctx.fillStyle = cssVar('--crit'); ctx.textAlign = 'right'; ctx.fillText('crit', x - 3, g.pad.t); }
+	const col = cssVar(seriesColor(ed.i)), pts = c.curve.slice().sort((a, b) => a[0] - b[0]);
+	ctx.beginPath(); ctx.moveTo(g.X(0), g.Y(pts[0][1]));
+	for (const p of pts) ctx.lineTo(g.X(clamp(p[0], 0, g.xmax)), g.Y(clamp(p[1], 0, 255)));
+	ctx.lineTo(g.X(g.xmax), g.Y(pts[pts.length - 1][1]));
+	ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.stroke();
+	ctx.lineTo(g.X(g.xmax), g.Y(0)); ctx.lineTo(g.X(0), g.Y(0)); ctx.closePath(); ctx.globalAlpha = .1; ctx.fillStyle = col; ctx.fill(); ctx.globalAlpha = 1;
+	for (const p of pts) dot(ctx, g.X(clamp(p[0], 0, g.xmax)), g.Y(clamp(p[1], 0, 255)), col);
+	const live = snap && snap.channels.find(x => x.name === c.name);
+	if (live && live.temp > -900) { const x = g.X(clamp(live.temp, 0, g.xmax)), y = g.Y(interp(pts, live.temp));
+		ctx.strokeStyle = cssVar('--fg2'); seg(ctx, x, g.pad.t, x, g.H - g.pad.b, [2, 3]);
+		dot(ctx, x, y, cssVar('--fg'));
+		ctx.fillStyle = cssVar('--fg2'); ctx.textAlign = x > g.W / 2 ? 'right' : 'left'; ctx.textBaseline = 'bottom'; ctx.fillText(`now ${fmtT(live.temp)}${unit()} → ${Math.round(interp(pts, live.temp))}`, x + (x > g.W / 2 ? -8 : 8), y - 6); }
+}
+function bindCurveDrag(ed) {
+	const { cv, c } = ed; let drag = -1;
+	const pos = ev => { const r = cv.getBoundingClientRect(); return [ev.clientX - r.left, ev.clientY - r.top]; };
+	cv.addEventListener('pointerdown', ev => { const g = curveGeom(ed), [x, y] = pos(ev); let best = 14, bi = -1;
+		c.curve.forEach((p, i) => { const d = Math.hypot(g.X(p[0]) - x, g.Y(p[1]) - y); if (d < best) { best = d; bi = i; } });
+		if (bi >= 0) { drag = bi; cv.setPointerCapture(ev.pointerId); ev.preventDefault(); } });
+	cv.addEventListener('pointermove', ev => { if (drag < 0) return; const g = curveGeom(ed), [x, y] = pos(ev);
+		const lo = drag ? c.curve[drag - 1][0] + 1 : 0, hi = drag < c.curve.length - 1 ? c.curve[drag + 1][0] - 1 : g.xmax;
+		c.curve[drag] = [clamp(Math.round(g.T(x)), lo, hi), clamp(Math.round(g.D(y)), 0, 255)];
+		const row = ed.tbody.rows[drag]; if (row) { row.cells[0].firstChild.value = c.curve[drag][0]; row.cells[1].firstChild.value = c.curve[drag][1]; } ed.draw(); });
+	const up = () => { drag = -1; }; cv.addEventListener('pointerup', up); cv.addEventListener('pointercancel', up);
+}
+const validateCurves = () => { const errs = [];
+	for (const c of edState) { const n = c.curve.length; if (n < 2 || n > 8) errs.push(`${c.name}: ${n} points (need 2..8)`);
+		for (let i = 1; i < n; i++) if (c.curve[i][0] <= c.curve[i - 1][0]) errs.push(`${c.name}: temps must ascend (point ${i + 1})`);
+		for (const p of c.curve) if (!Number.isFinite(p[0]) || !Number.isFinite(p[1]) || p[1] < 0 || p[1] > 255) errs.push(`${c.name}: bad point [${p}]`);
+		if (!(c.critical > 0)) errs.push(`${c.name}: critical missing`);
+		if (c.stop !== 'auto' && !(/^\d+$/.test(c.stop) && +c.stop <= 255)) errs.push(`${c.name}: stop must be "auto" or 0..255`); }
+	return errs; };
+$('#cv-apply').addEventListener('click', async () => {
+	const n = $('#cv-notice'), errs = validateCurves();
+	if (errs.length) { n.hidden = false; n.className = 'notice err'; n.textContent = errs.join('\n'); return; }
+	const body = stripChannels(cfgRaw) + edState.map(tomlChannel).join('\n');
+	try { const r = await api('/api/config', { method: 'PUT', body, headers: { 'Content-Type': 'application/toml' } });
+		const warn = r.body && Array.isArray(r.body.warnings) && r.body.warnings.length ? 'Daemon replaced invalid values by defaults:\n' + r.body.warnings.join('\n') : '';
+		n.hidden = r.status !== 202 && !warn; n.className = 'notice'; n.textContent = (r.status === 202 ? 'Saved — restart required (channel set or profile changed): systemctl restart pvefand\n' : '') + warn;
+		toast(r.status === 202 ? 'Config written, restart required' : warn ? 'Applied with warnings' : 'Curves applied', warn ? 'warn' : 'ok'); await loadConfig(); loadEditor();
+	} catch (e) { n.hidden = false; n.className = 'notice err'; n.textContent = e.message; toast('Rejected', 'err'); }
+});
+$('#cv-revert').addEventListener('click', () => { loadEditor(); toast('Reverted', ''); });
 
-  /* ---------- canvas charts ---------- */
-  function setupCanvas(cv) {
-    var dpr = window.devicePixelRatio || 1;
-    var w = cv.clientWidth || 400, h = cv.clientHeight || 180;
-    if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) {
-      cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
-    }
-    var ctx = cv.getContext('2d');
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, w, h);
-    return { ctx: ctx, w: w, h: h };
-  }
-  var chartEls = {};
-  function renderCharts() {
-    if (!state || !$('tab-overview').classList.contains('active')) return;
-    var box = $('charts');
-    var names = state.channels.map(function (c) { return c.name; });
-    var stale = Object.keys(chartEls).filter(function (n) { return names.indexOf(n) < 0; });
-    stale.forEach(function (n) { box.removeChild(chartEls[n].wrap); delete chartEls[n]; });
-    names.forEach(function (n) {
-      if (!chartEls[n]) {
-        var wrap = el('div', 'chart');
-        var h4 = el('h4', null, n + ' ');
-        var lg = el('span', 'legend'); lg.appendChild(el('span', 'temp', '— temp °C')); lg.appendChild(document.createTextNode('  '));
-        lg.appendChild(el('span', 'rpm', '— rpm')); lg.appendChild(document.createTextNode('  '));
-        lg.appendChild(el('span', 'duty', '· · duty %'));
-        h4.appendChild(lg); wrap.appendChild(h4);
-        var cv = el('canvas'); wrap.appendChild(cv);
-        box.appendChild(wrap);
-        chartEls[n] = { wrap: wrap, cv: cv };
-      }
-      drawHistory(chartEls[n].cv, n);
-    });
-  }
-  function drawHistory(cv, name) {
-    var c = setupCanvas(cv), ctx = c.ctx, w = c.w, h = c.h;
-    var padL = 34, padR = 44, padT = 8, padB = 18;
-    var pw = w - padL - padR, ph = h - padT - padB;
-    var now = Math.floor(Date.now() / 1000), t0 = now - HISTORY_MIN * 60;
-    var pts = history.filter(function (p) { return p.ts >= t0; });
-    var temps = [], rpms = [];
-    pts.forEach(function (p) {
-      var t = p.temp && p.temp[name], r = p.rpm && p.rpm[name];
-      if (t !== undefined && t > -900) temps.push(t);
-      if (r !== undefined && r >= 0) rpms.push(r);
-    });
-    var tMin = temps.length ? Math.min.apply(null, temps) : 20, tMax = temps.length ? Math.max.apply(null, temps) : 80;
-    tMin = Math.floor((tMin - 5) / 10) * 10; tMax = Math.ceil((tMax + 5) / 10) * 10; if (tMax - tMin < 20) tMax = tMin + 20;
-    var rMax = rpms.length ? Math.max.apply(null, rpms) : 0; rMax = Math.max(500, Math.ceil(rMax / 500) * 500);
-    var css = getComputedStyle(document.documentElement);
-    var colLine = css.getPropertyValue('--line').trim(), colFg2 = css.getPropertyValue('--fg2').trim();
-    var colT = css.getPropertyValue('--temp').trim(), colR = css.getPropertyValue('--rpm').trim(), colD = css.getPropertyValue('--duty').trim();
-    var x = function (ts) { return padL + (ts - t0) / (HISTORY_MIN * 60) * pw; };
-    var yT = function (t) { return padT + (1 - (t - tMin) / (tMax - tMin)) * ph; };
-    var yR = function (r) { return padT + (1 - r / rMax) * ph; };
-    var yD = function (d) { return padT + (1 - d / 255) * ph; };
-    ctx.font = '10px system-ui, sans-serif'; ctx.strokeStyle = colLine; ctx.fillStyle = colFg2; ctx.lineWidth = 1;
-    // grid + left axis (temp), right axis (rpm)
-    for (var i = 0; i <= 4; i++) {
-      var yy = padT + ph * i / 4;
-      ctx.beginPath(); ctx.moveTo(padL, yy + .5); ctx.lineTo(w - padR, yy + .5); ctx.stroke();
-      ctx.textAlign = 'right'; ctx.fillText(String(Math.round(tMax - (tMax - tMin) * i / 4)), padL - 4, yy + 3);
-      ctx.textAlign = 'left'; ctx.fillText(String(Math.round(rMax - rMax * i / 4)), w - padR + 4, yy + 3);
-    }
-    // x ticks every 30 min
-    ctx.textAlign = 'center';
-    for (var m = 0; m <= HISTORY_MIN; m += 30) {
-      var ts = t0 + m * 60, xx = x(ts);
-      ctx.beginPath(); ctx.moveTo(xx + .5, padT); ctx.lineTo(xx + .5, padT + ph); ctx.stroke();
-      var d = new Date(ts * 1000);
-      ctx.fillText(('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2), xx, h - 5);
-    }
-    if (!pts.length) { ctx.textAlign = 'center'; ctx.fillText('no history yet', padL + pw / 2, padT + ph / 2); return; }
-    function line(color, getY, dashed) {
-      ctx.strokeStyle = color; ctx.lineWidth = dashed ? 1 : 1.6; ctx.setLineDash(dashed ? [3, 3] : []);
-      ctx.beginPath(); var open = false;
-      pts.forEach(function (p) {
-        var y = getY(p);
-        if (y === null) { open = false; return; }
-        if (!open) { ctx.moveTo(x(p.ts), y); open = true; } else ctx.lineTo(x(p.ts), y);
-      });
-      ctx.stroke(); ctx.setLineDash([]);
-    }
-    line(colD, function (p) { var v = p.duty && p.duty[name]; return v === undefined ? null : yD(v); }, true);
-    line(colR, function (p) { var v = p.rpm && p.rpm[name]; return (v === undefined || v < 0) ? null : yR(v); }, false);
-    line(colT, function (p) { var v = p.temp && p.temp[name]; return (v === undefined || v <= -900) ? null : yT(v); }, false);
-  }
+// manual
+const MN = {};
+function renderManual() {
+	const host = $('#manual');
+	for (const c of snap.channels) {
+		let m = MN[c.name];
+		if (!m) {
+			const cc = chList().find(x => x.name === c.name) || c, min = minDuty(cc);
+			m = MN[c.name] = {}; m.val = h('div', { class: 'val' }); m.mode = h('span', { class: 'mode' }); m.warn = h('div', { class: 'warn' });
+			m.range = h('input', { type: 'range', min: 0, max: 255, value: c.duty, id: 'rg-' + c.name, oninput: () => { m.dirty = 1; m.show(+m.range.value); } });
+			m.show = v => { clear(m.val).append(pct(v) + ' %', h('small', null, `${v}/255`)); m.warn.textContent = min && v < min ? `HDD-like channel: minimum ${min} (EC stops regulating it; the daemon refuses lower values).` : ''; };
+			m.set = h('button', { class: 'btn primary', onclick: async () => { const v = +m.range.value; m.dirty = 0;
+				if (min && v < min) return toast(`${c.name}: duty below ${min} refused`, 'warn');
+				await act(() => api('/api/override/' + c.name, { method: 'PUT', json: { duty: v } }), `${c.name}: manual ${v} (${pct(v)} %)`); poll(); } }, 'Set');
+			m.auto = h('button', { class: 'btn', onclick: async () => { m.dirty = 0; await act(() => api('/api/override/' + c.name, { method: 'DELETE' }), `${c.name}: back to auto`); poll(); } }, 'Back to auto');
+			m.cur = h('span', { class: 'hint' });
+			host.append(h('div', { class: 'card mn' }, h('div', { class: 'top' }, chanHead(c), m.mode),
+				m.val, h('label', { for: 'rg-' + c.name, class: 'sr' }, `${c.name} duty`), m.range, m.warn, h('div', { class: 'act' }, m.set, m.auto, m.cur)));
+			m.show(c.duty);
+		}
+		modeBadge(m.mode, c.mode);
+		m.cur.textContent = `current ${c.duty} · ${c.rpm < 0 ? 'no tach' : c.rpm + ' rpm'}`;
+		if (c.mode !== 'manual' && !m.dirty) { m.range.value = c.duty; m.show(c.duty); }
+	}
+}
 
-  function drawCurve(cv, ch) {
-    var c = setupCanvas(cv), ctx = c.ctx, w = c.w, h = c.h;
-    var padL = 30, padR = 10, padT = 8, padB = 18, pw = w - padL - padR, ph = h - padT - padB;
-    var css = getComputedStyle(document.documentElement);
-    var colLine = css.getPropertyValue('--line').trim(), colFg2 = css.getPropertyValue('--fg2').trim();
-    var colAcc = css.getPropertyValue('--acc').trim(), colCrit = css.getPropertyValue('--crit').trim(), colT = css.getPropertyValue('--temp').trim();
-    var x = function (t) { return padL + t / 100 * pw; }, y = function (d) { return padT + (1 - d / 255) * ph; };
-    ctx.font = '10px system-ui, sans-serif'; ctx.strokeStyle = colLine; ctx.fillStyle = colFg2; ctx.lineWidth = 1;
-    for (var i = 0; i <= 4; i++) {
-      var yy = padT + ph * i / 4; ctx.beginPath(); ctx.moveTo(padL, yy + .5); ctx.lineTo(w - padR, yy + .5); ctx.stroke();
-      ctx.textAlign = 'right'; ctx.fillText(String(Math.round(100 - 25 * i)) + '%', padL - 3, yy + 3);
-    }
-    ctx.textAlign = 'center';
-    for (var t = 0; t <= 100; t += 20) { ctx.beginPath(); ctx.moveTo(x(t) + .5, padT); ctx.lineTo(x(t) + .5, padT + ph); ctx.stroke(); ctx.fillText(t + '°', x(t), h - 5); }
-    var pts = ch.curve.filter(function (p) { return isFinite(p[0]) && isFinite(p[1]); }).slice().sort(function (a, b) { return a[0] - b[0]; });
-    if (pts.length) {
-      ctx.strokeStyle = colAcc; ctx.lineWidth = 2; ctx.beginPath();
-      ctx.moveTo(x(0), y(pts[0][1]));
-      pts.forEach(function (p) { ctx.lineTo(x(Math.min(100, Math.max(0, p[0]))), y(p[1])); });
-      ctx.lineTo(x(100), y(pts[pts.length - 1][1])); ctx.stroke();
-      ctx.fillStyle = colAcc;
-      pts.forEach(function (p) { ctx.beginPath(); ctx.arc(x(p[0]), y(p[1]), 3.5, 0, Math.PI * 2); ctx.fill(); });
-    }
-    if (isFinite(ch.critical) && ch.critical > 0) {
-      ctx.strokeStyle = colCrit; ctx.setLineDash([4, 3]); ctx.beginPath(); ctx.moveTo(x(ch.critical) + .5, padT); ctx.lineTo(x(ch.critical) + .5, padT + ph); ctx.stroke(); ctx.setLineDash([]);
-    }
-    var live = state && state.channels.filter(function (c) { return c.name === ch.name; })[0];
-    if (live && live.temp > -900) {
-      ctx.fillStyle = colT; ctx.beginPath(); ctx.arc(x(live.temp), y(live.duty), 4.5, 0, Math.PI * 2); ctx.fill();
-    }
-  }
+// presets
+const chanSummary = chs => Array.isArray(chs) ? chs.map(c => typeof c === 'string' ? c : `${c.name}: ${(c.curve || []).map(p => p.join('/')).join(' ')}${c.critical ? ' crit ' + c.critical : ''}`).join(' · ') : String(chs || '');
+async function loadPresets() {
+	const host = $('#presets'); try {
+		const r = await api('/api/presets'); const list = Array.isArray(r.body) ? r.body : r.body.presets || []; clear(host);
+		if (!list.length) host.append(h('p', { class: 'empty' }, 'No presets yet — save the current curves to create one.'));
+		for (const p of list) host.append(h('div', { class: 'card ps' }, h('span', { class: 'name' }, p.name), h('span', { class: 'sum' }, chanSummary(p.channels)),
+			h('button', { class: 'btn', onclick: async () => { if (!confirm(`Apply preset “${p.name}”? Curves change immediately.`)) return;
+				const r = await act(() => api(`/api/presets/${encodeURIComponent(p.name)}/apply`, { method: 'POST' }), `Preset ${p.name} applied`); if (!r) return;
+				const n = $('#ps-notice'); n.hidden = r.status !== 202; n.textContent = 'Preset written — restart required: systemctl restart pvefand'; await loadConfig(); loadEditor(); } }, 'Apply')));
+	} catch (e) { clear(host).append(h('p', { class: 'empty' }, 'presets: ' + e.message)); }
+}
+$('#ps-save').addEventListener('submit', async ev => { ev.preventDefault(); const n = $('#ps-name').value.trim();
+	if (await act(() => api('/api/presets/' + encodeURIComponent(n), { method: 'PUT' }), `Saved current curves as “${n}”`)) { $('#ps-name').value = ''; loadPresets(); } });
 
-  /* ---------- TOML [[channel]] block handling ---------- */
-  function stripComment(s) {
-    var q = false, out = '';
-    for (var i = 0; i < s.length; i++) {
-      var ch = s[i];
-      if (ch === '"' && s[i - 1] !== '\\') q = !q;
-      if (ch === '#' && !q) break;
-      out += ch;
-    }
-    return out;
-  }
-  function unquote(v) {
-    v = v.trim();
-    if ((v[0] === '"' && v[v.length - 1] === '"') || (v[0] === "'" && v[v.length - 1] === "'")) return v.slice(1, -1);
-    return v;
-  }
-  function splitToml(text) {
-    var lines = text.split(/\r?\n/), blocks = [], cur = { header: null, lines: [] };
-    lines.forEach(function (ln) {
-      var m = ln.match(/^\s*(\[\[?\s*[A-Za-z0-9_."'-]+\s*\]\]?)\s*(#.*)?$/);
-      if (m) { blocks.push(cur); cur = { header: m[1].replace(/\s+/g, ''), lines: [] }; }
-      else cur.lines.push(ln);
-    });
-    blocks.push(cur);
-    return blocks;
-  }
-  function parseChannel(lines) {
-    var ch = { name: '', pwm: 1, sensor: '', curve: [], critical: '', stop: 'auto', extra: [] };
-    var i = 0;
-    while (i < lines.length) {
-      var raw = lines[i], s = stripComment(raw).trim(); i++;
-      if (!s) continue;
-      var m = s.match(/^([A-Za-z0-9_-]+)\s*=\s*(.*)$/);
-      if (!m) { ch.extra.push(raw); continue; }
-      var k = m[1], v = m[2].trim();
-      if (k === 'curve') {
-        // arrays may span lines: accumulate until brackets balance
-        var depth = 0, acc = v, guard = 0;
-        var count = function (str) { for (var j = 0; j < str.length; j++) { if (str[j] === '[') depth++; else if (str[j] === ']') depth--; } };
-        count(acc);
-        while (depth > 0 && i < lines.length && guard++ < 50) { var nx = stripComment(lines[i]).trim(); i++; acc += nx; count(nx); }
-        try { ch.curve = JSON.parse(acc.replace(/,\s*\]/g, ']')); } catch (e) { ch.extra.push(raw); }
-      } else if (k === 'name' || k === 'sensor') ch[k] = unquote(v);
-      else if (k === 'pwm' || k === 'critical') ch[k] = parseInt(v, 10);
-      else if (k === 'stop') ch.stop = unquote(v);
-      else ch.extra.push(raw);
-    }
-    while (ch.extra.length && !ch.extra[ch.extra.length - 1].trim()) ch.extra.pop();
-    return ch;
-  }
-  function renderChannelToml(ch) {
-    var out = ['[[channel]]', 'name = "' + ch.name + '"', 'pwm = ' + ch.pwm, 'sensor = "' + ch.sensor + '"',
-      'curve = [' + ch.curve.map(function (p) { return '[' + p[0] + ', ' + p[1] + ']'; }).join(', ') + ']',
-      'critical = ' + ch.critical, 'stop = ' + (/^\d+$/.test(String(ch.stop)) ? ch.stop : '"' + ch.stop + '"')];
-    return out.concat(ch.extra).join('\n');
-  }
-  function assembleToml() {
-    var out = [], ci = 0;
-    tomlBlocks.forEach(function (b) {
-      if (b.header === '[[channel]]') { out.push(renderChannelToml(curveForm[ci++]) + '\n'); return; }
-      var txt = (b.header !== null ? b.header + '\n' : '') + b.lines.join('\n');
-      if (txt.trim() !== '' || b.header !== null) out.push(txt.replace(/\s+$/, '') + '\n');
-    });
-    return out.join('\n');
-  }
+// log
+let logLines = [];
+const logLine = l => { if (typeof l === 'string') return l; const ts = l.ts || (l.__REALTIME_TIMESTAMP && +l.__REALTIME_TIMESTAMP / 1e6);
+	return (ts ? new Date(ts * 1000).toISOString().slice(0, 19) + ' ' : '') + (l.level ? l.level + ' ' : '') + (l.msg || l.message || l.MESSAGE || JSON.stringify(l)); };
+async function loadLog() {
+	try { const r = await api('/api/log?lines=200'); const b = r.body;
+		logLines = (Array.isArray(b) ? b : b && b.lines ? b.lines : String(b || '').split('\n').filter(Boolean)).map(logLine); renderLog();
+	} catch (e) { $('#log').textContent = 'log: ' + e.message; }
+}
+function renderLog() {
+	const q = $('#lg-filter').value.toLowerCase(), pre = clear($('#log'));
+	for (const l of logLines) { if (q && !l.toLowerCase().includes(q)) continue;
+		pre.append(h('span', { class: /error|fail/i.test(l) ? 'e' : /warn/i.test(l) ? 'w' : '' }, l + '\n')); }
+	if ($('#lg-auto').checked) pre.scrollTop = pre.scrollHeight;
+}
+$('#lg-filter').addEventListener('input', renderLog); $('#lg-refresh').addEventListener('click', loadLog);
 
-  /* ---------- curves tab ---------- */
-  function loadCurves() {
-    return get('/api/config').then(function (cfg) {
-      $('raw').value = cfg.raw || '';
-      tomlBlocks = splitToml(cfg.raw || '');
-      curveForm = tomlBlocks.filter(function (b) { return b.header === '[[channel]]'; }).map(function (b) { return parseChannel(b.lines); });
-      renderCurves();
-    }).catch(function (e) { toast('load config: ' + e.message, 'err'); });
-  }
-  function renderCurves() {
-    var box = $('curves');
-    clear(box);
-    if (!curveForm.length) { box.appendChild(el('p', 'muted', 'No [[channel]] tables in config. Use the raw editor to add channels (restart required).')); return; }
-    curveForm.forEach(function (ch, idx) {
-      var card = el('div', 'curve');
-      card.appendChild(el('h4', null, (ch.name || 'channel ' + (idx + 1)) + ' (pwm' + ch.pwm + ')'));
-      var cv = el('canvas'); card.appendChild(cv);
-      var f = el('div', 'fields');
-      f.appendChild(el('label', null, 'Sensor'));
-      var sel = el('select'); var known = false;
-      sensors.forEach(function (s) { var o = el('option', null, s.id + (s.description ? ' - ' + s.description : '')); o.value = s.id; if (s.id === ch.sensor) { o.selected = true; known = true; } sel.appendChild(o); });
-      if (!known) { var o = el('option', null, ch.sensor || '(none)'); o.value = ch.sensor; o.selected = true; sel.appendChild(o); }
-      sel.onchange = function () { ch.sensor = sel.value; };
-      f.appendChild(sel);
-      f.appendChild(el('label', null, 'Critical °C'));
-      var crit = el('input'); crit.type = 'number'; crit.min = 30; crit.max = 120; crit.value = ch.critical;
-      crit.oninput = function () { ch.critical = parseInt(crit.value, 10); drawCurve(cv, ch); };
-      f.appendChild(crit);
-      f.appendChild(el('label', null, 'Stop'));
-      var stop = el('input'); stop.type = 'text'; stop.value = ch.stop; stop.placeholder = 'auto or 0..255';
-      stop.oninput = function () { ch.stop = stop.value.trim(); };
-      f.appendChild(stop);
-      card.appendChild(f);
-      var tbl = el('table', 'pts');
-      var thead = el('tr'); ['Temp °C', 'Duty (0-255)', '%', ''].forEach(function (t) { thead.appendChild(el('th', null, t)); }); tbl.appendChild(thead);
-      function rows() {
-        while (tbl.rows.length > 1) tbl.deleteRow(1);
-        ch.curve.forEach(function (p, pi) {
-          var tr = el('tr');
-          var tdT = el('td'), inT = el('input'); inT.type = 'number'; inT.min = -20; inT.max = 120; inT.value = p[0];
-          inT.oninput = function () { p[0] = parseFloat(inT.value); drawCurve(cv, ch); }; tdT.appendChild(inT); tr.appendChild(tdT);
-          var tdD = el('td'), inD = el('input'), pc = el('td', 'mono', pct(p[1]) + '%'); inD.type = 'number'; inD.min = 0; inD.max = 255; inD.value = p[1];
-          inD.oninput = function () { p[1] = parseInt(inD.value, 10); pc.textContent = isFinite(p[1]) ? pct(p[1]) + '%' : '-'; drawCurve(cv, ch); }; tdD.appendChild(inD); tr.appendChild(tdD);
-          tr.appendChild(pc);
-          var tdX = el('td', 'del'), bx = el('button', 'btn small', '×'); bx.type = 'button'; bx.title = 'remove point';
-          bx.onclick = function () { ch.curve.splice(pi, 1); rows(); drawCurve(cv, ch); }; tdX.appendChild(bx); tr.appendChild(tdX);
-          tbl.appendChild(tr);
-        });
-      }
-      rows();
-      card.appendChild(tbl);
-      var add = el('button', 'btn small', '+ point'); add.type = 'button';
-      add.onclick = function () {
-        if (ch.curve.length >= 8) { toast('max 8 points', 'err'); return; }
-        var last = ch.curve[ch.curve.length - 1] || [40, 80];
-        ch.curve.push([Math.min(100, last[0] + 10), Math.min(255, last[1] + 40)]); rows(); drawCurve(cv, ch);
-      };
-      var act = el('div', 'actions'); act.appendChild(add); card.appendChild(act);
-      box.appendChild(card);
-      requestAnimationFrame(function () { drawCurve(cv, ch); });
-    });
-  }
-  function validateCurves() {
-    for (var i = 0; i < curveForm.length; i++) {
-      var ch = curveForm[i], n = ch.name || ('channel ' + (i + 1));
-      if (ch.curve.length < 2 || ch.curve.length > 8) return n + ': 2..8 curve points required';
-      for (var j = 0; j < ch.curve.length; j++) {
-        var p = ch.curve[j];
-        if (!isFinite(p[0]) || !isFinite(p[1]) || p[1] < 0 || p[1] > 255) return n + ': invalid point ' + (j + 1);
-        if (j > 0 && p[0] <= ch.curve[j - 1][0]) return n + ': temperatures must ascend';
-      }
-      if (!isFinite(ch.critical) || ch.critical < 30 || ch.critical > 120) return n + ': critical must be 30..120';
-      if (!(ch.stop === 'auto' || (/^\d+$/.test(ch.stop) && +ch.stop <= 255))) return n + ': stop must be "auto" or 0..255';
-    }
-    return null;
-  }
-  function putConfig(text) {
-    return api('PUT', '/api/config', text, true).then(function (r) {
-      var note = $('curves-note');
-      if (r.status === 202 || (r.data && r.data.restart_required)) {
-        note.hidden = false; note.className = 'note'; note.textContent = 'Config saved. Restart required: ' + ((r.data && r.data.message) || 'channel set or profile changed') + ' - run: systemctl restart pvefand';
-        toast('saved, restart required', 'ok');
-      } else {
-        note.hidden = false; note.className = 'note ok'; note.textContent = 'Config saved and reloaded.';
-        toast('config applied', 'ok');
-      }
-      tomlBlocks = null;
-      return loadCurves();
-    }).catch(function (e) { toast(e.message, 'err'); });
-  }
-  $('curves-apply').onclick = function () {
-    var err = validateCurves();
-    if (err) { toast(err, 'err'); return; }
-    putConfig(assembleToml());
-  };
-  $('curves-reload').onclick = function () { tomlBlocks = null; loadCurves(); };
-  $('raw-save').onclick = function () { putConfig($('raw').value); };
-  $('raw-from-form').onclick = function () {
-    var err = validateCurves(); if (err) { toast(err, 'err'); return; }
-    $('raw').value = assembleToml(); toast('raw text regenerated - not saved yet');
-  };
+// compatibility
+function renderProfiles() {
+	const tb = clear($('#profiles tbody'));
+	for (const p of profiles) { const act = snap && snap.profile === p.name;
+		tb.append(h('tr', { class: act ? 'active' : '' }, h('td', { class: 'mono' }, p.name, act ? h('span', { class: 'act' }, 'ACTIVE') : null), h('td', null, p.title || ''),
+			h('td', null, h('span', { class: 'badge ' + (p.verified ? 'ok' : 'warn') }, p.verified ? 'verified on hardware' : 'from documentation · untested')), h('td', null, p.notes || ''))); }
+}
 
-  /* ---------- manual tab ---------- */
-  var manualEls = {};
-  function renderManual() {
-    var box = $('manual');
-    if (!state) { clear(box); manualEls = {}; box.appendChild(el('p', 'muted', 'Daemon not reachable.')); return; }
-    if (box.firstChild && box.firstChild.tagName === 'P') { clear(box); manualEls = {}; }
-    var names = state.channels.map(function (c) { return c.name; });
-    Object.keys(manualEls).forEach(function (n) { if (names.indexOf(n) < 0) { box.removeChild(manualEls[n].wrap); delete manualEls[n]; } });
-    state.channels.forEach(function (c) {
-      var m = manualEls[c.name];
-      if (!m) {
-        var wrap = el('div', 'mch');
-        var head = el('div', 'head'); head.appendChild(el('b', null, c.name)); var badge = el('span', 'badge'); head.appendChild(badge); wrap.appendChild(head);
-        var range = el('input'); range.type = 'range'; range.min = 0; range.max = 255; range.value = c.duty; wrap.appendChild(range);
-        var vals = el('div', 'vals'); var cur = el('span'); var sel = el('span'); vals.appendChild(cur); vals.appendChild(sel); wrap.appendChild(vals);
-        var act = el('div', 'actions');
-        var apply = el('button', 'btn primary', 'Apply'); var autoB = el('button', 'btn', 'Auto');
-        act.appendChild(apply); act.appendChild(autoB); wrap.appendChild(act);
-        m = manualEls[c.name] = { wrap: wrap, badge: badge, range: range, cur: cur, sel: sel, apply: apply, autoB: autoB, touched: false };
-        range.oninput = function () { m.touched = true; m.sel.textContent = 'selected ' + range.value + ' (' + pct(+range.value) + '%)'; };
-        apply.onclick = function () {
-          api('PUT', '/api/override/' + encodeURIComponent(c.name), { duty: parseInt(range.value, 10) })
-            .then(function () { m.touched = false; toast(c.name + ' → manual ' + range.value, 'ok'); return refresh(); })
-            .catch(function (e) { toast(e.message, 'err'); });
-        };
-        autoB.onclick = function () {
-          api('DELETE', '/api/override/' + encodeURIComponent(c.name))
-            .then(function () { m.touched = false; toast(c.name + ' → auto', 'ok'); return refresh(); })
-            .catch(function (e) { toast(e.message, 'err'); });
-        };
-        box.appendChild(wrap);
-      }
-      m.badge.textContent = c.mode; m.badge.className = 'badge ' + modeClass(c.mode);
-      var curTxt = el('span'); curTxt.appendChild(document.createTextNode('current ')); curTxt.appendChild(el('b', null, c.duty + ' (' + pct(c.duty) + '%)'));
-      curTxt.appendChild(document.createTextNode(c.rpm >= 0 ? ' · ' + c.rpm + ' rpm' : '')); clear(m.cur); m.cur.appendChild(curTxt);
-      if (!m.touched) { m.range.value = c.duty; m.sel.textContent = c.mode === 'manual' ? 'override active' : 'following curve'; }
-      m.autoB.disabled = c.mode !== 'manual';
-    });
-  }
+// loading & polling
+async function loadConfig() {
+	try { const r = await api('/api/config'); const b = r.body;
+		cfgRaw = b.raw || ''; cfg = b.config || { channel: [] };
+	} catch (e) { toast('config: ' + e.message, 'err'); }
+}
+async function loadHistory() {
+	try { const r = await api('/api/history?minutes=120' + (lastTs ? '&since=' + lastTs : ''));
+		const pts = (Array.isArray(r.body) ? r.body : r.body.points || []).filter(p => p.ts > lastTs).sort((a, b) => a.ts - b.ts);
+		if (pts.length) { hist = hist.concat(pts); lastTs = hist[hist.length - 1].ts; }
+		const cut = Date.now() / 1000 - 7200; while (hist.length && (hist[0].ts < cut || hist.length > 720)) hist.shift();
+		renderCharts();
+	} catch (e) {}
+}
+let timer = null, histTimer = null, polling = false;
+async function poll() {
+	if (polling) return; polling = true;
+	try { const r = await api('/api/state'); snap = r.body; renderHeader(); renderCards(); renderManual();
+		if (curTab === 'curves') for (const k in ED) ED[k].draw(); }
+	catch (e) {}
+	polling = false;
+}
+const liveState = () => { const l = $('#h-live'); const paused = document.hidden; l.classList.toggle('paused', paused); l.lastChild.textContent = paused ? 'paused' : 'live'; };
+function schedule() {
+	clearInterval(timer); clearInterval(histTimer); liveState();
+	if (document.hidden) return;
+	poll(); loadHistory();
+	timer = setInterval(poll, S.interval * 1000); histTimer = setInterval(loadHistory, 30000);
+}
+document.addEventListener('visibilitychange', schedule);
 
-  /* ---------- presets ---------- */
-  function loadPresets() {
-    get('/api/presets').then(function (list) {
-      var tb = $('presets'); clear(tb);
-      $('presets-none').hidden = list.length > 0;
-      list.forEach(function (p) {
-        var tr = el('tr');
-        tr.appendChild(el('td', 'mono', p.name));
-        tr.appendChild(el('td', null, (p.channels || []).join(', ')));
-        var td = el('td'); var b = el('button', 'btn small primary', 'Apply'); td.appendChild(b); tr.appendChild(td);
-        b.onclick = function () {
-          if (!confirm('Apply preset "' + p.name + '"? Current curves will be replaced.')) return;
-          api('POST', '/api/presets/' + encodeURIComponent(p.name) + '/apply').then(function (r) {
-            toast(r.status === 202 ? 'preset applied - restart required' : 'preset ' + p.name + ' applied', 'ok');
-            tomlBlocks = null; return refresh();
-          }).catch(function (e) { toast(e.message, 'err'); });
-        };
-        tb.appendChild(tr);
-      });
-    }).catch(function (e) { toast('presets: ' + e.message, 'err'); });
-  }
-  $('preset-save').onclick = function () {
-    var name = $('preset-name').value.trim();
-    if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(name)) { toast('name: letters, digits, _ . - (max 64)', 'err'); return; }
-    api('PUT', '/api/presets/' + encodeURIComponent(name)).then(function () { toast('preset ' + name + ' saved', 'ok'); $('preset-name').value = ''; loadPresets(); })
-      .catch(function (e) { toast(e.message, 'err'); });
-  };
+// tabs
+let curTab = 'overview';
+const TABS = $$('#tabs [role=tab]');
+function selectTab(id, focus) {
+	curTab = id;
+	TABS.forEach(t => { const on = t.id === 'tab-' + id; t.setAttribute('aria-selected', on); t.tabIndex = on ? 0 : -1; $('#' + t.getAttribute('aria-controls')).hidden = !on; if (on && focus) t.focus(); });
+	({ overview: renderCharts, presets: loadPresets, log: loadLog, compat: renderProfiles, curves: () => { if (!edState) loadEditor();
+		api('/api/sensors').then(r => { cvSensors = Array.isArray(r.body) ? r.body : r.body.sensors || []; fillSensorSelects(); }).catch(() => {}); for (const k in ED) ED[k].draw(); } })[id]();
+}
+TABS.forEach((t, i) => { t.addEventListener('click', () => selectTab(t.id.slice(4)));
+	t.addEventListener('keydown', ev => { const d = { ArrowRight: 1, ArrowLeft: -1, Home: -i, End: TABS.length - 1 - i }[ev.key]; if (d === undefined) return; ev.preventDefault(); selectTab(TABS[(i + d + TABS.length) % TABS.length].id.slice(4), true); }); });
 
-  /* ---------- log ---------- */
-  function loadLog() {
-    get('/api/log?lines=' + encodeURIComponent($('log-lines').value)).then(function (r) {
-      var pre = $('log'); pre.textContent = (r.lines || []).join('\n') || '(empty)'; pre.scrollTop = pre.scrollHeight;
-    }).catch(function (e) { $('log').textContent = 'log unavailable: ' + e.message; });
-  }
-  $('log-refresh').onclick = loadLog;
-  $('log-lines').onchange = loadLog;
+// settings UI
+const sb = $('#h-settings'), sp = $('#settings'), showS = on => { sp.hidden = !on; sb.setAttribute('aria-expanded', on); };
+sb.addEventListener('click', () => showS(sp.hidden));
+document.addEventListener('click', ev => { if (!sp.hidden && !sp.contains(ev.target) && ev.target !== sb) showS(false); });
+document.addEventListener('keydown', ev => { if (ev.key === 'Escape' && !sp.hidden) { showS(false); sb.focus(); } });
+$('#s-unit').value = S.unit; $('#s-interval').value = String(S.interval); $('#s-theme').value = S.theme;
+$('#s-unit').addEventListener('change', ev => { S.unit = ev.target.value; saveS(); if (snap) { renderCards(); renderCharts(); fillSensorSelects(); redrawAll(); } });
+$('#s-interval').addEventListener('change', ev => { S.interval = +ev.target.value; saveS(); schedule(); });
+$('#s-theme').addEventListener('change', ev => { S.theme = ev.target.value; saveS(); document.documentElement.dataset.theme = S.theme; redrawAll(); });
+matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => { if (S.theme === 'system') redrawAll(); });
+document.documentElement.dataset.theme = S.theme;
 
-  /* ---------- compatibility ---------- */
-  function loadProfiles() {
-    get('/api/profiles').then(function (list) {
-      var tb = $('profiles'); clear(tb);
-      list.forEach(function (p) {
-        var tr = el('tr');
-        var td0 = el('td', 'mono', p.name); if (p.active) { td0.appendChild(document.createTextNode(' ')); td0.appendChild(el('span', 'badge info', 'active')); } tr.appendChild(td0);
-        tr.appendChild(el('td', null, p.title));
-        var td = el('td'); td.appendChild(el('span', 'badge ' + (p.verified ? 'ok' : 'warn'), p.verified ? 'verified on hardware' : 'from documentation - untested')); tr.appendChild(td);
-        tr.appendChild(el('td', null, p.notes || ''));
-        tb.appendChild(tr);
-      });
-    }).catch(function (e) { toast('profiles: ' + e.message, 'err'); });
-  }
-
-  /* ---------- refresh loop ---------- */
-  var version = '';
-  function refresh() {
-    return Promise.all([get('/api/state'), get('/api/history?minutes=' + HISTORY_MIN)]).then(function (r) {
-      state = r[0]; history = r[1] || [];
-      document.title = 'pvefand · ' + (state.profile || '') + (state.status !== 'ok' ? ' · ' + state.status : '');
-      renderHeader(); renderCards(); renderHardware(version); renderCharts();
-      if ($('tab-manual').classList.contains('active')) renderManual();
-    }).catch(function (e) {
-      state = null; renderHeader(); renderCards();
-      $('hdr-profile').textContent = e.message;
-    });
-  }
-  get('/api/version').then(function (v) { version = v.version || ''; renderHardware(version); }).catch(function () { /* ignore */ });
-  get('/api/sensors').then(function (s) { sensors = s || []; if (tomlBlocks) renderCurves(); }).catch(function () { /* ignore */ });
-  refresh();
-  setInterval(refresh, REFRESH_MS);
-  window.addEventListener('resize', function () { renderCharts(); });
-  var savedTab = null;
-  try { savedTab = localStorage.getItem('pvefand.tab'); } catch (e) { /* ignore */ }
-  if (savedTab && savedTab !== 'overview') showTab(savedTab);
+// boot
+(async () => {
+	if (MOCK) toast('Mock mode', 'warn', 8000);
+	api('/api/profiles').then(r => { profiles = Array.isArray(r.body) ? r.body : r.body.profiles || []; renderHeader(); if (snap) renderCards(); }).catch(() => {});
+	api('/api/version').then(r => { version = typeof r.body === 'string' ? r.body.trim() : r.body.version || ''; renderHeader(); }).catch(() => {});
+	await loadConfig();
+	if (document.hidden) { poll(); loadHistory(); }
+	schedule();
+})();
 })();
