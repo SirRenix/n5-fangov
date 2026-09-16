@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SirRenix/n5-fangov/internal/config"
 	"github.com/SirRenix/n5-fangov/internal/control"
@@ -257,5 +258,18 @@ func TestRestoreHashOnlyAssignments(t *testing.T) {
 	got := restoreHash(raw, "HASH")
 	if strings.Count(got, "HASH") != 1 || !strings.Contains(got, "# keep <unchanged> here") || !strings.Contains(got, `user = "<unchanged>"`) {
 		t.Errorf("restoreHash:\n%s", got)
+	}
+}
+
+// TestAlertStatusCooldownSeconds: the panel gets the cooldown as seconds
+// next to the Go duration text.
+func TestAlertStatusCooldownSeconds(t *testing.T) {
+	m := newAlertManager(filepath.Join(t.TempDir(), "config.toml"), "", config.Alert{Transport: "log", MailTo: "root"}, nil)
+	if st := m.Status(); st.Cooldown != "" || st.CooldownS != 0 {
+		t.Errorf("offline: %q %d", st.Cooldown, st.CooldownS)
+	}
+	m.cooldown = func() time.Duration { return 30 * time.Minute }
+	if st := m.Status(); st.Cooldown != "30m0s" || st.CooldownS != 1800 {
+		t.Errorf("online: %q %d", st.Cooldown, st.CooldownS)
 	}
 }

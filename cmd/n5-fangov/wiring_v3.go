@@ -211,15 +211,17 @@ func (m *alertManager) Status() web.AlertStatus {
 	m.mu.Unlock()
 	pve, mail := alert.Available()
 	cool := ""
+	var coolS int64
 	if m.cooldown != nil {
-		cool = m.cooldown().String()
+		d := m.cooldown()
+		cool, coolS = d.String(), int64(d.Seconds())
 	}
 	return web.AlertStatus{
 		Transport: transport, Effective: eff, MailTo: mailTo,
 		PVEAvailable: pve, MailAvailable: mail,
 		Template: m.templateStatus(),
-		Cooldown: cool,
-		Kinds:    append([]web.AlertKind(nil), alertKinds...),
+		Cooldown: cool, CooldownS: coolS,
+		Kinds: append([]web.AlertKind(nil), alertKinds...),
 	}
 }
 

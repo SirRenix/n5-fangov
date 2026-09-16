@@ -78,7 +78,8 @@ type AlertStatus struct {
 	PVEAvailable  bool           `json:"pve_available"`
 	MailAvailable bool           `json:"mail_available"`
 	Template      TemplateStatus `json:"template"`
-	Cooldown      string         `json:"cooldown"`
+	Cooldown      string         `json:"cooldown"`   // Go duration text ("30m0s"), kept for older clients
+	CooldownS     int64          `json:"cooldown_s"` // the same in seconds (0 offline) for the dashboard to format
 	Kinds         []AlertKind    `json:"kinds"`
 }
 
