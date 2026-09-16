@@ -62,6 +62,32 @@ type Sender interface {
 	Send(kind, msg string) error
 }
 
+// ContextSender is a Sender whose delivery the caller can bound with a
+// context (R-L9): the panel's synchronous test must not outlive the HTTP
+// write timeout, while the fire-and-forget path keeps Timeout. PVE and
+// Mail (the sinks that run a child) are ones, so are Ring and Swappable
+// as wrappers; Send is SendCtx with context.Background().
+type ContextSender interface {
+	Sender
+	SendCtx(ctx context.Context, kind, msg string) error
+}
+
+// ErrTestBusy is returned by a test delivery while another one is still
+// running (R-L9); the web layer answers 409.
+var ErrTestBusy = errors.New("test alert already in progress")
+
+// sendCtx delivers through s honouring ctx when s can, else however s can.
+func sendCtx(ctx context.Context, s Sink, kind, msg string) error {
+	switch t := s.(type) {
+	case ContextSender:
+		return t.SendCtx(ctx, kind, msg)
+	case Sender:
+		return t.Send(kind, msg)
+	}
+	s.Alert(kind, msg)
+	return nil
+}
+
 // Transport names (config [alert].transport) and effective sink names.
 const (
 	TransportAuto = "auto"
@@ -149,7 +175,7 @@ func (l *Log) Alert(kind, msg string) {
 	l.Logger.Printf("ALERT[%s]: %s", kind, msg)
 }
 
-// Send is Alert; the log never fails.
+// Send is Alert; the log never fails (no SendCtx: nothing to bound).
 func (l *Log) Send(kind, msg string) error {
 	l.Alert(kind, msg)
 	return nil
@@ -211,16 +237,15 @@ func (s *Swappable) Alert(kind, msg string) {
 
 // Send delivers through the target and returns its error; a target that
 // is only a Sink delivers fire-and-forget and reports nil.
-func (s *Swappable) Send(kind, msg string) error {
+func (s *Swappable) Send(kind, msg string) error { return s.SendCtx(context.Background(), kind, msg) }
+
+// SendCtx is Send bounded by ctx where the target supports it.
+func (s *Swappable) SendCtx(ctx context.Context, kind, msg string) error {
 	t := s.Get()
 	if t == nil {
 		return errors.New("no alert sink configured")
 	}
-	if snd, ok := t.(Sender); ok {
-		return snd.Send(kind, msg)
-	}
-	t.Alert(kind, msg)
-	return nil
+	return sendCtx(ctx, t, kind, msg)
 }
 
 // PVE feeds the alert into the Proxmox notification stack as severity
@@ -250,13 +275,16 @@ func (p *PVE) Alert(kind, msg string) {
 }
 
 // Send delivers through PVE::Notify and returns the failure, if any.
-func (p *PVE) Send(kind, msg string) error {
+func (p *PVE) Send(kind, msg string) error { return p.SendCtx(context.Background(), kind, msg) }
+
+// SendCtx is Send bounded by ctx as well as Timeout.
+func (p *PVE) SendCtx(ctx context.Context, kind, msg string) error {
 	p.Logger.Printf("ALERT[%s]: %s", kind, msg)
 	perl := p.Perl
 	if perl == "" {
 		perl = "perl"
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), Timeout)
+	ctx, cancel := context.WithTimeout(ctx, Timeout)
 	defer cancel()
 	cmd := command(ctx, perl, "-MPVE::Notify", "-e", perlProgram)
 	cmd.Env = append(os.Environ(),
@@ -291,7 +319,10 @@ func (m *Mail) Alert(kind, msg string) {
 }
 
 // Send pipes the alert into mail(1) and returns the failure, if any.
-func (m *Mail) Send(kind, msg string) error {
+func (m *Mail) Send(kind, msg string) error { return m.SendCtx(context.Background(), kind, msg) }
+
+// SendCtx is Send bounded by ctx as well as Timeout.
+func (m *Mail) SendCtx(ctx context.Context, kind, msg string) error {
 	m.Logger.Printf("ALERT[%s]: %s", kind, msg)
 	bin := m.Bin
 	if bin == "" {
@@ -301,9 +332,12 @@ func (m *Mail) Send(kind, msg string) error {
 	if to == "" {
 		to = "root"
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), Timeout)
+	ctx, cancel := context.WithTimeout(ctx, Timeout)
 	defer cancel()
-	cmd := command(ctx, bin, "-s", fmt.Sprintf("[%s] n5-fangov: %s", m.Hostname, kind), to)
+	// R-M3: "--" ends option parsing, so a recipient that starts with "-"
+	// can never become a mail(1) option (config.ValidMailTo refuses such
+	// values too; this is the second line).
+	cmd := command(ctx, bin, "-s", fmt.Sprintf("[%s] n5-fangov: %s", m.Hostname, kind), "--", to)
 	cmd.Stdin = strings.NewReader(fmt.Sprintf("n5-fangov on %s reports:\n\n%s\n\nTime: %s\n",
 		m.Hostname, msg, time.Now().Format("2006-01-02 15:04:05")))
 	if out, err := cmd.CombinedOutput(); err != nil {
