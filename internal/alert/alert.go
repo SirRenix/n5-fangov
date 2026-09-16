@@ -44,7 +44,7 @@ type Logger interface {
 }
 
 // Sink delivers alerts. Implementations never panic and never block longer
-// than Timeout.
+// than Timeout plus WaitDelay (the child's pipes are given up after that).
 type Sink interface {
 	// Alert delivers one alert of the given kind (sensor, stall, temp, write,
 	// config, config-channels, restart, failed, kernel, tls, test). Fire
@@ -170,7 +170,10 @@ func Available() (pve, mail bool) {
 // Log only writes the alert to the logger.
 type Log struct{ Logger Logger }
 
+// Name is EffectiveLog.
 func (l *Log) Name() string { return EffectiveLog }
+
+// Alert writes the alert line to the logger.
 func (l *Log) Alert(kind, msg string) {
 	l.Logger.Printf("ALERT[%s]: %s", kind, msg)
 }
@@ -185,7 +188,10 @@ func (l *Log) Send(kind, msg string) error {
 // that one was suppressed, so the history is not silently empty.
 type Off struct{ Logger Logger }
 
+// Name is EffectiveOff.
 func (o *Off) Name() string { return EffectiveOff }
+
+// Alert drops the alert and logs that it did.
 func (o *Off) Alert(kind, msg string) {
 	o.Logger.Printf("ALERT[%s] suppressed (transport off): %s", kind, msg)
 }
@@ -222,6 +228,7 @@ func (s *Swappable) Get() Sink {
 	return s.sink
 }
 
+// Name is the target's name, "none" before the first Set.
 func (s *Swappable) Name() string {
 	if t := s.Get(); t != nil {
 		return t.Name()
@@ -229,6 +236,7 @@ func (s *Swappable) Name() string {
 	return "none"
 }
 
+// Alert delivers through the current target (nothing before the first Set).
 func (s *Swappable) Alert(kind, msg string) {
 	if t := s.Get(); t != nil {
 		t.Alert(kind, msg)
@@ -257,6 +265,7 @@ type PVE struct {
 	Perl string
 }
 
+// Name is EffectivePVE.
 func (p *PVE) Name() string { return EffectivePVE }
 
 // perlProgram reads its data from the environment so that no user text is
@@ -295,7 +304,7 @@ func (p *PVE) SendCtx(ctx context.Context, kind, msg string) error {
 		"N5FANGOV_WHEN="+time.Now().Format("2006-01-02 15:04:05"),
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("PVE::Notify failed: %v: %s", err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("PVE::Notify failed: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
@@ -309,6 +318,7 @@ type Mail struct {
 	Bin string
 }
 
+// Name is EffectiveMail.
 func (m *Mail) Name() string { return EffectiveMail }
 
 // Alert is Send with the failure logged.
@@ -341,7 +351,7 @@ func (m *Mail) SendCtx(ctx context.Context, kind, msg string) error {
 	cmd.Stdin = strings.NewReader(fmt.Sprintf("n5-fangov on %s reports:\n\n%s\n\nTime: %s\n",
 		m.Hostname, msg, time.Now().Format("2006-01-02 15:04:05")))
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("mail failed: %v: %s", err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("mail failed: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
@@ -349,6 +359,7 @@ func (m *Mail) SendCtx(ctx context.Context, kind, msg string) error {
 // Multi fans out to several sinks (e.g. PVE plus an in-memory ring for the UI).
 type Multi []Sink
 
+// Name joins the member names with "+".
 func (m Multi) Name() string {
 	names := make([]string, len(m))
 	for i, s := range m {
@@ -357,6 +368,7 @@ func (m Multi) Name() string {
 	return strings.Join(names, "+")
 }
 
+// Alert delivers to every member in order.
 func (m Multi) Alert(kind, msg string) {
 	for _, s := range m {
 		s.Alert(kind, msg)

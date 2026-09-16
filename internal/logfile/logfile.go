@@ -34,6 +34,23 @@ const (
 // TailLimit is how much of the file Lines reads from the end.
 const TailLimit = 1 << 20
 
+// journald priority prefixes (sd-daemon(3), SyslogLevelPrefix): a log line
+// that starts with one is filed at that priority by journald, so
+// `journalctl -p warning -u n5-fangov` finds alerts and warnings. The
+// prefix is stripped from the file copy (Timestamped).
+const (
+	PrefixErr     = "<3>"
+	PrefixWarning = "<4>"
+)
+
+// StripPrefix removes a leading journald priority prefix ("<N>").
+func StripPrefix(p []byte) []byte {
+	if len(p) >= 3 && p[0] == '<' && p[1] >= '0' && p[1] <= '7' && p[2] == '>' {
+		return p[3:]
+	}
+	return p
+}
+
 // Writer is a rotating log file. Safe for concurrent use. Writes, rotation
 // and Clear hold the lock; the read side (Lines, Export) holds it only to
 // open the current file and take its size, then reads from that descriptor
@@ -47,7 +64,11 @@ type Writer struct {
 	path     string
 	maxSize  int64
 	maxFiles int
-	f        *os.File
+	f        *os.File // nil after a failed reopen (rotation) until the next Write reopens it
+	closed   bool     // Close was called: writes fail with "closed", no reopen
+	// reopenErr is the last failed reopen, logged once to stderr; cleared
+	// when a reopen succeeds.
+	reopenErr string
 }
 
 // New opens (or creates) path for appending. maxSizeMB is the rotation
@@ -118,21 +139,57 @@ func (w *Writer) open() error {
 func (w *Writer) Path() string { return w.path }
 
 // Write appends p, rotating first when the file would exceed the limit.
-// A write larger than the limit goes into a fresh file on its own.
+// A write larger than the limit goes into a fresh file on its own. When
+// the file could not be reopened after a rotation (the log directory was
+// removed meanwhile), every Write tries again — directory included — so
+// the file log comes back by itself; the failure is logged to stderr once.
 func (w *Writer) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.f == nil {
-		return 0, errors.New("logfile: closed")
+	if err := w.ensureOpenLocked(); err != nil {
+		return 0, err
 	}
 	size := w.sizeLocked()
 	if size > 0 && size+int64(len(p)) > w.maxSize {
 		if err := w.rotateLocked(); err != nil {
-			// Keep logging into the old file rather than losing lines.
+			// Keep logging into the old file rather than losing lines; when
+			// the reopen itself failed, try once more with the directory.
 			fmt.Fprintf(os.Stderr, "logfile: rotate %s: %v\n", w.path, err)
+			if w.f == nil {
+				if err := w.ensureOpenLocked(); err != nil {
+					return 0, err
+				}
+			}
 		}
 	}
 	return w.f.Write(p)
+}
+
+// ensureOpenLocked reopens the file after a failed rotation reopen. A
+// closed Writer stays closed.
+func (w *Writer) ensureOpenLocked() error {
+	if w.closed {
+		return errors.New("logfile: closed")
+	}
+	if w.f != nil {
+		return nil
+	}
+	err := os.MkdirAll(filepath.Dir(w.path), DirMode)
+	if err == nil {
+		err = w.open()
+	}
+	if err != nil {
+		if msg := err.Error(); msg != w.reopenErr {
+			w.reopenErr = msg
+			fmt.Fprintf(os.Stderr, "logfile: reopen %s: %v (file log paused, retried on every write)\n", w.path, err)
+		}
+		return fmt.Errorf("logfile: reopen: %w", err)
+	}
+	if w.reopenErr != "" {
+		fmt.Fprintf(os.Stderr, "logfile: %s reopened, file log resumed\n", w.path)
+		w.reopenErr = ""
+	}
+	return nil
 }
 
 // sizeLocked is the current size from the descriptor (0 on error).
@@ -172,6 +229,7 @@ func (w *Writer) rotateLocked() error {
 func (w *Writer) Close() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	w.closed = true
 	if w.f == nil {
 		return nil
 	}
@@ -309,8 +367,8 @@ func exportFrom(f *os.File, size int64, dst io.Writer) error {
 func (w *Writer) Clear() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.f == nil {
-		return errors.New("logfile: closed")
+	if err := w.ensureOpenLocked(); err != nil {
+		return err
 	}
 	return w.f.Truncate(0)
 }
@@ -334,7 +392,8 @@ func Truncate(path string) error {
 	return f.Truncate(0)
 }
 
-// Timestamped wraps w so that every Write is prefixed with the local time.
+// Timestamped wraps w so that every Write is prefixed with the local time
+// and stripped of a journald priority prefix (PrefixErr, PrefixWarning).
 // The standard logger writes one line per call with flags 0 (journald
 // stamps stdout itself), so the file gets its own stamps here.
 func Timestamped(w io.Writer) io.Writer { return stampWriter{w: w} }
@@ -343,15 +402,13 @@ type stampWriter struct{ w io.Writer }
 
 func (s stampWriter) Write(p []byte) (int, error) {
 	stamp := time.Now().Format("2006-01-02 15:04:05 ")
-	buf := make([]byte, 0, len(stamp)+len(p))
+	body := StripPrefix(p)
+	buf := make([]byte, 0, len(stamp)+len(body))
 	buf = append(buf, stamp...)
-	buf = append(buf, p...)
-	n, err := s.w.Write(buf)
-	if n >= len(stamp) {
-		n -= len(stamp)
+	buf = append(buf, body...)
+	_, err := s.w.Write(buf)
+	if err != nil {
+		return 0, err
 	}
-	if n > len(p) {
-		n = len(p)
-	}
-	return n, err
+	return len(p), nil
 }
