@@ -1265,8 +1265,8 @@ func TestStaticIndex(t *testing.T) {
 	if !strings.HasPrefix(r.hdr.Get("Content-Type"), "text/javascript") || !strings.Contains(r.body, "X-N5-Fangov-Csrf") {
 		t.Errorf("app.js: %q %.100s", r.hdr.Get("Content-Type"), r.body)
 	}
-	if len(r.body) > 84*1024 {
-		t.Errorf("app.js is %d bytes, budget 84 KB (DESIGN \"System inventory\")", len(r.body))
+	if len(r.body) > 96*1024 {
+		t.Errorf("app.js is %d bytes, budget 96 KB (DESIGN \"System inventory\", v4 design fixes)", len(r.body))
 	}
 	// UI assumptions the server honours: since-polling, {"lines"} log wrapper,
 	// "channel" key, "<unchanged>" hash placeholder passes through untouched,
