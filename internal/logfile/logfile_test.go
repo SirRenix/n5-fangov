@@ -323,6 +323,13 @@ func (b *blockingWriter) String() string {
 	return b.buf.String()
 }
 
+// stallLimit is how long a Write/Lines call may take while an Export is
+// stuck before the test calls it blocked. A held writer lock would block
+// until the export is released (never, here), so the limit only has to
+// exceed scheduling noise on a loaded builder (AUDIT 7: 100 ms was too
+// tight for the Alpine container on the build host).
+const stallLimit = 2 * time.Second
+
 // H1: an Export whose destination stalls (slow HTTP client) must not hold
 // the writer lock — the controller logs from inside the regulation cycle
 // and a blocked log call would run it into the systemd watchdog. Write and
@@ -352,7 +359,7 @@ func TestExportDoesNotBlockWrites(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(stallLimit):
 		t.Fatal("Write blocked behind a stalled Export (writer lock held while streaming)")
 	}
 	linesDone := make(chan []string, 1)
@@ -362,7 +369,7 @@ func TestExportDoesNotBlockWrites(t *testing.T) {
 		if strings.Join(l, ",") != "concurrent" {
 			t.Errorf("Lines during export: %v", l)
 		}
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(stallLimit):
 		t.Fatal("Lines blocked behind a stalled Export")
 	}
 	close(bw.release)
