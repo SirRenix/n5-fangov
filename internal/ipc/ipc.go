@@ -90,10 +90,14 @@ func Serve(ctx context.Context, socketPath string, handler http.Handler) error {
 }
 
 // Client returns an http.Client whose transport dials the unix socket. Request
-// URLs use any host, e.g. http://n5-fangov/api/state.
+// URLs use any host, e.g. http://n5-fangov/api/state. Redirects are not
+// followed: the mux answers a path with ".." or a trailing slash with a
+// 301 to another endpoint, and a CLI that followed it would turn a PUT
+// into a GET of something else and report success.
 func Client(socketPath string) *http.Client {
 	return &http.Client{
-		Timeout: 10 * time.Second,
+		Timeout:       10 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 				var d net.Dialer

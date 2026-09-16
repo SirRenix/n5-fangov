@@ -11,8 +11,12 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/SirRenix/n5-fangov/internal/config"
+	"github.com/SirRenix/n5-fangov/internal/control"
 )
 
 // captureStderr runs f with os.Stderr redirected and returns what was written.
@@ -150,4 +154,122 @@ func logCapture(f func()) string {
 	defer func() { log.SetOutput(old); log.SetFlags(flags) }()
 	f()
 	return buf.String()
+}
+
+// TestAlertKindsComplete: every alert kind raised anywhere in the code
+// (controller raise, serve's start-up alerts, the onfailure/apt-hook
+// paths) has an entry in alertKinds, and alertKinds names nothing else.
+func TestAlertKindsComplete(t *testing.T) {
+	listed := map[string]bool{}
+	for _, k := range alertKinds {
+		listed[k.Kind] = true
+	}
+	raised := map[string]bool{control.AlertConfigChannels: true, "restart": true, "failed": true} // the onfailure unit passes these as argv
+	call := regexp.MustCompile(`\b(?:raise|sendAlertCooled|startAlert|sendAlert)\((?:[^,"\n]+,\s*)*"([a-z-]+)"`)
+	for _, dir := range []string{".", "../../internal/control"} {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
+				continue
+			}
+			src, err := os.ReadFile(filepath.Join(dir, e.Name()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, m := range call.FindAllStringSubmatch(string(src), -1) {
+				raised[m[1]] = true
+			}
+		}
+	}
+	if len(raised) < 10 {
+		t.Fatalf("only %d raised kinds found, the scan is broken: %v", len(raised), raised)
+	}
+	for k := range raised {
+		if !listed[k] {
+			t.Errorf("kind %q is raised but missing from alertKinds", k)
+		}
+	}
+	for k := range listed {
+		if !raised[k] && k != "test" {
+			t.Errorf("alertKinds lists %q, which nothing raises", k)
+		}
+	}
+}
+
+// TestSetRefusesBadChannelName: a channel name that is not a plain
+// identifier never reaches the URL path (the mux would redirect a ".."
+// path to another endpoint).
+func TestSetRefusesBadChannelName(t *testing.T) {
+	for _, name := range []string{"../config", "cpu?x", "", "CPU", strings.Repeat("a", 33)} {
+		out := captureStderr(t, func() {
+			if rc := cmdSet([]string{name, "30"}); rc != exitUsage {
+				t.Errorf("set %q: rc=%d", name, rc)
+			}
+		})
+		if !strings.Contains(out, "must match") {
+			t.Errorf("set %q: %q", name, out)
+		}
+	}
+	out := captureStderr(t, func() {
+		if rc := cmdAuto([]string{"../config"}); rc != exitUsage {
+			t.Errorf("auto: rc=%d", rc)
+		}
+	})
+	if !strings.Contains(out, "must match") {
+		t.Errorf("auto: %q", out)
+	}
+	out = captureStderr(t, func() {
+		if rc := cmdLog([]string{"-n", "0"}); rc != exitUsage {
+			t.Errorf("log -n 0: rc=%d", rc)
+		}
+	})
+	if !strings.Contains(out, "1..5000") {
+		t.Errorf("log -n 0: %q", out)
+	}
+	if rc := cmdLog([]string{"-n", "6000"}); rc != exitUsage {
+		t.Errorf("log -n 6000: rc=%d", rc)
+	}
+	if rc := cmdTest([]string{"--sample", "0s", "cpu"}); rc != exitUsage {
+		t.Errorf("test --sample 0: rc=%d", rc)
+	}
+	if rc := cmdTest([]string{"--sample", "10s", "--hold", "5s", "cpu"}); rc != exitUsage {
+		t.Errorf("test sample > hold: rc=%d", rc)
+	}
+}
+
+// TestTomlStringEscapes: tomlString renders control characters as TOML
+// escapes, so the written file parses again.
+func TestTomlStringEscapes(t *testing.T) {
+	cases := map[string]string{
+		"plain":         `"plain"`,
+		"a\"b\\c":       `"a\"b\\c"`,
+		"tab\there":     `"tab\there"`,
+		"nl\nx":         `"nl\nx"`,
+		"ctl\x01x":      `"ctl\u0001x"`,
+		"del\x7fx":      `"del\u007Fx"`,
+		"umlaut \u00e4": "\"umlaut \u00e4\"",
+	}
+	for in, want := range cases {
+		if got := tomlString(in); got != want {
+			t.Errorf("tomlString(%q) = %s, want %s", in, got, want)
+		}
+		raw := setConfigKey(nil, "web", "user", tomlString(in))
+		cfg, _, err := config.Parse(raw)
+		if err != nil || cfg.Web.User != in {
+			t.Errorf("round trip of %q: %v %q", in, err, cfg.Web.User)
+		}
+	}
+}
+
+// TestRestoreHashOnlyAssignments: the bundle import puts the hash back into
+// the password_hash assignment only, not into a comment.
+func TestRestoreHashOnlyAssignments(t *testing.T) {
+	raw := "# keep <unchanged> here\n[web]\npassword_hash = \"<unchanged>\"\nuser = \"<unchanged>\"\n"
+	got := restoreHash(raw, "HASH")
+	if strings.Count(got, "HASH") != 1 || !strings.Contains(got, "# keep <unchanged> here") || !strings.Contains(got, `user = "<unchanged>"`) {
+		t.Errorf("restoreHash:\n%s", got)
+	}
 }

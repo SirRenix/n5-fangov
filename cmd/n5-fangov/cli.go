@@ -6,7 +6,9 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -38,10 +40,10 @@ func loadSnapshot(dir string) (snap control.Snapshot, source string, err error) 
 	}
 	data, rerr := os.ReadFile(statePath(dir))
 	if rerr != nil {
-		return snap, "", fmt.Errorf("%v; no %s either (daemon not running?)", err, statePath(dir))
+		return snap, "", fmt.Errorf("%w; no %s either (daemon not running?)", err, statePath(dir))
 	}
 	if jerr := json.Unmarshal(data, &snap); jerr != nil {
-		return snap, "", fmt.Errorf("%s: %v", statePath(dir), jerr)
+		return snap, "", fmt.Errorf("%s: %w", statePath(dir), jerr)
 	}
 	age := "unknown age"
 	if snap.TS > 0 {
@@ -121,12 +123,21 @@ func printSnapshot(s control.Snapshot, source string, active bool) {
 // ---------------------------------------------------------------------------
 // set / auto
 
+// channelNameRe is the daemon's channel name rule (config nameRe, web
+// channelName); checked here so a stray name never becomes a URL path
+// element ("../config" would be redirected by the mux to another endpoint).
+var channelNameRe = regexp.MustCompile(`^[a-z0-9_]{1,32}$`)
+
 func cmdSet(args []string) int {
 	if len(args) != 2 {
 		fmt.Fprintln(os.Stderr, "usage: n5-fangov set <channel> <duty|NN%>")
 		return exitUsage
 	}
 	ch := args[0]
+	if !channelNameRe.MatchString(ch) {
+		fmt.Fprintf(os.Stderr, "set: channel name %q must match %s\n", ch, channelNameRe)
+		return exitUsage
+	}
 	duty, err := parseDuty(args[1])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "set:", err)
@@ -134,7 +145,7 @@ func cmdSet(args []string) int {
 	}
 	a := newAPI(runDir())
 	body := map[string]int{"duty": duty}
-	if err := a.do("PUT", "/api/override/"+ch, body, nil); err != nil {
+	if err := a.do("PUT", "/api/override/"+url.PathEscape(ch), body, nil); err != nil {
 		fmt.Fprintln(os.Stderr, "set:", err)
 		return exitFail
 	}
@@ -145,6 +156,10 @@ func cmdSet(args []string) int {
 func cmdAuto(args []string) int {
 	if len(args) != 1 {
 		fmt.Fprintln(os.Stderr, "usage: n5-fangov auto <channel|all>")
+		return exitUsage
+	}
+	if args[0] != "all" && !channelNameRe.MatchString(args[0]) {
+		fmt.Fprintf(os.Stderr, "auto: channel name %q must match %s (or \"all\")\n", args[0], channelNameRe)
 		return exitUsage
 	}
 	a := newAPI(runDir())
@@ -162,7 +177,7 @@ func cmdAuto(args []string) int {
 	}
 	rc := exitOK
 	for _, n := range names {
-		if err := a.do("DELETE", "/api/override/"+n, nil, nil); err != nil {
+		if err := a.do("DELETE", "/api/override/"+url.PathEscape(n), nil, nil); err != nil {
 			fmt.Fprintf(os.Stderr, "auto %s: %v\n", n, err)
 			rc = exitFail
 			continue
@@ -216,7 +231,7 @@ func currentConfigRaw(dir string) ([]byte, string, error) {
 	data, rerr := os.ReadFile(defaultConfigPath)
 	if rerr != nil {
 		if err != nil {
-			return nil, "", fmt.Errorf("%v; %v", err, rerr)
+			return nil, "", errors.Join(err, rerr)
 		}
 		return nil, "", rerr
 	}
@@ -225,6 +240,9 @@ func currentConfigRaw(dir string) ([]byte, string, error) {
 
 // ---------------------------------------------------------------------------
 // log
+
+// maxLogLines is the most lines `log -n` asks for (the API's own bound).
+const maxLogLines = 5000
 
 // cmdLog shows, exports or clears the daemon's log file ([log].file);
 // without a file the journal is the source and --clear is refused. The
@@ -253,6 +271,10 @@ func cmdLog(args []string) int {
 			return exitUsage
 		}
 		*n = v
+	}
+	if *n < 1 || *n > maxLogLines {
+		fmt.Fprintf(os.Stderr, "log: -n must be 1..%d\n", maxLogLines)
+		return exitUsage
 	}
 	cfg, _, _ := loadConfig(*cfgPath)
 	file := logOf(cfg).File
@@ -323,7 +345,7 @@ func cmdLog(args []string) int {
 			fmt.Fprintf(os.Stderr, "log: %s: %v; falling back to the journal\n", file, err)
 		}
 	}
-	lines, err := journalLines(unitName, *n)
+	lines, err := journalLines(unitName, *n, journalTimeout)
 	if err == nil {
 		for _, l := range lines {
 			fmt.Println(l)

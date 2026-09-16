@@ -8,7 +8,6 @@ import (
 	"io"
 	"net"
 	"os"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -407,24 +406,16 @@ const (
 	passwordFileFlagHelp = "file whose first line is the password (mode 0600 recommended)"
 )
 
-// Password and user rules shared with the web API (internal/web account
-// endpoints): the CLI must not write what the dashboard would refuse.
-const (
-	minPasswordLen = 8
-	maxPasswordLen = 128
-)
-
-var userNameRe = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,32}$`)
-
-// validPassword applies the web API's password length rule (runes).
+// validPassword applies the account API's password length rule (runes):
+// the CLI must not write what the dashboard would refuse.
 func validPassword(pw string) error {
-	if n := utf8.RuneCountInString(pw); n < minPasswordLen || n > maxPasswordLen {
-		return fmt.Errorf("password must be %d..%d characters", minPasswordLen, maxPasswordLen)
+	if n := utf8.RuneCountInString(pw); n < passwordMinLen || n > passwordMaxLen {
+		return fmt.Errorf("password must be %d..%d characters", passwordMinLen, passwordMaxLen)
 	}
 	return nil
 }
 
-// validUserName applies the web API's user name rule.
+// validUserName applies the account API's user name rule.
 func validUserName(u string) error {
 	if !userNameRe.MatchString(u) {
 		return fmt.Errorf("user %q must match %s", u, userNameRe)
