@@ -128,7 +128,7 @@ func (s *Server) putAlerts(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &b) {
 		return
 	}
-	st, err := m.Configure(AlertSettings{Transport: b.Transport, MailTo: b.MailTo, WebhookURL: b.WebhookURL, WebhookFormat: b.WebhookFormat})
+	st, err := m.Configure(AlertSettings(b))
 	if err != nil {
 		writeError(w, storeStatus(err), err.Error())
 		return

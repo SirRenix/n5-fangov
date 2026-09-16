@@ -220,7 +220,7 @@ func (m *alertManager) Configure(s web.AlertSettings) (web.AlertStatus, error) {
 	var a config.Alert
 	var verr error
 	err := editConfig(m.cfgPath, m.pin, "alert", func(raw []byte) []byte {
-		base := config.Default().Alert
+		var base config.Alert
 		if cfg, _, perr := config.Parse(raw); perr == nil {
 			base = cfg.Alert
 		} else {
