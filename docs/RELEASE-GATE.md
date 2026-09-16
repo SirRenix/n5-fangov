@@ -3,15 +3,15 @@
 Decided 2026-09-16 by the operator: a version drops its `-rc` suffix only after a
 **manual installation test performed by the operator, on the real host, following the
 documentation alone** — no chat, no shortcuts. If a step needs knowledge that is not in
-`docs/`, the documentation is the defect, not the tester. Latest by 0.4.0; a 0.3.x
-release before that runs the same gate.
+`docs/`, the documentation is the defect, not the tester. Applies to every 0.3.x release
+and to 0.4.0 (the public one).
 
 ## Preconditions (prepared by the maintainer)
 
 1. `docs/` split is done (README = landing page, one page per topic, kernel-driver page).
-2. Repository hardening merged (`.gitignore`, gitleaks hook + workflows, `SECURITY.md`),
-   history rewritten, repository public — the tester downloads from the public release
-   page like any user.
+2. Repository hardening merged, history rewritten (done). While the repository is private,
+   the tester downloads the assets with `gh release download <tag>` (signed-in `gh`); the
+   public curl path from the install page is re-run once at 0.4.0.
 3. The release candidate is tagged; the release workflow produced binary, sha256 and
    `.deb`; CI is green.
 4. The host's current config is backed up outside `/etc/n5-fangov` (the test starts from

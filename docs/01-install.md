@@ -24,6 +24,9 @@ Both install paths end with `n5-fangov setup` ([Setup](03-setup.md)).
 
 ## From a GitHub release
 
+> While the repository is private (until 0.4.0), download the assets with the signed-in GitHub
+> CLI instead of the public URLs: `gh release download <tag> --dir dist --pattern "n5-fangov-*"`.
+
 No Go toolchain needed. The release carries the static `linux/amd64` binary and its
 sha256; the units, scripts and templates come from the repository at the same tag:
 

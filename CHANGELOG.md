@@ -12,9 +12,19 @@ names; the audit that drove the *Unreleased* work is `docs/AUDIT.md` (code) and
 
 ## [Unreleased]
 
-### Planned (0.4.0) — decided 2026-09-16, not started
+### Version plan (operator decision 2026-09-16, 22:30)
 
-Scope rule for 0.4: the regulator (`internal/control`) is verified and stays as it is;
+- **0.3.x** (`0.3.0-rc*` → `0.3.0`, then `0.3.1`…): every feature below (interface, regulation
+  add-ons, dashboard history and per-device sensors, maintenance debt), each as pre-releases
+  on the private repository, each verified on the reference host.
+- **0.4.0**: the dashboard redesign (`docs/design/REDESIGN-CONCEPT.md`) with new documentation
+  screenshots — the release that goes **public**. The repository stays private until every
+  test has passed, at the latest when all 0.3.x features are in.
+- Each rc becomes a release only through the release gate below.
+
+### Planned (0.3.x) — decided 2026-09-16, not started
+
+Scope rule for 0.3.x: the regulator (`internal/control`) is verified and stays as it is;
 everything below is API, dashboard, alerts and packaging. Attack surface stays small: no
 MQTT/discovery, no multi-host management, no new dependencies. The UI stays English.
 
@@ -67,13 +77,15 @@ MQTT/discovery, no multi-host management, no new dependencies. The UI stays Engl
 - Reboot proof on the reference host (DKMS + daemon together) — the last open operations
   question, no code.
 
-### Planned (after 0.4.0, separate session) — dashboard redesign
+### Planned (0.4.0, separate session) — dashboard redesign, public release
 
 Structural redesign of the dashboard (sidebar navigation, channel-centric Fans page,
 consolidated Settings page, SVG icons, sparklines) — concept and hand-over in
 [`docs/design/REDESIGN-CONCEPT.md`](docs/design/REDESIGN-CONCEPT.md). Deliberately after
-0.4.0 so tokens, schedules and the longer history have their place in the new structure;
-prototype in the mock first, operator decides on screenshots.
+the 0.3.x features so tokens, schedules and the longer history have their place in the new
+structure; prototype in the mock first, operator decides on screenshots; every documentation
+screenshot is regenerated for the new pages. 0.4.0 is the version that switches the
+repository to public.
 
 ### Before the public release (documentation) — done 2026-09-16
 
@@ -93,8 +105,10 @@ A version loses its `-rc` suffix only after the operator has performed a **manua
 installation test on the real host following the documentation alone** — uninstall,
 kernel-driver check, install by release path and by package, setup, dashboard, update
 hook, reboot, troubleshooting, uninstall/reinstall. Checklist: [`docs/RELEASE-GATE.md`](docs/RELEASE-GATE.md).
-Latest by 0.4.0; a 0.3.x release runs the same gate. Preconditions: docs split, repository
-hardening merged, history rewritten, repository public.
+Applies to every 0.3.x release and to 0.4.0. Preconditions: docs split, repository hardening
+merged, history rewritten (all done). While the repository is private the tester downloads
+the release assets with `gh release download <tag>` instead of the public URL; the public
+curl path is re-run once at 0.4.0.
 
 **Not planned**: MQTT/discovery (REST + token is enough and smaller), a German UI
 (audience is GitHub), multi-host management, a frontend framework.
