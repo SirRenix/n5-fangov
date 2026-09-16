@@ -764,9 +764,10 @@ sensors.
   sign-in). **Toasts:** at most 3 visible per region, the oldest is dropped when a fourth
   arrives.
 - **Mock:** `?mock=1` anonymous, `&user=1` signed in, `&auth=none`, `&tls=off|file|soon|fallback`,
-  `&tab=<id>`, `&syserr=1`, `&schedfail=1` (last schedule switch failed); every endpoint
-  above is implemented (login `admin`/`admin`); names and addresses are documentation
-  values (`n5host`, `192.0.2.x`, `n5.lan`).
+  `&tab=<id>`, `&syserr=1`, `&reject=1` (strict PUT 400), `&expire=1` (session dies after
+  15 s), `&schedfail=1` (last schedule switch failed), `&pwm4=1` (fourth channel `pcie`,
+  pwm 4, no tach); every endpoint above is implemented (login `admin`/`admin`); names and
+  addresses are documentation values (`n5host`, `192.0.2.x`, `n5.lan`).
 
 ## 12. Deploy
 
