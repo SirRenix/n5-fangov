@@ -82,9 +82,13 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 func (s *Server) getSession(w http.ResponseWriter, r *http.Request) {
 	c := CallerFrom(r.Context())
 	out := map[string]any{"authenticated": c.Authenticated, "mode": s.authMode(), "user": c.User, "via": c.Via}
-	if c.Via == "cookie" {
+	switch c.Via {
+	case "cookie":
 		out["expires"] = c.session.Expires.Unix()
 		out["remember"] = c.session.Remember
+	case "bearer":
+		out["scope"] = c.Scope
+		out["token_id"] = c.TokenID
 	}
 	writeJSON(w, http.StatusOK, out)
 }

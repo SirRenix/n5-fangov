@@ -1,6 +1,9 @@
-// Package web serves the HTTP API (DESIGN.md "HTTP API") and the embedded
-// static UI. The same mux is served on TCP (with Host check, CSRF header and
-// optional basic auth) and on the unix socket (no checks, see SocketHandler).
+// Package web serves the HTTP API (DESIGN.md "Web and API") and the
+// embedded static UI. The routes are declared once in the route table
+// (openapi.go), which also feeds the guard and GET /api/openapi.json. The
+// same mux is served on TCP (Host check, caller resolution — cookie
+// session, bearer token, basic credential —, CSRF header, visibility and
+// token scope) and on the unix socket (no checks, see SocketHandler).
 package web
 
 import (
@@ -222,6 +225,8 @@ type Deps struct {
 	// Store-backed endpoints (types.go; DESIGN.md "Web and API").
 	// SessionFile mirrors the cookie sessions; "" = memory only.
 	SessionFile string
+	// TokenFile mirrors the API tokens (token.go); "" = memory only.
+	TokenFile string
 	// Account backs /api/account (nil → 501; credentials then stay Deps.Auth).
 	Account AccountStore
 	// Alerts backs /api/alerts (nil → 501).
@@ -251,6 +256,15 @@ type Server struct {
 	// every successful AccountStore.Update. Read per request without a lock.
 	auth     atomic.Pointer[AuthConfig]
 	sessions SessionStore
+	// tokens holds the API tokens; tokenLimit bounds requests per token.
+	tokens     TokenStore
+	tokenLimit *tokenLimiter
+	// byPattern maps a mux pattern ("GET /api/state") to its route: the
+	// guard reads class and scope from it.
+	byPattern map[string]route
+	// openapi is the document rendered from the route table at New.
+	openapi     []byte
+	openapiETag string
 	// upgradeMu serialises upgradeLegacyHash: two successful logins in
 	// the same instant must not both rewrite the file.
 	upgradeMu sync.Mutex
@@ -260,7 +274,7 @@ type Server struct {
 
 // New builds a Server from deps.
 func New(deps Deps) *Server {
-	s := &Server{deps: deps, mux: http.NewServeMux(), allowed: map[string]bool{}, limiter: newAuthLimiter()}
+	s := &Server{deps: deps, mux: http.NewServeMux(), allowed: map[string]bool{}, limiter: newAuthLimiter(), tokenLimit: newTokenLimiter(), byPattern: map[string]route{}}
 	s.logf = deps.Logf
 	if s.logf == nil {
 		s.logf = log.Printf
@@ -271,6 +285,8 @@ func New(deps Deps) *Server {
 	// The mirror file is only loaded when it was written under the
 	// credentials in effect now; a rotation outside the daemon drops it.
 	s.sessions = NewSessionStoreEpoch(deps.SessionFile, CredentialEpoch(auth.User, auth.PasswordHash), s.logf)
+	// Tokens are not bound to the epoch: revocation is explicit.
+	s.tokens = NewTokenStore(deps.TokenFile, s.logf)
 	s.tlsNoise = newHandshakeFilter(s.logf, time.Now)
 	s.logs = deps.Log
 	for _, h := range deps.AllowedHosts {
@@ -479,60 +495,45 @@ func VerifyPassword(user, password, stored string) bool {
 
 // ---- routing -------------------------------------------------------------
 
+// routes registers the route table (openapi.go) plus the two
+// catch-alls, and renders the OpenAPI document once.
 func (s *Server) routes() {
 	m := s.mux
-	m.HandleFunc("GET /api/state", s.getState)
-	m.HandleFunc("GET /api/history", s.getHistory)
-	m.HandleFunc("GET /api/config", s.getConfig)
-	m.HandleFunc("PUT /api/config", s.putConfig)
-	m.HandleFunc("PUT /api/override/{name}", s.putOverride)
-	m.HandleFunc("DELETE /api/override/{name}", s.deleteOverride)
-	m.HandleFunc("GET /api/presets", s.getPresets)
-	m.HandleFunc("POST /api/presets/{name}/apply", s.applyPreset)
-	m.HandleFunc("PUT /api/presets/{name}", s.savePreset)
-	m.HandleFunc("DELETE /api/presets/{name}", s.deletePreset)
-	m.HandleFunc("GET /api/presets/{name}", s.getPreset)
-	m.HandleFunc("POST /api/presets/{name}/rename", s.renamePreset)
-	m.HandleFunc("GET /api/log", s.getLog)
-	m.HandleFunc("GET /api/log/export", s.exportLog)
-	m.HandleFunc("DELETE /api/log", s.clearLog)
-	m.HandleFunc("GET /api/config/export", s.exportConfig)
-	m.HandleFunc("POST /api/config/import", s.importConfig)
-	m.HandleFunc("GET /api/profiles", s.getProfiles)
-	m.HandleFunc("GET /api/version", s.getVersion)
-	m.HandleFunc("GET /api/sensors", s.getSensors)
-	m.HandleFunc("GET /api/tls", s.getTLS)
-	m.HandleFunc("GET /api/tls/cert.crt", s.tlsCertPEM)
-	m.HandleFunc("GET /api/tls/cert.cer", s.tlsCertDER)
-	m.HandleFunc("POST /api/tls/regenerate", s.tlsRegenerate)
-	m.HandleFunc("POST /api/tls/upload", s.tlsUpload)
-	m.HandleFunc("POST /api/tls/reset", s.tlsReset)
-	m.HandleFunc("POST /api/login", s.login)
-	m.HandleFunc("POST /api/logout", s.logout)
-	m.HandleFunc("GET /api/session", s.getSession)
-	m.HandleFunc("GET /api/account", s.getAccount)
-	m.HandleFunc("POST /api/account/password", s.accountPassword)
-	m.HandleFunc("POST /api/account/user", s.accountUser)
-	m.HandleFunc("POST /api/account/sessions/revoke", s.accountRevoke)
-	m.HandleFunc("GET /api/alerts", s.getAlerts)
-	m.HandleFunc("PUT /api/alerts", s.putAlerts)
-	m.HandleFunc("POST /api/alerts/test", s.alertsTest)
-	m.HandleFunc("POST /api/alerts/template", s.alertsTemplate)
-	m.HandleFunc("GET /api/dashboard", s.getDashboard)
-	m.HandleFunc("PUT /api/dashboard", s.putDashboard)
-	m.HandleFunc("GET /api/about", s.getAbout)
-	m.HandleFunc("GET /api/system", s.getSystem)
+	table := s.routeTable()
+	for _, r := range table {
+		m.HandleFunc(r.pattern(), r.Handler)
+		s.byPattern[r.pattern()] = r
+	}
 	m.HandleFunc("/api/", s.apiFallback)
 	m.HandleFunc("/", s.static)
+	doc, err := buildOpenAPI(s.deps.Version, table)
+	if err != nil {
+		// Only a programming error in the table can fail here; the
+		// endpoint then serves an Error document instead of nothing.
+		s.logf("web: openapi document not rendered: %v", err)
+		doc = []byte(`{"error":"openapi document not available"}` + "\n")
+	}
+	s.openapi, s.openapiETag = doc, etagOf(doc)
+}
+
+// routeFor returns the route a request resolves to; ok is false for the
+// catch-alls (static UI, unknown or method-mismatched API path).
+func (s *Server) routeFor(r *http.Request) (route, bool) {
+	_, pat := s.mux.Handler(r)
+	rt, ok := s.byPattern[pat]
+	return rt, ok
 }
 
 // Caller is the resolved identity of a request (CallerFrom). Via is
-// "cookie" (session), "basic" (Authorization header), "socket" (unix
-// socket) or "none" (anonymous, or auth = none).
+// "cookie" (session), "basic" (Authorization header), "bearer" (API
+// token), "socket" (unix socket) or "none" (anonymous, or auth = none).
+// A bearer caller carries its Scope and TokenID; User is the token name.
 type Caller struct {
 	Authenticated bool
 	User          string
 	Via           string
+	Scope         string
+	TokenID       string
 	// token is the cookie token of a session caller (kept out of the
 	// JSON world; used as the keep argument of RevokeAll).
 	token   string
@@ -555,26 +556,36 @@ func withCaller(next http.Handler, c Caller) http.Handler {
 	})
 }
 
-// publicPath lists what an anonymous caller may reach with auth = basic
-// (DESIGN.md "Visibility model"): the static UI, the version/about/session
-// cards, login/logout and the two filtered reads (state, history — the
-// handlers reduce them for anonymous callers). Everything else under /api/
-// is protected.
-func publicPath(path string) bool {
-	if !strings.HasPrefix(path, "/api/") {
+// publicPath reports what an anonymous caller may reach with auth =
+// basic (DESIGN.md "Visibility"): the static UI and every route of the
+// table whose class is not protected (the filtered reads reduce their
+// answer themselves). A wrong method on a public path is still public
+// (the fallback answers 405); an API path no route matches is protected,
+// so an anonymous probe learns nothing about the endpoint set.
+func (s *Server) publicPath(r *http.Request) bool {
+	if !strings.HasPrefix(r.URL.Path, "/api/") {
 		return true
 	}
-	switch path {
-	case "/api/version", "/api/about", "/api/session", "/api/login", "/api/logout", "/api/state", "/api/history":
-		return true
+	if rt, ok := s.routeFor(r); ok {
+		return rt.Class != classProtected
+	}
+	for _, m := range []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete} {
+		probe := r.Clone(r.Context())
+		probe.Method = m
+		if rt, ok := s.routeFor(probe); ok && rt.Class != classProtected {
+			return true
+		}
 	}
 	return false
 }
 
-// guard enforces, in this order: Host header (DNS rebinding), CSRF
-// header on state-changing methods, then resolves the caller once (cookie
-// session, else basic auth) and refuses anonymous access to protected
-// paths. Over TLS every answer carries HSTS.
+// guard enforces, in this order: Host header (DNS rebinding); the caller
+// is resolved once (cookie session, bearer token, basic credential); the
+// CSRF header on state-changing methods unless the caller is a bearer
+// token (a browser cannot attach that header cross-site — the header
+// guards cookies and cached Basic credentials); visibility (silent 401
+// for anonymous callers on a protected path); the token scope. Over TLS
+// every answer carries HSTS.
 func (s *Server) guard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.TLS != nil {
@@ -584,34 +595,61 @@ func (s *Server) guard(next http.Handler) http.Handler {
 			writeError(w, http.StatusMisdirectedRequest, "host header not allowed; use the IP address, localhost or a configured allowed_hosts entry")
 			return
 		}
+		c, ok := s.resolveCaller(w, r)
+		if !ok {
+			return
+		}
 		write := true
 		switch r.Method {
 		case http.MethodGet, http.MethodHead, http.MethodOptions:
 			write = false
 		}
-		if write && r.Header.Get(CSRFHeader) != "1" {
+		if write && c.Via != "bearer" && r.Header.Get(CSRFHeader) != "1" {
 			writeError(w, http.StatusForbidden, "missing "+CSRFHeader+" header")
 			return
 		}
-		c, ok := s.resolveCaller(w, r)
-		if !ok {
-			return
-		}
-		if !c.Authenticated && !publicPath(r.URL.Path) {
+		if !c.Authenticated && !s.publicPath(r) {
 			// Anonymous: a silent 401 (no log line, no rate-limit count)
 			// that makes the UI show its login form. No WWW-Authenticate
 			// challenge on purpose: the UI has its own form.
 			writeError(w, http.StatusUnauthorized, "authentication required")
 			return
 		}
+		if c.Via == "bearer" {
+			if !s.scopeAllowed(w, r, c) {
+				return
+			}
+		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), callerKey{}, c)))
 	})
 }
 
+// scopeAllowed checks a bearer caller against the route's scope: the
+// session-only routes refuse every token, the others need a scope that
+// covers theirs. A path no route matches passes (the fallback answers
+// 404/405). false means the 403 was written.
+func (s *Server) scopeAllowed(w http.ResponseWriter, r *http.Request, c Caller) bool {
+	rt, ok := s.routeFor(r)
+	if !ok {
+		return true
+	}
+	what := r.Method + " " + r.URL.Path
+	switch {
+	case rt.Scope == scopeSession:
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "token scope " + c.Scope + " does not allow " + what + " (session only)", "scope": c.Scope, "required": string(scopeSession)})
+		return false
+	case !ScopeAllows(c.Scope, string(rt.Scope)):
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "token scope " + c.Scope + " does not allow " + what, "scope": c.Scope, "required": string(rt.Scope)})
+		return false
+	}
+	return true
+}
+
 // resolveCaller identifies the request: with auth = none everyone is signed
-// in; else the session cookie wins, then a presented basic credential. A
-// presented credential that does not verify is a failure (counted, logged,
-// answered 401 whatever the path); ok=false means the answer was written.
+// in (a Bearer header is ignored); else the session cookie wins, then a
+// presented bearer token, then a basic credential. A presented credential
+// that does not verify is a failure (counted, logged, answered 401
+// whatever the path); ok=false means the answer was written.
 func (s *Server) resolveCaller(w http.ResponseWriter, r *http.Request) (Caller, bool) {
 	if !s.basicMode() {
 		return Caller{Authenticated: true, Via: "none"}, true
@@ -621,8 +659,12 @@ func (s *Server) resolveCaller(w http.ResponseWriter, r *http.Request) (Caller, 
 			return Caller{Authenticated: true, User: sess.User, Via: "cookie", token: ck.Value, session: sess}, true
 		}
 	}
-	if r.Header.Get("Authorization") == "" {
+	authz := r.Header.Get("Authorization")
+	if authz == "" {
 		return Caller{Via: "none"}, true
+	}
+	if secret, ok := bearerSecret(authz); ok {
+		return s.resolveBearer(w, r, secret)
 	}
 	ip := remoteIP(r)
 	// A bucket that already has limitConcurrent failed attempts sleeping
@@ -646,6 +688,46 @@ func (s *Server) resolveCaller(w http.ResponseWriter, r *http.Request) (Caller, 
 	s.limiter.reset(ip)
 	s.upgradeLegacyHash(user, pass)
 	return Caller{Authenticated: true, User: user, Via: "basic"}, true
+}
+
+// bearerSecret extracts the token from an Authorization header of the
+// Bearer scheme (scheme case-insensitive, blanks tolerated).
+func bearerSecret(authz string) (string, bool) {
+	const scheme = "bearer "
+	if len(authz) <= len(scheme) || !strings.EqualFold(authz[:len(scheme)], scheme) {
+		return "", false
+	}
+	secret := strings.TrimSpace(authz[len(scheme):])
+	return secret, secret != ""
+}
+
+// resolveBearer looks a presented token up. The lookup is one sha256, so
+// it goes through the limiter's delay counter and the concurrency cap
+// (busy) but not the PBKDF2 semaphore. A rejected token is counted and
+// logged; an accepted one is bounded by the per-token request limiter.
+func (s *Server) resolveBearer(w http.ResponseWriter, r *http.Request, secret string) (Caller, bool) {
+	ip := remoteIP(r)
+	if s.limiter.busy(ip) {
+		writeError(w, http.StatusTooManyRequests, "too many concurrent authentication attempts")
+		return Caller{}, false
+	}
+	t, ok, expired := s.tokens.Lookup(secret, ip)
+	if !ok {
+		reason := "unknown"
+		if expired {
+			reason = "expired"
+		}
+		n, delay := s.limiter.fail(ip)
+		s.logf("web: bearer token rejected from %s: %s (%s %s, %d recent failures, delay %s)", ip, reason, r.Method, r.URL.Path, n, delay)
+		writeError(w, http.StatusUnauthorized, "authentication failed: token "+reason)
+		return Caller{}, false
+	}
+	s.limiter.reset(ip)
+	if !s.tokenLimit.allow(t.ID) {
+		writeError(w, http.StatusTooManyRequests, "token rate limit")
+		return Caller{}, false
+	}
+	return Caller{Authenticated: true, User: t.Name, Via: "bearer", Scope: t.Scope, TokenID: t.ID}, true
 }
 
 // upgradeLegacyHash rewrites a stored legacy sha256("user:password") hash
