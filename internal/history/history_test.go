@@ -214,8 +214,8 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	// reload with the same clock: identical tiers
 	l2 := &logs{}
 	s2 := New(path, 10*time.Second, c.now, l2.f)
-	if len(l2.lines) != 0 {
-		t.Errorf("unexpected log on load: %v", l2.lines)
+	if len(l2.lines) != 1 || !strings.Contains(l2.lines[0], "loaded") {
+		t.Errorf("want one \"loaded\" line on load, got %v", l2.lines)
 	}
 	for name, want := range before {
 		var got []Point
