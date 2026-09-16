@@ -51,12 +51,13 @@ MQTT/discovery, no multi-host management, no new dependencies. The UI stays Engl
   drive fans oscillate around a curve point at 44/45 °C today. — done, see Added
 - **Several sensors per channel** (`sensor = ["drivetemp:max", "ec:hdd"]` → maximum). — done
 - **Schedules** (`[[schedule]] preset = "n5pro-quiet" from = "22:00" to = "07:00"`) as
-  preset switches with an alert when a switch fails.
+  preset switches with an alert when a switch fails. — done
 - **pwm4** (PCIe header, no tachometer) as an optional fourth channel. — done
 
 **3. Dashboard**
 - **Longer history**: persist the ring in the state directory, views 2 h / 24 h / 7 d
-  (downsampled), CSV export.
+  (downsampled), CSV export — backend done, see Added below (range selector and CSV
+  button in the dashboard open).
 - **Per-device sensors**: today only `nvme:max`, `drivetemp:max` and the *first* device of a
   name (`hwmon:nvme:temp1`) are addressable — a box with three NVMe SSDs and four HDDs
   shows two temperatures. New ids per device (`disk:sda`, `disk:nvme1n1`, resolved through
@@ -143,6 +144,25 @@ curl path is re-run once at 0.4.0.
   `stop = "auto"` hands it back to the EC); `SanitizeChannels` neither adds nor corrects it
   and a built-in preset keeps it (see the merge rule below). `test`, `detect` and `check`
   treat it as a channel without tach.
+- **Schedules** (backend): `[[schedule]] preset = "n5pro-quiet" from = "22:00" to = "07:00"
+  days = ["fri", "sat"]` switches presets by local time; an entry without `from`/`to` is
+  the fallback outside every window (at most 16 entries, one fallback, invalid entries
+  dropped with a warning). The scheduler (`cmd/n5-fangov/scheduler.go`, `internal/schedule`)
+  evaluates every 30 s and once after READY, applies the preset on transitions only (a
+  manual apply or curve edit inside a window stands until the next switch) through the same
+  merge-by-pwm apply the API uses, and raises the new `schedule` alert (cooled 30 min) when a
+  switch fails — the previous curves stay, the retry happens at the next transition. Every
+  reload (config PUT, import, preset apply) hands the list to the scheduler. New endpoint
+  `GET /api/schedules` (`{entries, active, next, last, timezone}`), `GET /api/config` carries
+  `schedule[]`. Dashboard card and docs follow in the frontend part.
+- **Longer history** (backend): the chart history is a tiered store (`internal/history`):
+  raw points for 2 h, 1-minute means for 24 h, 5-minute means for 7 days, persisted to
+  `/var/lib/n5-fangov/history.json` (0600, every 10 min and on stop; an unwritable state dir
+  keeps it in memory) and reloaded at start. `GET /api/history?minutes=N` accepts up to 10080
+  and answers from the tier that matches the span; `GET /api/history.csv?minutes=N`
+  (protected) exports it as CSV (`ts,time,<ch>_temp,<ch>_duty,<ch>_rpm,…,<extra id>…`,
+  `time` RFC 3339 local). The range selector and the CSV button are part of the frontend
+  part.
 
 ### Changed
 

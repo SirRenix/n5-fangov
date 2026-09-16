@@ -155,7 +155,7 @@ refused). `Default()` has **no channels**; `N5ProChannels()` is the verified set
 | `hysteresis` | 0..10 °C (integer); 0 = off (section 6 "Curve post-processing") | 0 | reload |
 | `min_on` | `0s`..`1h` duration; `0s` = off | `0s` | reload |
 | `[[schedule]] preset` | preset name `^[a-z0-9_-]{1,64}$` (existence is checked when the switch happens, not at parse) | — | reload |
-| `from`, `to` | `HH:MM` (24 h, local time of the host), both or neither; `from == to` → entry dropped; `to < from` = the window crosses midnight | — | reload |
+| `from`, `to` | `HH:MM` (24 h, local time of the host; a one-digit hour is accepted and stored as `HH:MM`), both or neither (empty strings count as absent); `from == to` → entry dropped; `to < from` = the window crosses midnight | — | reload |
 | `days` | subset of `mon tue wed thu fri sat sun` (lower-cased, distinct); the day of the window is the day `from` falls in; missing = every day | all | reload |
 
 Schedule rules: at most 16 entries; an entry without `from`/`to` is the **fallback** that
@@ -297,13 +297,16 @@ above keeps it across an apply.
 ### 6a. History (internal/history)
 
 ```go
-type Point = control.HistoryPoint            // {ts, temp{}, duty{}, rpm{}, extra{}}
+type Point struct{…}                         // {ts, temp{}, duty{}, rpm{}, extra{}}; control.HistoryPoint is an alias of it
+                                             // (history must not import control: control holds the store)
 type Store struct{…}
 func New(path string, interval time.Duration, now func() time.Time, logf func(string, ...any)) *Store
 func (s *Store) Push(p Point)                // called by the controller once per cycle (under its lock is fine: O(1))
-func (s *Store) Range(span time.Duration, since int64) []Point   // tier by span: ≤ 2 h raw, ≤ 24 h 1-min, else 5-min; ts > since
+func (s *Store) Range(span time.Duration, since int64) []Point   // tier by span: ≤ 2 h raw, ≤ 24 h 1-min, else 5-min; ts ≥ now−span and ts > since
 func (s *Store) Save() error                 // atomic JSON, 0600; called every 10 min by the controller loop and from Stop
 func (s *Store) Load()                       // at New: file missing/corrupt → empty + one log line; points older than their tier are dropped
+func (s *Store) SetInterval(d time.Duration) // reload changed [daemon].interval: raw capacity recomputed, tier trimmed
+func RawCapacity(interval time.Duration) int // 2h / interval, at least 1
 func CSV(w io.Writer, pts []Point, channels []string, extras []string) error
 ```
 
@@ -311,12 +314,15 @@ Tiers: **raw** = one point per cycle, 2 h (`historySpan`, capacity `2h / interva
 before); **1-min** = 1440 buckets of 60 s, 24 h; **5-min** = 2016 buckets of 300 s, 7 d.
 A bucket is the arithmetic mean of the raw points that fall into it (temp per channel and
 extra id, duty and rpm rounded to int; a value absent in every raw point stays absent);
-`ts` = bucket start. Buckets close when the first point of the next bucket arrives; the
-open bucket is included in `Range` with its running mean. File `<state dir>/history.json`
-(`{format:1, interval, raw[], min1[], min5[]}`), ~0.5 MB at 10 s; an unwritable state
-dir is logged once and the store runs in memory. `Range` returns copies. The
-controller's `History(since)` stays (raw tier) and `HistoryRange(span, since)` is added to
-`Service`; the state file `state.json` is unchanged.
+`ts` = bucket start; temperatures are rounded to three decimals. Buckets close when the
+first point of the next bucket arrives; the open bucket is included in `Range` with its
+running mean and is written to the file as a plain point — `Load` rebuilds it from the
+raw points that fall into it, so a restart inside a bucket continues the mean. File
+`<state dir>/history.json` (`{format:1, interval, raw[], min1[], min5[]}`, `interval` as a
+duration string), ~0.5 MB at 10 s; an unwritable state dir is logged once and the store
+runs in memory. `Range` returns copies. The controller's `History(since)` stays (raw tier;
+`since` capped at 2 h) and `HistoryRange(span, since)` is added to `Service`; the state
+file `state.json` is unchanged.
 
 - Safe duty of a channel = its fixed stop duty when configured (N5 Pro HDD: 140), else 255;
   overrides do not apply while the temperature is unknown. Status becomes `sensor-error`
@@ -387,26 +393,37 @@ a restart loop cannot spam PVE.
 ### 6b. Schedules (internal/schedule, cmd scheduler.go)
 
 ```go
-type Entry struct { Preset string; From, To string; Days []time.Weekday; Fallback bool }   // from config.Schedule
+type Entry struct { Preset string; From, To string; Days []time.Weekday; Fallback bool }
+func FromConfig(in []config.Schedule) []Entry                    // parsed [[schedule]] tables → entries
+func Equal(a, b Entry) bool                                      // same preset, window and days
 func Active(entries []Entry, now time.Time) (idx int, ok bool)   // first windowed entry that contains now, else the fallback, else ok=false
-func Next(entries []Entry, now time.Time) (at time.Time, idx int, ok bool)   // next moment the active entry changes (≤ 8 days ahead)
+func Next(entries []Entry, now time.Time) (at time.Time, idx int, ok bool)   // next moment the active entry changes (≤ 8 days ahead);
+                                                                              // idx = entry active from then (−1 none); ok=false when nothing changes
 ```
 
-A window contains `now` when the local clock (`time.Local`) is in `[from, to)` on a
-listed day; a window crossing midnight (`to < from`) belongs to the day `from` falls in
-and also matches the early hours of the following day. The scheduler in cmd ticks every
-30 s (and once at start, after READY): it computes `Active`; when the active index (or
-`ok`) differs from the last evaluation it applies that entry's preset through the same
-`dirPresetStore.Apply` the API uses (merge by pwm, config written, reload); a switch that
-leaves every window without a fallback applies nothing and only logs. Success: one log
-line `schedule: preset "night" applied (22:00–07:00)`. Failure: log + `schedule` alert
-(cooled 30 min, `sendAlertCooled`), the previous curves stay, the scheduler retries at the
-next transition (not every tick). A manual preset apply or curve edit during a window is
-respected — the scheduler acts on **transitions only**, never re-applies within a window.
-`Reload` (config PUT, import) hands the new `[[schedule]]` list to the scheduler
-(`Set(entries)`), which re-evaluates at the next tick; a changed list that changes the
-active entry counts as a transition. State for the API: `Status()` →
-`{entries, active, next{ts, preset}, last{ts, preset, ok, error}, timezone}`.
+A window contains `now` when the wall clock of `now`'s location (the daemon passes
+`time.Local`) is in `[from, to)` at minute granularity on a listed day; a window crossing
+midnight (`to < from`) belongs to the day `from` falls in and also matches the early hours
+of the following day. `Next` evaluates `Active` at every window boundary and every full
+hour of the coming 8 days, so a boundary inside a DST gap or repeated hour is resolved at
+the hour mark. The scheduler in cmd ticks every 30 s and evaluates once at start (after
+READY): the first evaluation applies the active entry (a daemon start is a transition —
+after a reboot inside a window the window's preset is in effect); afterwards it applies a
+preset only when the active entry (compared by value, `Equal`, or `ok`) differs from the
+previous evaluation, through the same `dirPresetStore.Apply` the API uses (merge by pwm,
+config written, reload); a switch that leaves every window without a fallback applies
+nothing and only logs. Success: one log line `schedule: preset "night" applied
+(22:00–07:00)` (`(fallback)` for the fallback). Failure (including `ErrRestartRequired`):
+log + `schedule` alert (cooled 30 min, `sendAlertCooled`), the previous curves stay, the
+scheduler retries at the next transition (not every tick). A manual preset apply or curve
+edit during a window is respected — the scheduler acts on **transitions only**, never
+re-applies within a window. `Reload` (config PUT, import, preset apply) hands the new
+`[[schedule]]` list to the scheduler (`Set(entries)`), which re-evaluates at the next
+tick; a changed list that changes the active entry counts as a transition, an unchanged
+active entry does not. State for the API: `Status()` → `{entries[{preset, from, to,
+days[], fallback, active}], active: idx|-1, next{ts, preset}|null (preset "" when no entry
+is active after the switch; null when nothing changes within 8 days), last{ts, preset,
+ok, error}|null, timezone}` with `timezone` = zone abbreviation and offset (`CEST +02:00`).
 
 ## 7. Alerts (internal/alert)
 

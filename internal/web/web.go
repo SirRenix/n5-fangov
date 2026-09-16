@@ -236,6 +236,12 @@ type Deps struct {
 	// sysinfo.Info of the cmd collector; typed any to keep the package
 	// free of that import). nil → 501.
 	System func() any
+	// Schedules returns the scheduler's status for GET /api/schedules
+	// (the cmd scheduler's Status; typed any like System). nil → 501.
+	Schedules func() any
+	// Channels is the daemon's channel order for the history CSV columns;
+	// nil → the order of the snapshot's channels.
+	Channels func() []string
 }
 
 // Server holds the mux and serves it on TCP and on the unix socket.
@@ -524,6 +530,8 @@ func (s *Server) routes() {
 	m.HandleFunc("PUT /api/dashboard", s.putDashboard)
 	m.HandleFunc("GET /api/about", s.getAbout)
 	m.HandleFunc("GET /api/system", s.getSystem)
+	m.HandleFunc("GET /api/history.csv", s.historyCSV) // merge: move into routeTable
+	m.HandleFunc("GET /api/schedules", s.getSchedules) // merge: move into routeTable
 	m.HandleFunc("/api/", s.apiFallback)
 	m.HandleFunc("/", s.static)
 }
@@ -801,14 +809,9 @@ func (s *Server) getHistory(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotImplemented, "no service")
 		return
 	}
-	minutes := 120
-	if q := r.URL.Query().Get("minutes"); q != "" {
-		n, err := strconv.Atoi(q)
-		if err != nil || n < 1 || n > 24*60 {
-			writeError(w, http.StatusBadRequest, "minutes must be 1..1440")
-			return
-		}
-		minutes = n
+	minutes, ok := historyMinutes(w, r)
+	if !ok {
+		return
 	}
 	var since int64
 	if q := r.URL.Query().Get("since"); q != "" {
@@ -819,7 +822,7 @@ func (s *Server) getHistory(w http.ResponseWriter, r *http.Request) {
 		}
 		since = n
 	}
-	pts := s.deps.Service.History(time.Duration(minutes) * time.Minute)
+	pts := s.deps.Service.HistoryRange(time.Duration(minutes)*time.Minute, since)
 	if !CallerFrom(r.Context()).Authenticated {
 		// Anonymous: the channel series only; the extra sensors stay
 		// behind the sign-in (they name the operator's hardware).

@@ -36,7 +36,9 @@ type fakeService struct {
 	mu        sync.Mutex
 	snap      control.Snapshot
 	hist      []control.HistoryPoint
-	histSince time.Duration
+	histSince time.Duration // last History() argument
+	histSpan  time.Duration // last HistoryRange() span
+	histFrom  int64         // last HistoryRange() since
 	overrides map[string]int
 	fixedMode map[string]control.Mode // wins over the override-derived mode
 	cleared   []string
@@ -87,6 +89,20 @@ func (f *fakeService) History(since time.Duration) []control.HistoryPoint {
 	defer f.mu.Unlock()
 	f.histSince = since
 	return f.hist
+}
+
+// HistoryRange mirrors the store: the fake keeps one tier, since is strict.
+func (f *fakeService) HistoryRange(span time.Duration, since int64) []control.HistoryPoint {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.histSpan, f.histFrom = span, since
+	var out []control.HistoryPoint
+	for _, p := range f.hist {
+		if p.TS > since {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 func (f *fakeService) SetOverride(ch string, duty int) error {
 	f.mu.Lock()
@@ -471,8 +487,8 @@ func TestHistoryQuery(t *testing.T) {
 	e := newEnv(t, AuthConfig{})
 	r := e.do(t, "GET", "/api/history", "", nil)
 	wantCode(t, r, 200)
-	if e.svc.histSince != 120*time.Minute {
-		t.Errorf("default since = %v", e.svc.histSince)
+	if e.svc.histSpan != 120*time.Minute {
+		t.Errorf("default span = %v", e.svc.histSpan)
 	}
 	var pts []map[string]any
 	decode(t, r.body, &pts)
@@ -481,8 +497,8 @@ func TestHistoryQuery(t *testing.T) {
 	}
 	r = e.do(t, "GET", "/api/history?minutes=30", "", nil)
 	wantCode(t, r, 200)
-	if e.svc.histSince != 30*time.Minute {
-		t.Errorf("since = %v", e.svc.histSince)
+	if e.svc.histSpan != 30*time.Minute {
+		t.Errorf("span = %v", e.svc.histSpan)
 	}
 	wantError(t, e.do(t, "GET", "/api/history?minutes=0", "", nil), 400, "minutes")
 	wantError(t, e.do(t, "GET", "/api/history?minutes=abc", "", nil), 400, "minutes")
@@ -1627,8 +1643,8 @@ func TestQuerySemicolonNotLogged(t *testing.T) {
 			t.Errorf("%s: %d", p, res.StatusCode)
 		}
 	}
-	// a ';'-separated pair is parsed: minutes=9999 is out of range → 400
-	res, err := http.Get("http://" + ln.Addr().String() + "/api/history?since=0;minutes=9999")
+	// a ';'-separated pair is parsed: minutes=99999 is out of range → 400
+	res, err := http.Get("http://" + ln.Addr().String() + "/api/history?since=0;minutes=99999")
 	if err != nil {
 		t.Fatal(err)
 	}

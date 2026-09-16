@@ -21,6 +21,7 @@ coverage.*
 *.pfx
 sessions.json
 alerts.json
+history.json
 *.token
 *.secret
 

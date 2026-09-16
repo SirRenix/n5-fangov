@@ -18,6 +18,7 @@ import (
 
 	"github.com/SirRenix/n5-fangov/internal/config"
 	"github.com/SirRenix/n5-fangov/internal/fsutil"
+	"github.com/SirRenix/n5-fangov/internal/history"
 	"github.com/SirRenix/n5-fangov/internal/logfile"
 	"github.com/SirRenix/n5-fangov/internal/profile"
 	"github.com/SirRenix/n5-fangov/internal/sdnotify"
@@ -51,6 +52,9 @@ type Options struct {
 	DryRun bool   // compute and log, never write hardware
 	RunDir string // /run/n5-fangov: state.json, override.<name>, alert.<kind>; "" = no files
 	Logger Logger // default: log.New(os.Stdout, "", 0)
+	// HistoryFile is <state dir>/history.json, the persisted chart history
+	// (internal/history); "" keeps the history in memory only.
+	HistoryFile string
 
 	// Injection points for tests. nil = real time / real sd_notify.
 	Now    func() time.Time
@@ -106,8 +110,9 @@ type enableReader interface {
 // writes to pwmN (port of the Bash "n % 6" rule, one minute at 10 s).
 const rewriteEvery = 6
 
-// historySpan is how much history the ring keeps.
-const historySpan = 2 * time.Hour
+// historySaveEvery is how often the loop persists the history store
+// (Options.Now readings); Stop saves once more.
+const historySaveEvery = 10 * time.Minute
 
 // resolveEvery re-resolves all sensors every N cycles (Bash: hwmon re-resolve
 // every 60 cycles), so devices that re-enumerated are picked up.
@@ -173,8 +178,7 @@ type Controller struct {
 	chans     []*channel
 	overrides map[string]int
 	snap      Snapshot
-	hist      []HistoryPoint // ring, oldest first
-	histCap   int
+	hist      *history.Store   // tiered history (raw 2 h, 1-min 24 h, 5-min 7 d)
 	alerts    map[string]int64 // kind → unix ts of last delivered alert (snapshot, stamp files)
 	// alertAt is the in-memory cooldown clock per kind: Options.Now()
 	// readings, which carry a monotonic reading in production, so a wall
@@ -211,6 +215,7 @@ type Controller struct {
 	sameRaw  int
 	haveRaw  bool
 	started  time.Time
+	lastSave time.Time // last history Save (Options.Now)
 	stopOnce sync.Once
 }
 
@@ -263,7 +268,7 @@ func New(cfg config.Config, dev profile.Device, sensors SensorFactory, alerter A
 		extra:     dev.ExtraTemps(),
 	}
 	c.cfg = cfg.Clone()
-	c.histCap = historyCapacity(c.cfg.Daemon.Interval)
+	c.hist = history.New(opts.HistoryFile, c.cfg.Daemon.Interval, opts.Now, c.log.Printf)
 	if opts.RunDir != "" {
 		if err := os.MkdirAll(opts.RunDir, 0o755); err != nil {
 			c.log.Printf("control: run dir %s: %v (state files disabled)", opts.RunDir, err)
@@ -281,19 +286,9 @@ func New(cfg config.Config, dev profile.Device, sensors SensorFactory, alerter A
 		c.loadOverrides()
 	}
 	c.started = c.opts.Now()
+	c.lastSave = c.started
 	c.snap = c.buildSnapshot(StatusStarting)
 	return c, nil
-}
-
-func historyCapacity(interval time.Duration) int {
-	if interval <= 0 {
-		return 1
-	}
-	n := int(historySpan / interval)
-	if n < 1 {
-		n = 1
-	}
-	return n
 }
 
 func realWait(ctx context.Context, d time.Duration) bool {
@@ -474,10 +469,23 @@ func (c *Controller) Run(ctx context.Context) (err error) {
 		if err := c.cycle(); err != nil {
 			return err
 		}
+		c.saveHistory()
 		if !c.opts.Wait(ctx, c.interval()) {
 			return ctx.Err()
 		}
 	}
+}
+
+// saveHistory persists the history store every historySaveEvery (loop
+// goroutine only; Stop saves once more). Write failures are logged by
+// the store itself, once.
+func (c *Controller) saveHistory() {
+	now := c.opts.Now()
+	if now.Sub(c.lastSave) < historySaveEvery {
+		return
+	}
+	c.lastSave = now
+	_ = c.hist.Save()
 }
 
 func (c *Controller) interval() time.Duration {
@@ -1019,6 +1027,7 @@ func (c *Controller) Stop() {
 			}
 		}
 		c.removeRunFile("state.json", "state.json")
+		_ = c.hist.Save()
 	})
 }
 
@@ -1192,18 +1201,20 @@ func (c *Controller) Snapshot() Snapshot {
 	return s
 }
 
-// History returns ring entries not older than since (oldest first).
+// History returns the raw tier (one point per cycle) not older than since,
+// oldest first. The raw tier holds history.RawSpan at most, so a larger
+// since yields the whole tier.
 func (c *Controller) History(since time.Duration) []HistoryPoint {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	cut := c.opts.Now().Add(-since).Unix()
-	var out []HistoryPoint
-	for _, p := range c.hist {
-		if p.TS >= cut {
-			out = append(out, p)
-		}
+	if since > history.RawSpan {
+		since = history.RawSpan
 	}
-	return out
+	return c.hist.Range(since, 0)
+}
+
+// HistoryRange returns the history tier for span (raw, 1-min or 5-min
+// means) with ts > since; see history.Store.Range.
+func (c *Controller) HistoryRange(span time.Duration, since int64) []HistoryPoint {
+	return c.hist.Range(span, since)
 }
 
 // SetOverride pins a channel to duty (manual mode) until ClearOverride.
@@ -1347,10 +1358,7 @@ func (c *Controller) applyPendingLocked() {
 		c.watchDirty = true
 	}
 	if cfg.Daemon.Interval != old.Daemon.Interval {
-		c.histCap = historyCapacity(cfg.Daemon.Interval)
-		if len(c.hist) > c.histCap {
-			c.hist = append([]HistoryPoint(nil), c.hist[len(c.hist)-c.histCap:]...)
-		}
+		c.hist.SetInterval(cfg.Daemon.Interval)
 	}
 	c.log.Printf("config applied")
 }
@@ -1500,11 +1508,7 @@ func (c *Controller) pushHistoryLocked(chans []*channel, watched map[string]floa
 			p.RPM[ch.cfg.Name] = ch.rpm
 		}
 	}
-	if len(c.hist) >= c.histCap {
-		drop := len(c.hist) - c.histCap + 1
-		c.hist = append(c.hist[:0], c.hist[drop:]...)
-	}
-	c.hist = append(c.hist, p)
+	c.hist.Push(p)
 }
 
 func (c *Controller) writeState(s Snapshot) {

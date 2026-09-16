@@ -69,12 +69,13 @@ func TestHistoryBoundsAPI(t *testing.T) {
 	for _, c := range []struct {
 		query string
 		code  int
-		since time.Duration // History() argument on success
+		since time.Duration // HistoryRange() span on success
 	}{
 		{"minutes=1", 200, time.Minute},
 		{"minutes=1440", 200, 1440 * time.Minute},
+		{"minutes=10080", 200, 10080 * time.Minute},
 		{"minutes=0", 400, 0},
-		{"minutes=1441", 400, 0},
+		{"minutes=10081", 400, 0},
 		{"minutes=-1", 400, 0},
 		{"minutes=abc", 400, 0},
 		{"minutes=", 200, 120 * time.Minute}, // empty = default
@@ -87,23 +88,23 @@ func TestHistoryBoundsAPI(t *testing.T) {
 	} {
 		t.Run(c.query, func(t *testing.T) {
 			e.svc.mu.Lock()
-			e.svc.histSince = -1
+			e.svc.histSpan = -1
 			e.svc.mu.Unlock()
 			r := e.do(t, "GET", "/api/history?"+c.query, "", nil)
 			if c.code != 200 {
 				wantError(t, r, c.code, "must be")
 				e.svc.mu.Lock()
 				defer e.svc.mu.Unlock()
-				if e.svc.histSince != -1 {
-					t.Errorf("History called on a refused query")
+				if e.svc.histSpan != -1 {
+					t.Errorf("HistoryRange called on a refused query")
 				}
 				return
 			}
 			wantCode(t, r, 200)
 			e.svc.mu.Lock()
 			defer e.svc.mu.Unlock()
-			if e.svc.histSince != c.since {
-				t.Errorf("History(%s), want %s", e.svc.histSince, c.since)
+			if e.svc.histSpan != c.since {
+				t.Errorf("HistoryRange(%s), want %s", e.svc.histSpan, c.since)
 			}
 		})
 	}
