@@ -7,10 +7,12 @@ package alert
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -45,35 +47,180 @@ type Logger interface {
 // than Timeout.
 type Sink interface {
 	// Alert delivers one alert of the given kind (sensor, stall, temp, write,
-	// config, start, service, restart).
+	// config, config-channels, restart, failed, kernel, tls, test). Fire
+	// and forget: a delivery failure is logged, never returned.
 	Alert(kind, msg string)
 	// Name identifies the transport for the start-up log line.
 	Name() string
 }
 
-// New picks the best available sink: PVE, mail, or log.
+// Sender is a Sink that also reports delivery failures (the alerts panel's
+// test button, `n5-fangov alerts test`). Every concrete sink here is one;
+// Alert is Send with the error logged.
+type Sender interface {
+	Sink
+	Send(kind, msg string) error
+}
+
+// Transport names (config [alert].transport) and effective sink names.
+const (
+	TransportAuto = "auto"
+	TransportPVE  = "pve"
+	TransportMail = "mail"
+	TransportLog  = "log"
+	TransportOff  = "off"
+
+	EffectivePVE  = "pve-notify"
+	EffectiveMail = "mail"
+	EffectiveLog  = "log"
+	EffectiveOff  = "off"
+)
+
+// New picks the best available sink: PVE, mail, or log (transport "auto").
 func New(logger Logger) Sink {
+	s, _ := NewFor(TransportAuto, "", logger)
+	return s
+}
+
+// NewFor builds the sink for a configured transport and returns it with
+// the effective transport name (EffectivePVE, EffectiveMail, EffectiveLog,
+// EffectiveOff). "auto" takes PVE::Notify when the Proxmox stack and perl
+// are present, else mail(1), else the log. A requested transport whose
+// tool is missing degrades along the same order (pve → mail → log) — the
+// alert still goes somewhere; `n5-fangov check` and the panel say why the
+// effective transport differs from the configured one. mailTo "" means
+// root. An unknown transport counts as "auto".
+func NewFor(transport, mailTo string, logger Logger) (Sink, string) {
 	if logger == nil {
 		logger = nopLogger{}
 	}
+	if mailTo == "" {
+		mailTo = "root"
+	}
 	host := hostname()
+	pve, mail := Available()
+	switch transport {
+	case TransportOff:
+		return &Off{Logger: logger}, EffectiveOff
+	case TransportLog:
+		return &Log{Logger: logger}, EffectiveLog
+	case TransportPVE:
+		if pve {
+			return &PVE{Logger: logger, Hostname: host}, EffectivePVE
+		}
+	case TransportMail:
+		if mail {
+			return &Mail{Logger: logger, Hostname: host, To: mailTo}, EffectiveMail
+		}
+		if pve {
+			return &PVE{Logger: logger, Hostname: host}, EffectivePVE
+		}
+		return &Log{Logger: logger}, EffectiveLog
+	}
+	// auto, or pve without the stack
+	if pve {
+		return &PVE{Logger: logger, Hostname: host}, EffectivePVE
+	}
+	if mail {
+		return &Mail{Logger: logger, Hostname: host, To: mailTo}, EffectiveMail
+	}
+	return &Log{Logger: logger}, EffectiveLog
+}
+
+// Available reports which delivery tools this box has: PVE::Notify with a
+// perl interpreter, and a mail(1) binary.
+func Available() (pve, mail bool) {
 	if _, err := os.Stat(pveNotifyPM); err == nil {
 		if _, err := exec.LookPath("perl"); err == nil {
-			return &PVE{Logger: logger, Hostname: host}
+			pve = true
 		}
 	}
 	if _, err := exec.LookPath("mail"); err == nil {
-		return &Mail{Logger: logger, Hostname: host, To: "root"}
+		mail = true
 	}
-	return &Log{Logger: logger}
+	return pve, mail
 }
 
 // Log only writes the alert to the logger.
 type Log struct{ Logger Logger }
 
-func (l *Log) Name() string { return "log" }
+func (l *Log) Name() string { return EffectiveLog }
 func (l *Log) Alert(kind, msg string) {
 	l.Logger.Printf("ALERT[%s]: %s", kind, msg)
+}
+
+// Send is Alert; the log never fails.
+func (l *Log) Send(kind, msg string) error {
+	l.Alert(kind, msg)
+	return nil
+}
+
+// Off drops every alert (transport "off"); the journal line still says
+// that one was suppressed, so the history is not silently empty.
+type Off struct{ Logger Logger }
+
+func (o *Off) Name() string { return EffectiveOff }
+func (o *Off) Alert(kind, msg string) {
+	o.Logger.Printf("ALERT[%s] suppressed (transport off): %s", kind, msg)
+}
+
+// Send is Alert; dropping never fails.
+func (o *Off) Send(kind, msg string) error {
+	o.Alert(kind, msg)
+	return nil
+}
+
+// Swappable is a Sink whose target can be replaced at runtime (the alerts
+// panel's Configure and a reloaded [alert] section): the controller holds
+// the Swappable, cmd swaps what is behind it. The zero value delivers to
+// nothing until Set; New… never hands one out like that.
+type Swappable struct {
+	mu   sync.RWMutex
+	sink Sink
+}
+
+// NewSwappable wraps sink.
+func NewSwappable(sink Sink) *Swappable { return &Swappable{sink: sink} }
+
+// Set replaces the target; alerts already in flight finish on the old one.
+func (s *Swappable) Set(sink Sink) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sink = sink
+}
+
+// Get returns the current target (nil before the first Set).
+func (s *Swappable) Get() Sink {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.sink
+}
+
+func (s *Swappable) Name() string {
+	if t := s.Get(); t != nil {
+		return t.Name()
+	}
+	return "none"
+}
+
+func (s *Swappable) Alert(kind, msg string) {
+	if t := s.Get(); t != nil {
+		t.Alert(kind, msg)
+	}
+}
+
+// Send delivers through the target and returns its error; a target that
+// is only a Sink delivers fire-and-forget and reports nil.
+func (s *Swappable) Send(kind, msg string) error {
+	t := s.Get()
+	if t == nil {
+		return errors.New("no alert sink configured")
+	}
+	if snd, ok := t.(Sender); ok {
+		return snd.Send(kind, msg)
+	}
+	t.Alert(kind, msg)
+	return nil
 }
 
 // PVE feeds the alert into the Proxmox notification stack as severity
@@ -85,7 +232,7 @@ type PVE struct {
 	Perl string
 }
 
-func (p *PVE) Name() string { return "pve-notify" }
+func (p *PVE) Name() string { return EffectivePVE }
 
 // perlProgram reads its data from the environment so that no user text is
 // ever interpolated into Perl source. Note: the template field is "when",
@@ -95,7 +242,15 @@ const perlProgram = `PVE::Notify::warning($ENV{N5FANGOV_TEMPLATE},
     hostname => $ENV{N5FANGOV_HOST}, when => $ENV{N5FANGOV_WHEN} },
   { type => "n5-fangov", hostname => $ENV{N5FANGOV_HOST}, kind => $ENV{N5FANGOV_TITLE} });`
 
+// Alert is Send with the failure logged.
 func (p *PVE) Alert(kind, msg string) {
+	if err := p.Send(kind, msg); err != nil {
+		p.Logger.Printf("alert: %v", err)
+	}
+}
+
+// Send delivers through PVE::Notify and returns the failure, if any.
+func (p *PVE) Send(kind, msg string) error {
 	p.Logger.Printf("ALERT[%s]: %s", kind, msg)
 	perl := p.Perl
 	if perl == "" {
@@ -112,8 +267,9 @@ func (p *PVE) Alert(kind, msg string) {
 		"N5FANGOV_WHEN="+time.Now().Format("2006-01-02 15:04:05"),
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		p.Logger.Printf("alert: PVE::Notify failed: %v: %s", err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("PVE::Notify failed: %v: %s", err, strings.TrimSpace(string(out)))
 	}
+	return nil
 }
 
 // Mail pipes the alert into mail(1).
@@ -125,9 +281,17 @@ type Mail struct {
 	Bin string
 }
 
-func (m *Mail) Name() string { return "mail" }
+func (m *Mail) Name() string { return EffectiveMail }
 
+// Alert is Send with the failure logged.
 func (m *Mail) Alert(kind, msg string) {
+	if err := m.Send(kind, msg); err != nil {
+		m.Logger.Printf("alert: %v", err)
+	}
+}
+
+// Send pipes the alert into mail(1) and returns the failure, if any.
+func (m *Mail) Send(kind, msg string) error {
 	m.Logger.Printf("ALERT[%s]: %s", kind, msg)
 	bin := m.Bin
 	if bin == "" {
@@ -143,8 +307,9 @@ func (m *Mail) Alert(kind, msg string) {
 	cmd.Stdin = strings.NewReader(fmt.Sprintf("n5-fangov on %s reports:\n\n%s\n\nTime: %s\n",
 		m.Hostname, msg, time.Now().Format("2006-01-02 15:04:05")))
 	if out, err := cmd.CombinedOutput(); err != nil {
-		m.Logger.Printf("alert: mail failed: %v: %s", err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("mail failed: %v: %s", err, strings.TrimSpace(string(out)))
 	}
+	return nil
 }
 
 // Multi fans out to several sinks (e.g. PVE plus an in-memory ring for the UI).
