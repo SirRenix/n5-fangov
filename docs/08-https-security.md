@@ -2,8 +2,9 @@
 
 What this page covers: the dashboard certificate (automatic, own pair, trust recipes
 per OS), TLS transport and HSTS, what a visitor sees with and without a login, sessions
-and cookies, login throttling, password hashes, the systemd sandbox, and running behind
-a reverse proxy. Reporting a vulnerability: [SECURITY.md](../SECURITY.md).
+and cookies, API tokens for scripts, login throttling, password hashes, the systemd
+sandbox, and running behind a reverse proxy. Reporting a vulnerability:
+[SECURITY.md](../SECURITY.md).
 
 - [Defaults](#defaults)
 - [The certificate](#the-certificate)
@@ -12,6 +13,7 @@ a reverse proxy. Reporting a vulnerability: [SECURITY.md](../SECURITY.md).
 - [Transport and HSTS](#transport-and-hsts)
 - [Who sees what](#who-sees-what)
 - [Sessions](#sessions)
+- [API tokens](#api-tokens)
 - [What auth covers](#what-auth-covers)
 - [Login throttling](#login-throttling)
 - [Password hashes](#password-hashes)
@@ -178,13 +180,15 @@ mirrors it):
 
 | | Anonymous | Signed in |
 |---|---|---|
-| Overview | channel cards and the two charts (`GET /api/state` and `/api/history` in a **reduced** form: name, pwm, sensor, temp, duty, target, rpm, mode — no hwmon path, no EC temperatures, no alert stamps, no extra sensors) | full: plus the Sensors card, the extra-sensor chart, System details, recent alerts |
-| About tab, version | full | full |
-| Curves, Manual, Presets, Alerts, System, Log, Compatibility, certificate panel, settings gear | hidden; the API answers 401 | full |
+| Overview | channel cards and the charts (`GET /api/state` and `/api/history` in a **reduced** form: name, pwm, sensor, temp, duty, target, rpm, mode — no hwmon path, no EC temperatures, no alert stamps, no extra sensors, no held temperature or hold) | full: plus the Sensors card, the extra-sensor chart, the CSV export, System details, recent alerts |
+| About tab, version, `GET /api/openapi.json` | full | full |
+| Curves, Manual, Presets (with the Schedules card), Alerts, System, Log, Compatibility, certificate panel, settings gear | hidden; the API answers 401 | full |
 
 Nothing pops up for an anonymous visitor: the reduced Overview is the landing page, the
 **Sign in** button in the header opens the form. With `auth = "none"` every visitor
-counts as signed in.
+counts as signed in — a Bearer header is then ignored. A script with an API token
+counts as signed in for what its scope allows ([API tokens](#api-tokens)); the endpoint
+table with the scope of each is on the [API page](12-api.md#endpoints).
 
 ## Sessions
 
@@ -205,28 +209,85 @@ session is for browsers.
   Account dialog keep the session that made them and sign every other one out.
 - The cookie is `HttpOnly; SameSite=Strict` (`Secure` over TLS or with
   `behind_tls_proxy = true`).
+- Sessions are for browsers and the dashboard. Scripts, Home Assistant and agents use
+  an API token instead of the password ([below](#api-tokens)).
+
+## API tokens
+
+An API token replaces the admin password in anything that is not a browser: Home
+Assistant, monitoring, scripts, a local LLM agent. It is sent as
+`Authorization: Bearer n5t_…` on every request ([usage and curl examples](12-api.md#authentication)).
+Tokens exist only with `auth = "basic"`; with `auth = "none"` everyone is signed in
+and a Bearer header is ignored.
+
+**Scopes** are cumulative; `read` is the default:
+
+| Scope | Allows |
+|---|---|
+| `read` | `GET` on `version`, `about`, `session`, `openapi.json`, `state`, `history`, `history.csv`, `system`, `sensors`, `profiles`, `presets`, `presets/{name}`, `alerts`, `dashboard`, `schedules`, `tls` (the info only, not the certificate downloads) |
+| `control` | `read` + `PUT`/`DELETE /api/override/{name}`, `POST /api/presets/{name}/apply`, `PUT /api/dashboard` |
+| `admin` | everything the dashboard can do **except** token and account management |
+
+**What no token can do:** `/api/tokens*`, `/api/account/*`, `/api/login` and
+`/api/logout` answer 403 to every token, `admin` included — a leaked admin token
+cannot mint new tokens, change the password or rename the user. Those need a browser
+session or Basic auth. A request outside the scope answers 403
+`{"error":"token scope read does not allow PUT /api/override/cpu","scope":"read","required":"control"}`.
+`GET /api/alerts` is within `read` and carries the full `webhook_url`, query
+included — hand out `read` tokens with that in mind when the webhook URL holds a key
+([Webhook](07-alerts.md#webhook)).
+
+- **Create** — settings gear → *Account…* → *API tokens* → *Create token…* (name,
+  scope, expiry `30 d · 90 d · 1 y · never`), or from the shell
+  `n5-fangov token create NAME [--scope read|control|admin] [--ttl DAYS]`
+  ([CLI](05-cli.md#subcommands)). The secret — `n5t_` + 43 characters — is shown **once**;
+  the daemon stores only its sha256. Names are `[A-Za-z0-9][A-Za-z0-9 ._-]{0,31}` and
+  unique (409); at most 50 tokens (409). The default expiry is 90 days; *never* (0) is
+  allowed and flagged with a warning at creation.
+- **Storage** — `/var/lib/n5-fangov/tokens.json` (0600, atomic writes), next to the
+  sessions. The settings bundle (`export`/`import`) never carries tokens; a purge or
+  a reinstall removes the file and every client needs a new token
+  ([Updates](09-updates.md#what-an-upgrade-can-affect)).
+- **List** — the same dialog and `n5-fangov token list`: id (8 hex), name, scope,
+  created, expires, last used, last address (the last two refreshed at most once a
+  minute). An expired token stays in the list, marked, until it is revoked.
+- **Revoke** — *Revoke* in the dialog (with confirmation) or `n5-fangov token revoke ID`;
+  takes effect on the next request. Revocation is the **only** way to end a token
+  early: a password change, *Sign out other sessions* and a user rename leave tokens
+  valid, unlike browser sessions.
+- **Rate limit** — 20 requests per second sustained, burst 40, per token; above that
+  429 `{"error":"token rate limit"}`. Cookie and Basic callers are not limited this way.
+- **Failures** — an unknown (revoked) or expired token is a 401 for the client and one
+  journal line `web: bearer token rejected from <ip>: unknown|expired`; it counts
+  towards the [login throttling](#login-throttling) of that address like a wrong
+  password (one sha256, no PBKDF2 cost).
+- **CSRF** — a Bearer caller does not need the `X-N5-Fangov-Csrf: 1` header
+  ([below](#host-header-and-csrf)); the Host header check still applies.
 
 ## What auth covers
 
-With `auth = "basic"`, everything under `/api/` needs credentials (cookie session or
-Basic) except `GET /api/version`, `/api/about`, `/api/session`, the login/logout
-endpoints and the **reduced** `GET /api/state` / `/api/history` (channel temperatures,
-duties, RPM and modes — [Who sees what](#who-sees-what)). Config, sensors, presets,
-profiles, log, certificate panel and downloads, alerts, account, system and every write
-are protected.
+With `auth = "basic"`, everything under `/api/` needs credentials (cookie session,
+Basic or a Bearer token within its scope) except `GET /api/version`, `/api/about`,
+`/api/session`, `/api/openapi.json`, the login/logout endpoints and the **reduced**
+`GET /api/state` / `/api/history` (channel temperatures, duties, RPM and modes —
+[Who sees what](#who-sees-what)). Config, sensors, presets, schedules, the history CSV,
+profiles, log, certificate panel and downloads, alerts, account, tokens, system and
+every write are protected.
 
 **The hash never leaves the daemon.** `GET /api/config` and the settings export show
 `password_hash = "<unchanged>"`; sending that text back keeps the stored hash.
 
 ## Login throttling
 
-Failed logins — form and Basic alike, and a wrong current password in the account
-forms — are throttled per client IP: 5 free, then 250 ms doubling to 2 s, reset after
-10 min or a success. They are logged with user name and IP, but only when a credential
-was actually presented; the anonymous 401 the UI gets before login is not a failure. At
-most 4 delayed attempts per IP are in flight at once; further ones get an immediate
-`429` without a hash computation, so parallel requests cannot side-step the delay or
-burn CPU on PBKDF2.
+Failed logins — form and Basic alike, a rejected Bearer token, and a wrong current
+password in the account forms — are throttled per client address (IPv4 address or IPv6
+/64): 5 free, then 250 ms doubling to 2 s, reset after 10 min or a success. They are
+logged with user name (or the token verdict) and IP, but only when a credential was
+actually presented; the anonymous 401 the UI gets before login is not a failure. At
+most 4 delayed attempts per address are in flight at once and at most 4 password
+verifications run process-wide; further ones get an immediate `429` without a hash
+computation, so parallel requests cannot side-step the delay or burn CPU on PBKDF2.
+Token lookups are one sha256 and never wait for the PBKDF2 slot.
 
 ## Password hashes
 
@@ -244,7 +305,10 @@ that carries a hash is written `0600`; an existing wider mode is tightened and l
   disables the check.
 - **CSRF.** State-changing requests need the header `X-N5-Fangov-Csrf: 1`, which the UI
   always sends; a browser form or cross-site fetch cannot add it without CORS, which the
-  API does not offer. This is the CSRF defence for the cookie session.
+  API does not offer. This is the CSRF defence for the cookie session and for Basic
+  credentials a browser has cached. **A Bearer token is exempt**: a browser cannot attach
+  that header cross-site, so there is nothing to forge — scripts send the token and
+  nothing else ([API](12-api.md#authentication)).
 
 ## Behind a reverse proxy
 
@@ -273,7 +337,7 @@ on real hardware after every change — `/sys` writes are what most sandboxes fo
 | `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK`, `RestrictNamespaces=yes` | socket, TCP/HTTP(S), netlink for the interface list (`net.Interfaces()` — the fallback when the TLS certificate needs the box's addresses), nothing else |
 | `MemoryDenyWriteExecute=yes`, `SystemCallArchitectures=native`, `SystemCallFilter=@system-service` | no JIT/exec tricks, native syscalls only, no module loading |
 | `CapabilityBoundingSet=` (empty) | the daemon runs as uid 0 but holds no capability: it never loads modules (modules-load.d does), never chowns, and root's own files and the root-owned sysfs attributes need none |
-| `UMask=0077`, `LogsDirectory=n5-fangov` (`0750`), `RuntimeDirectory=n5-fangov` (`0750`), `StateDirectory=n5-fangov` (`0700`) | files private by default; `/var/lib/n5-fangov` holds `sessions.json` (hashed session tokens — secrets, hence 0700) and `alerts.json`. `serve --state-dir DIR` / `N5FANGOV_STATE_DIR` move it; an unwritable one is logged once and the daemon runs without persistence (sessions and history in memory) |
+| `UMask=0077`, `LogsDirectory=n5-fangov` (`0750`), `RuntimeDirectory=n5-fangov` (`0750`), `StateDirectory=n5-fangov` (`0700`) | files private by default; `/var/lib/n5-fangov` holds `sessions.json` and `tokens.json` (hashed session and API tokens — secrets, hence 0700), `alerts.json` and `history.json` (all 0600). `serve --state-dir DIR` / `N5FANGOV_STATE_DIR` move it; an unwritable one is logged once and the daemon runs without persistence (sessions, tokens, alerts and history in memory) |
 
 ## Alert delivery under the sandbox
 
@@ -291,5 +355,5 @@ delivery error (`n5-fangov alert` or `alerts test` from a shell with the daemon 
 run outside the sandbox and prove nothing). A failed delivery is logged
 (`alert: ... failed`), the alert text is always in the journal.
 
-Next: [Alerts](07-alerts.md) · [Troubleshooting](10-troubleshooting.md) ·
-[Dashboard](04-dashboard.md)
+Next: [API and integrations](12-api.md) · [Alerts](07-alerts.md) ·
+[Troubleshooting](10-troubleshooting.md) · [Dashboard](04-dashboard.md)

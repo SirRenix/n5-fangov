@@ -1,11 +1,12 @@
 # Alerts and guards
 
 What this page covers: what the daemon does when something fails, which alert each
-failure raises, how alerts leave the box (Proxmox notification stack, mail, journal),
-the PVE side, cooldowns, the test alert and the alert history.
+failure raises, how alerts leave the box (Proxmox notification stack, mail, webhook,
+journal), the PVE side, cooldowns, the test alert and the alert history.
 
 - [What the daemon guards against](#what-the-daemon-guards-against)
 - [Transports](#transports)
+- [Webhook](#webhook)
 - [Alert kinds](#alert-kinds)
 - [The Alerts tab](#the-alerts-tab)
 - [The PVE template](#the-pve-template)
@@ -26,6 +27,7 @@ the PVE side, cooldowns, the test alert and the alert history.
 | Broken config | built-in defaults + warning + alert; daemon still starts |
 | Critical temperature | 255 immediately, also in manual mode |
 | Fan controller vanishes (driver reload) | daemon exits after 6 failed cycles, systemd restarts it with a fresh detection |
+| Scheduled preset switch fails | previous curves stay, alert, retry at the next transition |
 
 Every alert is always written to the journal, whatever the transport.
 
@@ -33,21 +35,88 @@ Every alert is always written to the journal, whatever the transport.
 
 ```toml
 [alert]
-transport = "auto"     # auto | pve | mail | log | off
+transport = "auto"     # auto | pve | mail | webhook | log | off
 mail_to = "root"       # mail transport only: local user or address
+webhook_url = ""       # webhook transport only: absolute http(s) URL
+webhook_format = "json"   # json | text
 ```
 
 `auto` (the default) takes `PVE::Notify` (template `n5-fangov`) when
 `/usr/share/perl5/PVE/Notify.pm` and perl are present, else `mail(1)` to `mail_to`, else
 the journal only. `pve` or `mail` without their tool degrade in that same order and
-`n5-fangov check` says so; `off` drops every alert but still writes a
-`suppressed (transport off)` line to the journal. `mail_to` is a local user or an
-address without spaces or quotes and never starts with `-`; the recipient is passed to
-`mail(1)` after `--`.
+`n5-fangov check` says so; `webhook` is never chosen by `auto` and degrades to `log`
+only when `webhook_url` is empty or invalid (with a config warning); `off` drops every
+alert but still writes a `suppressed (transport off)` line to the journal. `mail_to`
+is a local user or an address without spaces or quotes and never starts with `-`; the
+recipient is passed to `mail(1)` after `--`.
 
-Delivery runs from inside the unit's sandbox. PVE targets of type SMTP are verified;
-the `mail(1)`/sendmail path needs one extra capability, see
+Delivery runs from inside the unit's sandbox and is bounded to 30 s. PVE targets of
+type SMTP are verified; the `mail(1)`/sendmail path needs one extra capability, see
 [Alert delivery under the sandbox](08-https-security.md#alert-delivery-under-the-sandbox).
+The webhook needs nothing beyond outbound TCP, which the sandbox allows.
+
+## Webhook
+
+`transport = "webhook"` sends one `POST` per alert to `webhook_url` — the transport for
+non-PVE hosts without a mail set-up and for ntfy, Gotify and Home Assistant.
+
+- **URL rules:** absolute `http` or `https`, with a host, no `user:pass@` part, at most
+  2048 characters. Redirects are **not** followed — give the final URL. TLS uses the
+  system CA pool, there is no "insecure" switch: a receiver with a self-signed
+  certificate needs its CA in `/usr/local/share/ca-certificates/` on this box
+  (`update-ca-certificates`), or plain `http` on a trusted LAN.
+- **Success** is any 2xx answer. Anything else, a timeout or a transport error is the
+  delivery error `webhook: <status or error>` — returned by *Send test alert* and logged
+  (`alert: … failed`); the alert text is in the journal regardless.
+- **Headers** on every request: `Content-Type` (by format), `User-Agent:
+  n5-fangov/<version>`, `X-N5-Fangov-Kind: <kind>` and `Title: n5-fangov <kind> on
+  <host>` (ntfy reads `Title`).
+- **Redaction:** log lines, `n5-fangov alerts status` and the effective-transport line
+  of the Alerts tab show the URL **without query and userinfo**
+  (`https://gotify.example.test/message`) because Gotify carries its key in the query.
+  The full URL is in the config file and in `GET /api/alerts` (protected; readable with
+  a `read` token — [tokens](08-https-security.md#api-tokens)).
+
+`webhook_format = "json"` (default) sends `Content-Type: application/json`:
+
+```json
+{"type":"n5-fangov","kind":"stall","severity":"warning","hostname":"n5host",
+ "title":"n5-fangov stall on n5host","message":"<alert text>","ts":1789500000}
+```
+
+`title` and `message` are what Gotify and Home Assistant read; ntfy shows the JSON text
+as the message and takes the title from the header. `webhook_format = "text"` sends
+`Content-Type: text/plain; charset=utf-8` with the alert text as the body — for ntfy
+and any receiver that wants a plain line.
+
+| Receiver | `webhook_url` | `webhook_format` | Notes |
+|---|---|---|---|
+| ntfy | `https://ntfy.example.test/n5` | `text` | topic in the path; the `Title` header becomes the notification title. n5-fangov sends no `Authorization` header and refuses userinfo in the URL — a protected topic takes its access token as the `auth` query parameter (ntfy docs, *Authentication → Query param*), which is redacted in logs like the Gotify key |
+| Gotify | `https://gotify.example.test/message?token=<app token>` | `json` | the app token is the query — redacted in logs and status, present in the file and `GET /api/alerts` |
+| Home Assistant | `http://ha.example.test:8123/api/webhook/<id>` | `json` | webhook trigger in an automation; the payload is `trigger.json` (`trigger.json.kind`, `.title`, `.message`). Use a long random `<id>`; HA webhooks carry no other auth |
+
+A Home Assistant automation on the receiving side:
+
+```yaml
+automation:
+  - alias: n5-fangov alert
+    triggers:
+      - trigger: webhook
+        webhook_id: "<id>"
+        allowed_methods: [POST]
+        local_only: true
+    actions:
+      - action: notify.mobile_app_phone
+        data:
+          title: "{{ trigger.json.title }}"
+          message: "{{ trigger.json.kind }}: {{ trigger.json.message }}"
+```
+
+The Alerts tab's *Save* writes the four `[alert]` keys in place and applies them at
+once; `PUT /api/alerts` answers 400 for an invalid URL, format or `mail_to`, and for
+`webhook` without a URL. The PVE notification stack has its own webhook and Gotify
+targets — on a PVE host `transport = "auto"` plus a matcher ([The PVE side](#the-pve-side))
+is the alternative that keeps the routing in one place.
 
 ## Alert kinds
 
@@ -66,12 +135,14 @@ the `mail(1)`/sendmail path needs one extra capability, see
 | `tls` | `tls = "file"` pair unreadable | automatic certificate served, mode `auto (fallback from file)` | 30 min (start alert) |
 | `kernel` | DKMS module missing for a bootable kernel (`check --after-update`) | printed on the apt output; nothing changes until the reboot | 30 min (own stamp) |
 | `restart` / `failed` | unit failed and came back / stayed down (onfailure unit) | — | 30 min (own stamp) |
+| `schedule` | a scheduled preset switch failed: preset missing or invalid, write or reload error ([Schedules](06-configuration.md#schedules)) | previous curves stay; retried at the next transition | 30 min (own stamp) |
 | `test` | *Send test alert*, `n5-fangov alerts test` | — | none; one at a time, 20 s bound |
 
 `alert_cooldown` is `[daemon] alert_cooldown` (`60s`..`24h`, default `30m`) per alert
 kind ([Configuration](06-configuration.md#configuration-reference)). The start alerts
-are cooled 30 minutes regardless; `kernel`, `restart` and `failed` are raised outside
-the daemon and keep their own 30-minute stamps (`alert.<kind>` under `/run/n5-fangov/`).
+are cooled 30 minutes regardless; `kernel`, `restart`, `failed` and `schedule` are
+raised outside the controller and keep their own 30-minute stamps (`alert.<kind>`
+under `/run/n5-fangov/`).
 
 `restart` and `failed` come from `n5-fangov-onfailure.service`: when the main unit
 fails, it reads `Result`/`ExecMainStatus`, waits 8 s and reports `restart` (daemon back)
@@ -85,14 +156,15 @@ alerts (newest first, the last 50, kept across restarts in
 `/var/lib/n5-fangov/alerts.json`). Screenshot in [Dashboard](04-dashboard.md#alerts).
 Actions:
 
-- **Save** transport and `mail_to` — written to the config file in place and
+- **Save** transport and its fields — `mail_to` for `auto`/`mail`, `webhook_url` and
+  `webhook_format` for `webhook` — written to the config file in place and
   hot-applied; no restart. A `PUT /api/config`, a settings import or a preset apply
   re-applies whatever `[alert]` the written file contains.
 - **Send test alert** — kind `test`, no cooldown, through the real transport; the
-  response carries the delivery error when perl/mail fail. It also lands in the recent
-  list. One test at a time (a second click while one runs answers `409 test in
-  progress`), bounded to 20 s. This is the test that proves delivery: it is sent by the
-  daemon from inside its sandbox.
+  response carries the delivery error when perl, mail or the webhook receiver fail. It
+  also lands in the recent list. One test at a time (a second click while one runs
+  answers `409 test in progress`), bounded to 20 s. This is the test that proves
+  delivery: it is sent by the daemon from inside its sandbox.
 - **Install / Update template** — see below.
 
 ## The PVE template
@@ -124,11 +196,13 @@ n5-fangov alerts test            send a test alert now
 n5-fangov alerts template        install/update the PVE template pair
 ```
 
-`status` and `test` go through the daemon's socket when it runs (the test then shows in
-the dashboard), otherwise they work on the config file. `template` asks the daemon first
-and writes the files itself when that fails for anything but "not a PVE host". A test
-sent from a shell with the daemon stopped runs outside the sandbox and proves nothing
-about delivery from the daemon.
+`status` shows the configured and the effective transport, `mail_to`, and for the
+webhook the URL (query redacted) and the format. `status` and `test` go through the
+daemon's socket when it runs (the test then shows in the dashboard), otherwise they
+work on the config file. `template` asks the daemon first and writes the files itself
+when that fails for anything but "not a PVE host". A test sent from a shell with the
+daemon stopped runs outside the sandbox and proves nothing about delivery from the
+daemon.
 
 Next: [Troubleshooting](10-troubleshooting.md) · [HTTPS and security](08-https-security.md) ·
 [Configuration](06-configuration.md)
