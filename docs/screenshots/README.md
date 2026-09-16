@@ -46,6 +46,8 @@ by clicking the same controls a user would.
 | `26-mobile-curves.png` | Mobile Curves | `?mock=1&user=1&tab=curves` | touch drag on the points |
 
 Not reproducible from the mock and therefore not included: the browser's own
-certificate warning and the OS trust dialogs (README "HTTPS", three steps) and the PVE
-notification matcher (README "Alerts", the PVE side) — take those on a real box when
-needed.
+certificate warning and the OS trust dialogs ([HTTPS](../08-https-security.md#the-certificate),
+three steps) and the PVE notification matcher ([Alerts](../07-alerts.md#the-pve-side))
+— take those on a real box when needed. The pages that embed these images:
+[Dashboard](../04-dashboard.md) (all views) and the [README](../../README.md)
+(`03-overview-signed-in-top.png`).
