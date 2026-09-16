@@ -310,11 +310,18 @@ func newAcc(start int64) *acc {
 	return &acc{start: start, temp: map[string]sum{}, duty: map[string]sum{}, rpm: map[string]sum{}, extra: map[string]sum{}}
 }
 
+// add folds a raw point into the bucket. A negative duty is the
+// controller's "unknown after a failed write" marker (-1), not a value:
+// it is skipped, so a mean is formed from the duties that were written
+// (a -1 among them would pull the mean below every real duty).
 func (a *acc) add(p Point) {
 	for k, v := range p.Temp {
 		a.temp[k] = a.temp[k].add(v)
 	}
 	for k, v := range p.Duty {
+		if v < 0 {
+			continue
+		}
 		a.duty[k] = a.duty[k].add(float64(v))
 	}
 	for k, v := range p.RPM {
