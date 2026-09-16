@@ -72,9 +72,14 @@ type ParsedConfigStore interface {
 
 // Preset is one entry of /etc/n5-fangov/presets.
 type Preset struct {
-	Name     string   `json:"name"`
-	Channels []string `json:"channels"` // channel names contained in the preset
+	Name        string   `json:"name"`
+	Channels    []string `json:"channels"` // channel names contained in the preset
+	Builtin     bool     `json:"builtin"`
+	Description string   `json:"description,omitempty"`
 }
+
+// ErrPresetBuiltin is returned by PresetStore.Save/Delete for a built-in preset (409).
+var ErrPresetBuiltin = errors.New("built-in preset")
 
 // PresetStore lists, applies and saves curve presets.
 type PresetStore interface {
@@ -211,6 +216,18 @@ type Deps struct {
 	TLSHosts []string
 	// Logf receives auth failures and startup warnings; nil → log.Printf.
 	Logf func(format string, args ...any)
+
+	// v0.3.0-beta members (DESIGN.md "v0.3.0-beta contract").
+	// SessionFile mirrors the cookie sessions; "" = memory only.
+	SessionFile string
+	// Account backs /api/account (nil → 501; credentials then stay Deps.Auth).
+	Account AccountStore
+	// Alerts backs /api/alerts (nil → 501).
+	Alerts AlertMgr
+	// Dashboard backs /api/dashboard (nil → 501).
+	Dashboard DashboardStore
+	// About is served verbatim by GET /api/about.
+	About About
 }
 
 // Server holds the mux and serves it on TCP and on the unix socket.
