@@ -1,5 +1,5 @@
-# n5-fangov build. Plain make + dpkg-deb, no debhelper. Needs Go 1.25 (or run
-# inside the golang:1.25-alpine container via tools/remote-go.ps1).
+# n5-fangov build. Plain make + dpkg-deb, no debhelper. Needs Go 1.26 (or run
+# inside the golang:1.26-alpine container via tools/remote-go.ps1).
 #
 #   make build   -> dist/n5-fangov (linux/amd64, static, stripped)
 #   make deb     -> dist/n5-fangov_<version>_amd64.deb (no conffile: the config is
@@ -108,6 +108,6 @@ release: build
 
 # test-race: the race detector needs cgo, so this target is for a host with a
 # full Go toolchain (CI, a Debian box); the static release build stays cgo-free.
-# Over the Docker builder: tools/remote-go.ps1 -Image golang:1.25-bookworm -Cmd "make test-race".
+# Over the Docker builder: tools/remote-go.ps1 -Image golang:1.26-bookworm -Cmd "make test-race".
 test-race:
 	CGO_ENABLED=1 go test -race -count=1 ./...
