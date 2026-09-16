@@ -94,12 +94,14 @@ func (s dirPresetStore) load(name string) ([]config.Channel, []config.Warning, e
 	return config.LoadPreset(s.dir, name)
 }
 
-// Apply replaces the [[channel]] tables of the config file with the preset,
-// writes the file and reloads the daemon. The file is rewritten from the
-// parsed config, so comments in it are lost. control.ErrRestartRequired
-// passes through unchanged (the web layer answers 202 for it); any other
-// reload failure comes back as web.ReloadError — "preset written, reload
-// failed" — so it is told apart from a write error.
+// Apply merges the [[channel]] tables of the preset into the config file
+// by pwm (mergeChannelsByPWM), writes the file and reloads the daemon. The
+// file is rewritten from the parsed config, so comments in it are lost.
+// control.ErrRestartRequired passes through unchanged (the web layer
+// answers 202 for it; with the merge that only happens when the preset
+// names a pwm the config lacks); any other reload failure comes back as
+// web.ReloadError — "preset written, reload failed" — so it is told apart
+// from a write error.
 func (s dirPresetStore) Apply(name string) error {
 	chans, warns, err := s.load(name)
 	if err != nil {
@@ -111,11 +113,11 @@ func (s dirPresetStore) Apply(name string) error {
 	if len(chans) == 0 {
 		return fmt.Errorf("preset %q contains no usable [[channel]] table", name)
 	}
-	raw, err := s.write(name, chans)
+	raw, n, err := s.write(name, chans)
 	if err != nil {
 		return err
 	}
-	log.Printf("preset %s applied to %s (%d channels)", name, s.cfgPath, len(chans))
+	log.Printf("preset %s applied to %s (%d channels, %d in the file)", name, s.cfgPath, len(chans), n)
 	if err := s.svc.Reload(raw); err != nil {
 		if isRestartRequired(err) {
 			return err
@@ -125,24 +127,66 @@ func (s dirPresetStore) Apply(name string) error {
 	return nil
 }
 
+// mergeChannelsByPWM applies the preset channels to the config channels
+// (DESIGN "Presets: Apply merges by pwm"): a preset channel replaces the
+// config channel with the same pwm, keeping the config channel's name (the
+// daemon's channel set is keyed by name and pwm, so a renamed channel would
+// force a restart); config channels the preset does not name stay as they
+// are (an optional pwm4 channel survives a built-in preset); preset
+// channels whose pwm the config lacks are appended. A preset name that
+// collides with a kept config channel of another pwm is replaced by
+// "pwm<N>" so the file stays valid. Order: config channels first (in their
+// order), then the additions in preset order.
+func mergeChannelsByPWM(cfgChans, preset []config.Channel) []config.Channel {
+	out := config.CloneChannels(cfgChans)
+	if out == nil {
+		out = []config.Channel{}
+	}
+	byPWM := map[int]int{}
+	for i, ch := range out {
+		byPWM[ch.PWM] = i
+	}
+	var adds []config.Channel
+	for _, pc := range config.CloneChannels(preset) {
+		if i, ok := byPWM[pc.PWM]; ok {
+			pc.Name = out[i].Name
+			out[i] = pc
+			continue
+		}
+		adds = append(adds, pc)
+	}
+	names := map[string]bool{}
+	for _, ch := range out {
+		names[ch.Name] = true
+	}
+	for _, pc := range adds {
+		if names[pc.Name] {
+			pc.Name = fmt.Sprintf("pwm%d", pc.PWM)
+		}
+		names[pc.Name] = true
+		out = append(out, pc)
+	}
+	return out
+}
+
 // write is Apply's read-modify-write of the config file, under the file
-// lock.
-func (s dirPresetStore) write(name string, chans []config.Channel) ([]byte, error) {
+// lock. It returns the written text and the number of channels in it.
+func (s dirPresetStore) write(name string, chans []config.Channel) ([]byte, int, error) {
 	configFileMu.Lock()
 	defer configFileMu.Unlock()
 	cfg, _, err := config.Load(s.cfgPath)
 	if err != nil {
-		return nil, fmt.Errorf("current config: %w", err)
+		return nil, 0, fmt.Errorf("current config: %w", err)
 	}
-	cfg.Channels = config.CloneChannels(chans)
+	cfg.Channels = mergeChannelsByPWM(cfg.Channels, chans)
 	raw := config.Marshal(cfg)
 	if s.pin != nil {
 		raw = s.pin(raw)
 	}
 	if err := config.Save(s.cfgPath, raw); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	return raw, nil
+	return raw, len(cfg.Channels), nil
 }
 
 // Save stores the channel tables of the current config file as preset
@@ -188,7 +232,10 @@ func (s dirPresetStore) Detail(name string) (web.PresetDetail, error) {
 		}
 	}
 	for _, c := range chans {
-		det.Channels = append(det.Channels, web.PresetChannel{Name: c.Name, PWM: c.PWM, Sensor: c.Sensor, Curve: c.Curve, Critical: c.Critical, Stop: c.Stop})
+		det.Channels = append(det.Channels, web.PresetChannel{
+			Name: c.Name, PWM: c.PWM, Sensor: c.Sensor, Curve: c.Curve, Critical: c.Critical, Stop: c.Stop,
+			Hysteresis: c.Hysteresis, MinOn: c.MinOn.String(),
+		})
 	}
 	return det, nil
 }
