@@ -168,21 +168,57 @@ type redactedErr struct {
 func (e *redactedErr) Error() string { return e.msg }
 func (e *redactedErr) Unwrap() error { return e.err }
 
-// RedactURL renders u without query and userinfo for logs and status
-// views (Gotify puts its key into the query). A string that does not
-// parse is cut at its first "?" or "#" instead.
+// RedactURL renders u for logs and status views: scheme, host and the
+// first path segment only — no userinfo, no query, no fragment, no
+// deeper path (Gotify puts its key into the query, Home Assistant and
+// ntfy put an id into the path: "/api/webhook/<id>" reads "/api/…").
+// A string that does not parse is cut by the same rules on the text.
 func RedactURL(u string) string {
 	p, err := url.Parse(u)
 	if err != nil {
-		if i := strings.IndexAny(u, "?#"); i >= 0 {
-			return u[:i]
-		}
-		return u
+		return redactRaw(u)
 	}
+	path := redactPath(p.EscapedPath())
 	p.RawQuery = ""
 	p.ForceQuery = false
 	p.Fragment = ""
 	p.RawFragment = ""
 	p.User = nil
-	return p.String()
+	p.Path, p.RawPath = "", ""
+	// the path is appended by hand: url.String would percent-encode the
+	// ellipsis
+	return p.String() + path
+}
+
+// redactPath keeps the first segment of path ("/a/b/c" → "/a/…"; "/a",
+// "/" and "" stay).
+func redactPath(path string) string {
+	if len(path) < 2 || path[0] != '/' {
+		return path
+	}
+	if i := strings.IndexByte(path[1:], '/'); i >= 0 {
+		return path[:i+1] + "/…"
+	}
+	return path
+}
+
+// redactRaw is RedactURL for a string url.Parse refuses: query and
+// fragment cut, the userinfo of the authority dropped, the path cut to
+// its first segment.
+func redactRaw(u string) string {
+	if i := strings.IndexAny(u, "?#"); i >= 0 {
+		u = u[:i]
+	}
+	prefix := ""
+	if i := strings.Index(u, "://"); i >= 0 {
+		prefix, u = u[:i+3], u[i+3:]
+	}
+	authority, path := u, ""
+	if i := strings.IndexByte(u, '/'); i >= 0 {
+		authority, path = u[:i], u[i:]
+	}
+	if i := strings.LastIndexByte(authority, '@'); i >= 0 {
+		authority = authority[i+1:]
+	}
+	return prefix + authority + redactPath(path)
 }

@@ -222,18 +222,32 @@ func TestWebhookClientNoRedirect(t *testing.T) {
 	}
 }
 
+// TestRedactURL: scheme, host and the first path segment survive; the
+// userinfo, the query, the fragment and every deeper path segment (Home
+// Assistant's "/api/webhook/<id>") do not — also when the URL does not
+// parse and the text is cut by hand.
 func TestRedactURL(t *testing.T) {
 	for in, want := range map[string]string{
 		"https://ntfy.example.test/n5":                        "https://ntfy.example.test/n5",
 		"https://gotify.example.test/message?token=abc":       "https://gotify.example.test/message",
 		"https://user:pw@h.example.test/hook?x=1#frag":        "https://h.example.test/hook",
-		"http://192.0.2.10:8080/api/webhook/n5?key=1&other=2": "http://192.0.2.10:8080/api/webhook/n5",
+		"http://192.0.2.10:8080/api/webhook/n5?key=1&other=2": "http://192.0.2.10:8080/api/…",
+		"https://ha.example.test/api/webhook/abcdef0123":      "https://ha.example.test/api/…",
+		"https://h.example.test/a/":                           "https://h.example.test/a/…",
 		"http://h.example.test/?":                             "http://h.example.test/",
+		"http://h.example.test":                               "http://h.example.test",
 		"":                                                    "",
 		"http://h.example.test/bad\x7f?k=v":                   "http://h.example.test/bad\x7f",
+		"http://user:pw@h.example.test/bad\x7f/id?k=v":        "http://h.example.test/bad\x7f/…",
+		"http://user:p@w@h.example.test/bad\x7f":              "http://h.example.test/bad\x7f",
+		"user:pw@h.example.test/bad\x7f/x":                    "h.example.test/bad\x7f/…",
 	} {
-		if got := RedactURL(in); got != want {
+		got := RedactURL(in)
+		if got != want {
 			t.Errorf("RedactURL(%q) = %q, want %q", in, got, want)
+		}
+		if strings.Contains(got, "pw") || strings.Contains(got, "user") {
+			t.Errorf("RedactURL(%q) = %q keeps the userinfo", in, got)
 		}
 	}
 }
