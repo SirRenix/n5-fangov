@@ -24,6 +24,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/SirRenix/n5-fangov/internal/config"
@@ -182,8 +183,8 @@ type AuthConfig struct {
 }
 
 // Deps wires the handler to the rest of the daemon. Nil optional members
-// (Config, Presets, Log, Bundle, Profiles, Sensors) make the corresponding
-// endpoints answer 501.
+// (Config, Presets, Log, Bundle, Profiles, Sensors, TLSMgr, Account,
+// Alerts, Dashboard) make the corresponding endpoints answer 501.
 type Deps struct {
 	Service control.Service
 	Config  ConfigStore
@@ -241,6 +242,12 @@ type Server struct {
 	anyHost bool
 	limiter *authLimiter
 	logf    func(string, ...any)
+	// auth is the credential set in effect: Deps.Auth at start, replaced by
+	// every successful AccountStore.Update. Read per request without a lock.
+	auth     atomic.Pointer[AuthConfig]
+	sessions SessionStore
+	// tlsNoise summarises rejected TLS handshakes (browsers without the CA).
+	tlsNoise *handshakeFilter
 }
 
 // New builds a Server from deps.
@@ -250,6 +257,10 @@ func New(deps Deps) *Server {
 	if s.logf == nil {
 		s.logf = log.Printf
 	}
+	auth := deps.Auth
+	s.auth.Store(&auth)
+	s.sessions = NewSessionStore(deps.SessionFile, s.logf)
+	s.tlsNoise = newHandshakeFilter(s.logf, time.Now)
 	s.logs = logStoreOf(deps.Log)
 	if s.logs == nil && deps.Log != nil {
 		s.logf("web: Deps.Log has unsupported type %T; log endpoints answer 501", deps.Log)
@@ -265,7 +276,7 @@ func New(deps Deps) *Server {
 		}
 	}
 	s.routes()
-	s.socket = s.mux
+	s.socket = withCaller(s.mux, Caller{Authenticated: true, Via: "socket"})
 	s.tcp = s.guard(s.mux)
 	return s
 }
@@ -274,13 +285,28 @@ func New(deps Deps) *Server {
 func NewHandler(deps Deps) http.Handler { return New(deps).Handler() }
 
 // Handler is the TCP handler: Host header validated on every request, CSRF
-// header on state-changing methods, and (when Auth.Mode == "basic") basic
-// auth on state-changing methods plus the protected reads (GET /api/config,
-// /api/config/export, /api/log, /api/log/export).
+// header on state-changing methods, and (when Auth.Mode == "basic") a
+// signed-in caller (session cookie or basic auth) on everything that is not
+// public (see publicPath).
 func (s *Server) Handler() http.Handler { return s.tcp }
 
-// SocketHandler is the same mux without Host/CSRF/auth checks, for the unix socket.
+// SocketHandler is the same mux without Host/CSRF/auth checks, for the unix
+// socket; every request there counts as signed in (via "socket").
 func (s *Server) SocketHandler() http.Handler { return s.socket }
+
+// authCfg is the credential set currently in effect.
+func (s *Server) authCfg() AuthConfig { return *s.auth.Load() }
+
+// basicMode reports whether [web] auth = "basic" (case-insensitive).
+func (s *Server) basicMode() bool { return strings.EqualFold(s.authCfg().Mode, "basic") }
+
+// authMode is the value reported as "auth"/"mode": "basic" or "none".
+func (s *Server) authMode() string {
+	if s.basicMode() {
+		return "basic"
+	}
+	return "none"
+}
 
 // ListenAndServe serves the TCP handler on tcpAddr until ctx is done.
 func (s *Server) ListenAndServe(ctx context.Context, tcpAddr string) error {
@@ -295,7 +321,7 @@ func (s *Server) ListenAndServe(ctx context.Context, tcpAddr string) error {
 // reachable from the network without basic auth is logged loudly (H3): the
 // API can then change fan duties for anyone on the LAN.
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
-	if !strings.EqualFold(s.deps.Auth.Mode, "basic") && !listenerIsLoopback(ln) {
+	if !s.basicMode() && !listenerIsLoopback(ln) {
 		s.logf("WARNING: web listening on non-loopback %s without auth; anyone reaching this port can change fan duties. Set [web].auth = \"basic\" or bind to 127.0.0.1 behind a TLS reverse proxy.", ln.Addr())
 	}
 	return s.serve(ctx, ln)
@@ -320,13 +346,16 @@ func (s *Server) ServeTLS(ctx context.Context, ln net.Listener, cert tls.Certifi
 func (s *Server) ServeTLSStore(ctx context.Context, ln net.Listener, store *tlscert.Store) error {
 	cfg := tlscert.ServerConfig(store.Get)
 	s.deps.TLS = true // before serving: handlers read it without a lock
-	if !strings.EqualFold(s.deps.Auth.Mode, "basic") && !listenerIsLoopback(ln) {
+	if !s.basicMode() && !listenerIsLoopback(ln) {
 		s.logf("WARNING: web listening on non-loopback %s with TLS but without auth; anyone reaching this port can change fan duties. Set [web].auth = \"basic\".", ln.Addr())
 	}
 	return s.serve(ctx, tls.NewListener(ln, cfg))
 }
 
-// serve runs the http.Server on ln until ctx is done.
+// serve runs the http.Server on ln until ctx is done. The server's own
+// error log goes through handshakeFilter: rejected TLS handshakes (a
+// browser that has not imported the certificate yet) are counted and
+// summarised instead of logged one by one.
 func (s *Server) serve(ctx context.Context, ln net.Listener) error {
 	srv := &http.Server{
 		Handler:           s.tcp,
@@ -335,6 +364,7 @@ func (s *Server) serve(ctx context.Context, ln net.Listener) error {
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    16 << 10,
+		ErrorLog:          log.New(s.tlsNoise, "", 0),
 	}
 	done := make(chan struct{})
 	go func() {
@@ -424,6 +454,7 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/presets", s.getPresets)
 	m.HandleFunc("POST /api/presets/{name}/apply", s.applyPreset)
 	m.HandleFunc("PUT /api/presets/{name}", s.savePreset)
+	m.HandleFunc("DELETE /api/presets/{name}", s.deletePreset)
 	m.HandleFunc("GET /api/log", s.getLog)
 	m.HandleFunc("GET /api/log/export", s.exportLog)
 	m.HandleFunc("DELETE /api/log", s.clearLog)
@@ -438,26 +469,75 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/tls/regenerate", s.tlsRegenerate)
 	m.HandleFunc("POST /api/tls/upload", s.tlsUpload)
 	m.HandleFunc("POST /api/tls/reset", s.tlsReset)
+	m.HandleFunc("POST /api/login", s.login)
+	m.HandleFunc("POST /api/logout", s.logout)
+	m.HandleFunc("GET /api/session", s.getSession)
+	m.HandleFunc("GET /api/account", s.getAccount)
+	m.HandleFunc("POST /api/account/password", s.accountPassword)
+	m.HandleFunc("POST /api/account/user", s.accountUser)
+	m.HandleFunc("POST /api/account/sessions/revoke", s.accountRevoke)
+	m.HandleFunc("GET /api/alerts", s.getAlerts)
+	m.HandleFunc("PUT /api/alerts", s.putAlerts)
+	m.HandleFunc("POST /api/alerts/test", s.alertsTest)
+	m.HandleFunc("POST /api/alerts/template", s.alertsTemplate)
+	m.HandleFunc("GET /api/dashboard", s.getDashboard)
+	m.HandleFunc("PUT /api/dashboard", s.putDashboard)
+	m.HandleFunc("GET /api/about", s.getAbout)
 	m.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "unknown endpoint")
 	})
 	m.HandleFunc("/", s.static)
 }
 
-// protectedRead lists the GET endpoints that need basic auth (when enabled):
-// the config (and its export) carries the credential hash, the log (and its
-// export) may carry anything.
-func protectedRead(path string) bool {
+// Caller is the resolved identity of a request (CallerFrom). Via is
+// "cookie" (session), "basic" (Authorization header), "socket" (unix
+// socket) or "none" (anonymous, or auth = none).
+type Caller struct {
+	Authenticated bool
+	User          string
+	Via           string
+	// token is the cookie token of a session caller (kept out of the
+	// JSON world; used as the keep argument of RevokeAll).
+	token   string
+	session Session
+}
+
+type callerKey struct{}
+
+// CallerFrom returns the caller resolved by guard (or the socket handler);
+// the zero Caller for a request that went through neither.
+func CallerFrom(ctx context.Context) Caller {
+	c, _ := ctx.Value(callerKey{}).(Caller)
+	return c
+}
+
+// withCaller stores a fixed caller in every request's context.
+func withCaller(next http.Handler, c Caller) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), callerKey{}, c)))
+	})
+}
+
+// publicPath lists what an anonymous caller may reach with auth = basic
+// (DESIGN.md "Visibility model"): the static UI, the version/about/session
+// cards, login/logout and the two filtered reads (state, history — the
+// handlers reduce them for anonymous callers). Everything else under /api/
+// is protected.
+func publicPath(path string) bool {
+	if !strings.HasPrefix(path, "/api/") {
+		return true
+	}
 	switch path {
-	case "/api/config", "/api/config/export", "/api/log", "/api/log/export":
+	case "/api/version", "/api/about", "/api/session", "/api/login", "/api/logout", "/api/state", "/api/history":
 		return true
 	}
 	return false
 }
 
 // guard enforces, in this order: Host header (DNS rebinding, M1), CSRF
-// header on state-changing methods, basic auth on state-changing methods
-// and protected reads. Over TLS every answer carries HSTS.
+// header on state-changing methods, then resolves the caller once (cookie
+// session, else basic auth) and refuses anonymous access to protected
+// paths. Over TLS every answer carries HSTS.
 func (s *Server) guard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.TLS != nil {
@@ -476,34 +556,56 @@ func (s *Server) guard(next http.Handler) http.Handler {
 			writeError(w, http.StatusForbidden, "missing "+CSRFHeader+" header")
 			return
 		}
-		if strings.EqualFold(s.deps.Auth.Mode, "basic") && (write || protectedRead(r.URL.Path)) {
-			// An IP that already has limitConcurrent failed attempts
-			// sleeping gets an immediate 429 before any hash is computed
-			// (M3c): the delay cannot be side-stepped with parallel
-			// requests, and the PBKDF2 cost is not paid for them.
-			if r.Header.Get("Authorization") != "" && s.limiter.busy(remoteIP(r)) {
-				writeError(w, http.StatusTooManyRequests, "too many concurrent authentication attempts")
-				return
-			}
-			if !s.authorized(r) {
-				// Only a presented credential is a failure: the UI's first
-				// request arrives anonymous and gets a silent 401 that opens
-				// the login form (no log line, no rate-limit count).
-				if r.Header.Get("Authorization") != "" {
-					ip := remoteIP(r)
-					user, _, _ := r.BasicAuth()
-					n, delay := s.limiter.fail(ip)
-					s.logf("web: auth failure from %s (user %q, %s %s, %d recent failures, delay %s)", ip, user, r.Method, r.URL.Path, n, delay)
-				}
-				// No WWW-Authenticate challenge on purpose: the UI shows its own
-				// login form and sends the Authorization header itself.
-				writeError(w, http.StatusUnauthorized, "authentication required")
-				return
-			}
-			s.limiter.reset(remoteIP(r))
+		c, ok := s.resolveCaller(w, r)
+		if !ok {
+			return
 		}
-		next.ServeHTTP(w, r)
+		if !c.Authenticated && !publicPath(r.URL.Path) {
+			// Anonymous: a silent 401 (no log line, no rate-limit count)
+			// that makes the UI show its login form. No WWW-Authenticate
+			// challenge on purpose: the UI has its own form.
+			writeError(w, http.StatusUnauthorized, "authentication required")
+			return
+		}
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), callerKey{}, c)))
 	})
+}
+
+// resolveCaller identifies the request: with auth = none everyone is signed
+// in; else the session cookie wins, then a presented basic credential. A
+// presented credential that does not verify is a failure (counted, logged,
+// answered 401 whatever the path); ok=false means the answer was written.
+func (s *Server) resolveCaller(w http.ResponseWriter, r *http.Request) (Caller, bool) {
+	if !s.basicMode() {
+		return Caller{Authenticated: true, Via: "none"}, true
+	}
+	if ck, err := r.Cookie(sessionCookie); err == nil && ck.Value != "" {
+		if sess, ok := s.sessions.Lookup(ck.Value); ok {
+			return Caller{Authenticated: true, User: sess.User, Via: "cookie", token: ck.Value, session: sess}, true
+		}
+	}
+	if r.Header.Get("Authorization") == "" {
+		return Caller{Via: "none"}, true
+	}
+	ip := remoteIP(r)
+	// An IP that already has limitConcurrent failed attempts sleeping gets
+	// an immediate 429 before any hash is computed (M3c): the delay cannot
+	// be side-stepped with parallel requests, and the PBKDF2 cost is not
+	// paid for them.
+	if s.limiter.busy(ip) {
+		writeError(w, http.StatusTooManyRequests, "too many concurrent authentication attempts")
+		return Caller{}, false
+	}
+	if !s.authorized(r) {
+		user, _, _ := r.BasicAuth()
+		n, delay := s.limiter.fail(ip)
+		s.logf("web: auth failure from %s (user %q, %s %s, %d recent failures, delay %s)", ip, user, r.Method, r.URL.Path, n, delay)
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return Caller{}, false
+	}
+	s.limiter.reset(ip)
+	user, _, _ := r.BasicAuth()
+	return Caller{Authenticated: true, User: user, Via: "basic"}, true
 }
 
 // hostAllowed accepts IP literals, localhost and the configured hosts (M1).
@@ -546,9 +648,15 @@ func (s *Server) authorized(r *http.Request) bool {
 	if !ok {
 		return false
 	}
-	userOK := subtle.ConstantTimeCompare([]byte(user), []byte(s.deps.Auth.User))
+	return s.credentialsOK(user, pass)
+}
+
+// credentialsOK checks user/password against the credential set in effect.
+func (s *Server) credentialsOK(user, pass string) bool {
+	cfg := s.authCfg()
+	userOK := subtle.ConstantTimeCompare([]byte(user), []byte(cfg.User))
 	hashOK := 0
-	if VerifyPassword(user, pass, s.deps.Auth.PasswordHash) {
+	if VerifyPassword(user, pass, cfg.PasswordHash) {
 		hashOK = 1
 	}
 	return userOK&hashOK == 1
@@ -556,12 +664,51 @@ func (s *Server) authorized(r *http.Request) bool {
 
 // ---- handlers ------------------------------------------------------------
 
+// publicState is the reduced GET /api/state for anonymous callers: no
+// hwmon path, extra temperatures, alert times or watched sensors.
+type publicState struct {
+	TS       int64           `json:"ts"`
+	Status   string          `json:"status"`
+	Profile  string          `json:"profile"`
+	Verified bool            `json:"verified"`
+	DryRun   bool            `json:"dry_run"`
+	Channels []publicChannel `json:"channels"`
+	Uptime   int64           `json:"uptime_s"`
+}
+
+type publicChannel struct {
+	Name   string       `json:"name"`
+	PWM    int          `json:"pwm"`
+	Sensor string       `json:"sensor"`
+	Temp   float64      `json:"temp"`
+	Duty   int          `json:"duty"`
+	Target int          `json:"target"`
+	RPM    int          `json:"rpm"`
+	Mode   control.Mode `json:"mode"`
+}
+
+// publicPoint is a history point without the extra sensors.
+type publicPoint struct {
+	TS   int64              `json:"ts"`
+	Temp map[string]float64 `json:"temp"`
+	Duty map[string]int     `json:"duty"`
+	RPM  map[string]int     `json:"rpm"`
+}
+
 func (s *Server) getState(w http.ResponseWriter, r *http.Request) {
 	if s.deps.Service == nil {
 		writeError(w, http.StatusNotImplemented, "no service")
 		return
 	}
 	snap := s.deps.Service.Snapshot()
+	if !CallerFrom(r.Context()).Authenticated {
+		out := publicState{TS: snap.TS, Status: snap.Status, Profile: snap.Profile, Verified: snap.Verified, DryRun: snap.DryRun, Uptime: snap.Uptime, Channels: make([]publicChannel, 0, len(snap.Channels))}
+		for _, c := range snap.Channels {
+			out.Channels = append(out.Channels, publicChannel{Name: c.Name, PWM: c.PWM, Sensor: c.Sensor, Temp: c.Temp, Duty: c.Duty, Target: c.Target, RPM: c.RPM, Mode: c.Mode})
+		}
+		writeJSON(w, http.StatusOK, out)
+		return
+	}
 	if snap.Channels == nil {
 		snap.Channels = []control.ChannelState{}
 	}
@@ -598,6 +745,18 @@ func (s *Server) getHistory(w http.ResponseWriter, r *http.Request) {
 		since = n
 	}
 	pts := s.deps.Service.History(time.Duration(minutes) * time.Minute)
+	if !CallerFrom(r.Context()).Authenticated {
+		// Anonymous: the channel series only; the extra sensors stay
+		// behind the sign-in (they name the operator's hardware).
+		out := make([]publicPoint, 0, len(pts))
+		for _, p := range pts {
+			if p.TS > since {
+				out = append(out, publicPoint{TS: p.TS, Temp: p.Temp, Duty: p.Duty, RPM: p.RPM})
+			}
+		}
+		writeJSON(w, http.StatusOK, out)
+		return
+	}
 	out := make([]control.HistoryPoint, 0, len(pts))
 	for _, p := range pts {
 		if p.TS > since {
@@ -1148,7 +1307,7 @@ func (s *Server) getProfiles(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getVersion(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"name": "n5-fangov", "version": s.deps.Version, "tls": s.deps.TLS})
+	writeJSON(w, http.StatusOK, map[string]any{"name": "n5-fangov", "version": s.deps.Version, "tls": s.deps.TLS, "prerelease": s.deps.About.Prerelease, "auth": s.authMode()})
 }
 
 func (s *Server) getSensors(w http.ResponseWriter, r *http.Request) {

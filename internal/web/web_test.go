@@ -544,19 +544,27 @@ func TestAuthRequiredOnAllWrites(t *testing.T) {
 	wantCode(t, e.do(t, "PUT", "/api/presets/quiet", "", ok), 200)
 }
 
-// TestProtectedReadsNeedAuth (H1): with auth = basic the config (carries the
-// hash) and the log need credentials; state/history stay open for dashboards.
+// TestProtectedReadsNeedAuth (H1, v0.3 visibility model): with auth = basic
+// every read that is not public needs credentials; state/history stay open
+// (reduced) for dashboards, the UI files and version/about/session too.
 func TestProtectedReadsNeedAuth(t *testing.T) {
 	e := newEnv(t, AuthConfig{Mode: "basic", User: "admin", PasswordHash: PasswordHash("admin", "pw")})
 	wantError(t, e.do(t, "GET", "/api/config", "", nil), 401, "authentication")
 	wantError(t, e.do(t, "GET", "/api/log", "", nil), 401, "authentication")
+	wantError(t, e.do(t, "GET", "/api/presets", "", nil), 401, "authentication")
+	wantError(t, e.do(t, "GET", "/api/sensors", "", nil), 401, "authentication")
+	wantError(t, e.do(t, "GET", "/api/profiles", "", nil), 401, "authentication")
 	wantCode(t, e.do(t, "GET", "/api/state", "", nil), 200)
 	wantCode(t, e.do(t, "GET", "/api/history", "", nil), 200)
-	wantCode(t, e.do(t, "GET", "/api/presets", "", nil), 200)
+	wantCode(t, e.do(t, "GET", "/api/version", "", nil), 200)
+	wantCode(t, e.do(t, "GET", "/api/about", "", nil), 200)
+	wantCode(t, e.do(t, "GET", "/api/session", "", nil), 200)
 	wantCode(t, e.do(t, "GET", "/", "", nil), 200)
+	wantCode(t, e.do(t, "GET", "/app.js", "", nil), 200)
 	ok := basicAuth("admin", "pw")
 	wantCode(t, e.do(t, "GET", "/api/config", "", ok), 200)
 	wantCode(t, e.do(t, "GET", "/api/log", "", ok), 200)
+	wantCode(t, e.do(t, "GET", "/api/presets", "", ok), 200)
 	// auth = none: everything readable.
 	e2 := newEnv(t, AuthConfig{})
 	wantCode(t, e2.do(t, "GET", "/api/config", "", nil), 200)

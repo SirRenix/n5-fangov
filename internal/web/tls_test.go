@@ -92,13 +92,14 @@ func tlsEnv(t *testing.T, auth AuthConfig, mgr TLSMgr) *env {
 	return e
 }
 
-// TestTLSInfoAndDownloads: GET /api/tls is public (also with basic auth
-// on), carries mode/info/hosts; the two downloads are attachments with the
-// right media types and never need auth.
+// TestTLSInfoAndDownloads: GET /api/tls carries mode/info/hosts; the two
+// downloads are attachments with the right media types. Since v0.3 the
+// whole /api/tls tree is protected: anonymous callers get 401.
 func TestTLSInfoAndDownloads(t *testing.T) {
 	m := newFakeTLSMgr("auto")
+	creds := basicAuth("admin", "pw")
 	e := tlsEnv(t, AuthConfig{Mode: "basic", User: "admin", PasswordHash: PasswordHash("admin", "pw")}, m)
-	r := e.do(t, "GET", "/api/tls", "", nil)
+	r := e.do(t, "GET", "/api/tls", "", creds)
 	wantCode(t, r, 200)
 	var out struct {
 		Mode  string           `json:"mode"`
@@ -122,31 +123,31 @@ func TestTLSInfoAndDownloads(t *testing.T) {
 		d.TLSMgr = m
 		d.TLSHosts = []string{"192.0.2.20", "n5.lan", "other.lan:8010", "localhost", "127.0.0.1", "::1"}
 	})
-	r = e.do(t, "GET", "/api/tls", "", nil)
+	r = e.do(t, "GET", "/api/tls", "", creds)
 	wantCode(t, r, 200)
 	if !strings.Contains(r.body, `"warnings":["SAN list lacks host other.lan"]`) || !strings.Contains(r.body, `"fallback":true`) {
 		t.Errorf("warnings/fallback: %s", r.body)
 	}
 	m.fallback = false
 	m.info.NotAfter = time.Now().Add(3 * 24 * time.Hour)
-	r = e.do(t, "GET", "/api/tls", "", nil)
+	r = e.do(t, "GET", "/api/tls", "", creds)
 	if !strings.Contains(r.body, `"warnings":["certificate expires in 3 days (`) {
 		t.Errorf("expiry warning: %s", r.body)
 	}
 	m.info.NotAfter = time.Date(2036, 9, 13, 0, 0, 0, 0, time.UTC)
-	r = e.do(t, "GET", "/api/tls/cert.crt", "", nil)
+	r = e.do(t, "GET", "/api/tls/cert.crt", "", creds)
 	name := wantAttachment(t, r, "application/x-pem-file", `^n5-fangov-[A-Za-z0-9.-]+\.crt$`)
 	if !strings.HasPrefix(r.body, "-----BEGIN CERTIFICATE-----") {
 		t.Errorf("crt body %q (%s)", r.body, name)
 	}
-	r = e.do(t, "GET", "/api/tls/cert.cer", "", nil)
+	r = e.do(t, "GET", "/api/tls/cert.cer", "", creds)
 	wantAttachment(t, r, "application/pkix-cert", `^n5-fangov-[A-Za-z0-9.-]+\.cer$`)
 	if r.body != string([]byte{0x30, 0x82, 0x01, 0x02}) {
 		t.Errorf("cer body % x", r.body)
 	}
 	// empty list members are [] not null
 	m.info.DNSNames, m.info.IPs = nil, nil
-	r = e.do(t, "GET", "/api/tls", "", nil)
+	r = e.do(t, "GET", "/api/tls", "", creds)
 	if !strings.Contains(r.body, `"dns_names":[]`) || !strings.Contains(r.body, `"ips":[]`) {
 		t.Errorf("nil lists: %s", r.body)
 	}
