@@ -87,6 +87,15 @@ prototype in the mock first, operator decides on screenshots.
   `n5-fangov detect`), the kernel-update gate, removal — the topic first-time users
   stumble over.
 
+### Release gate (decided 2026-09-16)
+
+A version loses its `-rc` suffix only after the operator has performed a **manual
+installation test on the real host following the documentation alone** — uninstall,
+kernel-driver check, install by release path and by package, setup, dashboard, update
+hook, reboot, troubleshooting, uninstall/reinstall. Checklist: [`docs/RELEASE-GATE.md`](docs/RELEASE-GATE.md).
+Latest by 0.4.0; a 0.3.x release runs the same gate. Preconditions: docs split, repository
+hardening merged, history rewritten, repository public.
+
 **Not planned**: MQTT/discovery (REST + token is enough and smaller), a German UI
 (audience is GitHub), multi-host management, a frontend framework.
 
