@@ -60,7 +60,7 @@ regexes = [
 [[rules]]
 id = "operator-names"
 description = "Operator host, domain, ssh alias or person names — use n5host / builder / example.test in examples"
-regex = '''(?i)\b(pve0[0-9]|pve-root|pve-me|builder|hassio|glkvm|example\.test|redacted|redacted)\b'''
+regex = '''(?i)\b(pve0[0-9]|pve-root|pve-me|debdock[e]r|hassio|glkvm|example\.test|redact[e]d|redacte[d])\b'''
 keywords = ["pve0", "pve-", "debdock", "hassio", "glkvm", "redacted", "redacted", "redacted"]
 
 [[rules]]
