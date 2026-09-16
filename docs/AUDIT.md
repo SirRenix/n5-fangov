@@ -33,6 +33,8 @@ Nur gelesen und gemessen; **kein Code geändert**. Diese Datei ist die Mängelli
 | 9 Dokumentation | 0 | 2 | 7 | 5 | 14 |
 | **Summe** | **0** | **7** | **46** | **77** | **130** |
 
+**Stand der Behebung (16.09.2026, nach dem Audit):** alle 7 hohen Befunde behoben und einzeln getestet — Commits `dee927c` (Manual-Tab), `d549eb1` (Goroutine-`t.Fatal`), `527982c` (`-race`-Lauf, `make test-race`), `73b4bc9` (`TestServeSmoke`), `489bdb5` (Button-Kontrast), `0968936` (README Prerequisites/Install/Rollback/Uninstall). Jede Zeile trägt einen **Status**-Vermerk in der Empfehlungsspalte. Kritisch: keine. Mittel/niedrig: unverändert offen. Die sieben Punkte der Go/No-Go-Liste unten sind damit erledigt bis auf die drei mittleren Punkte 2 (Toolchain), 3 (Auth-Limiter) und 7 (Regler-/Editor-Punkte).
+
 Eine Tabellenzeile bündelt teils mehrere gleichartige Fundstellen. Schweregrade: **kritisch** = Datenverlust/Fremdzugriff/Regler gefährdet; **hoch** = blockiert den Pre-Release (Funktionsfehler, Barriere für Erstinstallation, ungeprüfte Nebenläufigkeit); **mittel** = vor `v0.3.0` beheben; **niedrig** = Beta-Zyklus.
 
 ## Befunde
@@ -198,8 +200,8 @@ Spalten: Bereich · Datei:Zeile / Ansicht · Befund · Schweregrad · Empfehlung
 
 | Bereich | Datei:Zeile / Ansicht | Befund | Schweregrad | Empfehlung |
 |---|---|---|---|---|
-| Dokumentation | README.md:49–60, deploy/install.sh:17–22, Makefile `release` | **Kein Installationspfad für Endanwender aus dem GitHub-Release.** Das Release liefert nur `n5-fangov-<ver>-linux-amd64` + sha256; `install.sh` verlangt einen Repo-Checkout mit Binary in `dist/` oder Repo-Root; das `.deb` wird nicht veröffentlicht (`make deb` lokal). README sagt „`./deploy/install.sh` oder `apt install ./dist/n5-fangov_<version>_amd64.deb`" — beides setzt Build oder Checkout voraus, ohne das zu sagen. | hoch | Release-Notes/README: „Checkout klonen, Binary nach `dist/n5-fangov` legen, `./deploy/install.sh`" **oder** `.deb` mit `make release` hochladen und `apt install ./n5-fangov_*.deb` als Hauptweg dokumentieren. |
-| Dokumentation | README.md:57–60 | **Voraussetzungen für den Neuling unvollständig.** „DKMS package from the sibling repo, `experimental_write=1`" — kein Link, kein Paketname, kein Hinweis auf `pve-headers`/`dkms`, keine Angabe, wie `experimental_write=1` gesetzt wird (modprobe.d), keine Mindestversion PVE/Kernel außer in der Kompatibilitätstabelle (Z. 591). | hoch | Abschnitt „Prerequisites" mit: PVE ≥ 9 / Debian 13, `dkms` + `pve-headers-$(uname -r)`, Link auf `SirRenix/minisforum-n5pro-fan-proxmox` (DKMS-Paket), `/etc/modprobe.d/minisforum-n5-it5571.conf` mit `options … experimental_write=1`, `modules-load.d`, `pciutils` (für `lspci`), Prüfbefehl `n5-fangov detect`. |
+| Dokumentation | README.md:49–60, deploy/install.sh:17–22, Makefile `release` | **Kein Installationspfad für Endanwender aus dem GitHub-Release.** Das Release liefert nur `n5-fangov-<ver>-linux-amd64` + sha256; `install.sh` verlangt einen Repo-Checkout mit Binary in `dist/` oder Repo-Root; das `.deb` wird nicht veröffentlicht (`make deb` lokal). README sagt „`./deploy/install.sh` oder `apt install ./dist/n5-fangov_<version>_amd64.deb`" — beides setzt Build oder Checkout voraus, ohne das zu sagen. | hoch | Release-Notes/README: „Checkout klonen, Binary nach `dist/n5-fangov` legen, `./deploy/install.sh`" **oder** `.deb` mit `make release` hochladen und `apt install ./n5-fangov_*.deb` als Hauptweg dokumentieren. — **Status: behoben `0968936` (16.09.): README „Install" beschreibt den Weg aus dem GitHub-Release (Checkout des Tags, Binary + sha256 nach `dist/`, Prüfsumme, `deploy/install.sh`, `setup`) und den Weg mit Build/`.deb`; dazu neue Abschnitte „Rollback" (unter Updates) und „Uninstall". Hinweis: der Release-Download funktioniert erst, wenn das Repo öffentlich ist (aktuell privat). Das `.deb` wird weiterhin nicht hochgeladen (niedrig, Abhängigkeiten-Tabelle).** |
+| Dokumentation | README.md:57–60 | **Voraussetzungen für den Neuling unvollständig.** „DKMS package from the sibling repo, `experimental_write=1`" — kein Link, kein Paketname, kein Hinweis auf `pve-headers`/`dkms`, keine Angabe, wie `experimental_write=1` gesetzt wird (modprobe.d), keine Mindestversion PVE/Kernel außer in der Kompatibilitätstabelle (Z. 591). | hoch | Abschnitt „Prerequisites" mit: PVE ≥ 9 / Debian 13, `dkms` + `pve-headers-$(uname -r)`, Link auf `SirRenix/minisforum-n5pro-fan-proxmox` (DKMS-Paket), `/etc/modprobe.d/minisforum-n5-it5571.conf` mit `options … experimental_write=1`, `modules-load.d`, `pciutils` (für `lspci`), Prüfbefehl `n5-fangov detect`. — **Status: behoben `0968936` (16.09.): README-Abschnitt „Prerequisites" mit OS/PVE-Version, Paketen (`dkms`, `proxmox-headers-$(uname -r)`/`linux-headers-…`, `pciutils`, `lm-sensors`), dem EC-Treiber (Upstream ltdstudio + DKMS-Paket `minisforum-n5-it5571/0.2.0` aus dem Schwester-Repo, Hinweis, dass dessen Installer auch `n5-fand` mitbringt), den Treiberoptionen (`modprobe.d` mit `experimental_write=1`, `modules-load.d`), anderen Boards und Prüfbefehlen (`n5-fangov detect`, `dkms status`).** |
 | Dokumentation | README.md:614 (`internal/version.Version` is `0.3.0-beta.2`), version.go:9 (`0.3.0-beta.4`), README.md:15 (`0.3.0-beta.4`), DESIGN.md:579 (`0.3.0-beta.1`) | **Versionsangaben widersprechen sich** in drei Dateien. | mittel | README-Zeile 614 auf „is the current version" ohne Literal; DESIGN ohne Versionsliterale; einzige Quelle `version.go`. |
 | Dokumentation | DESIGN.md gesamt (955 Zeilen) | **Kein lesbarer Vertrag mehr, sondern Akkretionsprotokoll:** Abschnitt „Config" (Z. 49–77) ohne `[web].tls/log/alert/dashboard`, `password_hash`-Kommentar „bcrypt not available → sha256" überholt (PBKDF2 seit v0.2), „Layout" (Z. 31) listet nur 9 Subcommands (heute 18), „HTTP API" (Z. 145–169) ohne tls/alerts/account/session/system/dashboard, „Web UI" (Z. 202–207) nennt sechs Tabs (heute neun). Die gültigen Aussagen stehen in vier „integration notes"-Anhängen (15.09., 15.09., 16.09., 16.09.). Widerspricht der Hausregel „Korrekturen im Original, nicht als Nachtrag". | mittel | Einmalig konsolidieren: ein Ist-Vertrag je Paket (config, control, web/API, tlscert, alert, sysinfo, UI, deploy) mit Stand beta.4; die Änderungshistorie in `CHANGELOG.md` auslagern. |
 | Dokumentation | LICENSE (9 Zeilen), Makefile:118 (`install … LICENSE … /usr/share/doc/n5-fangov/copyright`) | **Kein vollständiger GPL-2.0-Text.** Die Datei ist der Kurzvermerk mit Link; GPLv2 §1 verlangt, „a copy of this License" beizulegen; Debian-`copyright` verweist üblicherweise auf `/usr/share/common-licenses/GPL-2` — das fehlt hier ebenfalls. Copyright-Zeile vorhanden (2026 SirRenix). | mittel | `LICENSE` = voller GPL-2.0-Text; den Kurzvermerk als `COPYING`-Kopf oder in die Debian-`copyright`-Datei mit `On Debian systems, see /usr/share/common-licenses/GPL-2`. |
@@ -235,17 +237,17 @@ Spalten: Bereich · Datei:Zeile / Ansicht · Befund · Schweregrad · Empfehlung
 
 ## Go/No-Go für den Pre-Release
 
-**No-Go im aktuellen Stand — Go nach Abarbeitung der folgenden Liste** (zusammen etwa zwei Arbeitstage; nichts davon berührt den Regelkreis):
+**Ursprüngliches Votum: No-Go — Go nach Abarbeitung der folgenden Liste.** Stand nach der Behebung: die hohen Punkte 1, 4, 5, 6 sind erledigt; **Go für den Pre-Release-Tag, sobald die drei mittleren Punkte 2, 3 und 7 nachgezogen sind** (zusammen etwa zwei Arbeitstage; nichts davon berührt den Regelkreis):
 
-| # | Bereich | Punkt | Aufwand |
-|---|---|---|---|
-| 1 | 4 / 8 | Manual-Tab-Dispatch (`app.js:816`) reparieren, Konsistenztest „jeder Tab hat einen Handler" | Minuten |
-| 2 | 6 | Toolchain auf `golang:1.26-alpine` (oder 1.27) heben, `go 1.26` in `go.mod`, Image-Digest pinnen, Tests + govulncheck wiederholen | 1 h |
-| 3 | 1 | Auth-Limiter: IPv6 auf /64 bucketen, globales Semaphor für Passwortprüfungen (429 darüber) | 2–3 h |
-| 4 | 7 | Ein `-race`-Lauf im cgo-fähigen Image (`golang:1.26-bookworm`), Goroutine-`t.Fatal` in `web_test.go:960` beseitigen, `cmdServe`-Smoke-Test | 3–4 h |
-| 5 | 8 | Kontrast Primärbuttons Dark-Theme (`--info` dunkler oder Text `var(--bg)`) | Minuten |
-| 6 | 9 | README: Installationspfad aus dem Release (Binary → `dist/` + `install.sh`, oder `.deb` per `make release` veröffentlichen) und Abschnitt „Prerequisites" (DKMS-Paket mit Link, Header, `experimental_write=1`, `pciutils`) | 1–2 h |
-| 7 | 2 / 3 | Kurven-Editor prüft Duty-Monotonie/critical/stop vor dem PUT; Alarm-Stempel aus der Zukunft in `raise()` wie in `serve` behandeln; `logOnce`-Text ohne Live-Werte; Benutzername im Log kürzen | 2 h |
+| # | Bereich | Punkt | Aufwand | Status |
+|---|---|---|---|---|
+| 1 | 4 / 8 | Manual-Tab-Dispatch (`app.js:816`) reparieren, Konsistenztest „jeder Tab hat einen Handler" | Minuten | **behoben** |
+| 2 | 6 | Toolchain auf `golang:1.26-alpine` (oder 1.27) heben, `go 1.26` in `go.mod`, Image-Digest pinnen, Tests + govulncheck wiederholen | 1 h | offen (mittel) |
+| 3 | 1 | Auth-Limiter: IPv6 auf /64 bucketen, globales Semaphor für Passwortprüfungen (429 darüber) | 2–3 h | offen (mittel) |
+| 4 | 7 | Ein `-race`-Lauf im cgo-fähigen Image (`golang:1.26-bookworm`), Goroutine-`t.Fatal` in `web_test.go:960` beseitigen, `cmdServe`-Smoke-Test | 3–4 h | **behoben** |
+| 5 | 8 | Kontrast Primärbuttons Dark-Theme (`--info` dunkler oder Text `var(--bg)`) | Minuten | **behoben** |
+| 6 | 9 | README: Installationspfad aus dem Release (Binary → `dist/` + `install.sh`, oder `.deb` per `make release` veröffentlichen) und Abschnitt „Prerequisites" (DKMS-Paket mit Link, Header, `experimental_write=1`, `pciutils`) | 1–2 h | **behoben** |
+| 7 | 2 / 3 | Kurven-Editor prüft Duty-Monotonie/critical/stop vor dem PUT; Alarm-Stempel aus der Zukunft in `raise()` wie in `serve` behandeln; `logOnce`-Text ohne Live-Werte; Benutzername im Log kürzen | 2 h | offen (mittel) |
 
 Vor dem Tag `v0.3.0` (mittel): `LICENSE`-Volltext, Versionsliterale auf eine Quelle, CLI-/Config-Referenz, `CHANGELOG.md`, `DESIGN.md` konsolidieren (Ist-Vertrag je Paket, Historie ins Changelog, Finding-Tags mit Legende oder entfernt), Übergangspfad `Deps.Log any` abbauen, `nics`-`null`, logfile-Reopen, Grenzwert-Tabellentests, `-race` als fester Schritt in `make`/Release-Checkliste, GUI-Mittelpunkte (Einheiten im Editor, Temperaturfarbe, Zertifikatswarnung sichtbar, `aria-live`, Sticky-Header mobil, Editor-Stand bei Session-Ablauf sichern).
 
@@ -257,7 +259,7 @@ Was der Abnahme nicht im Weg steht und bewusst so bleibt: Englisch als einzige U
 
 
 | Eingabepunkt | Datei:Zeile | Validierung | Lücke/OK |
-|---|---|---|---|
+|---|---|---|---|---|
 | CLI Dispatch `n5-fangov <sub>` | `main.go:84-104` | Map-Lookup, unbekannt → usage, exit 2 | OK |
 | `serve --config/--run-dir/--state-dir/--listen/--dry-run` | `serve.go:31-43` | Flags; `--listen` „none" oder host:port, Nicht-Loopback erzwingt tls auto | relative Pfade (Befund) |
 | `status` | `cli.go:53-66` | keine Argumente erlaubt | OK |
