@@ -182,9 +182,11 @@ func TestPresetHeader(t *testing.T) {
 // The shipped example config must parse without a single warning: it is
 // the reference for every key, and the daemon would alert on it.
 func TestExampleConfigParses(t *testing.T) {
+	// The file is part of the repository and shipped by the deb: a missing
+	// copy is a broken checkout, not a reason to skip (AUDIT 7).
 	raw, err := os.ReadFile(filepath.Join("..", "..", "deploy", "config.example.toml"))
 	if err != nil {
-		t.Skip("deploy/config.example.toml not found:", err)
+		t.Fatal("deploy/config.example.toml not found:", err)
 	}
 	cfg, warns, err := Parse(raw)
 	if err != nil || len(warns) != 0 {
