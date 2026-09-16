@@ -1,6 +1,6 @@
 // n5-fangov dashboard mock — loaded by app.js only with ?mock=1, never referenced by index.html.
 // Publishes window.n5mock(path, opt) → Promise<{status, body, filename?}>; api() calls it instead of fetch.
-// Flags: &user=1 &auth=none &tls=off|file|soon|fallback &tab= &syserr=1 &reject=1 &expire=1 &schedfail=1 &pwm4=1
+// Flags: &user=1 &auth=none &tls=off|file|soon|fallback &tab= &syserr=1 &reject=1 &restart=1 &expire=1 &schedfail=1 &pwm4=1
 // Names and addresses are documentation values (n5host, 192.0.2.x, n5.lan, example.test).
 'use strict';
 window.n5mock = (() => {
@@ -52,9 +52,12 @@ window.n5mock = (() => {
 		+ (c.hysteresis ? `hysteresis = ${c.hysteresis}\n` : '') + (c.min_on && c.min_on !== '0s' ? `min_on = "${c.min_on}"\n` : '');
 	const tomlSched = s => `[[schedule]]\npreset = "${s.preset}"\n` + (s.from ? `from = "${s.from}"\nto = "${s.to}"\n` : '') + (s.days.length ? `days = ${tomlV(s.days)}\n` : '');
 	const raw = () => sec('daemon') + sec('web') + sec('log') + cfg.channel.map(tomlCh).join('\n') + '\n' + cfg.schedule.map(tomlSched).join('\n');
-	// PUT /api/config: parse the [[channel]] tables back (strict: the daemon's rules, rule 8 would substitute defaults with a warning)
+	// PUT /api/config: parse the [[channel]] and [[schedule]] tables back (strict: the daemon's rules, rule 8 would substitute defaults with a warning);
+	// like the daemon, the mock keeps only what the body carries — a client that drops the [[schedule]] tables loses them (visible in raw() and on the Schedules card)
 	const kv = (blk, k) => { const m = new RegExp(`^${k}\\s*=\\s*(.+)$`, 'm').exec(blk); return m ? m[1].trim() : ''; };
-	const parseChannels = body => body.split(/^\[\[channel\]\]\s*$/m).slice(1).map(b => { b = b.split(/^\[/m)[0]; const s = kv(b, 'sensor'), mo = kv(b, 'min_on'), st = kv(b, 'stop');
+	const tables = (body, name) => body.split(new RegExp(`^\\[\\[${name}\\]\\]\\s*$`, 'm')).slice(1).map(b => b.split(/^\[/m)[0]);
+	const parseSchedules = body => tables(body, 'schedule').map(b => ({ preset: kv(b, 'preset').replace(/"/g, ''), from: kv(b, 'from').replace(/"/g, ''), to: kv(b, 'to').replace(/"/g, ''), days: [...kv(b, 'days').matchAll(/"([^"]*)"/g)].map(x => x[1]) }));
+	const parseChannels = body => tables(body, 'channel').map(b => { const s = kv(b, 'sensor'), mo = kv(b, 'min_on'), st = kv(b, 'stop');
 		return { name: kv(b, 'name').replace(/"/g, ''), pwm: +kv(b, 'pwm'), sensor: s.startsWith('[') ? [...s.matchAll(/"([^"]*)"/g)].map(x => x[1]).join(',') : s.replace(/"/g, ''),
 			curve: [...kv(b, 'curve').matchAll(/\[\s*(-?\d+)\s*,\s*(\d+)\s*\]/g)].map(x => [+x[1], +x[2]]), critical: +kv(b, 'critical'), stop: st === '"auto"' ? 'auto' : +st.replace(/"/g, ''),
 			hysteresis: +kv(b, 'hysteresis') || 0, min_on: mo ? mo.replace(/"/g, '') : '0s' }; });
@@ -160,7 +163,7 @@ window.n5mock = (() => {
 			M.in = true; M.remember = !!j.remember; return ok({ ok: true, user: M.user, expires: Math.floor(now + (M.remember ? 30 : .5) * 86400), remember: M.remember }); }
 		if (p === '/api/logout') { M.in = M.auth === 'none'; return wait({ status: 204, body: null }); }
 		if (p === '/api/version') return ok({ name: 'n5-fangov', version: MV, prerelease: PRE, auth: M.auth, tls: T.mode !== 'off',
-			limits: { min_hdd_override: 60, critical_min: 30, critical_max: 150, curve_points_min: 2, curve_points_max: 8, dashboard_sensors_max: 8, password_min: 8, password_max: 128, hysteresis_max: 10, min_on_max_s: 3600 } });
+			limits: { min_hdd_override: 60, critical_min: 30, critical_max: 150, curve_points_max: 8, dashboard_sensors_max: 8, password_min: 8, password_max: 128, hysteresis_max: 10, min_on_max_s: 3600 } });
 		if (p === '/api/about') return ok({ name: 'n5-fangov', version: MV, prerelease: PRE, license: 'GPL-2.0-only', license_url: 'https://www.gnu.org/licenses/old-licenses/gpl-2.0.html',
 			repo: GH + 'SirRenix/n5-fangov', author: 'SirRenix', author_url: GH + 'SirRenix', go: M.in ? 'go1.25.1' : '',
 			credits: [['ltdstudio/minisforum-n5-it5571', 'the kernel driver'], ['Sl0thC0der/proxfansx', 'dashboard idea; nct67xx/it87xx profiles']].map(([name, note]) => ({ name, url: GH + name, note })) });
@@ -182,7 +185,9 @@ window.n5mock = (() => {
 		if (p === '/api/config' && m === 'GET') return ok({ config: cfg, raw: raw() });
 		if (p === '/api/config' && m === 'PUT') { const chs = parseChannels(opt.body || ''), errs = check(chs);
 			if (u.searchParams.get('strict') === '1' && errs.length) return fail('config rejected', 400, { errors: errs });
-			const restart = chs.length !== cfg.channel.length; if (!restart) cfg.channel = chs; return wait({ status: restart ? 202 : 200, body: { ok: true, restart_required: restart, warnings: errs } }); }
+			// &restart=1: 202 although the channel set is unchanged (the daemon answers so for a profile change too); a changed channel set is written but not applied
+			const restart = Q.get('restart') === '1' || chs.length !== cfg.channel.length; if (chs.length === cfg.channel.length) cfg.channel = chs; cfg.schedule = parseSchedules(opt.body || '');
+			return wait({ status: restart ? 202 : 200, body: { ok: true, restart_required: restart, warnings: errs } }); }
 		if (p === '/api/sensors') return ok(Object.entries(SENS).map(([id, [d, , , kind]]) => Object.assign({ id, description: `${d} (now ${sv(id, now)} °C)`, temp: sv(id, now) }, kind ? { kind } : {})).concat(PAT));
 		if (p === '/api/dashboard') { if (m === 'PUT') { const ids = (opt.json || {}).sensors || []; if (ids.length > 8) return fail('at most 8 sensors', 400);
 				dash = ids; return ok({ ok: true, sensors: dash, warnings: ids.filter(i => !SENS[i]).map(i => i + ': unresolved') }); }

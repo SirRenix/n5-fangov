@@ -47,7 +47,8 @@ const REF = { // N5 Pro duty→RPM (measured)
 // history ranges: minutes for the API, window/grid/label format for the charts, polling (2 h: since every 30 s; 24 h / 7 d: full reload every 60 s)
 const hm = ts => new Date(ts * 1000).toTimeString().slice(0, 5);
 const ddmm = ts => { const d = new Date(ts * 1000); return `${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')} ${hm(ts)}`; };
-const RANGES = { '2h': { label: '2 h', minutes: 120, windowS: 7200, gridS: 1800, maxPoints: 720, poll: 30000, since: true, fmt: hm },
+// maxPoints 0 = raw tier: the cap follows the daemon's interval once the config is known (maxPts), otherwise only the window trims
+const RANGES = { '2h': { label: '2 h', minutes: 120, windowS: 7200, gridS: 1800, maxPoints: 0, poll: 30000, since: true, fmt: hm },
 	'24h': { label: '24 h', minutes: 1440, windowS: 86400, gridS: 4 * 3600, maxPoints: 1500, poll: 60000, fmt: ts => new Date(ts * 1000).toLocaleDateString('en', { weekday: 'short' }) + ' ' + hm(ts) },
 	'7d': { label: '7 d', minutes: 10080, windowS: 7 * 86400, gridS: 86400, maxPoints: 2100, poll: 60000, fmt: ddmm } };
 // settings (whitelisted values; anything else falls back to the default)
@@ -278,9 +279,9 @@ async function applyAuth() {
 	for (const [id, show] of [['#h-settings', on], ['#h-sec', on], ['#h-signin', !on && basic], ['#h-signout', on && basic], ['#h-user', on && basic], ['#s-account', on && basic], ['#ov-more', on], ['#ov-csv', on]]) $(id).hidden = !show;
 	$('#h-user').textContent = sess.user || ''; tabsFade();
 	if ($('#tab-' + curTab).hidden) selectTab('overview');
-	if (!on) { cert = null; cfg = null; edState = null; dirty(false); alerts = null; sysinfo = null; dash = []; profiles = []; SN.key = null; for (const id of ['#editors', '#presets', '#log', '#sc-tbl tbody', '#sc-kv', '#ac-tok tbody']) clear($(id)); secState(); renderCharts(); return; }
+	if (!on) { cert = null; cfg = null; edState = null; dirty(false); alerts = null; sysinfo = null; dash = []; profiles = []; SN.key = null; for (const id of ['#editors', '#presets', '#log', '#sc-tbl tbody', '#sc-kv', '#ac-tok tbody']) clear($(id)); secState(); renderCharts(); loadAbout(); return; }
 	hist = []; lastTs = 0; // history is re-read with the extra series
-	await loadConfig(); loadCert(); loadDash(); loadAlerts(); loadSystem(); resetHistory();
+	await loadConfig(); loadCert(); loadDash(); loadAlerts(); loadSystem(); resetHistory(); loadAbout();
 	api('/api/profiles').then(r => { profiles = r.body || []; renderHeader(); renderSystem(); renderProfiles(); }).catch(() => {});
 	if (edStash) { edState = edStash; edStash = null; buildEditors(); dirty(true); cvNotice('Unsaved curve edits from before the session expired are restored — apply or revert.', ''); if (curTab !== 'curves') toast('Unsaved curve edits restored (Curves tab)', 'warn'); }
 	else if (curTab === 'curves') loadEditor();
@@ -456,17 +457,20 @@ const parts = s => String(s || '').split(',').map(x => x.trim()).filter(Boolean)
 const tomlChannel = c => { const ps = parts(c.sensor);
 	return `[[channel]]\nname = "${c.name}"\npwm = ${c.pwm}\nsensor = ${ps.length > 1 ? `[${ps.map(x => `"${x}"`).join(', ')}]` : `"${ps[0] || ''}"`}\ncurve = [${c.curve.map(p => `[${p[0]}, ${p[1]}]`).join(', ')}]\ncritical = ${c.critical}\nstop = ${c.stop === 'auto' || c.stop === '' || c.stop === undefined ? '"auto"' : c.stop}\n`
 		+ (c.hysteresis > 0 ? `hysteresis = ${c.hysteresis}\n` : '') + (durS(c.min_on) ? `min_on = "${c.min_on}"\n` : ''); };
+// every [[channel]] table is dropped as a block; the block ends at the next table header of ANY kind — [section] or [[other]], e.g. [[schedule]] —
+// so the other array tables survive the rewrite. A header carries a bare/quoted key path only: an array element line ("[45, 85],") has a comma and is no header.
+const TOML_HDR = /^\[\[?\s*[\w.\-"' ]+\s*\]\]?\s*(#.*)?$/, CH_HDR = /^\[\[\s*channel\s*\]\]/;
 const stripChannels = raw => { const out = []; let skip = false;
 	for (const ln of raw.split('\n')) { const t = ln.trim();
-		if (/^\[\[channel\]\]/.test(t)) { skip = true; continue; }
-		if (/^\[[^\[]/.test(t)) skip = false;
+		if (CH_HDR.test(t)) { skip = true; continue; }
+		if (TOML_HDR.test(t)) skip = false;
 		if (!skip) out.push(ln); } return out.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd() + '\n\n'; };
 const fromCfg = () => chList().map(c => ({ name: c.name, pwm: c.pwm, sensor: parts(c.sensor).join(','), curve: (c.curve || []).map(p => [+p[0], +p[1]]), critical: +c.critical, stop: c.stop === undefined || c.stop === 'auto' ? 'auto' : String(c.stop),
 	hysteresis: +c.hysteresis || 0, min_on: normDur(c.min_on) }));
-function loadEditor() { edState = fromCfg(); dirty(false); buildEditors(); }
-function buildEditors() {
+function loadEditor(keepNotice) { edState = fromCfg(); dirty(false); buildEditors(keepNotice); }
+function buildEditors(keepNotice) { // keepNotice: the 202 / warnings notice of an apply survives the reload of the editors (cleared by Revert, tab switch, next apply)
 	const host = clear($('#editors')); for (const k in ED) delete ED[k];
-	cvNotice('');
+	if (!keepNotice) cvNotice('');
 	edState.forEach((c, i) => {
 		const ed = ED[c.name] = { c, i }, L = LIM;
 		const cv = h('canvas', { role: 'img', 'aria-label': `curve ${c.name}` });
@@ -596,7 +600,7 @@ on('#cv-apply', 'click', async () => {
 	try { const r = await api('/api/config?strict=1', { method: 'PUT', body, headers: { 'Content-Type': 'application/toml' } });
 		const warn = r.body && Array.isArray(r.body.warnings) && r.body.warnings.length ? 'Config warnings outside the channel tables:\n' + r.body.warnings.join('\n') : '';
 		cvNotice((r.status === 202 ? 'Written — restart required (channel set or profile changed): systemctl restart n5-fangov\n' : '') + warn, '');
-		toast(r.status === 202 ? 'Curves written — restart required' : warn ? 'Applied with warnings' : 'Curves applied', r.status === 202 || warn ? 'warn' : 'ok'); await loadConfig(); loadEditor();
+		toast(r.status === 202 ? 'Curves written — restart required' : warn ? 'Applied with warnings' : 'Curves applied', r.status === 202 || warn ? 'warn' : 'ok'); await loadConfig(); loadEditor(true);
 	} catch (e) { cvNotice(e.message, 'err'); } // notice is role=alert: no toast on top
 });
 on('#cv-revert', 'click', () => { loadEditor(); toast('Reverted', ''); });
@@ -717,7 +721,8 @@ on('#al-test', 'click', async () => {
 	loadAlerts(); });
 on('#al-tpl-btn', 'click', async () => { const r = await act(() => api('/api/alerts/template', { method: 'POST' })); if (r) { toast('Template written to ' + r.body.path, 'ok'); loadAlerts(); } });
 
-// about (public; `go` is empty for anonymous readers)
+// about (public; `go` is empty for anonymous readers, so the page is re-read on every sign-in / sign-out)
+const loadAbout = () => api('/api/about').then(r => renderAbout(r.body || {})).catch(() => {});
 function renderAbout(a) {
 	$('#ab-name').textContent = a.name || 'n5-fangov'; $('#ab-version').textContent = 'v' + (a.version || version || '?').replace(/^v/, ''); preBadge([$('#ab-beta')], a.prerelease);
 	const link = (id, href, text) => { const e = $(id); e.href = href || '#'; e.textContent = text || href || '—'; };
@@ -768,6 +773,8 @@ async function loadConfig() {
 }
 // a reset bumps the generation; a late answer of the old load is dropped
 let histGen = 0;
+// raw tier: one point per daemon cycle, so the cap follows [daemon] interval (2..30 s → 3600..240 points) plus a margin for jitter; anonymous (no config): the window only
+const maxPts = rg => { if (rg.maxPoints) return rg.maxPoints; const iv = cfg && cfg.daemon ? durS(cfg.daemon.interval) : 0; return iv > 0 ? Math.ceil(rg.windowS / iv) + 12 : Infinity; };
 // 2 h: incremental (since); 24 h / 7 d: the averaged tier is reloaded whole (bucket means change until the bucket closes)
 async function loadHistory() {
 	const g = histGen, rg = R(), inc = !!(rg.since && lastTs);
@@ -775,7 +782,7 @@ async function loadHistory() {
 		const pts = (r.body || []).filter(p => !inc || p.ts > lastTs).sort((a, b) => a.ts - b.ts);
 		if (!inc) hist = [];
 		if (pts.length) { hist = hist.concat(pts); lastTs = hist[hist.length - 1].ts; }
-		const cut = Date.now() / 1000 - rg.windowS; while (hist.length && (hist[0].ts < cut || hist.length > rg.maxPoints)) hist.shift();
+		const cut = Date.now() / 1000 - rg.windowS, cap = maxPts(rg); while (hist.length && (hist[0].ts < cut || hist.length > cap)) hist.shift();
 		renderCharts();
 	} catch (e) {}
 }
@@ -947,7 +954,6 @@ const boot = async () => {
 	if (MOCK) toast('Mock mode', 'warn', UI.timing.toastNotice);
 	api('/api/version').then(r => { version = r.body.version || ''; if (typeof r.body.tls === 'boolean') tls = r.body.tls; if (r.body.prerelease !== undefined) preBadge($$('.beta'), r.body.prerelease);
 		if (r.body.limits) { Object.assign(LIM, r.body.limits); applyLimits(); } secState(); renderHeader(); }).catch(() => {});
-	api('/api/about').then(r => renderAbout(r.body || {})).catch(() => {});
 	try { sess = (await api('/api/session')).body || sess; } catch (e) { sess = anon(); }
 	await applyAuth(); if (MOCK && Q.get('tab')) selectTab(Q.get('tab'));
 	if (document.hidden) { poll(); loadHistory(); }
