@@ -114,6 +114,15 @@ curl path is re-run once at 0.4.0.
 **Not planned**: MQTT/discovery (REST + token is enough and smaller), a German UI
 (audience is GitHub), multi-host management, a frontend framework.
 
+### Added
+
+- Documentation for the 0.3.x features: new page [`docs/12-api.md`](docs/12-api.md)
+  (authentication and tokens, scopes, OpenAPI, endpoint overview, history/CSV, the
+  Home Assistant recipe with the YAML in `docs/openapi/`); tokens, webhook, hysteresis
+  and `min_on`, sensor arrays and `disk:<dev>`, pwm4, `[[schedule]]`, history ranges and
+  the new state files on the existing pages; `deploy/config.example.toml` carries every
+  new key with a commented pwm4 channel and schedule pair.
+
 ### Changed
 
 - Files are named by topic, never by version or review round. cmd: `wiring_v2.go` →
