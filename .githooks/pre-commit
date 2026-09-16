@@ -16,7 +16,7 @@ cd "$repo" || exit 1
 
 # --- 1. file-name guard --------------------------------------------------------
 bad=$(git diff --cached --name-only --diff-filter=ACMR | grep -E \
-  '(^|/)(\.env(\..*)?|config\.toml|sessions\.json|alerts\.json)$|\.(pem|key|crt|cer|p12|pfx|bak|bak-[0-9]+|log)$' \
+  '(^|/)(\.env(\..*)?|config\.toml|sessions\.json|alerts\.json|history\.json)$|\.(pem|key|crt|cer|p12|pfx|bak|bak-[0-9]+|log)$' \
   | grep -vE '^(\.env\.example|deploy/config\.example\.toml)$' || true)
 if [ -n "$bad" ]; then
   echo "pre-commit: refusing files that must not be committed:" >&2

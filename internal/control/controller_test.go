@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/SirRenix/n5-fangov/internal/config"
+	"github.com/SirRenix/n5-fangov/internal/history"
 )
 
 func TestInterpolate(t *testing.T) {
@@ -534,8 +535,8 @@ func TestHistoryRing(t *testing.T) {
 	cfg.Daemon.Interval = 120 * time.Second // capacity 60
 	cfg.Daemon.StaleCycles = 600            // constant fake sensors must not trip stale detection
 	h := newHarness(t, cfg, nil)
-	if h.c.histCap != 60 {
-		t.Fatalf("capacity %d", h.c.histCap)
+	if h.c.hist.RawCap() != 60 {
+		t.Fatalf("capacity %d", h.c.hist.RawCap())
 	}
 	h.cycles(65)
 	all := h.c.History(24 * time.Hour)
@@ -553,8 +554,13 @@ func TestHistoryRing(t *testing.T) {
 		t.Errorf("History(10m) = %d points", len(recent))
 	}
 	// default interval: 2h / 10s
-	if got := historyCapacity(10 * time.Second); got != 720 {
+	if got := history.RawCapacity(10 * time.Second); got != 720 {
 		t.Errorf("capacity at 10s: %d", got)
+	}
+	// HistoryRange: the raw tier by span, since strict
+	last := all[59].TS
+	if got := h.c.HistoryRange(time.Hour, last-120); len(got) != 1 || got[0].TS != last {
+		t.Errorf("HistoryRange(1h, since): %+v", got)
 	}
 }
 
@@ -940,5 +946,32 @@ func TestSnapshotStatusConstants(t *testing.T) {
 	h.cycles(1)
 	if s := h.c.Snapshot().Status; s != StatusDryRun {
 		t.Errorf("dry run: %q", s)
+	}
+}
+
+func TestHistoryPersisted(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.json")
+	cfg := n5cfg()
+	cfg.Daemon.StaleCycles = 600
+	h := newHarness(t, cfg, func(o *Options) { o.HistoryFile = path })
+	h.cycles(3)
+	h.c.saveHistory()
+	if _, err := os.Stat(path); err == nil {
+		t.Fatalf("history saved before %s elapsed", historySaveEvery)
+	}
+	h.cycles(60) // 10 min at 10 s
+	h.c.saveHistory()
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("history not saved after %s: %v", historySaveEvery, err)
+	}
+	h.cycles(2)
+	h.c.Stop()
+	// a new controller on the same file starts with the persisted points
+	h2 := newHarness(t, cfg, func(o *Options) { o.HistoryFile = path })
+	if got := h2.c.History(24 * time.Hour); len(got) != 65 || got[64].Temp["cpu"] != 36 {
+		t.Errorf("history after restart: %d points, last %+v", len(got), got[len(got)-1])
+	}
+	if got := h2.c.HistoryRange(24*time.Hour, 0); len(got) < 10 {
+		t.Errorf("1-min tier after restart: %d points", len(got))
 	}
 }

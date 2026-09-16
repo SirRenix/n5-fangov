@@ -4,6 +4,8 @@ package control
 import (
 	"errors"
 	"time"
+
+	"github.com/SirRenix/n5-fangov/internal/history"
 )
 
 // Status of the last regulation cycle (Snapshot.Status). The dashboard
@@ -59,21 +61,19 @@ type Snapshot struct {
 	Uptime  int64              `json:"uptime_s"`
 }
 
-// HistoryPoint is one ring-buffer entry for charts.
-type HistoryPoint struct {
-	TS   int64              `json:"ts"`
-	Temp map[string]float64 `json:"temp"` // by channel name
-	Duty map[string]int     `json:"duty"`
-	RPM  map[string]int     `json:"rpm"`
-	// Extra holds the watched dashboard sensors ([dashboard].sensors) by
-	// id, degrees C; absent ids could not be read that cycle (v0.3).
-	Extra map[string]float64 `json:"extra,omitempty"`
-}
+// HistoryPoint is one history entry for the charts: {ts, temp{}, duty{},
+// rpm{}, extra{}} by channel name (extra by sensor id). The type lives in
+// internal/history (the store); the alias keeps the controller API.
+type HistoryPoint = history.Point
 
 // Service is what the web/ipc layer needs from the controller.
 type Service interface {
 	Snapshot() Snapshot
+	// History returns the raw tier (one point per cycle) not older than since.
 	History(since time.Duration) []HistoryPoint
+	// HistoryRange returns the tier for span (raw ≤ 2 h, 1-min means ≤ 24 h,
+	// else 5-min means) with ts > since; see history.Store.Range.
+	HistoryRange(span time.Duration, since int64) []HistoryPoint
 	SetOverride(channel string, duty int) error
 	ClearOverride(channel string) error
 	// Reload applies a new config; returns ErrRestartRequired when the channel
