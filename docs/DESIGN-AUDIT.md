@@ -8,6 +8,7 @@ Stand: 16.09.2026 · geprüfter Stand: `main` `6d4dfc3` (0.3.0-beta.4 + die sieb
 | Nutzungsumgebung | Windows 11 mit Chrome/Edge/Firefox, Full HD 1920×1080 bei 100 % und 150 % Skalierung (≙ 1280 CSS-px), 1024 px (Laptop 125 %), Smartphone 375 px; Dark-Theme als Standard, Light-Theme |
 | Grundlage | Code der Oberfläche (`internal/web/static/index.html`, `app.js`, `app.css`) und Live-Durchgang aller Hauptaufgaben gegen den eingebauten Mock (`?mock=1`) im Browser; Screenshots: **`docs/screenshots/` existiert nicht** — die geprüften Ansichten sind unten beschrieben, die für die Anleitung nötigen Screenshots in Abschnitt 9 gelistet |
 | Ergebnis | **0 kritisch · 4 hoch · 15 mittel · 33 niedrig** — Go für das Design mit Auflagen (Abschnitt 8) |
+| Stand 0.3.0-rc1 | Alle vier hohen (B01, B13, B32, B33) und die mittleren Befunde umgesetzt (Token-Block, eigene Dialoge, sticky Tabs mit Fade, Mobil-Header, Dirty-Anzeige, Slider-Minimum, deaktivierte Transporte, Schloss-Warnung, Kontraste beider Themes 4,6–9,8:1); Screenshots in `docs/screenshots/` neu erzeugt. Offen: die niedrigen Punkte B18/B19/B21–B23/B25/B27/B28/B30/B38/B41/B42/B50/B51 |
 
 ## 1. Kopf
 
