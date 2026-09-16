@@ -219,13 +219,23 @@ type resp struct {
 
 func (e *env) do(t *testing.T, method, path, body string, hdr map[string]string) resp {
 	t.Helper()
+	r, err := e.try(method, path, body, hdr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+// try is do without the test binding: safe to call from a goroutine (a
+// t.Fatal outside the test goroutine is undefined behaviour; AUDIT hoch 2).
+func (e *env) try(method, path, body string, hdr map[string]string) (resp, error) {
 	var rd io.Reader
 	if body != "" {
 		rd = strings.NewReader(body)
 	}
 	req, err := http.NewRequest(method, e.ts.URL+path, rd)
 	if err != nil {
-		t.Fatal(err)
+		return resp{}, err
 	}
 	for k, v := range hdr {
 		if k == "Host" {
@@ -236,11 +246,23 @@ func (e *env) do(t *testing.T, method, path, body string, hdr map[string]string)
 	}
 	res, err := e.ts.Client().Do(req)
 	if err != nil {
-		t.Fatal(err)
+		return resp{}, err
 	}
 	defer res.Body.Close()
 	b, _ := io.ReadAll(res.Body)
-	return resp{code: res.StatusCode, body: string(b), hdr: res.Header}
+	return resp{code: res.StatusCode, body: string(b), hdr: res.Header}, nil
+}
+
+// waitTimeout waits for wg or gives up after d (false).
+func waitTimeout(wg *sync.WaitGroup, d time.Duration) bool {
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+		return true
+	case <-time.After(d):
+		return false
+	}
 }
 
 var csrf = map[string]string{CSRFHeader: "1"}
@@ -958,9 +980,19 @@ func TestAuthConcurrencyCap(t *testing.T) {
 	sleeping.Add(limitConcurrent)
 	codes := make(chan int, limitConcurrent)
 	for i := 0; i < limitConcurrent; i++ {
-		go func() { codes <- e.do(t, "PUT", "/api/override/cpu", `{"duty":10}`, basicAuth("admin", "wrong")).code }()
+		go func() {
+			r, err := e.try("PUT", "/api/override/cpu", `{"duty":10}`, basicAuth("admin", "wrong"))
+			if err != nil {
+				codes <- -1 // reported by the test goroutine below
+				return
+			}
+			codes <- r.code
+		}()
 	}
-	sleeping.Wait()
+	if !waitTimeout(&sleeping, 10*time.Second) {
+		close(release)
+		t.Fatal("the parked attempts never reached the limiter sleep")
+	}
 	if !e.srv.limiter.busy(remoteIPOf(e)) {
 		t.Fatal("limiter not busy with all sleepers parked")
 	}
