@@ -12,6 +12,24 @@ names; the audit that drove the *Unreleased* work is `docs/AUDIT.md` (code) and
 
 ## [Unreleased]
 
+### Planned (0.4.0) — decided 2026-09-16, not started
+
+- **API tokens** for automation and AI agents (Home Assistant, monitoring, scripts,
+  local LLM agents) instead of the admin password in scripts: named tokens with a
+  **scope** (`read` = state/history/system/sensors; `control` = overrides, presets,
+  dashboard sensors; `admin` = everything the dashboard can do), optional **expiry**
+  (e.g. 90 days; unlimited allowed, with a warning), individual **revocation**, and a
+  list with created / expires / last used / last address. Storage like the sessions
+  (`/var/lib/n5-fangov/tokens.json`, sha256 of the token, 0600), transport
+  `Authorization: Bearer <token>`, rate limit per token, `read` as the default scope.
+  Dashboard: a *Tokens* section in the account dialog; CLI `n5-fangov token create|list|revoke`.
+  Basic auth and the unix socket stay as they are.
+- **OpenAPI description** (`GET /api/openapi.json`, public) so an agent can use the API
+  without reading the README; generated from the route table, kept in sync by a test.
+- Open design question (operator, 2026-09-16): the 0.3 dashboard work fixed contrast,
+  consistency and interaction, not the look. A visual redesign (layout, typography, card
+  style) would be a separate task on top of the token block in `app.css`; no decision yet.
+
 ## [0.3.0-rc1] — 2026-09-16
 
 Pre-release hardening after the acceptance audit of `v0.3.0-beta.4` (16 September 2026).
