@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SirRenix/n5-fangov/internal/hwmon"
 	"github.com/SirRenix/n5-fangov/internal/hwmon/hwmontest"
 )
 
@@ -210,15 +211,75 @@ func TestCollect(t *testing.T) {
 	if in.Collected == 0 || in.StaticAt == 0 {
 		t.Error("timestamps missing")
 	}
-	// JSON: snake_case keys, no nulls.
+	// JSON: snake_case keys, no nulls except a disk's temp_c without a
+	// sensor (the fixture has no block hwmons; TestDiskTemperatures adds them).
 	b, _ := json.Marshal(in)
-	for _, k := range []string{`"fan_controller"`, `"size_bytes"`, `"speed_mbit"`, `"max_mhz"`, `"driver_version"`, `"installed_bytes"`, `"errors":[]`} {
+	for _, k := range []string{`"fan_controller"`, `"size_bytes"`, `"speed_mbit"`, `"max_mhz"`, `"driver_version"`, `"installed_bytes"`, `"errors":[]`, `"temp_c":null`} {
 		if !strings.Contains(string(b), k) {
 			t.Errorf("json lacks %s", k)
 		}
 	}
-	if strings.Contains(string(b), "null") {
+	if s := strings.ReplaceAll(string(b), `"temp_c":null`, ""); strings.Contains(s, "null") {
 		t.Errorf("json has null: %s", b)
+	}
+	if strings.Contains(string(b), `"sensor"`) {
+		t.Errorf("sensor id must be omitted without a temperature: %s", b)
+	}
+}
+
+// TestDiskTemperatures: every disk carries the live reading of the hwmon
+// the disk:<dev> sensor uses (SATA: device/hwmon/hwmonN, NVMe:
+// device/hwmonN), re-read on every Collect without touching the cache; a
+// disk without a hwmon stays at null.
+func TestDiskTemperatures(t *testing.T) {
+	o := testOptions(t)
+	sda := filepath.Join(o.Sysfs, "devices", "pci0000:00", "0000:00:02.1", "0000:c1:00.0", "ata1", "host0", "target0:0:0", "0:0:0:0", "block", "sda")
+	writeFile(t, filepath.Join(sda, "device", "hwmon", "hwmon6", "name"), "drivetemp\n")
+	writeFile(t, filepath.Join(sda, "device", "hwmon", "hwmon6", "temp1_input"), "38000\n")
+	nvmeTemp := filepath.Join(o.Sysfs, "block", "nvme0n1", "device", "hwmon3", "temp1_input")
+	writeFile(t, filepath.Join(o.Sysfs, "block", "nvme0n1", "device", "hwmon3", "name"), "nvme\n")
+	writeFile(t, nvmeTemp, "43850\n")
+	// a third disk without a sensor
+	writeFile(t, filepath.Join(o.Sysfs, "block", "sdb", "device", "model"), "Example SSD\n")
+	writeFile(t, filepath.Join(o.Sysfs, "block", "sdb", "size"), "1000\n")
+	c := NewCollector(o)
+	in := c.Collect()
+	if len(in.Storage.Disks) != 3 {
+		t.Fatalf("disks = %+v", in.Storage.Disks)
+	}
+	want := map[string]float64{"nvme0n1": 43.85, "sda": 38}
+	for _, d := range in.Storage.Disks {
+		w, ok := want[d.Name]
+		switch {
+		case !ok:
+			if d.TempC != nil || d.Sensor != "" {
+				t.Errorf("%s: temperature without a hwmon: %+v", d.Name, d)
+			}
+		case d.TempC == nil || *d.TempC != w || d.Sensor != "disk:"+d.Name:
+			t.Errorf("%s: temp %v sensor %q, want %v disk:%s", d.Name, d.TempC, d.Sensor, w, d.Name)
+		}
+	}
+	// live: a new reading shows on the next Collect from the cached static part
+	writeFile(t, nvmeTemp, "50000\n")
+	in2 := c.Collect()
+	if in2.StaticAt != in.StaticAt {
+		t.Fatal("static part must come from the cache")
+	}
+	if d := in2.Storage.Disks[0]; d.Name != "nvme0n1" || d.TempC == nil || *d.TempC != 50 {
+		t.Errorf("second collect: %+v", d)
+	}
+	// the first result is untouched (no aliasing into the cache)
+	if *in.Storage.Disks[0].TempC != 43.85 {
+		t.Errorf("first result changed: %v", *in.Storage.Disks[0].TempC)
+	}
+	// an implausible reading counts as no sensor
+	writeFile(t, nvmeTemp, "250000\n")
+	if d := c.Collect().Storage.Disks[0]; d.TempC != nil || d.Sensor != "" {
+		t.Errorf("implausible reading kept: %+v", d)
+	}
+	b, _ := json.Marshal(in)
+	if !strings.Contains(string(b), `"temp_c":38,"sensor":"disk:sda"`) {
+		t.Errorf("json: %s", b)
 	}
 }
 
@@ -322,8 +383,8 @@ func TestNewCollectorDefaults(t *testing.T) {
 	if transportOf("nvme1n1", "/x") != "nvme" || transportOf("sdb", "/sys/devices/pci0000:00/0000:c9:00.3/usb1/1-2/1-2:1.0/host6/target6:0:0/6:0:0:0/block/sdb") != "usb" || transportOf("sdc", "/sys/devices/x/host0/target0:0:0/0:0:0:0/block/sdc") != "scsi" {
 		t.Error("transportOf")
 	}
-	if !isVirtualBlock("zd16") || !isVirtualBlock("dm-3") || isVirtualBlock("sdz") || isVirtualBlock("nvme0n1") {
-		t.Error("isVirtualBlock")
+	if !hwmon.VirtualBlock("zd16") || !hwmon.VirtualBlock("dm-3") || hwmon.VirtualBlock("sdz") || hwmon.VirtualBlock("nvme0n1") {
+		t.Error("VirtualBlock")
 	}
 	if !errors.Is(errNoMemoryDevice, errNoMemoryDevice) {
 		t.Error("sentinel")

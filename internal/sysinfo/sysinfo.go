@@ -26,6 +26,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/SirRenix/n5-fangov/internal/hwmon"
 )
 
 // Info is the inventory as GET /api/system serves it.
@@ -148,6 +150,12 @@ type Disk struct {
 	SizeBytes  int64  `json:"size_bytes"`
 	Rotational bool   `json:"rotational"`
 	Transport  string `json:"transport"` // nvme | sata | usb | virtio | mmc | scsi
+	// TempC is the live temperature from the disk's hwmon (the file the
+	// disk:<dev> sensor reads), null without a sensor; Sensor is the
+	// matching sensor id ("disk:<dev>") when readable. Both are re-read on
+	// every Collect.
+	TempC  *float64 `json:"temp_c"`
+	Sensor string   `json:"sensor,omitempty"`
 }
 
 // Storage groups controllers and disks.
@@ -269,9 +277,10 @@ func (c *Collector) Collect() Info {
 		c.refreshed.Wait()
 	}
 	out := c.static
-	// Copies of the slices the live part edits (NICs) so the cache stays
-	// clean; never null in JSON.
+	// Copies of the slices the live part edits (NICs, disks) so the cache
+	// stays clean; never null in JSON.
 	out.NICs = append(make([]NIC, 0, len(c.static.NICs)), c.static.NICs...)
+	out.Storage.Disks = append(make([]Disk, 0, len(c.static.Storage.Disks)), c.static.Storage.Disks...)
 	out.Errors = append([]string(nil), c.static.Errors...)
 	c.mu.Unlock()
 	out.Collected = now.Unix()
@@ -370,6 +379,23 @@ func (c *Collector) collectLive(in *Info) {
 	for i := range in.NICs {
 		c.nicLive(&in.NICs[i])
 	}
+	for i := range in.Storage.Disks {
+		c.diskLive(&in.Storage.Disks[i])
+	}
+}
+
+// diskLive reads the disk temperature from the hwmon the disk:<dev> sensor
+// uses (hwmon.FS.DiskTemp), so the System tab and the sensor show the same
+// value; a disk without one (or an implausible reading) keeps TempC nil.
+func (c *Collector) diskLive(d *Disk) {
+	d.TempC, d.Sensor = nil, ""
+	fs := &hwmon.FS{Root: c.o.Sysfs}
+	v, err := fs.DiskTemp(d.Name)
+	if err != nil || v < -20000 || v > 120000 {
+		return
+	}
+	t := float64(v) / 1000
+	d.TempC, d.Sensor = &t, "disk:"+d.Name
 }
 
 // meminfo fills the live memory figures from /proc/meminfo (kB values).
@@ -696,10 +722,8 @@ func (c *Collector) controllers(pci []pciDevice) []Controller {
 	return out
 }
 
-// virtualBlock lists /sys/block prefixes that are not physical disks.
-var virtualBlock = []string{"zd", "loop", "dm-", "ram", "md", "nbd", "drbd", "rbd", "zram", "sr", "fd"}
-
-// disks: /sys/block entries that are physical devices.
+// disks: /sys/block entries that are physical devices (the virtual-device
+// rule is hwmon.VirtualBlock, shared with the disk:<dev> sensor list).
 func (c *Collector) disks(fail func(string, error)) []Disk {
 	dir := c.sys("block")
 	entries, err := os.ReadDir(dir)
@@ -710,7 +734,7 @@ func (c *Collector) disks(fail func(string, error)) []Disk {
 	var out []Disk
 	for _, e := range entries {
 		name := e.Name()
-		if isVirtualBlock(name) {
+		if hwmon.VirtualBlock(name) {
 			continue
 		}
 		p := filepath.Join(dir, name)
@@ -732,15 +756,6 @@ func (c *Collector) disks(fail func(string, error)) []Disk {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
-}
-
-func isVirtualBlock(name string) bool {
-	for _, p := range virtualBlock {
-		if strings.HasPrefix(name, p) {
-			return true
-		}
-	}
-	return false
 }
 
 // transportOf classifies a block device by its name and its resolved
