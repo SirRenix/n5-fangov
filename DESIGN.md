@@ -544,10 +544,12 @@ for the guard, the OpenAPI document and the docs. A per-token request limit of 2
 sustained, burst 40 (token bucket per `ID`, in memory) answers 429
 `{"error":"token rate limit"}` above; the limiter never blocks cookie or Basic callers.
 
-**OpenAPI** (`GET /api/openapi.json`, public, `Cache-Control: no-store`, ETag): an OpenAPI
-3.1 document rendered once at start from the route table `apiRoutes []route{Method, Path,
-Handler, Class, Scope, Summary, Body, Responses}` that `routes()` also registers from —
-the table is the only place a route is declared. `info.version` = the daemon version,
+**OpenAPI** (`GET /api/openapi.json`, public, `Cache-Control: no-store`, ETag = sha256 of
+the body, 304 on `If-None-Match`): an OpenAPI 3.1 document rendered once at start from the
+route table `(*Server).routeTable() []route{Method, Path, Handler, Class, Scope, Summary,
+Body, Response, Responses, Params}` that `routes()` also registers from — the table is the
+only place a route is declared (`Response` names the 2xx component schema, `Params` the
+query parameters). `info.version` = the daemon version,
 `servers: [{url: "/"}]`, security schemes `bearer` (http/bearer), `basic`, `cookie`
 (apiKey in cookie `n5fangov_session`); every operation carries `summary`, its parameters
 (path `{name}`, query `minutes`/`since`/`lines`/`strict`), `requestBody` with the content
@@ -641,10 +643,13 @@ password rotated outside the dashboard drops every persisted session at the next
 `AccountStore.Update(user, passwordHash)` rewrites `[web]` in place and returns the
 `AuthConfig` now in effect (atomic pointer in the server). `AlertMgr`: `Status()`,
 `Recent(n)`, `Test()`, `InstallTemplate()`, `Configure(AlertSettings{Transport, MailTo,
-WebhookURL, WebhookFormat})` — the template probe is cached 10 min. `DashboardStore`:
+WebhookURL, WebhookFormat})` (`*string` members, nil keeps the value in effect; the merged
+section is validated as a whole) — the template probe is cached 10 min. `DashboardStore`:
 `Sensors()`, `SetSensors(ids)`. `TokenStore` (`NewTokenStore(path, logf)`): `Create(name,
 scope string, expires time.Time) (secret string, t Token, err)`, `Lookup(secret, ip) (Token,
-ok)` (expired → not ok; touches LastUsed/LastIP), `Revoke(id) bool`, `List() []Token`.
+ok, expired bool)` (expired → not ok, `expired` names the reason for the log line; a hit
+touches LastUsed/LastIP), `Revoke(id) bool`, `List() []Token` (expired tokens stay listed
+until revoked).
 `Bundle`: `Export()`, `Import(b) (restartRequired, error)` with `Errors() []string` on the
 error. `LogStore`: `Lines(n)`, `Export(w)`, `Clear()`, `Path()`.
 
