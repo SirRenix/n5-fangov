@@ -1,7 +1,7 @@
 # remote-go.ps1 -- build/test a Go tree via Docker on a Linux host with Docker reachable
 # via an ssh alias (default: builder). No Go toolchain is needed on the Windows side.
 # Usage:
-#   tools\remote-go.ps1 -Path <repo-or-worktree> -Id <unique-name> [-Host <ssh-alias>] [-Cmd "go test ./..."] [-Fetch]
+#   tools\remote-go.ps1 -Path <repo-or-worktree> -Id <unique-name> [-Host <ssh-alias>] [-Image <docker-image>] [-Cmd "go test ./..."] [-Fetch]
 # Default Cmd: go mod tidy, go vet, go test, go build -> n5-fangov (linux/amd64, static).
 # -Fetch copies the built binary back to <Path>\dist\n5-fangov.
 # Run with pwsh (PowerShell 7+). Windows PowerShell 5.1 corrupts the binary tar pipe.
@@ -12,12 +12,19 @@ param(
     # read-only automatic variable in PowerShell.
     [Alias("Host")][string]$BuildHost = "builder",
     [string]$Cmd = "",
+    # Builder image. The default is cgo-free (static builds); the race
+    # detector needs cgo: -Image golang:1.25-bookworm -Cmd "go test -race -count=1 ./..."
+    [string]$Image = "golang:1.25-alpine",
     [switch]$Fetch
 )
 $ErrorActionPreference = "Stop"
 $Path = (Resolve-Path $Path).Path
 if ($Id -notmatch '^[a-zA-Z0-9_-]+$') { throw "Id must be [a-zA-Z0-9_-]" }
 if ($BuildHost -notmatch '^[a-zA-Z0-9_.@-]+$') { throw "Host must be an ssh alias or hostname" }
+if ($Image -notmatch '^[a-zA-Z0-9_./:@-]+$') { throw "Image must be a plain image reference" }
+# CGO_ENABLED=0 for the static release build; -race needs cgo.
+$cgo = "0"
+if ($Cmd -match '-race') { $cgo = "1" }
 $remote = "gobuild/$Id"
 if ($Cmd -eq "") {
     $Cmd = "go mod tidy && go vet ./... && go test ./... && CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o n5-fangov ./cmd/n5-fangov && ls -la n5-fangov"
@@ -29,7 +36,7 @@ try {
     tar -cf - --exclude .git --exclude dist . | ssh $BuildHost "tar -xf - -C ~/$remote"
 } finally { Pop-Location }
 $escaped = $Cmd.Replace("'", "'\''")
-$docker = "docker run --rm -v `$HOME/${remote}:/src -w /src -v n5fangov-gomod:/go/pkg/mod -v n5fangov-gocache:/root/.cache/go-build -e CGO_ENABLED=0 golang:1.25-alpine sh -c '${escaped}'"
+$docker = "docker run --rm -v `$HOME/${remote}:/src -w /src -v n5fangov-gomod:/go/pkg/mod -v n5fangov-gocache:/root/.cache/go-build -e CGO_ENABLED=$cgo $Image sh -c '${escaped}'"
 ssh $BuildHost $docker
 $rc = $LASTEXITCODE
 if ($Fetch -and $rc -eq 0) {

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -267,15 +268,28 @@ func TestAlertManagerConfigure(t *testing.T) {
 }
 
 // fakeService records Reload calls for the preset store and the hook.
+// fakeService records Reload calls. The mutex matters: the real controller
+// serialises Reload on its own lock, and TestConfigWritersSerialised calls
+// Apply from several goroutines (found by -race, AUDIT hoch 3).
 type fakeService struct {
 	control.Service
+	mu   sync.Mutex
 	raws [][]byte
 	err  error
 }
 
 func (f *fakeService) Reload(raw []byte) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.raws = append(f.raws, raw)
 	return f.err
+}
+
+// reloads is the number of Reload calls so far.
+func (f *fakeService) reloads() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.raws)
 }
 
 func TestHookedServiceReload(t *testing.T) {
@@ -284,7 +298,7 @@ func TestHookedServiceReload(t *testing.T) {
 	inner := &fakeService{}
 	svc := hookedService{Service: inner, alerts: m}
 	raw := []byte(v3Config + "\n[alert]\ntransport = \"off\"\n")
-	if err := svc.Reload(raw); err != nil || len(inner.raws) != 1 {
+	if err := svc.Reload(raw); err != nil || inner.reloads() != 1 {
 		t.Fatalf("reload: %v", err)
 	}
 	if m.sw.Get().Name() != "off" {
@@ -331,7 +345,7 @@ func TestPresetStoreBuiltins(t *testing.T) {
 		t.Errorf("nct67xx list: %+v", l)
 	}
 	// apply a built-in: config rewritten, daemon reloaded
-	if err := s.Apply("n5pro-balanced"); err != nil || len(svc.raws) != 1 {
+	if err := s.Apply("n5pro-balanced"); err != nil || svc.reloads() != 1 {
 		t.Fatalf("apply built-in: %v", err)
 	}
 	cfg, _, _ := config.Load(cfgPath)

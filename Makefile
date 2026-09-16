@@ -28,7 +28,7 @@ export CGO_ENABLED = 0
 export GOOS        = linux
 export GOARCH      = $(ARCH)
 
-.PHONY: build check verify-deploy deb release clean version
+.PHONY: build check test-race verify-deploy deb release clean version
 
 build:
 	mkdir -p $(DIST)
@@ -105,3 +105,9 @@ release: build
 	cd $(DIST) && sha256sum n5-fangov-$(VERSION)-linux-amd64 > n5-fangov-$(VERSION)-linux-amd64.sha256
 	gh release create $(VERSION) $(if $(findstring -,$(VERSION)),--prerelease,) --title "$(VERSION)" --notes "$(NOTES)" \
 	    $(DIST)/n5-fangov-$(VERSION)-linux-amd64 $(DIST)/n5-fangov-$(VERSION)-linux-amd64.sha256
+
+# test-race: the race detector needs cgo, so this target is for a host with a
+# full Go toolchain (CI, a Debian box); the static release build stays cgo-free.
+# Over the Docker builder: tools/remote-go.ps1 -Image golang:1.25-bookworm -Cmd "make test-race".
+test-race:
+	CGO_ENABLED=1 go test -race -count=1 ./...

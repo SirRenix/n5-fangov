@@ -279,7 +279,7 @@ func TestPresetBuiltinOtherProfile(t *testing.T) {
 			t.Errorf("profile %q: %v", prof, err)
 		}
 	}
-	if len(svc.raws) != 0 {
+	if svc.reloads() != 0 {
 		t.Fatal("a refused apply must not reload")
 	}
 	// a user file with a built-in name is shadowed (not applied) on every profile
@@ -288,7 +288,7 @@ func TestPresetBuiltinOtherProfile(t *testing.T) {
 	if err := (dirPresetStore{dir: dir, cfgPath: cfgPath, svc: svc, profile: "nct67xx"}).Apply("n5pro-quiet"); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("shadowed file on other profile: %v", err)
 	}
-	if err := (dirPresetStore{dir: dir, cfgPath: cfgPath, svc: svc, profile: "n5pro"}).Apply("n5pro-quiet"); err != nil || len(svc.raws) != 1 {
+	if err := (dirPresetStore{dir: dir, cfgPath: cfgPath, svc: svc, profile: "n5pro"}).Apply("n5pro-quiet"); err != nil || svc.reloads() != 1 {
 		t.Errorf("active profile: %v", err)
 	}
 	if cfg, _, _ := config.Load(cfgPath); cfg.Channel("hdd") == nil || cfg.Channel("hdd").Critical != 66 {
