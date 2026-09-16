@@ -12,7 +12,7 @@ community driver [`ltdstudio/minisforum-n5-it5571`](https://github.com/ltdstudio
 Generic hwmon profiles for Nuvoton NCT67xx and ITE IT87xx ship as *from documentation,
 untested* — the dashboard says so, per profile.
 
-> Status: **pre-release** (`0.3.0-beta.1`; the dashboard header shows the `beta` badge
+> Status: **pre-release** (`0.3.0-beta.2`; the dashboard header shows the `beta` badge
 > until a release tag drops the suffix — `n5-fangov version`, `GET /api/version` and
 > `/api/about` carry it as `prerelease`). Validation data, the Bash predecessor `n5-fand`
 > and the measurement scripts live in
@@ -562,7 +562,7 @@ with a note). Run it on the target box after editing the unit.
 
 | Platform | Status |
 |---|---|
-| Proxmox VE 9 / Debian 13, Minisforum N5 Pro, BIOS 1.05 | **verified** (channel mapping, stop behaviour, load tests) |
+| Proxmox VE 9.2 / Debian 13 (trixie), kernel 7.0.12-1-pve (DKMS module also built for 7.0.0-2/7.0.0-3-pve), driver `minisforum-n5-it5571` 0.2.0, Minisforum N5 Pro BIOS 1.05 | **verified** (channel mapping, stop behaviour, load tests, multi-hour runs; every release is verified on this box before it is tagged) |
 | Debian/Ubuntu with NCT67xx (`nct6775`) or IT87xx (`it87`) | from documentation, untested — please report |
 | Any Linux with hwmon, no PWM | monitoring only |
 | Unraid, TrueNAS, non-systemd | binary runs; the guard chain relies on systemd |
@@ -580,10 +580,10 @@ dashboard's About tab (public, `GET /api/about`) carries name, version with the
 pre-release tag, license, repository and author links, the Go version the binary was
 built with, and the credits: [`ltdstudio/minisforum-n5-it5571`](https://github.com/ltdstudio/minisforum-n5-it5571)
 (the kernel driver for the IT5571 EC) and [`Sl0thC0der/proxfansx`](https://github.com/Sl0thC0der/proxfansx)
-(the dashboard idea; no code shared). A UI mock for screenshots and layout work runs with
+(the dashboard idea and the generic NCT67xx/IT87xx handling the `nct67xx`/`it87xx` profiles follow; no code shared). A UI mock for screenshots and layout work runs with
 `?mock=1` (`&auth=none`, `&user=1` for the signed-in variants; login `admin`/`admin`).
 
-Versioning: `internal/version.Version` is `0.3.0-beta.1`; `make` overrides it with
+Versioning: `internal/version.Version` is `0.3.0-beta.2`; `make` overrides it with
 `git describe` (`v0.3.0-beta.1-3-gabcdef` on commits after a tag). The Debian package
 version maps `-alpha`/`-beta`/`-rc` to `~` (so `0.3.0~beta.1` sorts before `0.3.0`) and
 every other `-` to `+` (`0.3.0~beta.1+3+gabcdef` sorts after the tag it is based on).

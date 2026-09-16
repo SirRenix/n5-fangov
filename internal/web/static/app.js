@@ -159,7 +159,7 @@ const mock = (() => {
 	};
 	// alerts panel
 	const A = { transport: 'auto', mail_to: 'root', tpl: { installed: true, current: true, writable: true, path: '/etc/pve/notification-templates/default' } };
-	const KINDS = { sensor: 'sensor unreadable', stall: 'fan at 0 rpm', temp: 'critical temperature', write: 'pwm write failed', config: 'config replaced', 'config-channels': 'channel set changed', restart: 'daemon restarted', failed: 'unit failed', kernel: 'kernel/DKMS changed', tls: 'certificate unreadable', test: 'test alert' };
+	const KINDS = { sensor: 'sensor unreadable', stall: 'fan at 0 rpm', temp: 'critical temp', write: 'pwm write failed', config: 'config replaced', 'config-channels': 'channel set changed', restart: 'restarted', failed: 'unit failed', kernel: 'kernel/DKMS changed', tls: 'cert unreadable', test: 'test alert' };
 	const recent = [[720, 'stall', 'hdd: rpm=0 at duty 105, raised to 255'], [11220, 'sensor', 'drivetemp:max: no devices'], [93600, 'restart', 'n5-fangov 0.3.0-beta.1 started'], [3 * 86400, 'tls', 'certificate unreadable']]
 		.map(([ago, kind, msg]) => ({ ts: Math.floor(t0 - ago), kind, msg }));
 	const effective = () => A.transport === 'auto' || A.transport === 'pve' ? 'pve-notify' : A.transport;
@@ -177,7 +177,7 @@ const mock = (() => {
 		if (p === '/api/version') return ok({ name: 'n5-fangov', version: '0.3.0-beta.1', prerelease: 'beta.1', auth: M.auth, tls: T.mode !== 'off' });
 		if (p === '/api/about') return ok({ name: 'n5-fangov', version: '0.3.0-beta.1', prerelease: 'beta.1', license: 'GPL-2.0-only', license_url: 'https://www.gnu.org/licenses/old-licenses/gpl-2.0.html',
 			repo: GH + 'SirRenix/n5-fangov', author: 'SirRenix', author_url: GH + 'SirRenix', go: 'go1.25.1',
-			credits: [['ltdstudio/minisforum-n5-it5571', 'the kernel driver'], ['Sl0thC0der/proxfansx', 'dashboard idea']].map(([name, note]) => ({ name, url: GH + name, note })) });
+			credits: [['ltdstudio/minisforum-n5-it5571', 'the kernel driver'], ['Sl0thC0der/proxfansx', 'dashboard idea; nct67xx/it87xx profiles']].map(([name, note]) => ({ name, url: GH + name, note })) });
 		if (p === '/api/state') { const pt = point(now), stall = (now | 0) % 40 < 3;
 			const body = { ts: pt.ts, status: 'ok', profile: 'n5pro', verified: true, dry_run: false, uptime_s: 435723,
 				channels: cfg.channel.map(c => { const n = c.name, st = n === 'hdd' && stall; return { name: n, pwm: c.pwm, sensor: c.sensor, temp: pt.temp[n], duty: pt.duty[n], target: n === 'cpu' ? pt.duty.cpu + 22 : pt.duty[n], rpm: st ? 0 : pt.rpm[n],
@@ -649,7 +649,7 @@ on('#al-tpl-btn', 'click', async () => { const r = await act(() => api('/api/ale
 function renderAbout(a) {
 	$('#ab-name').textContent = a.name || 'n5-fangov'; $('#ab-version').textContent = 'v' + (a.version || version || '?').replace(/^v/, ''); preBadge($('#ab-beta'), a.prerelease);
 	const link = (id, href, text) => { const e = $(id); e.href = href || '#'; e.textContent = text || href || '—'; };
-	link('#ab-license', a.license_url, a.license); link('#ab-repo', a.repo, (a.repo || '').replace(/^https?:\/\//, '')); link('#ab-author', a.author_url, a.author);
+	link('#ab-license', a.license_url, a.license); link('#ab-repo', a.repo, (a.repo || '').replace(/^https?:\/\//, '')); link('#ab-author', a.author_url, a.author); link('#ab-rel', a.repo + '/releases', 'GitHub releases');
 	$('#ab-go').textContent = a.go || '—';
 	const ul = clear($('#ab-credits')); for (const c of a.credits || []) ul.append(h('li', null, h('a', { href: c.url, rel: 'noopener', target: '_blank' }, c.name), c.note ? ' — ' + c.note : ''));
 }

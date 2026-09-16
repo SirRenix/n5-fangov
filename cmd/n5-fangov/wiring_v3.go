@@ -534,7 +534,7 @@ func aboutInfo() web.About {
 		Go:         runtime.Version(),
 		Credits: []web.Credit{
 			{Name: "ltdstudio/minisforum-n5-it5571", URL: "https://github.com/ltdstudio/minisforum-n5-it5571", Note: "kernel driver for the IT5571 EC"},
-			{Name: "Sl0thC0der/proxfansx", URL: "https://github.com/Sl0thC0der/proxfansx", Note: "dashboard idea"},
+			{Name: "Sl0thC0der/proxfansx", URL: "https://github.com/Sl0thC0der/proxfansx", Note: "dashboard idea; the nct67xx/it87xx profiles follow its chip handling (from documentation, untested here)"},
 		},
 	}
 }

@@ -816,7 +816,7 @@ shows the description; the recommended one gets a second badge.
   user…* forms (current password required), *Sign out other sessions*, session list.
 - **Mock:** `?mock=1` starts anonymous; `&auth=none` = auth off; `&user=1` = signed in.
   The mock implements every endpoint above (login accepts admin/admin).
-- JS budget 72 KB, no framework, CSP unchanged.
+- JS budget 76 KB (raised from 72 with the releases link), no framework, CSP unchanged.
 
 ### Deploy (CMD builder)
 
