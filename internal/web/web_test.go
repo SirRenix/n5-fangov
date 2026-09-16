@@ -128,6 +128,7 @@ type fakePresets struct {
 	applied  []string
 	saved    []string
 	applyErr error
+	saveErr  error
 }
 
 func (p *fakePresets) List() ([]Preset, error) { return p.list, nil }
@@ -138,7 +139,13 @@ func (p *fakePresets) Apply(name string) error {
 	p.applied = append(p.applied, name)
 	return nil
 }
-func (p *fakePresets) Save(name string) error { p.saved = append(p.saved, name); return nil }
+func (p *fakePresets) Save(name string) error {
+	if p.saveErr != nil {
+		return p.saveErr
+	}
+	p.saved = append(p.saved, name)
+	return nil
+}
 
 const sampleTOML = "[daemon]\ninterval = \"10s\"\n\n[web]\nlisten = \"127.0.0.1:8010\"\n\n[[channel]]\nname = \"cpu\"\npwm = 1\nsensor = \"k10temp\"\ncurve = [[45,85],[80,255]]\ncritical = 88\nstop = \"auto\"\n"
 

@@ -6,6 +6,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -120,17 +121,57 @@ type alertManager struct {
 	effective string
 	cooldown  func() time.Duration
 	logger    alert.Logger
+
+	// Template probe cache (R-M2): TemplateStatus creates and unlinks a
+	// file on pmxcfs; the panel polls Status every minute. The result is
+	// kept for templateProbeEvery and dropped after InstallTemplate and
+	// Configure. now/probe are swapped in tests.
+	tmplMu    sync.Mutex
+	tmplAt    time.Time // zero = nothing cached
+	tmpl      web.TemplateStatus
+	now       func() time.Time
+	probe     func() (installed, current, writable bool, reason string)
+	testMu    sync.Mutex    // R-L9: one synchronous test delivery at a time
+	testLimit time.Duration // R-L9: bound of one test delivery
 }
+
+// templateProbeEvery is how long a template probe result is reused.
+const templateProbeEvery = 10 * time.Minute
+
+// testDeliveryLimit bounds the panel's synchronous test delivery below the
+// HTTP write timeout (30 s) (R-L9).
+const testDeliveryLimit = 20 * time.Second
 
 // newAlertManager builds the sink chain for the [alert] section of cfg.
 // alertsFile "" keeps the history in memory only.
 func newAlertManager(cfgPath, alertsFile string, a config.Alert, pin func([]byte) []byte) *alertManager {
-	m := &alertManager{cfgPath: cfgPath, pin: pin, logger: log.Default()}
+	m := &alertManager{cfgPath: cfgPath, pin: pin, logger: log.Default(), now: time.Now, probe: alert.TemplateStatus, testLimit: testDeliveryLimit}
 	sink, eff := alert.NewFor(a.Transport, a.MailTo, m.logger)
 	m.transport, m.mailTo, m.effective = a.Transport, a.MailTo, eff
 	m.sw = alert.NewSwappable(sink)
 	m.ring = alert.NewRing(m.sw, alertsFile, m.logger)
 	return m
+}
+
+// templateStatus returns the cached probe, re-probing after
+// templateProbeEvery or after invalidateTemplate (R-M2).
+func (m *alertManager) templateStatus() web.TemplateStatus {
+	m.tmplMu.Lock()
+	defer m.tmplMu.Unlock()
+	now := m.now()
+	if m.tmplAt.IsZero() || now.Sub(m.tmplAt) >= templateProbeEvery || now.Before(m.tmplAt) {
+		inst, cur, wr, reason := m.probe()
+		m.tmpl = web.TemplateStatus{Installed: inst, Current: cur, Writable: wr, Path: alert.TemplatePath, Reason: reason}
+		m.tmplAt = now
+	}
+	return m.tmpl
+}
+
+// invalidateTemplate makes the next Status probe again.
+func (m *alertManager) invalidateTemplate() {
+	m.tmplMu.Lock()
+	m.tmplAt = time.Time{}
+	m.tmplMu.Unlock()
 }
 
 // sink is what serve and the controller deliver through (records + delivers).
@@ -164,7 +205,6 @@ func (m *alertManager) Status() web.AlertStatus {
 	transport, mailTo, eff := m.transport, m.mailTo, m.effective
 	m.mu.Unlock()
 	pve, mail := alert.Available()
-	inst, cur, wr, reason := alert.TemplateStatus()
 	cool := ""
 	if m.cooldown != nil {
 		cool = m.cooldown().String()
@@ -172,7 +212,7 @@ func (m *alertManager) Status() web.AlertStatus {
 	return web.AlertStatus{
 		Transport: transport, Effective: eff, MailTo: mailTo,
 		PVEAvailable: pve, MailAvailable: mail,
-		Template: web.TemplateStatus{Installed: inst, Current: cur, Writable: wr, Path: alert.TemplatePath, Reason: reason},
+		Template: m.templateStatus(),
 		Cooldown: cool,
 		Kinds:    append([]web.AlertKind(nil), alertKinds...),
 	}
@@ -192,19 +232,32 @@ func (m *alertManager) Recent(n int) []web.AlertRecord {
 func (m *alertManager) Last() map[string]int64 { return m.ring.Last() }
 
 // Test sends a "test" alert now, without cooldown, through the ring (so
-// it shows in the history) and returns the transport that was tried.
+// it shows in the history) and returns the transport that was tried. One
+// test at a time (alert.ErrTestBusy while another runs) and bounded by
+// testLimit, so it neither outlives the HTTP write timeout nor piles up
+// perl/mail children (R-L9).
 func (m *alertManager) Test() (string, error) {
 	m.mu.Lock()
 	eff := m.effective
 	m.mu.Unlock()
+	if !m.testMu.TryLock() {
+		return eff, alert.ErrTestBusy
+	}
+	defer m.testMu.Unlock()
 	host, _ := os.Hostname()
 	msg := fmt.Sprintf("test alert from n5-fangov %s on %s at %s — delivery works if you can read this.",
 		version.Version, host, time.Now().Format("2006-01-02 15:04:05"))
-	return eff, m.ring.Send("test", msg)
+	ctx, cancel := context.WithTimeout(context.Background(), m.testLimit)
+	defer cancel()
+	return eff, m.ring.SendCtx(ctx, "test", msg)
 }
 
-// InstallTemplate writes the embedded PVE template pair.
-func (m *alertManager) InstallTemplate() (string, error) { return alert.InstallTemplate() }
+// InstallTemplate writes the embedded PVE template pair. The probe cache
+// is dropped either way: the operator asked, the panel shows fresh state.
+func (m *alertManager) InstallTemplate() (string, error) {
+	defer m.invalidateTemplate() // R-M2
+	return alert.InstallTemplate()
+}
 
 // Configure validates, writes [alert] to the config file (comments kept,
 // tls pin applied) and hot-applies it.
@@ -226,22 +279,17 @@ func (m *alertManager) Configure(transport, mailTo string) (web.AlertStatus, err
 	if !config.ValidMailTo(mailTo) {
 		return web.AlertStatus{}, fmt.Errorf("mail_to %q is not a local user or address", mailTo)
 	}
-	raw, err := readConfigRaw(m.cfgPath)
+	err := editConfig(m.cfgPath, m.pin, "alert", func(raw []byte) []byte {
+		raw = setConfigKey(raw, "alert", "transport", tomlString(transport))
+		return setConfigKey(raw, "alert", "mail_to", tomlString(mailTo))
+	}, func(cfg config.Config) bool {
+		return cfg.Alert.Transport == transport && cfg.Alert.MailTo == mailTo
+	})
 	if err != nil {
 		return web.AlertStatus{}, err
 	}
-	raw = setConfigKey(raw, "alert", "transport", tomlString(transport))
-	raw = setConfigKey(raw, "alert", "mail_to", tomlString(mailTo))
-	if _, _, err := config.Parse(raw); err != nil {
-		return web.AlertStatus{}, fmt.Errorf("config would not parse after the edit: %w", err)
-	}
-	if m.pin != nil {
-		raw = m.pin(raw)
-	}
-	if err := saveConfig(m.cfgPath, raw); err != nil {
-		return web.AlertStatus{}, fmt.Errorf("write %s: %w", m.cfgPath, err)
-	}
 	m.apply(config.Alert{Transport: transport, MailTo: mailTo})
+	m.invalidateTemplate() // R-M2
 	return m.Status(), nil
 }
 
@@ -256,6 +304,41 @@ func readConfigRaw(path string) ([]byte, error) {
 		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
 	return raw, nil
+}
+
+// editConfig is the read-modify-write behind the single-key stores: read
+// the file under configFileMu (R-L4), let edit rewrite the text with
+// SetKey, verify that the result parses and that the parsed values are
+// the ones asked for — a layout SetKey cannot edit, above all an inline
+// table `section = { … }`, is refused with a clear message instead of
+// leaving the file inconsistent (R-L11) — then pin and save. edit sees
+// the file text as read, so a store that keeps the untouched value takes
+// it from there (R-L5).
+func editConfig(path string, pin func([]byte) []byte, section string, edit func([]byte) []byte, verify func(config.Config) bool) error {
+	configFileMu.Lock()
+	defer configFileMu.Unlock()
+	raw, err := readConfigRaw(path)
+	if err != nil {
+		return err
+	}
+	_, _, beforeErr := config.Parse(raw)
+	raw = edit(raw)
+	cfg, _, err := config.Parse(raw)
+	switch {
+	case err != nil && beforeErr == nil:
+		return fmt.Errorf("config uses an inline [%s] table or a layout the in-place editor cannot handle; edit the file by hand (%v)", section, err)
+	case err != nil:
+		return fmt.Errorf("config would not parse after the edit: %w", err)
+	case !verify(cfg):
+		return fmt.Errorf("config uses an inline [%s] table or a layout the in-place editor cannot handle; edit the file by hand", section)
+	}
+	if pin != nil {
+		raw = pin(raw)
+	}
+	if err := saveConfig(path, raw); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -281,38 +364,41 @@ func (s *accountStore) Current() web.AuthConfig {
 
 // Update rewrites [web] user and/or password_hash ("" keeps the current
 // value) with config.SetKey, so comments and the other keys stay, and
-// returns the credentials now in effect. The mode is not touched: the
-// web layer refuses account changes while auth is "none".
+// returns the credentials now in effect. The kept value is the one in the
+// file at that moment, not s.cur (R-L5): a PUT /api/config or an import
+// may have changed [web] since the last Update; s.cur becomes what was
+// written. The mode is not touched: the web layer refuses account changes
+// while auth is "none".
 func (s *accountStore) Update(user, passwordHash string) (web.AuthConfig, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	next := s.cur
-	if user != "" {
-		next.User = user
+	if user == "" && passwordHash == "" {
+		return s.cur, nil
 	}
 	if passwordHash != "" {
 		if _, err := config.ParsePasswordHash(passwordHash); err != nil {
 			return s.cur, fmt.Errorf("password hash: %w", err)
 		}
-		next.PasswordHash = passwordHash
 	}
-	if next == s.cur {
-		return s.cur, nil
-	}
-	raw, err := readConfigRaw(s.cfgPath)
+	var next web.AuthConfig
+	err := editConfig(s.cfgPath, s.pin, "web", func(raw []byte) []byte {
+		next = s.cur
+		if cur, _, err := config.Parse(raw); err == nil {
+			next.User, next.PasswordHash = cur.Web.User, cur.Web.PasswordHash
+		}
+		if user != "" {
+			next.User = user
+		}
+		if passwordHash != "" {
+			next.PasswordHash = passwordHash
+		}
+		raw = setConfigKey(raw, "web", "user", tomlString(next.User))
+		return setConfigKey(raw, "web", "password_hash", tomlString(next.PasswordHash))
+	}, func(cfg config.Config) bool {
+		return cfg.Web.User == next.User && cfg.Web.PasswordHash == next.PasswordHash
+	})
 	if err != nil {
 		return s.cur, err
-	}
-	raw = setConfigKey(raw, "web", "user", tomlString(next.User))
-	raw = setConfigKey(raw, "web", "password_hash", tomlString(next.PasswordHash))
-	if _, _, err := config.Parse(raw); err != nil {
-		return s.cur, fmt.Errorf("config would not parse after the edit: %w", err)
-	}
-	if s.pin != nil {
-		raw = s.pin(raw)
-	}
-	if err := saveConfig(s.cfgPath, raw); err != nil {
-		return s.cur, fmt.Errorf("write %s: %w", s.cfgPath, err)
 	}
 	s.cur = next
 	return s.cur, nil
@@ -374,25 +460,31 @@ func (s *dashboardStore) SetSensors(ids []string) ([]string, error) {
 			warns = append(warns, fmt.Sprintf("%s: %v (kept; charted once the device appears)", id, err))
 		}
 	}
-	raw, err := readConfigRaw(s.cfgPath)
+	err := editConfig(s.cfgPath, s.pin, "dashboard", func(raw []byte) []byte {
+		return setConfigKey(raw, "dashboard", "sensors", tomlStringArray(clean))
+	}, func(cfg config.Config) bool {
+		return sameStrings(cfg.Dashboard.Sensors, clean)
+	})
 	if err != nil {
 		return nil, err
-	}
-	raw = setConfigKey(raw, "dashboard", "sensors", tomlStringArray(clean))
-	if _, _, err := config.Parse(raw); err != nil {
-		return nil, fmt.Errorf("config would not parse after the edit: %w", err)
-	}
-	if s.pin != nil {
-		raw = s.pin(raw)
-	}
-	if err := saveConfig(s.cfgPath, raw); err != nil {
-		return nil, fmt.Errorf("write %s: %w", s.cfgPath, err)
 	}
 	s.ctrl.SetWatched(clean)
 	if warns == nil {
 		warns = []string{}
 	}
 	return warns, nil
+}
+
+func sameStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // tomlStringArray renders ids as a TOML array of basic strings.
@@ -468,10 +560,11 @@ func builtinPresetsFor(profileName string) []builtinPresetInfo {
 
 func isBuiltinPreset(name string) bool { return config.IsBuiltinPreset(name) }
 
-// builtinPresetRaw returns the embedded preset text for any profile.
-func builtinPresetRaw(name string) ([]byte, bool) {
+// builtinPresetRaw returns the embedded preset text and the profile it is
+// meant for, for any profile.
+func builtinPresetRaw(name string) (raw []byte, profile string, ok bool) {
 	p, ok := config.BuiltinPresetByName(name)
-	return p.Raw, ok
+	return p.Raw, p.Profile, ok
 }
 
 func errPresetBuiltin() error { return web.ErrPresetBuiltin }

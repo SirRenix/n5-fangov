@@ -124,11 +124,17 @@ func writeAtomic(path string, data []byte, perm os.FileMode) error {
 // [section], leaving everything else (comments, order, other tables)
 // untouched. An existing assignment of key inside that section is replaced
 // in place (a trailing comment on that line is dropped); otherwise the line
-// is appended at the end of the section, before its trailing blank lines. A
-// missing section is appended at the end of the file. value must already
-// be a TOML literal (`"text"`, `5`, `["a"]`). Only used for the few
-// single-key edits of the CLI (passwd); everything else goes through
-// Marshal.
+// is appended at the end of the section, before its trailing blank lines.
+// Without a [section] header the dotted layout is handled (R-L11): a
+// top-level `section.key = …` line is replaced in place, and when other
+// `section.*` lines exist there the new one is inserted after the last of
+// them (a [section] header appended after dotted keys would redefine the
+// table and break the parse). Only then is a missing section appended at
+// the end of the file. An inline table (`section = { … }`) is not edited;
+// callers verify the result with Parse. value must already be a TOML
+// literal (`"text"`, `5`, `["a"]`). Only used for the few single-key edits
+// (passwd, the account/alert/dashboard stores); everything else goes
+// through Marshal.
 func SetKey(raw []byte, section, key, value string) []byte {
 	text := string(raw)
 	lines := strings.Split(strings.TrimSuffix(text, "\n"), "\n")
@@ -137,10 +143,14 @@ func SetKey(raw []byte, section, key, value string) []byte {
 	}
 	header := "[" + section + "]"
 	start, end := -1, len(lines) // section body is lines[start+1:end]
+	first := len(lines)          // first table header: the top-level region ends there
 	for i, ln := range lines {
 		t := strings.TrimSpace(ln)
 		if !strings.HasPrefix(t, "[") {
 			continue
+		}
+		if first == len(lines) {
+			first = i
 		}
 		if start >= 0 {
 			end = i
@@ -150,34 +160,63 @@ func SetKey(raw []byte, section, key, value string) []byte {
 			start = i
 		}
 	}
+	join := func(ls []string) []byte { return []byte(strings.Join(ls, "\n") + "\n") }
+	insertAt := func(i int, line string) []byte {
+		out := make([]string, 0, len(lines)+1)
+		out = append(out, lines[:i]...)
+		out = append(out, line)
+		out = append(out, lines[i:]...)
+		return join(out)
+	}
 	newLine := key + " = " + value
 	if start < 0 {
+		dotted := section + "." + key
+		last := -1
+		for i := 0; i < first; i++ {
+			k := assignedKey(lines[i])
+			if k == dotted {
+				lines[i] = dotted + " = " + value
+				return join(lines)
+			}
+			if strings.HasPrefix(k, section+".") {
+				last = i
+			}
+		}
+		if last >= 0 {
+			return insertAt(last+1, dotted+" = "+value)
+		}
 		out := lines
 		if len(out) > 0 && strings.TrimSpace(out[len(out)-1]) != "" {
 			out = append(out, "")
 		}
 		out = append(out, header, newLine)
-		return []byte(strings.Join(out, "\n") + "\n")
+		return join(out)
 	}
 	for i := start + 1; i < end; i++ {
-		t := strings.TrimSpace(lines[i])
-		if strings.HasPrefix(t, key) {
-			rest := strings.TrimSpace(t[len(key):])
-			if strings.HasPrefix(rest, "=") {
-				lines[i] = newLine
-				return []byte(strings.Join(lines, "\n") + "\n")
-			}
+		if assignedKey(lines[i]) == key {
+			lines[i] = newLine
+			return join(lines)
 		}
 	}
 	ins := end
 	for ins > start+1 && strings.TrimSpace(lines[ins-1]) == "" {
 		ins--
 	}
-	out := make([]string, 0, len(lines)+1)
-	out = append(out, lines[:ins]...)
-	out = append(out, newLine)
-	out = append(out, lines[ins:]...)
-	return []byte(strings.Join(out, "\n") + "\n")
+	return insertAt(ins, newLine)
+}
+
+// assignedKey returns the bare key of a `key = value` line ("" for
+// comments, blank lines and anything without "=").
+func assignedKey(line string) string {
+	t := strings.TrimSpace(line)
+	if t == "" || strings.HasPrefix(t, "#") {
+		return ""
+	}
+	k, _, ok := strings.Cut(t, "=")
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(k)
 }
 
 // ValidPresetName reports whether name is usable as a preset file stem

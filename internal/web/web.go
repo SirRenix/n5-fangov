@@ -259,7 +259,9 @@ func New(deps Deps) *Server {
 	}
 	auth := deps.Auth
 	s.auth.Store(&auth)
-	s.sessions = NewSessionStore(deps.SessionFile, s.logf)
+	// R-M1: the mirror file is only loaded when it was written under the
+	// credentials in effect now; a rotation outside the daemon drops it.
+	s.sessions = NewSessionStoreEpoch(deps.SessionFile, CredentialEpoch(auth.User, auth.PasswordHash), s.logf)
 	s.tlsNoise = newHandshakeFilter(s.logf, time.Now)
 	s.logs = logStoreOf(deps.Log)
 	if s.logs == nil && deps.Log != nil {
@@ -276,8 +278,12 @@ func New(deps Deps) *Server {
 		}
 	}
 	s.routes()
-	s.socket = withCaller(s.mux, Caller{Authenticated: true, Via: "socket"})
-	s.tcp = s.guard(s.mux)
+	// R-L7: net/http 1.17–1.24 logged one ErrorLog line per request whose
+	// query carried a ';' unless the handler opted in — an unauthenticated
+	// log-flood vector. Go 1.25 dropped that line; the wrapper stays so the
+	// behaviour is explicit whatever toolchain builds this (';' → '&').
+	s.socket = http.AllowQuerySemicolons(withCaller(s.mux, Caller{Authenticated: true, Via: "socket"}))
+	s.tcp = http.AllowQuerySemicolons(s.guard(s.mux))
 	return s
 }
 
@@ -1070,11 +1076,16 @@ func (s *Server) applyPreset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.deps.Presets.Apply(name); err != nil {
-		if errors.Is(err, control.ErrRestartRequired) {
+		switch {
+		case errors.Is(err, control.ErrRestartRequired):
 			writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "restart_required": true, "message": err.Error()})
-			return
+		case errors.Is(err, fs.ErrNotExist):
+			// R-L8: no such preset for this profile (a built-in of another
+			// profile counts as missing).
+			writeError(w, http.StatusNotFound, "unknown preset "+name)
+		default:
+			writeError(w, http.StatusBadRequest, "apply preset: "+err.Error())
 		}
-		writeError(w, http.StatusBadRequest, "apply preset: "+err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "applied": name})
@@ -1091,6 +1102,11 @@ func (s *Server) savePreset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.deps.Presets.Save(name); err != nil {
+		if errors.Is(err, ErrPresetBuiltin) {
+			// R-U8: the contract says 409 for a built-in name, like delete.
+			writeError(w, http.StatusConflict, "save preset: "+err.Error())
+			return
+		}
 		writeError(w, http.StatusBadRequest, "save preset: "+err.Error())
 		return
 	}

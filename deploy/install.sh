@@ -65,10 +65,15 @@ if [[ -d /etc/pve ]]; then
     # `n5-fangov alerts template` write them too; this copy only spares the
     # first click on a fresh box and creates the directory, which the daemon
     # cannot from inside its sandbox.
-    mkdir -p /etc/pve/notification-templates/default
-    cp "$DEPLOY/pve-notification/n5-fangov-subject.txt.hbs"     /etc/pve/notification-templates/default/
-    cp "$DEPLOY/pve-notification/n5-fangov-body.txt.hbs"        /etc/pve/notification-templates/default/
-    echo "  PVE notification template installed (alerts -> Proxmox notifications, template 'n5-fangov')"
+    # pmxcfs is read-only without quorum: under `set -e` a failing cp would
+    # abort before daemon-reload/enable, so the template is best effort (R-L6).
+    if mkdir -p /etc/pve/notification-templates/default 2>/dev/null \
+       && cp "$DEPLOY/pve-notification/n5-fangov-subject.txt.hbs" /etc/pve/notification-templates/default/ 2>/dev/null \
+       && cp "$DEPLOY/pve-notification/n5-fangov-body.txt.hbs"    /etc/pve/notification-templates/default/ 2>/dev/null; then
+        echo "  PVE notification template installed (alerts -> Proxmox notifications, template 'n5-fangov')"
+    else
+        echo "  warning: /etc/pve not writable (no quorum?), template skipped; later: n5-fangov alerts template"
+    fi
 fi
 # Built-in presets (n5pro-quiet/-balanced/-cool) are embedded in the binary;
 # /etc/n5-fangov/presets holds the operator's own ones only.

@@ -84,7 +84,7 @@ func TestMailSink(t *testing.T) {
 		t.Fatal(err)
 	}
 	txt := string(got)
-	for _, want := range []string{"ARGS: -s [deb] n5-fangov: temp root", "n5-fangov on deb reports:", "cpu=90C", "Time: "} {
+	for _, want := range []string{"ARGS: -s [deb] n5-fangov: temp -- root", "n5-fangov on deb reports:", "cpu=90C", "Time: "} {
 		if !strings.Contains(txt, want) {
 			t.Errorf("missing %q in:\n%s", want, txt)
 		}

@@ -136,7 +136,9 @@ const DefaultMailTo = "root"
 // mailToRe: a local user name or an address; no spaces, quotes or shell
 // metacharacters (the value becomes an argv element of mail(1), never a
 // shell string, but a recipient with spaces is a typo, not an address).
-var mailToRe = regexp.MustCompile(`^[A-Za-z0-9._%+-]+(@[A-Za-z0-9.-]+)?$`)
+// The first character is never "-" (R-M3): a value like "-Sopt" would be
+// parsed by mail(1) as an option (the sink also passes "--" before it).
+var mailToRe = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._%+-]*(@[A-Za-z0-9.-]+)?$`)
 
 // ValidMailTo reports whether s is acceptable as alert.mail_to.
 func ValidMailTo(s string) bool { return len(s) <= 254 && mailToRe.MatchString(s) }
@@ -266,6 +268,26 @@ func CloneChannels(in []Channel) []Channel {
 	return out
 }
 
+// table decodes the top-level section name as a table; false (with a
+// warning) when the key is absent or not a table. toml's map decoding
+// silently yields an empty map for non-table values, so the TOML type is
+// checked explicitly: "Hash" for a [name] header or an inline table, ""
+// for a table that exists only implicitly through dotted keys
+// (`web.user = …`) — that layout is valid TOML and was ignored before
+// (R-L11).
+func (p *parser) table(top map[string]toml.Primitive, name string) (map[string]toml.Primitive, bool) {
+	prim, ok := top[name]
+	if !ok {
+		return nil, false
+	}
+	var sec map[string]toml.Primitive
+	if t := p.md.Type(name); (t != "Hash" && t != "") || p.md.PrimitiveDecode(prim, &sec) != nil {
+		p.warn(name, "not a table, defaults used")
+		return nil, false
+	}
+	return sec, true
+}
+
 // Parse decodes raw TOML. Invalid values are replaced by their defaults and
 // reported as warnings; a channel whose identity (name, pwm, sensor) is
 // unusable is dropped with a warning. Only a TOML syntax/structure error
@@ -287,47 +309,20 @@ func Parse(raw []byte) (Config, []Warning, error) {
 		}
 	}
 
-	// toml's map decoding silently yields an empty map for non-table values,
-	// so the TOML type is checked explicitly.
-	if prim, ok := top["daemon"]; ok {
-		var sec map[string]toml.Primitive
-		if md.Type("daemon") != "Hash" || md.PrimitiveDecode(prim, &sec) != nil {
-			p.warn("daemon", "not a table, defaults used")
-		} else {
-			p.daemon(sec, &cfg.Daemon)
-		}
+	if sec, ok := p.table(top, "daemon"); ok {
+		p.daemon(sec, &cfg.Daemon)
 	}
-	if prim, ok := top["web"]; ok {
-		var sec map[string]toml.Primitive
-		if md.Type("web") != "Hash" || md.PrimitiveDecode(prim, &sec) != nil {
-			p.warn("web", "not a table, defaults used")
-		} else {
-			p.web(sec, &cfg.Web)
-		}
+	if sec, ok := p.table(top, "web"); ok {
+		p.web(sec, &cfg.Web)
 	}
-	if prim, ok := top["log"]; ok {
-		var sec map[string]toml.Primitive
-		if md.Type("log") != "Hash" || md.PrimitiveDecode(prim, &sec) != nil {
-			p.warn("log", "not a table, defaults used")
-		} else {
-			p.log(sec, &cfg.Log)
-		}
+	if sec, ok := p.table(top, "log"); ok {
+		p.log(sec, &cfg.Log)
 	}
-	if prim, ok := top["alert"]; ok {
-		var sec map[string]toml.Primitive
-		if md.Type("alert") != "Hash" || md.PrimitiveDecode(prim, &sec) != nil {
-			p.warn("alert", "not a table, defaults used")
-		} else {
-			p.alert(sec, &cfg.Alert)
-		}
+	if sec, ok := p.table(top, "alert"); ok {
+		p.alert(sec, &cfg.Alert)
 	}
-	if prim, ok := top["dashboard"]; ok {
-		var sec map[string]toml.Primitive
-		if md.Type("dashboard") != "Hash" || md.PrimitiveDecode(prim, &sec) != nil {
-			p.warn("dashboard", "not a table, defaults used")
-		} else {
-			p.dashboard(sec, &cfg.Dashboard)
-		}
+	if sec, ok := p.table(top, "dashboard"); ok {
+		p.dashboard(sec, &cfg.Dashboard)
 	}
 	if prim, ok := top["channel"]; ok {
 		var secs []map[string]toml.Primitive

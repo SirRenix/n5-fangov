@@ -1,6 +1,7 @@
 package alert
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -66,16 +67,15 @@ func (r *Ring) Alert(kind, msg string) {
 
 // Send records the alert and delivers it, returning the wrapped sink's
 // delivery error (nil for a plain Sink).
-func (r *Ring) Send(kind, msg string) error {
+func (r *Ring) Send(kind, msg string) error { return r.SendCtx(context.Background(), kind, msg) }
+
+// SendCtx is Send bounded by ctx where the wrapped sink supports it (R-L9).
+func (r *Ring) SendCtx(ctx context.Context, kind, msg string) error {
 	r.record(kind, msg)
 	if r.inner == nil {
 		return errors.New("no alert sink configured")
 	}
-	if s, ok := r.inner.(Sender); ok {
-		return s.Send(kind, msg)
-	}
-	r.inner.Alert(kind, msg)
-	return nil
+	return sendCtx(ctx, r.inner, kind, msg)
 }
 
 // Recent returns the newest n records, newest first (n <= 0: all).
