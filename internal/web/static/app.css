@@ -305,6 +305,12 @@ input[type=checkbox]{accent-color:var(--info)}
 .al .inline label{flex-wrap:nowrap}
 .al .inline input{width:12em}
 
+/* system tab */
+.sy{display:grid;gap:10px;margin-bottom:var(--gap);align-content:start}
+.sy .tbl-wrap{border:1px solid var(--line);border-radius:6px}
+#p-system .bar .hint{flex:1;min-width:240px}
+#sys dd{overflow-wrap:anywhere}
+
 /* about */
 .about{max-width:760px;display:grid;gap:12px}
 .about p{margin:0}

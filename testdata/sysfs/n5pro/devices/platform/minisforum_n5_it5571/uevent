@@ -1,0 +1,2 @@
+DRIVER=minisforum_n5_it5571
+MODALIAS=platform:minisforum_n5_it5571

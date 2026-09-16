@@ -453,6 +453,18 @@ func (s *Server) getAbout(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, a)
 }
 
+// ---- system -----------------------------------------------------------------
+
+// getSystem serves the hardware inventory (protected like every other
+// /api/ path: it names the operator's hardware). Deps.System nil → 501.
+func (s *Server) getSystem(w http.ResponseWriter, r *http.Request) {
+	if s.deps.System == nil {
+		writeError(w, http.StatusNotImplemented, "no system inventory")
+		return
+	}
+	writeJSON(w, http.StatusOK, s.deps.System())
+}
+
 // ---- presets ----------------------------------------------------------------
 
 // deletePreset removes a user preset: ErrPresetBuiltin → 409, missing →

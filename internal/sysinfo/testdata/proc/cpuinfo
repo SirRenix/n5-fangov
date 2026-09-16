@@ -1,0 +1,39 @@
+processor	: 0
+vendor_id	: ExampleCPU
+model name	: Example Ryzen-class 2-core APU
+physical id	: 0
+siblings	: 4
+core id	: 0
+cpu cores	: 2
+cpu MHz		: 2994.812
+flags		: fpu sse2 avx2
+
+processor	: 1
+vendor_id	: ExampleCPU
+model name	: Example Ryzen-class 2-core APU
+physical id	: 0
+siblings	: 4
+core id	: 1
+cpu cores	: 2
+cpu MHz		: 2994.812
+flags		: fpu sse2 avx2
+
+processor	: 2
+vendor_id	: ExampleCPU
+model name	: Example Ryzen-class 2-core APU
+physical id	: 0
+siblings	: 4
+core id	: 0
+cpu cores	: 2
+cpu MHz		: 2994.812
+flags		: fpu sse2 avx2
+
+processor	: 3
+vendor_id	: ExampleCPU
+model name	: Example Ryzen-class 2-core APU
+physical id	: 0
+siblings	: 4
+core id	: 1
+cpu cores	: 2
+cpu MHz		: 2994.812
+flags		: fpu sse2 avx2

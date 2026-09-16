@@ -46,7 +46,7 @@ func register(name string, c command) { commands[name] = c }
 // order lists every public subcommand in usage order.
 var order = []string{
 	"setup", "serve", "status", "set", "auto", "curve", "log",
-	"check", "detect", "test", "failsafe",
+	"check", "detect", "system", "test", "failsafe",
 	"passwd", "cert", "alerts", "export", "import", "version",
 }
 
@@ -61,6 +61,7 @@ var helpText = map[string]string{
 	"log":      "[-n N] [--export FILE] [--clear]  log file (journal when no file is configured)",
 	"check":    "[--quiet] [--after-update]  self-check; --after-update: DKMS module for every kernel (apt hook)",
 	"detect":   "                       list profiles with detection result (read-only)",
+	"system":   "[--json]               hardware inventory: machine, CPU, memory modules, GPU/NPU, NICs, disks (live via the daemon)",
 	"test":     "<ch> [--force]         channel verification run (writes duty, daemon must be stopped)",
 	"failsafe": "                       put all configured channels into their safe state",
 	"passwd":   "[--user U] [--password-file F | --password -]  set the web user/password (auth = basic), restart to apply; the dashboard (signed in) changes both live",

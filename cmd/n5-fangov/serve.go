@@ -206,6 +206,7 @@ func cmdServe(args []string) int {
 		Account:     accounts,
 		Alerts:      alertMgr,
 		Dashboard:   dashboard,
+		System:      newSystemCollector(hw, dev),
 	})
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)

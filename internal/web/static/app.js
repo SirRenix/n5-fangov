@@ -167,6 +167,22 @@ const mock = (() => {
 	const iso = ago => new Date((t0 - ago) * 1000).toISOString();
 	const sessions = () => [{ id: 'a1b2c3d4', created: iso(5400), expires: iso(5400 - (M.remember ? 30 : .5) * 86400), last_seen: iso(30), remember: M.remember, ip: '192.0.2.30', current: true },
 		{ id: '9f8e7d6c', created: iso(6 * 86400), expires: iso(-24 * 86400), last_seen: iso(4 * 3600), remember: true, ip: '192.0.2.31', current: false }];
+	// system inventory (generic names, documentation MACs)
+	const G = 1 << 30, sysMock = now => ({ host: { hostname: 'n5host', os: 'Debian GNU/Linux 13 (trixie)', kernel: '7.0.12-1-pve', uptime_s: 435723, load1: +(.6 + .3 * Math.sin(now / 300)).toFixed(2), load5: .7, load15: .66 },
+		machine: { vendor: 'Example Vendor', product: 'N5-class mini server', board: 'EXB-01', board_vendor: 'Example Boards Ltd', bios_version: '1.05', bios_date: '03/31/2026' },
+		cpu: { model: 'Example Ryzen-class 12-core APU w/ Radeon-class iGPU', sockets: 1, cores: 12, threads: 24, max_mhz: 5157 },
+		memory: { total_bytes: 62.4 * G, available_bytes: (34 + 4 * Math.sin(now / 400)) * G, swap_total_bytes: 8 * G, swap_free_bytes: 8 * G, installed_bytes: 96 * G, smbios: '3.7',
+			modules: ['P0 CHANNEL A', 'P0 CHANNEL B'].map(bank => ({ slot: 'DIMM 0', bank, size_bytes: 48 * G, type: 'DDR5', form_factor: 'SODIMM', speed_mts: 5600, manufacturer: 'Example Memory', part: 'EX-DDR5-48G-5600', ecc: true })) },
+		gpus: [{ name: 'Example iGPU [Radeon-class 890M]', vendor: 'EXS/GFX', pci: '0000:c7:00.0', driver: 'amdgpu' }],
+		npus: [{ name: 'Example Neural Processing Unit', pci: '0000:c8:00.1', driver: 'amdxdna', driver_version: '2.23.0_20260412,0000000000000000000000000000000000000000', accel: 'accel0' }],
+		nics: [{ name: 'nic0', pci: '0000:c5:00.0', model: 'EX8126 5GbE Controller', driver: 'r8169', speed_mbit: -1, state: 'down', duplex: '', mac: '02:00:00:00:00:01', mtu: 1500 },
+			{ name: 'nic1', pci: '0000:c4:00.0', model: 'EXN113 NBase-T/IEEE 802.3an Ethernet Controller [10G]', driver: 'atlantic', speed_mbit: 2500, state: 'up', duplex: 'full', mac: '02:00:00:00:00:02', mtu: 1500 }],
+		storage: { controllers: [{ kind: 'sata', name: 'EXB58x AHCI SATA controller', pci: '0000:c1:00.0', driver: 'ahci' }, { kind: 'nvme', name: 'Example NVMe SSD Controller', pci: '0000:c2:00.0', driver: 'nvme' }, { kind: 'nvme', name: 'Example NVMe SSD Controller', pci: '0000:c3:00.0', driver: 'nvme' }],
+			disks: [['nvme0n1', 'Example NVMe 1000GB', 1000204886016, 0, 'nvme'], ['nvme1n1', 'Example NVMe 1000GB', 1000204886016, 0, 'nvme'], ['nvme2n1', 'Example NVMe 2000GB', 2000398934016, 0, 'nvme'],
+				['sda', 'EX HDD 20TB', 20000588955648, 1, 'sata'], ['sdb', 'EX HDD 20TB', 20000588955648, 1, 'sata'], ['sdc', 'EX HDD 8TB', 8001563222016, 1, 'sata'], ['sdd', 'EX SATA SSD 1TB', 1000204886016, 0, 'sata']]
+				.map(([name, model, size_bytes, rot, transport]) => ({ name, model, size_bytes, rotational: !!rot, transport })) },
+		fan_controller: { profile: 'n5pro', hwmon: '/sys/class/hwmon/hwmon14', module: 'minisforum_n5_it5571', module_version: '0.2.0' },
+		collected: Math.floor(now), static_at: Math.floor(t0), errors: Q.get('syserr') ? ['lspci: exec: "lspci": executable file not found in $PATH (device names from ids only)'] : [] });
 	const GH = 'https://github.com/', PUB = /^\/api\/(version|about|session|login|logout|state|history)$/;
 	return (path, opt) => {
 		const m = opt.method || 'GET', u = new URL(path, location.origin), p = u.pathname, now = Date.now() / 1000;
@@ -226,6 +242,7 @@ const mock = (() => {
 			if (p.endsWith('/password')) return ok({ ok: true });
 			if (p.endsWith('/user')) { if (!/^[A-Za-z0-9_.-]{1,32}$/.test(j.user || '')) return fail('user: invalid', 400); M.user = j.user; return ok({ ok: true, user: M.user }); } }
 		if (p.startsWith('/api/tls')) return mockTLS(p, opt);
+		if (p === '/api/system') return ok(sysMock(now));
 		return fail('mock: not found ' + p, 404);
 	};
 })();
@@ -355,9 +372,9 @@ async function applyAuth() {
 	for (const [id, show] of [['#h-settings', on], ['#h-sec', on], ['#h-signin', !on && basic], ['#h-signout', on && basic], ['#h-user', on && basic], ['#s-account', on && basic], ['#ov-more', on]]) $(id).hidden = !show;
 	$('#h-user').textContent = sess.user || '';
 	if ($('#tab-' + curTab).hidden) selectTab('overview');
-	if (!on) { cert = null; cfg = null; edState = null; alerts = null; dash = []; profiles = []; SN.key = null; for (const id of ['#editors', '#presets', '#log']) clear($(id)); secState(); renderCharts(); return; }
+	if (!on) { cert = null; cfg = null; edState = null; alerts = null; sysinfo = null; dash = []; profiles = []; SN.key = null; for (const id of ['#editors', '#presets', '#log']) clear($(id)); secState(); renderCharts(); return; }
 	hist = []; lastTs = 0; // history is re-read with the extra series
-	await loadConfig(); loadCert(); loadDash(); loadAlerts(); resetHistory();
+	await loadConfig(); loadCert(); loadDash(); loadAlerts(); loadSystem(); resetHistory();
 	api('/api/profiles').then(r => { profiles = r.body || []; renderHeader(); renderSystem(); renderProfiles(); }).catch(() => {});
 	if (curTab === 'curves') loadEditor(); poll();
 }
@@ -402,12 +419,57 @@ function renderCards() {
 		k.rpm.textContent = c.rpm < 0 ? 'no tach' : c.rpm.toLocaleString('en') + ' rpm';
 	});
 }
+// system inventory: Overview card (at a glance) + System tab (full tables)
+let sysinfo = null;
+const GiB = 1 << 30, fmtB = b => !(b > 0) ? '0 B' : b >= 1024 * GiB ? (b / 1024 / GiB).toFixed(1) + ' TiB' : b >= GiB ? (b / GiB).toFixed(1) + ' GiB' : Math.round(b / (1 << 20)) + ' MiB';
+const fmtMb = m => m >= 1000 ? +(m / 1000).toFixed(1) + ' Gbit/s' : m + ' Mbit/s';
+const na = v => v === undefined || v === null || v === '' ? '—' : v;
+const dimm = m => `${fmtB(m.size_bytes)} ${m.type}${m.speed_mts ? '-' + m.speed_mts : ''}${m.ecc ? ' ECC' : ''}`;
+const diskSum = ds => { const t = ds.reduce((a, x) => a + x.size_bytes, 0), hdd = ds.filter(x => x.rotational).length; return `${ds.length} disk${ds.length === 1 ? '' : 's'} · ${fmtB(t)}` + (ds.length ? ` (${ds.length - hdd} SSD, ${hdd} HDD)` : ''); };
+const syNotice = notice('#sy-notice');
 function renderSystem() {
 	if (!snap || !signedIn()) return;
-	const pr = profiles.find(p => p.name === snap.profile) || {}, d = cfg && cfg.daemon || {}, lg = cfg && cfg.log || {};
-	kv($('#sys'), [['profile', `${snap.profile || '?'}${pr.title ? ' — ' + pr.title : ''}`], ['hwmon', snap.hwmon_path || '—'], ['verified', snap.verified ? 'yes, on hardware' : 'no (documentation)'],
-		['notes', pr.notes || '—'], ['interval', d.interval || '—'], ['version', version ? 'v' + version.replace(/^v/, '') : '—'], ['log file', lg.file || 'journal only']]);
+	const s = sysinfo, pr = profiles.find(p => p.name === snap.profile) || {}, d = cfg && cfg.daemon || {}, lg = cfg && cfg.log || {}, rows = [];
+	if (s) { const m = s.machine, c = s.cpu, me = s.memory, fc = s.fan_controller, used = me.total_bytes - me.available_bytes;
+		rows.push(['machine', `${na((m.vendor + ' ' + m.product).trim())} · ${na(m.board)} · BIOS ${na(m.bios_version)} (${na(m.bios_date)})`],
+			['cpu', `${na(c.model)} · ${c.cores}c/${c.threads}t` + (c.max_mhz ? ` · ${(c.max_mhz / 1000).toFixed(1)} GHz` : '')],
+			['memory', `${fmtB(used)} used of ${fmtB(me.total_bytes)}` + (me.installed_bytes ? ` · ${fmtB(me.installed_bytes)} installed (${me.modules.length} × ${dimm(me.modules[0])})` : '')],
+			['gpu', s.gpus.map(g => `${g.name} · ${na(g.driver)}`).join(', ') || 'none'],
+			['npu', s.npus.map(n => `${n.name} · ${na(n.driver)} ${(n.driver_version || '').split(',')[0]}`).join(', ') || 'none'],
+			['network', s.nics.map(n => `${n.name} ${n.state}${n.speed_mbit > 0 ? ' ' + fmtMb(n.speed_mbit) : ''}`).join(' · ') || 'no physical NIC'],
+			['storage', diskSum(s.storage.disks)], ['os', `${na(s.host.os)} · ${na(s.host.kernel)}`],
+			['fan control', `${snap.profile || '?'}${pr.title ? ' — ' + pr.title : ''} · ${na(snap.hwmon_path || fc.hwmon)}` + (fc.module ? ` · ${fc.module} ${fc.module_version}` : '')]);
+	} else rows.push(['profile', `${snap.profile || '?'}${pr.title ? ' — ' + pr.title : ''}`], ['hwmon', na(snap.hwmon_path)], ['inventory', 'not available — see the System tab']);
+	rows.push(['daemon', `${version ? 'v' + version.replace(/^v/, '') : '—'} · interval ${na(d.interval)} · ${lg.file || 'journal only'}`]);
+	if (s && s.errors.length) rows.push(['notes', s.errors.join('; ')]);
+	kv($('#sys'), rows);
 }
+const trow = (tb, ...cells) => tb.append(h('tr', null, ...cells.map(c => h('td', c && c.mono ? { class: 'mono' } : null, c && c.mono ? c.mono : na(c))))), mono = v => v ? { mono: v } : null;
+function renderSystemTab() {
+	const s = sysinfo; if (!s) return;
+	const hst = s.host, m = s.machine, c = s.cpu, me = s.memory, fc = s.fan_controller, used = me.total_bytes - me.available_bytes;
+	$('#sy-when').textContent = `live ${hm(s.collected)} · static ${rel(s.static_at)}`;
+	syNotice(s.errors.length ? 'Some sources could not be read:\n' + s.errors.join('\n') : '', 'warn');
+	kv($('#sy-host'), [['hostname', na(hst.hostname)], ['OS', na(hst.os)], ['kernel', na(hst.kernel)], ['uptime', fmtUp(hst.uptime_s)], ['load', `${hst.load1.toFixed(2)} · ${hst.load5.toFixed(2)} · ${hst.load15.toFixed(2)}`]]);
+	kv($('#sy-machine'), [['vendor', na(m.vendor)], ['product', na(m.product)], ['board', na(m.board) + (m.board_vendor ? ` (${m.board_vendor})` : '')], ['BIOS', `${na(m.bios_version)} · ${na(m.bios_date)}`]]);
+	kv($('#sy-cpu'), [['model', na(c.model)], ['sockets', c.sockets], ['cores / threads', `${c.cores} / ${c.threads}`], ['max clock', c.max_mhz ? `${c.max_mhz} MHz` : '—']]);
+	kv($('#sy-fan'), [['profile', na(fc.profile)], ['hwmon', h('dd', { class: 'mono' }, na(fc.hwmon))], ['module', h('dd', { class: 'mono' }, na(fc.module))], ['module version', na(fc.module_version)]]);
+	kv($('#sy-mem'), [['total', fmtB(me.total_bytes)], ['used', `${fmtB(used)} (${me.total_bytes ? Math.round(used / me.total_bytes * 100) : 0} %)`], ['available', fmtB(me.available_bytes)], ['swap', `${fmtB(me.swap_total_bytes - me.swap_free_bytes)} used of ${fmtB(me.swap_total_bytes)}`],
+		['installed', me.installed_bytes ? `${fmtB(me.installed_bytes)} in ${me.modules.length} module${me.modules.length === 1 ? '' : 's'} (SMBIOS ${na(me.smbios)})` : 'unknown (SMBIOS table not readable)']]);
+	let tb = clear($('#sy-dimms tbody')); for (const x of me.modules) trow(tb, x.slot, x.bank, fmtB(x.size_bytes), `${x.type} ${x.form_factor || ''}`, x.speed_mts ? x.speed_mts + ' MT/s' : '—', x.ecc ? 'yes' : 'no', x.manufacturer, mono(x.part));
+	tb = clear($('#sy-acc tbody')); for (const g of s.gpus) trow(tb, 'GPU', g.name, g.vendor, mono(g.pci), mono(g.driver), '—', '—');
+	for (const n of s.npus) trow(tb, 'NPU', n.name, '—', mono(n.pci), mono(n.driver), mono(n.driver_version), mono(n.accel));
+	if (!s.gpus.length && !s.npus.length) trow(tb, 'none found');
+	tb = clear($('#sy-nics tbody')); for (const n of s.nics) trow(tb, mono(n.name), n.state, n.speed_mbit > 0 ? fmtMb(n.speed_mbit) : '—', n.duplex, n.model, mono(n.driver), mono(n.mac), n.mtu, mono(n.pci));
+	if (!s.nics.length) trow(tb, 'no physical interfaces');
+	tb = clear($('#sy-ctl tbody')); for (const x of s.storage.controllers) trow(tb, x.kind, x.name, mono(x.driver), mono(x.pci));
+	tb = clear($('#sy-disks tbody')); for (const x of s.storage.disks) trow(tb, mono(x.name), fmtB(x.size_bytes), x.rotational ? 'HDD' : 'SSD', x.transport, x.model);
+	trow(tb, { mono: diskSum(s.storage.disks) });
+}
+async function loadSystem() { if (!signedIn()) return;
+	try { sysinfo = (await api('/api/system')).body; renderSystem(); if (curTab === 'system') renderSystemTab(); }
+	catch (e) { if (e.status === 401) return; sysinfo = null; renderSystem(); if (curTab === 'system') syNotice(e.status === 501 ? 'This daemon has no system inventory (older version?).' : 'system: ' + e.message, 'err'); } }
+on('#sy-refresh', 'click', loadSystem);
 // alerts list (Overview card + Alerts tab)
 const alertList = (el, recent, empty) => { clear(el); if (!recent.length) el.append(h('li', { class: 'empty' }, empty || 'no alerts'));
 	for (const a of recent) el.append(h('li', null, h('span', { class: 'k ' + a.kind }, a.kind), h('span', { class: 'msg' }, a.msg || ''), tm(a.ts))); };
@@ -724,7 +786,7 @@ async function loadHistory() {
 	} catch (e) {}
 }
 const resetHistory = () => { hist = []; lastTs = 0; histGen++; loadHistory(); };
-let timer = null, histTimer = null, alTimer = null, polling = false, repoll = false;
+let timer = null, histTimer = null, alTimer = null, syTimer = null, polling = false, repoll = false;
 async function poll() { // a call mid-poll queues one more round
 	if (polling) { repoll = true; return; } polling = true;
 	try { const r = await api('/api/state'); snap = r.body; renderHeader(); renderCards(); renderManual(); renderSystem();
@@ -735,11 +797,12 @@ async function poll() { // a call mid-poll queues one more round
 }
 const liveState = () => { const l = $('#h-live'); const paused = document.hidden; l.classList.toggle('paused', paused); l.lastChild.textContent = paused ? 'paused' : 'live'; };
 function schedule() {
-	clearInterval(timer); clearInterval(histTimer); clearInterval(alTimer); liveState();
+	clearInterval(timer); clearInterval(histTimer); clearInterval(alTimer); clearInterval(syTimer); liveState();
 	if (document.hidden) return;
 	poll(); loadHistory();
 	timer = setInterval(poll, S.interval * 1000); histTimer = setInterval(loadHistory, 30000);
 	alTimer = setInterval(() => { if (curTab === 'overview' || curTab === 'alerts') loadAlerts(); }, 60000);
+	syTimer = setInterval(() => { if (curTab === 'overview' || curTab === 'system') loadSystem(); }, 30000); // live parts: memory, load, link state
 }
 document.addEventListener('visibilitychange', schedule);
 
@@ -751,6 +814,7 @@ function selectTab(id, focus) {
 	curTab = id;
 	TABS.forEach(t => { const on = t.id === 'tab-' + id; t.setAttribute('aria-selected', on); t.tabIndex = on ? 0 : -1; $('#' + t.getAttribute('aria-controls')).hidden = !on; if (on && focus) t.focus(); });
 	({ overview: () => { renderCharts(); pollSensors(); loadAlerts(); }, presets: loadPresets, log: loadLog, compat: renderProfiles, alerts: () => { alDirty = false; renderAlertsTab(); loadAlerts(); }, about: () => {},
+		system: () => { renderSystemTab(); loadSystem(); },
 		curves: () => { if (!edState) loadEditor();
 			pollSensors(1); drawEds(); } })[id]();
 }

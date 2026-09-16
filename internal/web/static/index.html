@@ -57,6 +57,7 @@
   <button role="tab" id="tab-manual" aria-controls="p-manual" aria-selected="false" tabindex="-1" data-auth hidden>Manual</button>
   <button role="tab" id="tab-presets" aria-controls="p-presets" aria-selected="false" tabindex="-1" data-auth hidden>Presets</button>
   <button role="tab" id="tab-alerts" aria-controls="p-alerts" aria-selected="false" tabindex="-1" data-auth hidden>Alerts</button>
+  <button role="tab" id="tab-system" aria-controls="p-system" aria-selected="false" tabindex="-1" data-auth hidden>System</button>
   <button role="tab" id="tab-log" aria-controls="p-log" aria-selected="false" tabindex="-1" data-auth hidden>Log</button>
   <button role="tab" id="tab-compat" aria-controls="p-compat" aria-selected="false" tabindex="-1" data-auth hidden>Compatibility</button>
   <button role="tab" id="tab-about" aria-controls="p-about" aria-selected="false" tabindex="-1">About</button>
@@ -138,6 +139,33 @@
   <div class="grid2">
     <div class="card tbl-wrap"><table class="tbl" id="al-kinds"><thead><tr><th>Kind</th><th>Description</th><th>Last sent</th></tr></thead><tbody></tbody></table></div>
     <div class="card"><h2>Recent alerts</h2><ul class="alerts" id="al-recent"></ul></div>
+  </div>
+</section>
+
+<section id="p-system" role="tabpanel" aria-labelledby="tab-system" hidden>
+  <div class="bar">
+    <p class="hint">Read from sysfs, <code>/proc</code> and the SMBIOS tables, PCI names via <code>lspci</code>. The daemon caches the static parts for 10 minutes; memory, load and link state are live (refreshed every 30 s).</p>
+    <div class="actions"><span class="meta" id="sy-when">—</span><button class="btn" id="sy-refresh">Refresh</button></div>
+  </div>
+  <div class="notice" id="sy-notice" hidden></div>
+  <div class="grid2">
+    <div class="card"><h2>Host</h2><dl class="kv" id="sy-host"></dl></div>
+    <div class="card"><h2>Machine</h2><dl class="kv" id="sy-machine"></dl></div>
+    <div class="card"><h2>CPU</h2><dl class="kv" id="sy-cpu"></dl></div>
+    <div class="card"><h2>Fan controller</h2><dl class="kv" id="sy-fan"></dl></div>
+  </div>
+  <div class="card sy"><h2>Memory</h2><dl class="kv" id="sy-mem"></dl>
+    <div class="tbl-wrap"><table class="tbl sm" id="sy-dimms"><thead><tr><th>Slot</th><th>Bank</th><th>Size</th><th>Type</th><th>Speed</th><th>ECC</th><th>Manufacturer</th><th>Part number</th></tr></thead><tbody></tbody></table></div>
+  </div>
+  <div class="card sy"><h2>GPU · NPU</h2>
+    <div class="tbl-wrap"><table class="tbl sm" id="sy-acc"><thead><tr><th>Kind</th><th>Name</th><th>Vendor</th><th>PCI</th><th>Driver</th><th>Driver version</th><th>Device</th></tr></thead><tbody></tbody></table></div>
+  </div>
+  <div class="card sy"><h2>Network</h2>
+    <div class="tbl-wrap"><table class="tbl sm" id="sy-nics"><thead><tr><th>Interface</th><th>State</th><th>Speed</th><th>Duplex</th><th>Model</th><th>Driver</th><th>MAC</th><th>MTU</th><th>PCI</th></tr></thead><tbody></tbody></table></div>
+  </div>
+  <div class="card sy"><h2>Storage</h2>
+    <div class="tbl-wrap"><table class="tbl sm" id="sy-ctl"><thead><tr><th>Controller</th><th>Name</th><th>Driver</th><th>PCI</th></tr></thead><tbody></tbody></table></div>
+    <div class="tbl-wrap"><table class="tbl sm" id="sy-disks"><thead><tr><th>Disk</th><th>Size</th><th>Type</th><th>Transport</th><th>Model</th></tr></thead><tbody></tbody></table></div>
   </div>
 </section>
 

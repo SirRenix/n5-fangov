@@ -229,6 +229,10 @@ type Deps struct {
 	Dashboard DashboardStore
 	// About is served verbatim by GET /api/about.
 	About About
+	// System returns the hardware inventory for GET /api/system (the
+	// sysinfo.Info of the cmd collector; typed any to keep the package
+	// free of that import). nil → 501.
+	System func() any
 }
 
 // Server holds the mux and serves it on TCP and on the unix socket.
@@ -491,6 +495,7 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/dashboard", s.getDashboard)
 	m.HandleFunc("PUT /api/dashboard", s.putDashboard)
 	m.HandleFunc("GET /api/about", s.getAbout)
+	m.HandleFunc("GET /api/system", s.getSystem)
 	m.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "unknown endpoint")
 	})

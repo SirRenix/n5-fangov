@@ -867,3 +867,88 @@ implements both; rename is `os.Rename` inside the preset directory, never over a
 existing file). UI: *Details* toggles the channel tables under the card (curve points as
 `temp → duty (%)`, critical, stop), *Rename* prompts for the new name (client-side
 name rule + built-in check, server decides).
+
+## System inventory (0.3.0-beta.4)
+
+Operator request after the first beta: "more about the hardware — RAM, CPU model, NPU,
+GPU, network, everything relevant at a glance; simple on the dashboard, detailed in an
+extra tab". Read cleanly from the system, inside the daemon's sandbox, no new dependency
+(rule 9), no serial numbers.
+
+### internal/sysinfo
+
+```go
+type Info struct {
+    Host Host; Machine Machine; CPU CPU; Memory Memory; GPUs []GPU; NPUs []NPU; NICs []NIC
+    Storage Storage; FanController FanController; Collected, StaticAt int64; Errors []string
+}
+Host{Hostname, OS, Kernel string; UptimeS int64; Load1, Load5, Load15 float64}
+Machine{Vendor, Product, Board, BoardVendor, BIOSVersion, BIOSDate string}
+CPU{Model string; Sockets, Cores, Threads, MaxMHz int}
+Memory{TotalBytes, AvailableBytes, SwapTotalBytes, SwapFreeBytes, InstalledBytes int64; SMBIOS string; Modules []MemoryModule}
+MemoryModule{Slot, Bank string; SizeBytes int64; Type, FormFactor string; SpeedMTs int; Manufacturer, Part string; ECC bool}
+GPU{Name, Vendor, PCI, Driver}   NPU{Name, PCI, Driver, DriverVersion, Accel}
+NIC{Name, PCI, Model, Driver string; SpeedMbit int /* -1 unknown */; State, Duplex, MAC string; MTU int}
+Storage{Controllers []Controller{Kind nvme|sata|sas|scsi|raid, Name, PCI, Driver}; Disks []Disk{Name, Model string; SizeBytes int64; Rotational bool; Transport nvme|sata|usb|virtio|mmc|scsi}}
+FanController{Profile, Hwmon /* from the caller */, Module, ModuleVersion /* resolved */}
+
+type Options struct { Sysfs, Proc, OSRelease, LSPCI string; Hostname func() (string, error); Fan FanController; Now func() time.Time; CacheTTL time.Duration }
+func NewCollector(Options) *Collector; func (*Collector) Collect() Info; func (*Collector) Invalidate(); func Collect(Options) Info
+func ParseMemoryModules(table []byte) ([]MemoryModule, error); func SMBIOSVersion(entryPoint []byte) string; func ParseLspciMM(string) map[string]lspciNames
+```
+
+JSON keys are snake_case (`size_bytes`, `speed_mbit`, `max_mhz`, `driver_version`,
+`fan_controller`, …); slices are never null. Sources, per section — every one read on
+its own, a failure adds one `Errors` line ("source: reason") and leaves the section empty:
+
+| Section | Source |
+|---|---|
+| Host | hostname, `/etc/os-release` PRETTY_NAME, `/proc/sys/kernel/osrelease`; live: `/proc/uptime`, `/proc/loadavg` |
+| Machine | `/sys/class/dmi/id/{sys_vendor,product_name,board_name,board_vendor,bios_version,bios_date}` |
+| CPU | `/proc/cpuinfo` (model name, `processor` count = threads, distinct `physical id` = sockets, distinct physical+`core id` = cores), `cpu0/cpufreq/cpuinfo_max_freq` (kHz → MHz; `policy0` fallback) |
+| Memory | live: `/proc/meminfo` MemTotal/MemAvailable/SwapTotal/SwapFree; modules: SMBIOS type 17 from `/sys/firmware/dmi/tables/DMI` (size incl. 0x7FFF + extended size and KB units; configured speed over nominal; type/form factor tables; ECC from the type 16 array's error-correction byte at 0x06 or total width > data width), version from `smbios_entry_point` (`_SM3_`/`_SM_`) |
+| PCI | `/sys/bus/pci/devices/*/{class,vendor,device}` + `driver` link basename; names from `lspci -mm -D` (5 s timeout, `Options.LSPCI` = path, `"-"` = never) matched by address with or without the `0000:` domain; without lspci the name is `PCI device vvvv:dddd` and the vendor a short name for AMD/Intel/NVIDIA |
+| GPUs | `/sys/class/drm/card*` (connectors `card1-DP-1` and `renderD*` skipped) → `device` link → PCI entry; plus every class 0x03xxxx device |
+| NPUs | `/sys/class/accel/accel*` → `device` link (Accel = `accel0`); plus PCI devices named "…Neural…" or driven by amdxdna/intel_vpu/ivpu; DriverVersion = `/sys/module/<driver>/version` |
+| NICs | `/sys/class/net/*` with a `device` link (lo, vmbr*, veth*, tap*, fw*, bonding_masters have none): `device` basename = PCI address when it matches one (USB NICs: PCI ""), driver from `device/driver`, model from the PCI name, `address`; live: `operstate`, `duplex`, `speed` (EINVAL while down → -1), `mtu` |
+| Storage | controllers = PCI classes 0x0108 nvme / 0x0106 sata / 0x0107 sas / 0x0100 scsi / 0x0104 raid; disks = `/sys/block/*` minus zd/loop/dm-/ram/md/nbd/drbd/rbd/zram/sr/fd and entries without `device`: `device/model` (spaces collapsed), `size`×512, `queue/rotational`, transport from the name (`nvme*`) or the resolved device path (`/usb`, `/ata`, `/virtio`, `/mmc`, else scsi) |
+| FanController | `<hwmon>/device/driver/module` link basename (fallback: `name` when `/sys/module/<name>` exists) + `/sys/module/<mod>/version` |
+
+`Collector` caches the static parts (everything except meminfo, uptime, load and NIC
+link state) for `CacheTTL` (10 min) under a mutex and reads the live parts on every
+`Collect`; `Info.StaticAt` says when the cache was filled. The sysfs root follows
+`N5FANGOV_SYSFS` like hwmon (rule 10); `Proc` and `OSRelease` are overridable for tests.
+Fixtures: `testdata/sysfs/n5pro/{class/dmi,class/net,class/accel,class/drm,block,module,
+devices/system/cpu}` (regular files, generic names, `02:00:00:00:00:0N` MACs) and
+`internal/sysinfo/testdata/{proc,os-release}`; the PCI directories (colons in their names)
+and every symlink are created by the test in a temp copy — a Windows checkout cannot hold
+them. The SMBIOS blob is synthetic (`syntheticSMBIOS`: ECC and non-ECC arrays, 2.8- and
+2.6-length records, an empty slot); the parser was checked once against the reference
+host's real table (2 × 48 GiB DDR5 SODIMM 5600 MT/s ECC, SMBIOS 3.7, not kept).
+
+Sandbox: verified on the reference host with `systemd-run` and the unit's settings
+(`ProtectSystem=strict`, `PrivateDevices=yes`, `CapabilityBoundingSet=`,
+`NoNewPrivileges=yes`, `ProtectHome=yes`, `PrivateTmp=yes`, `SystemCallFilter=@system-service`,
+`ProtectKernelTunables=no`, …): `/sys/firmware/dmi/tables/DMI` (2215 B) and
+`smbios_entry_point` (24 B) read as uid 0 without capabilities (the files are 0400 root),
+`lspci -mm -D` exits 0 with 45 lines. No unit change needed.
+
+### API, wiring, CLI, UI
+
+- `web.Deps.System func() any` → `GET /api/system` (protected; nil → 501). The value is
+  served verbatim (`Cache-Control: no-store`); web does not import sysinfo.
+- cmd `wiring_sysinfo.go`: `newSystemCollector(fs, dev)` (profile name + hwmon path of
+  the running device, sysfs root of the hwmon FS), `applySystemDeps`; serve wires it
+  unconditionally. `n5-fangov system [--json]`: socket first, offline fallback = local
+  collection with profile detection from the config (a detection error becomes an
+  `Errors` line, not a failure).
+- UI: the Overview *System* card is the at-a-glance version (machine/board/BIOS, CPU
+  model + c/t + GHz, RAM used/total + installed modules, GPU, NPU + driver version, NICs
+  with state/speed, disks count/capacity/SSD+HDD, OS/kernel, fan control profile · hwmon ·
+  module, daemon line; `notes` when the collector reported errors). New tab **System**
+  (`data-auth`, hidden anonymous): Host / Machine / CPU / Fan controller cards, Memory
+  with the module table, GPU · NPU, Network, Storage (controllers + disks with a sum
+  row), a warn notice listing `errors`, "live HH:MM · static N ago" and *Refresh*.
+  `loadSystem` runs at sign-in and every 30 s while the Overview or System tab is
+  current (live parts). Mock: `/api/system` with generic names; `&syserr=1` adds an
+  lspci error line. JS budget **84 KB** (from 76: mock document + two renderers).

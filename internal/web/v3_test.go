@@ -707,10 +707,44 @@ func TestV3NotImplementedWithoutDeps(t *testing.T) {
 		{"GET", "/api/dashboard", ""},
 		{"PUT", "/api/dashboard", `{"sensors":[]}`},
 		{"DELETE", "/api/presets/quiet", ""},
+		{"GET", "/api/system", ""},
 	} {
 		if r := e.do(t, c.method, c.path, c.body, csrf); r.code != 501 {
 			t.Errorf("%s %s = %d %s, want 501", c.method, c.path, r.code, r.body)
 		}
+	}
+}
+
+// TestSystemEndpoint: protected (401 anonymous), the closure's value is
+// served verbatim when signed in (cookie or basic), 501 without it.
+func TestSystemEndpoint(t *testing.T) {
+	e, _, _, _ := v3Env(t, adminBasic)
+	calls := 0
+	e.withDeps(t, adminBasic, func(d *Deps) {
+		d.System = func() any {
+			calls++
+			return map[string]any{"host": map[string]any{"hostname": "n5host"}, "gpus": []string{}, "errors": []string{"lspci: not found"}}
+		}
+	})
+	wantError(t, e.do(t, "GET", "/api/system", "", nil), 401, "authentication")
+	if calls != 0 {
+		t.Errorf("collector called for an anonymous request")
+	}
+	r := e.do(t, "GET", "/api/system", "", basicAuth("admin", "pw"))
+	wantCode(t, r, 200)
+	var got struct {
+		Host   struct{ Hostname string }
+		Errors []string
+	}
+	decode(t, r.body, &got)
+	if got.Host.Hostname != "n5host" || len(got.Errors) != 1 || calls != 1 {
+		t.Errorf("system = %s (calls %d)", r.body, calls)
+	}
+	if cc := r.hdr.Get("Cache-Control"); cc != "no-store" {
+		t.Errorf("Cache-Control = %q", cc)
+	}
+	if r := e.do(t, "POST", "/api/system", "", basicAuth("admin", "pw")); r.code != 404 && r.code != 405 {
+		t.Errorf("POST /api/system = %d %s", r.code, r.body)
 	}
 }
 

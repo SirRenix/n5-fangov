@@ -12,7 +12,7 @@ community driver [`ltdstudio/minisforum-n5-it5571`](https://github.com/ltdstudio
 Generic hwmon profiles for Nuvoton NCT67xx and ITE IT87xx ship as *from documentation,
 untested* — the dashboard says so, per profile.
 
-> Status: **pre-release** (`0.3.0-beta.3`; the dashboard header shows the `beta` badge
+> Status: **pre-release** (`0.3.0-beta.4`; the dashboard header shows the `beta` badge
 > until a release tag drops the suffix — `n5-fangov version`, `GET /api/version` and
 > `/api/about` carry it as `prerelease`). Validation data, the Bash predecessor `n5-fand`
 > and the measurement scripts live in
@@ -102,12 +102,38 @@ n5-fangov test 3                 channel verification run (daemon must be stoppe
 n5-fangov export settings.json   config + presets as one JSON bundle
 n5-fangov cert info              dashboard certificate (see HTTPS)
 n5-fangov alerts status          alert transport, PVE template, recent alerts (see Alerts)
+n5-fangov system [--json]        hardware inventory (see System)
 ```
 
 Web dashboard: `http://127.0.0.1:8010` (`local`) or `https://<host>:8010` (`lan`). Tabs:
-Overview, Curves, Manual, Presets, Alerts, Log, Compatibility, About; the lock icon in the
-header opens the certificate panel (download, trust, regenerate, upload), the gear the
-settings with the account forms.
+Overview, Curves, Manual, Presets, Alerts, System, Log, Compatibility, About; the lock icon
+in the header opens the certificate panel (download, trust, regenerate, upload), the gear
+the settings with the account forms.
+
+## System
+
+The signed-in Overview carries a *System* card with the box at a glance — product, board
+and BIOS, CPU model with cores/threads and top clock, RAM used/total and installed modules,
+GPU, NPU with driver version, physical NICs with link state, disk count and capacity,
+OS/kernel, fan-controller profile, hwmon path and driver module. The *System* tab shows
+the full tables (memory modules, PCI addresses, drivers, MACs, MTU, load, uptime), and
+`n5-fangov system` prints the same from the shell (`--json` for the document; without a
+running daemon it collects locally). `GET /api/system` is protected like every other
+endpoint — the inventory names the operator's hardware.
+
+Everything is read from files the daemon can reach inside its sandbox: `/sys/class/dmi/id`
+(machine), `/proc/cpuinfo` and cpufreq (CPU), `/proc/meminfo` (memory), `/sys/bus/pci/devices`
+with the driver links (GPU, NPU, NICs, storage controllers), `/sys/class/accel` and
+`/sys/class/drm`, `/sys/class/net` (interfaces with a device link — bridges, veth, tap and
+`lo` are skipped), `/sys/block` (zvols, loop, dm and ram devices skipped), `/sys/module`
+(driver versions), `/etc/os-release`, `/proc/uptime`, `/proc/loadavg`. The **memory
+modules** (size, type, speed, manufacturer, part number, ECC) come from the SMBIOS
+structure table the kernel exports as `/sys/firmware/dmi/tables/DMI` — parsed by the
+daemon itself, no `dmidecode` and no `/dev/mem` needed. PCI device **names** need `lspci`
+(package `pciutils`, present on Proxmox VE); without it the entries carry
+`PCI device <vendor>:<device>` ids and the tab shows a note. The static parts are cached
+for 10 minutes, memory usage, load, uptime and NIC link state are read on every request
+(the tab refreshes every 30 s). No serial numbers are read.
 
 ## Dashboard access
 
@@ -118,7 +144,7 @@ mirrors it):
 |---|---|---|
 | Overview | channel cards and the two charts (`GET /api/state` and `/api/history` in a **reduced** form: name, pwm, sensor, temp, duty, target, rpm, mode — no hwmon path, no EC temperatures, no alert stamps, no extra sensors) | full: plus the Sensors card, the extra-sensor chart, System details, recent alerts |
 | About tab, version | full | full |
-| Curves, Manual, Presets, Alerts, Log, Compatibility, certificate panel, settings gear | hidden; the API answers 401 | full |
+| Curves, Manual, Presets, Alerts, System, Log, Compatibility, certificate panel, settings gear | hidden; the API answers 401 | full |
 
 Nothing pops up for an anonymous visitor: the reduced Overview is the landing page, the
 **Sign in** button in the header opens the form. Basic auth stays accepted on every

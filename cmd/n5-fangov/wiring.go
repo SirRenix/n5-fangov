@@ -451,6 +451,8 @@ type webDeps struct {
 	Account     *accountStore   // /api/account (nil: 501)
 	Alerts      *alertManager   // /api/alerts (nil: 501)
 	Dashboard   *dashboardStore // /api/dashboard (nil: 501)
+	// System backs GET /api/system (hardware inventory; see wiring_sysinfo.go). nil: 501.
+	System *systemCollector
 }
 
 // logStore is the log read side (DESIGN v0.2 "Log store"): implemented by
@@ -545,6 +547,7 @@ func newWebServer(d webDeps) webServer {
 	// Log, Bundle and TLS are the v0.2 members of web.Deps; see wiring_v2.go.
 	applyV2Deps(&deps, d)
 	applyV3Deps(&deps, d)
+	applySystemDeps(&deps, d.System)
 	s := web.New(deps)
 	return webServer{TCP: s.Handler(), Socket: s.SocketHandler(), serve: s.Serve, serveTLS: serveTLSFunc(s)}
 }
