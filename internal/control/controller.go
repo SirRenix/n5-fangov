@@ -143,6 +143,21 @@ type channel struct {
 	stallCnt int
 	stalled  bool
 	recov    int
+
+	// Curve post-processing (DESIGN "Curve post-processing"), loop-only
+	// state. held is the hysteresis-held temperature the curve is evaluated
+	// at (valid when heldOK; reset by a sensor error and a sensor change).
+	// lastCurve is the previous cycle's curve output (valid when haveCurve);
+	// a rise above it starts a min_on hold of holdTarget from holdStart
+	// until holdUntil (holding).
+	held       int
+	heldOK     bool
+	lastCurve  int
+	haveCurve  bool
+	holding    bool
+	holdTarget int
+	holdStart  time.Time
+	holdUntil  time.Time
 }
 
 // Controller runs the regulation loop. It implements Service.
@@ -629,24 +644,33 @@ func (c *Controller) readSensors(cs *cycleState) {
 	cs.nBad = nBad
 }
 
-// computeTargets sets every channel's target and mode from the curve, the
-// override and the critical temperature (rules 4 and 5); a channel whose
-// temperature is unknown goes to its safe duty.
+// computeTargets sets every channel's target and mode from the curve (at
+// the hysteresis-held temperature, then the min_on hold), the override
+// and the critical temperature (rules 4 and 5); a channel whose
+// temperature is unknown goes to its safe duty. Critical is judged on the
+// raw reading.
 func (c *Controller) computeTargets(cs *cycleState) {
 	chans, ovr := cs.chans, cs.ovr
 	crit := false
 	var critParts []string
+	now := c.opts.Now()
 	for _, ch := range chans {
 		if !ch.tempOK {
 			// unknown temperature: safe duty, no curve, no override
-			// (critical cannot be judged without a reading)
+			// (critical cannot be judged without a reading); the held
+			// temperature and a running hold are dropped, the next good
+			// reading starts afresh
+			ch.heldOK, ch.haveCurve, ch.holding = false, false, false
 			ch.target = c.safeDuty(ch)
 			ch.mode = ModeSensor
 			continue
 		}
 		ch.mode = ModeAuto
-		ch.target = Interpolate(ch.cfg.Curve, ch.temp)
+		ch.target = minOnHold(ch, Interpolate(ch.cfg.Curve, heldTemp(ch)), now)
 		if v, has := ovr[ch.cfg.Name]; has {
+			// an override replaces the target; a hold that started before
+			// it must not outlive it
+			ch.holding = false
 			ch.target = v
 			ch.mode = ModeManual
 		}
@@ -1084,6 +1108,53 @@ func Interpolate(curve [][2]int, tempMilli int) int {
 	return last[1]
 }
 
+// heldTemp returns the temperature the curve is evaluated at: with
+// hysteresis N > 0 the held value follows the raw reading only when the
+// reading differs from it by at least N degrees (N*1000 m°C); with N = 0
+// (or no held value yet) the held value is the reading. Caller: the loop,
+// with ch.tempOK.
+func heldTemp(ch *channel) int {
+	n := ch.cfg.Hysteresis
+	if n <= 0 || !ch.heldOK {
+		ch.held, ch.heldOK = ch.temp, true
+		return ch.held
+	}
+	if d := ch.temp - ch.held; d >= n*1000 || -d >= n*1000 {
+		ch.held = ch.temp
+	}
+	return ch.held
+}
+
+// minOnHold applies the minimum on-time to the curve output: a rise above
+// the previous cycle's curve output holds the higher value for
+// cfg.MinOn; while the hold runs the result is max(curve, held). A further
+// rise above the held value replaces it and restarts the timer; a rise that
+// stays below a running hold changes nothing (the fan already runs
+// faster). The hold ends by time, by min_on = 0 and — in computeTargets —
+// by a sensor error or an override. Returns the target for this cycle.
+func minOnHold(ch *channel, curve int, now time.Time) int {
+	d := ch.cfg.MinOn
+	prev, havePrev := ch.lastCurve, ch.haveCurve
+	ch.lastCurve, ch.haveCurve = curve, true
+	if d <= 0 {
+		ch.holding = false
+		return curve
+	}
+	if ch.holding && !now.Before(ch.holdUntil) {
+		ch.holding = false
+	}
+	if havePrev && curve > prev && (!ch.holding || curve > ch.holdTarget) {
+		ch.holding = true
+		ch.holdTarget = curve
+		ch.holdStart = now
+		ch.holdUntil = now.Add(d)
+	}
+	if ch.holding && ch.holdTarget > curve {
+		return ch.holdTarget
+	}
+	return curve
+}
+
 // Slew limits the change from cur towards target to +stepUp / -stepDown.
 func Slew(cur, target, stepUp, stepDown int) int {
 	switch {
@@ -1194,7 +1265,8 @@ func (c *Controller) Overrides() map[string]int {
 }
 
 // Reload parses rawTOML and applies it. Daemon parameters, curves, sensors,
-// critical and stop values are swapped atomically between cycles. When the
+// critical, stop, hysteresis and min_on values are swapped atomically
+// between cycles (a changed min_on re-times a running hold). When the
 // channel set (names or pwm numbers) or the profile differ, nothing is
 // applied and ErrRestartRequired is returned. Parse warnings are logged; a
 // syntax error is returned unchanged.
@@ -1267,6 +1339,7 @@ func (c *Controller) applyPendingLocked() {
 		}
 	}
 	c.swapChannelConfig(ups)
+	c.retimeHolds(ups)
 	if firstSensorChanged {
 		c.haveRaw, c.sameRaw = false, 0
 	}
@@ -1287,18 +1360,45 @@ type chanUpdate struct {
 	cfg       config.Channel
 	sensor    SensorReader // resolved outside the hardware lock; nil = unresolved
 	newSensor bool         // sensor id changed: install sensor (even nil)
+	// oldMinOn is the min_on in effect before the swap (retimeHolds).
+	oldMinOn time.Duration
 }
 
 // swapChannelConfig installs ups under hwMu. Stop reads ch.cfg under the
-// same lock, so it never sees a half-applied channel set.
+// same lock, so it never sees a half-applied channel set. A changed sensor
+// id drops the hysteresis-held temperature and a running min_on hold
+// (they belong to the old reading).
 func (c *Controller) swapChannelConfig(ups []chanUpdate) {
 	c.hwMu.Lock()
 	defer c.hwMu.Unlock()
 	for i, ch := range c.chans {
+		ups[i].oldMinOn = ch.cfg.MinOn
 		if ups[i].newSensor {
 			ch.sensor = ups[i].sensor
+			ch.heldOK, ch.haveCurve, ch.holding = false, false, false
 		}
 		ch.cfg = ups[i].cfg
+	}
+}
+
+// retimeHolds applies a changed min_on to a running hold: holdUntil =
+// max(holdStart + newD, now), so a shorter value shortens it (at the
+// latest to this cycle) and min_on = 0 ends it. Loop goroutine only.
+func (c *Controller) retimeHolds(ups []chanUpdate) {
+	now := c.opts.Now()
+	for i, ch := range c.chans {
+		if !ch.holding || ch.cfg.MinOn == ups[i].oldMinOn {
+			continue
+		}
+		if ch.cfg.MinOn <= 0 {
+			ch.holding = false
+			continue
+		}
+		if until := ch.holdStart.Add(ch.cfg.MinOn); until.After(now) {
+			ch.holdUntil = until
+		} else {
+			ch.holdUntil = now
+		}
 	}
 }
 
@@ -1374,6 +1474,12 @@ func (c *Controller) buildSnapshotLocked(status Status, extra, watched map[strin
 		}
 		if ch.tempOK {
 			cs.Temp = float64(ch.temp) / 1000
+			if ch.cfg.Hysteresis > 0 && ch.heldOK && ch.held != ch.temp {
+				cs.HeldTemp = float64(ch.held) / 1000
+			}
+		}
+		if ch.holding && ch.mode == ModeAuto {
+			cs.HoldUntil = ch.holdUntil.Unix()
 		}
 		s.Channels = append(s.Channels, cs)
 	}

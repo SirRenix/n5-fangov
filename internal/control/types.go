@@ -40,6 +40,11 @@ type ChannelState struct {
 	Target int     `json:"target"` // curve/override target before slew
 	RPM    int     `json:"rpm"`    // -1 when no tach
 	Mode   Mode    `json:"mode"`
+	// HeldTemp is the hysteresis-held temperature the curve was evaluated
+	// at, present only with hysteresis > 0 and when it differs from Temp.
+	HeldTemp float64 `json:"held_temp,omitempty"`
+	// HoldUntil is the unix time a running min_on hold ends; 0 = no hold.
+	HoldUntil int64 `json:"hold_until,omitempty"`
 }
 
 // Snapshot is the daemon state exposed to CLI and web.
