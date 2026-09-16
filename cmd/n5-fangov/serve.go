@@ -13,8 +13,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/SirRenix/n5-fangov/internal/alert"
+	"github.com/SirRenix/n5-fangov/internal/config"
 	"github.com/SirRenix/n5-fangov/internal/control"
 	"github.com/SirRenix/n5-fangov/internal/hwmon"
+	"github.com/SirRenix/n5-fangov/internal/logfile"
 	"github.com/SirRenix/n5-fangov/internal/profile"
 	"github.com/SirRenix/n5-fangov/internal/version"
 )
@@ -25,7 +28,9 @@ func init() {
 
 // cmdServe runs the daemon: config → profile → sensors → controller → API
 // (unix socket always, TCP when [web].listen is set) → READY=1 after the
-// first cycle → wait for SIGTERM/SIGINT → SafeStop.
+// first cycle → wait for SIGTERM/SIGINT → SafeStop. The work is done by
+// four stages that share a serveState: serveConfig, serveDevice, serveWeb,
+// serveRun (DESIGN "Layout").
 //
 // Exit codes: 0 clean stop, 1 fatal setup or runtime error, 2 usage.
 func cmdServe(args []string) int {
@@ -50,20 +55,72 @@ func cmdServe(args []string) int {
 			*p = abs
 		}
 	}
+	st := &serveState{cfgPath: *cfgPath, dryRun: *dryRun, rdir: *rdir, listen: *listen, sdir: *sdir}
+	if !serveConfig(st) {
+		return exitFail
+	}
+	if st.logFile != nil {
+		defer st.logFile.Close()
+	}
+	if !serveDevice(st) {
+		return exitFail
+	}
+	serveWeb(st)
+	return serveRun(st)
+}
 
+// serveState is what the stages of cmdServe hand each other: the parsed
+// flags, then what each stage produced for the next.
+type serveState struct {
+	// Flags (directory paths made absolute).
+	cfgPath string
+	dryRun  bool
+	rdir    string // run dir (socket, state.json, alert stamps)
+	listen  string // --listen override ("" = the file's [web].listen)
+	sdir    string // state dir flag
+
+	// serveConfig: config, alert chain, log file.
+	cfg      config.Config
+	dspec    daemonSpec
+	chans    []chanSpec
+	state    string // ensured state dir; "" = no persistence
+	alertMgr *alertManager
+	alerter  alert.Sink      // what serve and the controller deliver through
+	store    logStore        // the log read side behind /api/log
+	logFile  *logfile.Writer // nil without [log].file; closed by cmdServe
+
+	// serveDevice: hardware and controller.
+	hw      *hwmon.FS
+	dev     profile.Device
+	factory sensorFactory
+	ctrl    *control.Controller
+
+	// serveWeb: listener decision, certificate manager, stores, web server.
+	wspec  webSpec
+	addr   string // TCP listen address; "" = no TCP listener
+	useTLS bool
+	tlsMgr *tlsManager
+	hosts  []string
+	ws     webServer
+}
+
+// serveConfig sets up the logger, creates the run dir, loads the config
+// (rule 8: problems are warnings, defaults stay in effect), builds the
+// alert chain and opens the log file. false = fatal (run dir).
+func serveConfig(st *serveState) bool {
 	// journald adds timestamps; keep the lines bare.
 	log.SetFlags(0)
 	log.SetOutput(os.Stdout)
-	log.Printf("n5-fangov %s starting (config %s, run-dir %s, state-dir %s, dry-run %v)", version.Version, *cfgPath, *rdir, *sdir, *dryRun)
+	log.Printf("n5-fangov %s starting (config %s, run-dir %s, state-dir %s, dry-run %v)", version.Version, st.cfgPath, st.rdir, st.sdir, st.dryRun)
 
 	// The run dir first: the start-up alerts below keep their cooldown
 	// stamps there (a restart loop must not send one notification per try).
-	if err := os.MkdirAll(*rdir, 0o755); err != nil {
-		log.Printf("run-dir %s: %v", *rdir, err)
-		return exitFail
+	if err := os.MkdirAll(st.rdir, 0o755); err != nil {
+		log.Printf("run-dir %s: %v", st.rdir, err)
+		return false
 	}
 
-	cfg, warns, err := loadConfig(*cfgPath)
+	cfg, warns, err := loadConfig(st.cfgPath)
 	for _, w := range warns {
 		log.Printf("config: %s", w)
 	}
@@ -71,14 +128,14 @@ func cmdServe(args []string) int {
 	// State dir (sessions, alert history) and the alert chain: the
 	// configured transport behind a swappable sink (the panel and every
 	// config reload re-apply [alert]), wrapped in the ring the panel reads.
-	state := ensureStateDir(*sdir)
-	alertMgr := newAlertManager(*cfgPath, alertsPath(state), cfg.Alert, nil)
-	alerter := alertMgr.sink()
-	log.Printf("alerts: transport %s (%s), history %s", cfg.Alert.Transport, alertMgr.effective, orMemory(alertsPath(state)))
+	st.state = ensureStateDir(st.sdir)
+	st.alertMgr = newAlertManager(st.cfgPath, alertsPath(st.state), cfg.Alert, nil)
+	st.alerter = st.alertMgr.sink()
+	log.Printf("alerts: transport %s (%s), history %s", cfg.Alert.Transport, st.alertMgr.effective, orMemory(alertsPath(st.state)))
 	if len(warns) > 0 {
 		// Asynchronous like the controller's alerts: a PVE::Notify delivery
 		// may take 30 s and must not delay the first cycle and READY=1.
-		startAlert(*rdir, alerter, "config", fmt.Sprintf("%d config problem(s), built-in defaults in effect:\n%s",
+		startAlert(st.rdir, st.alerter, "config", fmt.Sprintf("%d config problem(s), built-in defaults in effect:\n%s",
 			len(warns), strings.Join(warns, "\n")))
 	}
 	if err != nil {
@@ -89,56 +146,74 @@ func cmdServe(args []string) int {
 	// Log file ([log].file): the standard logger writes to stdout (journald)
 	// and, time-stamped, to the rotating file. A file that cannot be opened
 	// is a warning, not a stop: the journal stays.
-	var store logStore = journalLogStore{}
+	st.store = journalLogStore{}
 	if lspec := logOf(cfg); lspec.File != "" {
 		if lf, err := newLogFile(lspec); err != nil {
 			log.Printf("log file: %v (journal only)", err)
 		} else {
 			teeLog(lf)
-			defer lf.Close()
-			store = lf
+			st.logFile = lf
+			st.store = lf
 			log.Printf("n5-fangov %s: log file %s (rotate above %d MiB, keep %d)", version.Version, lspec.File, lspec.MaxSizeMB, lspec.MaxFiles)
 		}
 	}
-	dspec := daemonOf(cfg)
-	chans := channelSpecs(cfg)
-	if len(chans) == 0 {
+	st.cfg = cfg
+	st.dspec = daemonOf(cfg)
+	st.chans = channelSpecs(cfg)
+	if len(st.chans) == 0 {
 		log.Printf("config: no [[channel]] tables; nothing to regulate (monitoring only, N5 Pro: built-in channels)")
 	}
+	return true
+}
 
-	hw := hwmon.New()
-	dev, err := detectDevice(hw, dspec.Profile)
+// serveDevice detects the fan controller for the configured profile and
+// builds the controller. false = fatal (no device, controller set-up),
+// with the alert already sent.
+func serveDevice(st *serveState) bool {
+	st.hw = hwmon.New()
+	dev, err := detectDevice(st.hw, st.dspec.Profile)
 	if err != nil {
-		log.Printf("profile %q: %v", dspec.Profile, err)
-		sendAlertCooled(*rdir, alerter, "profile", fmt.Sprintf("fan controller not detected (profile %q): %v\nNo regulation is running; fans stay in BIOS/EC control.", dspec.Profile, err))
-		return exitFail
+		log.Printf("profile %q: %v", st.dspec.Profile, err)
+		sendAlertCooled(st.rdir, st.alerter, "profile", fmt.Sprintf("fan controller not detected (profile %q): %v\nNo regulation is running; fans stay in BIOS/EC control.", st.dspec.Profile, err))
+		return false
 	}
+	st.dev = dev
 	p := dev.Profile()
 	log.Printf("profile %s (%s) at %s, %d channel(s), verified=%v", p.Name(), p.Title(), dev.HwmonPath(), len(dev.Channels()), p.Verified())
 	if !p.Verified() {
 		log.Printf("%sWARNING: profile %s is from documentation only, not verified on hardware", logWarning, p.Name())
 	}
-	for _, c := range chans {
+	for _, c := range st.chans {
 		if !hasChannel(dev, c.PWM) {
 			log.Printf("config: channel %q uses pwm%d which profile %s does not expose", c.Name, c.PWM, p.Name())
 		}
 	}
 
-	factory := newSensorFactory(hw, dev)
-	ctrl, err := newController(cfg, dev, factory, alerter, controlOpts{DryRun: *dryRun, RunDir: *rdir})
+	st.factory = newSensorFactory(st.hw, dev)
+	ctrl, err := newController(st.cfg, dev, st.factory, st.alerter, controlOpts{DryRun: st.dryRun, RunDir: st.rdir})
 	if err != nil {
 		log.Printf("controller: %v", err)
-		sendAlertCooled(*rdir, alerter, "start", "n5-fangov could not start the controller: "+err.Error())
-		return exitFail
+		sendAlertCooled(st.rdir, st.alerter, "start", "n5-fangov could not start the controller: "+err.Error())
+		return false
 	}
+	st.ctrl = ctrl
+	return true
+}
+
+// serveWeb decides the TCP listener address and TLS mode, sets up the
+// certificate manager, the stores behind the dashboard APIs and the web
+// server. Nothing here is fatal: a TLS failure disables the web UI, the
+// CLI socket keeps working.
+func serveWeb(st *serveState) {
+	cfgPath, rdir, alerter, ctrl := st.cfgPath, st.rdir, st.alerter, st.ctrl
 
 	// TCP listener address and TLS mode. --listen overrides the file; the
 	// rule "non-loopback is never plain HTTP" is re-applied to the override.
-	wspec := webOf(cfg)
+	wspec := webOf(st.cfg)
 	addr := wspec.Listen
 	modeOverridden := false // the effective tls mode differs from the file's (M2: the manager must not pin it)
-	if *listen != "" {
-		addr = *listen
+	if st.listen != "" {
+		addr = st.listen
 		wspec.Listen = addr
 		if addr != "none" && !isLoopbackListen(addr) && wspec.TLS == "off" {
 			log.Printf("web: --listen %s is not loopback, tls \"off\" replaced by \"auto\"", addr)
@@ -153,7 +228,7 @@ func cmdServe(args []string) int {
 	// mode, serves it through a hot-swappable store and backs /api/tls
 	// (dashboard certificate panel, `n5-fangov cert` via the socket).
 	hosts := tlsHosts(wspec)
-	tlsMgr := newTLSManager(*cfgPath, wspec, hosts)
+	tlsMgr := newTLSManager(cfgPath, wspec, hosts)
 	useTLS := false
 	if addr == "" {
 		tlsMgr.mode = "off" // no TCP listener: nothing to certify, /api/tls says so
@@ -165,7 +240,7 @@ func cmdServe(args []string) int {
 			// No plain-HTTP fallback: a LAN listener without TLS would carry
 			// basic auth in clear text.
 			log.Printf("web: TLS (%s): %v — web UI disabled, the CLI socket still works", wspec.TLS, err)
-			startAlert(*rdir, alerter, "web", fmt.Sprintf("web UI disabled: TLS (%s) could not be set up on %s: %v", wspec.TLS, addr, err))
+			startAlert(rdir, alerter, "web", fmt.Sprintf("web UI disabled: TLS (%s) could not be set up on %s: %v", wspec.TLS, addr, err))
 			addr = ""
 		case fellBack != nil:
 			// M3: the configured pair is unreadable or unusable; the listener
@@ -173,7 +248,7 @@ func cmdServe(args []string) int {
 			// reset`/`cert upload`) can repair it. The config keeps tls = "file".
 			log.Printf("web: TLS file pair %s / %s unusable: %v — FALLBACK to the automatic certificate %s (mode %q); fix with the certificate panel, `n5-fangov cert upload` or `cert reset`",
 				wspec.CertFile, wspec.KeyFile, fellBack, certPath, modeFallback)
-			startAlert(*rdir, alerter, "tls", fmt.Sprintf("custom certificate unreadable, serving the automatic certificate\n%s / %s: %v\nThe dashboard on %s stays up with the self-signed certificate %s; a browser that does not trust that one refuses the LAN name under HSTS — reach the dashboard by IP or import the certificate (n5-fangov cert export). Repair: certificate panel, `n5-fangov cert upload CERT KEY` or `n5-fangov cert reset`.",
+			startAlert(rdir, alerter, "tls", fmt.Sprintf("custom certificate unreadable, serving the automatic certificate\n%s / %s: %v\nThe dashboard on %s stays up with the self-signed certificate %s; a browser that does not trust that one refuses the LAN name under HSTS — reach the dashboard by IP or import the certificate (n5-fangov cert export). Repair: certificate panel, `n5-fangov cert upload CERT KEY` or `n5-fangov cert reset`.",
 				wspec.CertFile, wspec.KeyFile, fellBack, addr, certPath))
 			useTLS = true
 		case wspec.TLS == "auto":
@@ -191,34 +266,44 @@ func cmdServe(args []string) int {
 		tlsMgr.ownsConfig = false
 	}
 
-	// v0.3 stores. Every config write of theirs goes through the tls pin
-	// like the others; svc wraps Reload so a PUT /api/config, an import or
-	// a preset apply re-applies [alert] ([dashboard] is the controller's).
-	alertMgr.pin = tlsMgr.pinConfig
-	alertMgr.cooldown = func() time.Duration { return controllerConfig(ctrl).Daemon.AlertCooldown }
-	svc := hookedService{Service: ctrl, alerts: alertMgr}
-	accounts := newAccountStore(*cfgPath, wspec, tlsMgr.pinConfig)
-	dashboard := newDashboardStore(*cfgPath, ctrl, factory, tlsMgr.pinConfig)
+	// The stores behind the dashboard APIs. Every config write of theirs
+	// goes through the tls pin like the others; svc wraps Reload so a PUT
+	// /api/config, an import or a preset apply re-applies [alert]
+	// ([dashboard] is the controller's).
+	st.alertMgr.pin = tlsMgr.pinConfig
+	st.alertMgr.cooldown = func() time.Duration { return controllerConfig(ctrl).Daemon.AlertCooldown }
+	svc := hookedService{Service: ctrl, alerts: st.alertMgr}
+	accounts := newAccountStore(cfgPath, wspec, tlsMgr.pinConfig)
+	dashboard := newDashboardStore(cfgPath, ctrl, st.factory, tlsMgr.pinConfig)
 
-	ws := newWebServer(webDeps{
+	st.ws = newWebServer(webDeps{
 		Service:     svc,
-		ConfigPath:  *cfgPath,
+		ConfigPath:  cfgPath,
 		PresetDir:   defaultPresetDir,
-		Device:      dev,
-		Sysfs:       hw,
+		Device:      st.dev,
+		Sysfs:       st.hw,
 		Web:         wspec,
-		Log:         store,
-		Bundle:      fileBundle{cfgPath: *cfgPath, presetDir: defaultPresetDir, reload: svc.Reload, pin: tlsMgr.pinConfig, logf: log.Printf},
+		Log:         st.store,
+		Bundle:      fileBundle{cfgPath: cfgPath, presetDir: defaultPresetDir, reload: svc.Reload, pin: tlsMgr.pinConfig, logf: log.Printf},
 		TLS:         useTLS,
 		TLSMgr:      tlsMgr,
 		TLSHosts:    hosts,
 		ConfigPin:   tlsMgr.pinConfig,
-		SessionFile: sessionsPath(state),
+		SessionFile: sessionsPath(st.state),
 		Account:     accounts,
-		Alerts:      alertMgr,
+		Alerts:      st.alertMgr,
 		Dashboard:   dashboard,
-		System:      newSystemCollector(hw, dev),
+		System:      newSystemCollector(st.hw, st.dev),
 	})
+	st.wspec, st.addr, st.useTLS, st.tlsMgr, st.hosts = wspec, addr, useTLS, tlsMgr, hosts
+}
+
+// serveRun starts the goroutines (unix socket, TCP listener, regulation
+// loop, watchdog ticker, READY=1), waits for a signal or a fatal error and
+// stops the controller. Returns the exit code.
+func serveRun(st *serveState) int {
+	rdir, alerter, ctrl := st.rdir, st.alerter, st.ctrl
+	ws, addr, useTLS, tlsMgr := st.ws, st.addr, st.useTLS, st.tlsMgr
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
@@ -226,7 +311,7 @@ func cmdServe(args []string) int {
 	errc := make(chan error, 3)
 
 	// Unix socket (CLI, no auth/CSRF).
-	sock := socketPath(*rdir)
+	sock := socketPath(rdir)
 	go func() { errc <- wrapErr("ipc", serveIPC(ctx, sock, ws.Socket)) }()
 
 	// TCP (web UI), optional.
@@ -234,7 +319,7 @@ func cmdServe(args []string) int {
 		ln, err := net.Listen("tcp", addr)
 		if err != nil {
 			log.Printf("web: listen %s: %v (web UI disabled, socket still works)", addr, err)
-			startAlert(*rdir, alerter, "web", "web UI listener failed on "+addr+": "+err.Error())
+			startAlert(rdir, alerter, "web", "web UI listener failed on "+addr+": "+err.Error())
 		} else if useTLS {
 			log.Printf("web: listening on https://%s", ln.Addr())
 			go func() { errc <- wrapErr("web", ws.ServeTLS(ctx, ln, tlsMgr)) }()
@@ -277,7 +362,7 @@ func cmdServe(args []string) int {
 	// period, so a stuck first read still lets systemd's watchdog take over
 	// instead of TimeoutStartSec killing a half-started daemon).
 	go func() {
-		grace := 2*dspec.Interval + 5*time.Second
+		grace := 2*st.dspec.Interval + 5*time.Second
 		if waitFirstCycle(ctx, ctrl, grace) {
 			log.Printf("first cycle done, READY")
 		} else if ctx.Err() == nil {
