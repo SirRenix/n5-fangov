@@ -569,3 +569,264 @@ n5-fangov cert info | export [--der] [FILE] | regen [--new-key] | upload CERT KE
 ```
 Socket API when the daemon answers (hot swap), else the same `tlsManager` on the files
 plus a restart hint. `cert regen` keeps the key by default (old behaviour was a new key).
+
+## v0.3.0-beta contract — sessions, visibility split, alerts panel, about, sensors, curves, presets (16.09.2026)
+
+Findings of the operator's first multi-hour review of the dashboard: everything was
+visible without signing in (settings, certificate panel, hardware details, alerts), no
+logout, no "remember me", no password change, no About/licence, curve points always
+appended at the end, only the three channel temperatures charted, no shipped presets.
+This release fixes all of it. Version string `0.3.0-beta.1`; the UI shows the
+pre-release tag as a badge until the operator lifts it.
+
+Ownership (three builders in parallel, each in its own worktree):
+
+- **WEBAPI builder** owns `internal/web/*.go` (+ tests). Nothing else.
+- **UI builder** owns `internal/web/static/*` (index.html, app.js, app.css, mock).
+  Nothing else.
+- **CMD builder** owns `cmd/n5-fangov`, `internal/config`, `internal/alert`,
+  `internal/control`, `internal/version`, `deploy/`, `README.md`, `Makefile`.
+
+The interfaces below are the contract; the integrator wires them in `cmd/n5-fangov`.
+
+### Visibility model (enforced server-side, mirrored by the UI)
+
+With `[web] auth = "basic"`:
+
+| Class | Endpoints | Anonymous | Signed in (session cookie or Basic) |
+|---|---|---|---|
+| **public** | `GET /api/version`, `GET /api/about`, `GET /api/session`, `POST /api/login`, `POST /api/logout` | full | full |
+| **public, filtered** | `GET /api/state`, `GET /api/history` | reduced (see below) | full |
+| **protected** | everything else under `/api/` (config, sensors, profiles, presets, log, tls incl. the cert downloads, alerts, dashboard, account, overrides) | 401 | full |
+| static files | `/`, `app.js`, `app.css` | full | full |
+
+Reduced `GET /api/state`: `ts`, `status`, `profile`, `verified`, `uptime_s`, `dry_run`,
+`channels[]` with `name, pwm, sensor, temp, duty, target, rpm, mode` — **no**
+`hwmon_path`, `extra_temps`, `alerts`, `watched`. Reduced `GET /api/history`: the points
+without `extra`. With `auth = "none"` every request counts as signed in (`/api/session`
+→ `{"authenticated":true,"mode":"none"}`); the unix socket handler always counts as
+signed in. State-changing methods keep needing the CSRF header (`X-N5-Fangov-Csrf: 1`) —
+that header is the CSRF defence for the cookie session (custom header + `SameSite=Strict`).
+
+### Sessions (WEBAPI builder, `internal/web/session.go`)
+
+```
+POST /api/login    {"user","password","remember":bool}   public, CSRF, rate-limited like Basic (same limiter, per IP)
+                   → 200 {"ok":true,"user","expires":unix,"remember"} + Set-Cookie
+                   → 401 {"error":"invalid user or password"}; 429 while throttled; body limit 4 KiB
+POST /api/logout   → 204; clears the cookie and revokes the session (also fine when there is none)
+GET  /api/session  → {"authenticated":bool,"mode":"none|basic","user","expires"?,"remember"?,"via":"cookie|basic|none"}
+```
+Cookie `n5fangov_session=<token>; Path=/; HttpOnly; SameSite=Strict; Max-Age=<remaining>`
+plus `Secure` when the request arrived over TLS. Token: 32 random bytes, base64url.
+Lifetime 12 h, with remember 30 days; `LastSeen` is refreshed at most once a minute.
+
+```go
+type Session struct { ID, User, IP string; Created, Expires, LastSeen time.Time; Remember bool }
+type SessionStore interface {
+    Create(user string, remember bool, ip string) (token string, s Session, err error)
+    Lookup(token string) (Session, bool)          // expired → false (and pruned)
+    Revoke(token string)
+    RevokeAll(keepToken string)                   // "" = every session
+    List() []Session                              // ID is the first 8 hex chars of sha256(token), never the token
+}
+func NewSessionStore(path string, logf func(string, ...any)) SessionStore
+```
+The store keeps `sha256(token) → Session` in memory and, when `path != ""`, mirrors it
+to that JSON file (0600, temp file + rename) on every change; it loads the file at start
+so a restart or a config-triggered restart keeps "remember me" sessions. Cap 50 sessions
+(oldest dropped). `Deps.SessionFile string` — cmd passes `<state dir>/sessions.json`
+(see Deploy); `""` = memory only. A file that cannot be written is logged once and the
+store continues in memory.
+
+`guard` resolves the caller once per request: cookie → store lookup; else Basic → the
+current `AuthConfig`; the result (`authenticated bool`, `user`, `via`) rides in the
+request context (`web.CallerFrom(ctx)`) for the filtered handlers. Basic auth stays
+accepted on every protected request (CLI, curl, scripts). A failed Basic credential or
+login counts against the limiter exactly as today; an anonymous request to a protected
+endpoint is a silent 401 (no log, no count).
+
+### Account (WEBAPI builder ↔ CMD builder)
+
+```go
+// AccountStore (Deps.Account, implemented in cmd): the credentials in effect and their update.
+type AccountStore interface {
+    Current() AuthConfig
+    // Update rewrites [web] user and/or password_hash in the config file
+    // (config.SetKey: comments kept; the tls pin still applies) and returns
+    // the credentials now in effect. "" keeps the current value.
+    Update(user, passwordHash string) (AuthConfig, error)
+}
+```
+The server keeps the effective `AuthConfig` behind an atomic pointer (initial value
+`Deps.Auth`, replaced after every successful `Update`); `authorized()` reads it there.
+
+```
+GET  /api/account                  → {"user","mode","sessions":[{id,created,expires,last_seen,remember,ip,current}]}   protected
+POST /api/account/password         {"current_password","new_password"}  → 200 {"ok"}                                  protected
+                                   new: 8..128 chars; current wrong → 403 {"error":"current password wrong"} (limiter counts it)
+                                   writes web.PasswordHash(user, new), swaps AuthConfig, RevokeAll(keep = the caller's cookie)
+POST /api/account/user             {"current_password","user"}          → 200 {"ok","user"}                           protected
+                                   user ^[A-Za-z0-9_.-]{1,32}$; same verification and revocation as the password change
+POST /api/account/sessions/revoke  {"others":true}                       → 200 {"ok","revoked":n}                      protected
+```
+With `auth = "none"` the three POSTs answer `409 {"error":"auth is none"}`. Every change
+logs `web: account <password|user> changed by <ip>`.
+
+### Alerts panel (CMD builder implements `AlertMgr`, WEBAPI serves it)
+
+Config addition:
+```toml
+[alert]
+transport = "auto"     # auto | pve | mail | log | off   (auto = pve-notify if PVE::Notify + perl, else mail(1), else log)
+mail_to = "root"       # mail transport only
+```
+`config.Alert{Transport, MailTo}`; unknown transport → warning + "auto"; `mail_to` must be
+a local user or an address without spaces/quotes (else warning + "root"). The alert sink
+becomes swappable (`alert.Swappable` wrapping the current `Sink`, `Set(Sink)`), so
+`Configure` and `PUT /api/config` (via `Service.Reload` → an `OnAlertConfig` callback in
+cmd) apply it without a restart. Concrete sinks gain `Send(kind, msg string) error`
+(delivery error returned, still logged); `Alert` keeps its fire-and-forget contract.
+
+```go
+type AlertRecord struct { TS int64 `json:"ts"`; Kind string `json:"kind"`; Msg string `json:"msg"` }
+type AlertKind   struct { Kind string `json:"kind"`; Description string `json:"description"` }
+type TemplateStatus struct { Installed, Current, Writable bool; Path string; Reason string `json:",omitempty"` }
+type AlertStatus struct {
+    Transport string `json:"transport"`; Effective string `json:"effective"`   // configured | pve-notify|mail|log|off
+    MailTo string `json:"mail_to"`; PVEAvailable bool `json:"pve_available"`; MailAvailable bool `json:"mail_available"`
+    Template TemplateStatus `json:"template"`; Cooldown string `json:"cooldown"`; Kinds []AlertKind `json:"kinds"`
+}
+type AlertMgr interface {
+    Status() AlertStatus
+    Recent(n int) []AlertRecord                    // newest first; ring of 50, mirrored to <state dir>/alerts.json
+    Test() (transport string, err error)           // sends kind "test" now, no cooldown; err = delivery failure
+    InstallTemplate() (path string, err error)     // writes the two .hbs (embedded in internal/alert) to
+                                                   // /etc/pve/notification-templates/default/; errors.ErrUnsupported without PVE
+    Configure(transport, mailTo string) (AlertStatus, error)  // validates, config.SetKey [alert], hot-applies
+}
+```
+```
+GET  /api/alerts            → AlertStatus + {"last":{kind:ts},"recent":[AlertRecord…]}     protected
+POST /api/alerts/test       → 200 {"ok","transport"} | 502 {"error":"<delivery error>","transport"}   protected
+POST /api/alerts/template   → 200 {"ok","path"} | 501 (no PVE) | 500 {"error"} with the CLI hint      protected
+PUT  /api/alerts            {"transport","mail_to"} → 200 {"ok","status":AlertStatus} | 400           protected
+```
+`Template.Current` compares the installed files with the embedded ones; `Writable` is a
+probe (create and remove a temp file in the directory). Kinds: sensor, stall, temp,
+write, config, config-channels, restart, failed, kernel, tls, test — with one-line
+descriptions. The ring records every alert that passes the cooldown (the controller's
+and serve's), so the panel is the history the operator asked for. CLI:
+`n5-fangov alerts status | test | template` (socket when the daemon runs, else the same
+manager on the files). The hidden `alert <kind> <msg>` stays as it is (onfailure unit).
+
+### About (public)
+
+```
+GET /api/about → {"name":"n5-fangov","version","prerelease":"beta.1"|"","license":"GPL-2.0-only",
+                  "license_url":"https://www.gnu.org/licenses/old-licenses/gpl-2.0.html",
+                  "repo":"https://github.com/SirRenix/n5-fangov","author":"SirRenix","author_url":"https://github.com/SirRenix",
+                  "go":runtime.Version(),"credits":[{"name","url","note"}]}
+```
+`Deps.About web.About` (struct, filled in cmd from `internal/version`). Credits:
+`ltdstudio/minisforum-n5-it5571` (the kernel driver), `Sl0thC0der/proxfansx` (dashboard
+idea). No host name, no addresses, no paths. `internal/version`: `Version =
+"0.3.0-beta.1"`, `Prerelease() string` (text after the first `-`, "" for a release),
+`-X` override unchanged. `GET /api/version` adds `"prerelease"` and `"auth":"none|basic"`.
+
+### Dashboard sensors (CMD builder: control + config; WEBAPI serves)
+
+Config addition:
+```toml
+[dashboard]
+sensors = ["hwmon:amdgpu:temp1", "hwmon:nic1:temp1"]   # extra sensors recorded in the history for the dashboard chart, 0..8 ids
+```
+`config.Dashboard{Sensors []string}`; ids must parse (`sensor.Parse`) — an id that does
+not resolve is kept in the config but reported as a warning and skipped. The controller
+reads the watched sensors once per cycle (after the channel sensors, errors ignored →
+value absent) and records them in `HistoryPoint.Extra map[string]float64`
+(`json:"extra,omitempty"`), and in `Snapshot.Watched map[string]float64`
+(`json:"watched"`, live value). Reload applies a changed list without a restart.
+
+```go
+type DashboardStore interface {          // Deps.Dashboard, implemented in cmd
+    Sensors() []string
+    SetSensors(ids []string) (warnings []string, err error)   // validates count/syntax, config.SetKey [dashboard], hot-applies
+}
+```
+```
+GET /api/dashboard → {"sensors":[…]}                       protected
+PUT /api/dashboard {"sensors":[…]} → {"ok","sensors","warnings"}   protected; > 8 or unparsable id → 400
+```
+`GET /api/sensors` stays the catalogue (every readable temperature with its live
+value); the UI groups it (see below).
+
+### Presets: built-in N5 Pro sets (CMD builder)
+
+`web.Preset` gains `Builtin bool` and `Description string`. Built-in presets are TOML
+texts embedded in `internal/config/presets/*.toml` (`config.BuiltinPresets(profile)`),
+listed only for the active profile, applied like a file preset, never saved over
+(`PUT /api/presets/<builtin>` → 409) and never deleted. `DELETE /api/presets/{name}`
+(new, protected; `PresetStore.Delete(name) error`, `web.ErrPresetBuiltin` → 409,
+`fs.ErrNotExist` → 404) removes a user preset. The three N5 Pro sets (duty 0..255;
+measured duty→RPM in the file header; HDD `stop = 140` in every set):
+
+| Preset | cpu (k10temp, crit 88) | ssd (nvme:max, crit 72) | hdd (drivetemp:max) |
+|---|---|---|---|
+| `n5pro-quiet` — the operator's tuned set (16.09.): lowest noise, HDDs around 45 °C | `[[30,25],[61,163],[85,255]]` | `[[35,55],[65,255]]` | `[[26,63],[55,92],[56,255]]` crit 66 |
+| `n5pro-balanced` — **recommended**: HDDs held near 40 °C, audible under load only | `[[35,60],[60,150],[80,255]]` | `[[35,74],[55,160],[68,255]]` | `[[30,87],[42,140],[50,200],[55,255]]` crit 60 |
+| `n5pro-cool` — drives first, noise second | `[[30,85],[55,170],[75,255]]` | `[[30,90],[50,180],[65,255]]` | `[[28,105],[38,150],[45,210],[50,255]]` crit 58 |
+
+`install.sh` no longer needs preset files. The UI marks built-ins with a badge and
+shows the description; the recommended one gets a second badge.
+
+### UI (UI builder)
+
+- **Header:** version with a `beta` badge when `prerelease != ""`; when anonymous a
+  **Sign in** button (no automatic login popup — the reduced Overview is the landing
+  page); when signed in the user name, a **Sign out** button, the lock button and the
+  settings gear. Settings gear, lock/certificate button and every tab except Overview
+  and About are hidden while anonymous. Login form: user, password, **Remember me**
+  checkbox (hint: "30 days on this browser"), inline error on 401.
+- **Overview anonymous:** channel cards + the two charts. Nothing else.
+- **Overview signed in:** adds *Sensors* (the `/api/sensors` catalogue, polled with the
+  state interval, grouped CPU / SSD·NVMe / HDD / GPU / NIC / EC·board / other by id
+  prefix and hwmon name — k10temp|coretemp → CPU, nvme → SSD, drivetemp → HDD,
+  amdgpu|nouveau|i915|radeon → GPU, nic|eth|mlx|igc|ixgbe|r8169|atlantic → NIC,
+  ec:*|minisforum|acpitz|spd5118 → EC·board; each row: label, live value, a *chart*
+  toggle that adds/removes the id via `PUT /api/dashboard`), an **Extra sensors** chart
+  card (only when the watched list is non-empty; series from `history[].extra`, legend
+  with a remove ×), *System* (profile, hwmon path, verified, notes, daemon interval,
+  version, log file) and *Recent alerts* (from `/api/alerts`, newest first, kind badge,
+  relative time, message). The three channel cards and their two charts stay fixed.
+- **Curves:** *+ add point* opens a two-field row (temp, duty; prefilled with the middle
+  of the widest temperature gap and the interpolated duty) and inserts at the sorted
+  position; editing a temperature in the table re-sorts the rows when the field loses
+  focus; the drag on the canvas is unchanged. Validation as before.
+- **Presets:** built-in badge, *recommended* badge, description; *Delete* for user
+  presets (confirm); the save form refuses built-in names client-side too.
+- **Alerts tab (new):** transport (select auto/pve/mail/log/off + mail_to, Save),
+  effective transport and availability, PVE template status with *Install / Update
+  template* (disabled with reason when not writable), *Send test alert*, cooldown,
+  kind list with last-sent time, recent alerts list.
+- **About tab (new, public):** name, version + pre-release badge, one-paragraph
+  description, licence (GPL-2.0-only, link), repository and author links
+  (`github.com/SirRenix`), credits, "Dashboard mock: `?mock=1`".
+- **Account (in the settings popover, signed in):** *Change password…* and *Change
+  user…* forms (current password required), *Sign out other sessions*, session list.
+- **Mock:** `?mock=1` starts anonymous; `&auth=none` = auth off; `&user=1` = signed in.
+  The mock implements every endpoint above (login accepts admin/admin).
+- JS budget 72 KB, no framework, CSP unchanged.
+
+### Deploy (CMD builder)
+
+- Unit: `StateDirectory=n5-fangov`, `StateDirectoryMode=0700` (`/var/lib/n5-fangov`:
+  sessions.json, alerts.json); `ReadWritePaths` gains `-/etc/pve/notification-templates`
+  (verified on the reference host: a process with this sandbox writes and removes a file
+  there). `serve --state-dir` (default `$STATE_DIRECTORY`, else `/var/lib/n5-fangov`,
+  env `N5FANGOV_STATE_DIR`); an unwritable state dir logs once and the daemon runs
+  without persistence.
+- `install.sh`: daemon-reload after the unit copy (unchanged path). `uninstall.sh`
+  removes `/var/lib/n5-fangov`.
+- README: Sign-in/visibility, sessions, account, alerts panel, presets, dashboard
+  sensors, About/licence.
