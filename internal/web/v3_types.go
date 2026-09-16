@@ -129,3 +129,34 @@ type Credit struct {
 type PresetDeleter interface {
 	Delete(name string) error
 }
+
+// PresetChannel is one [[channel]] table of a preset as GET /api/presets/{name} shows it.
+type PresetChannel struct {
+	Name     string   `json:"name"`
+	PWM      int      `json:"pwm"`
+	Sensor   string   `json:"sensor"`
+	Curve    [][2]int `json:"curve"`
+	Critical int      `json:"critical"`
+	Stop     string   `json:"stop"`
+}
+
+// PresetDetail is the full content of one preset.
+type PresetDetail struct {
+	Name        string          `json:"name"`
+	Builtin     bool            `json:"builtin"`
+	Description string          `json:"description,omitempty"`
+	Channels    []PresetChannel `json:"channels"`
+}
+
+// PresetDetailer is optionally implemented by a PresetStore: GET
+// /api/presets/{name}. fs.ErrNotExist → 404.
+type PresetDetailer interface {
+	Detail(name string) (PresetDetail, error)
+}
+
+// PresetRenamer is optionally implemented by a PresetStore: POST
+// /api/presets/{name}/rename. ErrPresetBuiltin (either name) → 409,
+// fs.ErrNotExist → 404, fs.ErrExist (target taken) → 409.
+type PresetRenamer interface {
+	Rename(oldName, newName string) error
+}

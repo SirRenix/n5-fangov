@@ -636,3 +636,46 @@ func daemonOfCooldown(cfg config.Config) time.Duration { return cfg.Daemon.Alert
 // installAlertTemplate writes the embedded PVE template pair directly
 // (CLI path outside the sandbox).
 func installAlertTemplate() (string, error) { return alert.InstallTemplate() }
+
+// Detail returns a preset's channel tables (web.PresetDetailer): the
+// operator wants to see what a saved preset contains, not only its names.
+func (s dirPresetStore) Detail(name string) (web.PresetDetail, error) {
+	chans, _, err := s.load(name)
+	if err != nil {
+		return web.PresetDetail{}, err
+	}
+	det := web.PresetDetail{Name: name, Channels: make([]web.PresetChannel, 0, len(chans))}
+	for _, b := range builtinPresetsFor(s.profile) {
+		if b.Name == name {
+			det.Builtin, det.Description = true, b.Description
+		}
+	}
+	for _, c := range chans {
+		det.Channels = append(det.Channels, web.PresetChannel{Name: c.Name, PWM: c.PWM, Sensor: c.Sensor, Curve: c.Curve, Critical: c.Critical, Stop: c.Stop})
+	}
+	return det, nil
+}
+
+// Rename moves a user preset file (web.PresetRenamer). Built-in names are
+// refused on both sides (409), a taken target is never overwritten
+// (fs.ErrExist → 409), a missing source is fs.ErrNotExist (404).
+func (s dirPresetStore) Rename(oldName, newName string) error {
+	if !config.ValidPresetName(oldName) || !config.ValidPresetName(newName) {
+		return fmt.Errorf("preset: invalid name")
+	}
+	if isBuiltinPreset(oldName) || isBuiltinPreset(newName) {
+		return fmt.Errorf("preset %q -> %q: %w", oldName, newName, errPresetBuiltin())
+	}
+	src, dst := presetPath(s.dir, oldName), presetPath(s.dir, newName)
+	if _, err := os.Stat(src); err != nil {
+		return fmt.Errorf("preset %q: %w", oldName, err)
+	}
+	if _, err := os.Stat(dst); err == nil {
+		return fmt.Errorf("preset %q: %w", newName, fs.ErrExist)
+	}
+	if err := os.Rename(src, dst); err != nil {
+		return fmt.Errorf("preset rename: %w", err)
+	}
+	log.Printf("preset %s renamed to %s in %s", oldName, newName, s.dir)
+	return nil
+}

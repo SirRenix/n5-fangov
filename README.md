@@ -12,7 +12,7 @@ community driver [`ltdstudio/minisforum-n5-it5571`](https://github.com/ltdstudio
 Generic hwmon profiles for Nuvoton NCT67xx and ITE IT87xx ship as *from documentation,
 untested* — the dashboard says so, per profile.
 
-> Status: **pre-release** (`0.3.0-beta.2`; the dashboard header shows the `beta` badge
+> Status: **pre-release** (`0.3.0-beta.3`; the dashboard header shows the `beta` badge
 > until a release tag drops the suffix — `n5-fangov version`, `GET /api/version` and
 > `/api/about` carry it as `prerelease`). Validation data, the Bash predecessor `n5-fand`
 > and the measurement scripts live in

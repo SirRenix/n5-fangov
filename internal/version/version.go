@@ -6,7 +6,7 @@ import "strings"
 // Version is the semantic version of this build. A pre-release carries a
 // hyphenated suffix ("0.3.0-beta.1"); `make` overrides it with `git describe`
 // through -X, which yields "v0.3.0-beta.1-3-gabcdef" on commits after a tag.
-var Version = "0.3.0-beta.2"
+var Version = "0.3.0-beta.3"
 
 // Prerelease returns the text after the first "-" of Version ("beta.1"),
 // or "" for a release build. The UI shows it as a badge, GET /api/about

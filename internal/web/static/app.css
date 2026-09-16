@@ -310,4 +310,8 @@ input[type=checkbox]{accent-color:var(--info)}
 .about p{margin:0}
 .about .ab-t{font-size:18px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .about a{color:var(--info)}
-.credits{margin:0;padding-left:18px;display:grid;gap:4px}
+.credits{margin:0;padding-left:18px;display:grid;gap:4px}.ps .pd{flex-basis:100%;display:grid;gap:4px;border-top:1px solid var(--line);padding-top:8px;font-size:12px}
+.ps .pc{display:flex;flex-wrap:wrap;gap:6px 12px;align-items:baseline;color:var(--fg2)}
+.ps .pc b{color:var(--fg);min-width:36px}
+.ps .pc .pts{display:flex;flex-wrap:wrap;gap:4px}
+.ps .pc .pts span{background:var(--bg);border:1px solid var(--line);border-radius:4px;padding:1px 6px;font-family:ui-monospace,monospace}

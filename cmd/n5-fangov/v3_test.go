@@ -369,3 +369,43 @@ func TestAboutInfo(t *testing.T) {
 		t.Errorf("links: %+v", a)
 	}
 }
+
+func TestPresetDetailAndRename(t *testing.T) {
+	dir := t.TempDir()
+	chans := config.N5ProChannels()
+	if err := config.SavePreset(dir, "winter", chans); err != nil {
+		t.Fatal(err)
+	}
+	s := dirPresetStore{dir: dir, profile: "n5pro"}
+	det, err := s.Detail("winter")
+	if err != nil || det.Builtin || len(det.Channels) != len(chans) || det.Channels[0].Sensor != chans[0].Sensor || len(det.Channels[0].Curve) == 0 {
+		t.Fatalf("detail: %+v %v", det, err)
+	}
+	if det, err := s.Detail("n5pro-balanced"); err != nil || !det.Builtin || det.Description == "" || len(det.Channels) != 3 {
+		t.Fatalf("builtin detail: %+v %v", det, err)
+	}
+	if _, err := s.Detail("nope"); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("missing detail: %v", err)
+	}
+	if err := s.Rename("winter", "n5pro-quiet"); !errors.Is(err, web.ErrPresetBuiltin) {
+		t.Fatalf("rename onto builtin: %v", err)
+	}
+	if err := s.Rename("nope", "x"); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("rename missing: %v", err)
+	}
+	if err := config.SavePreset(dir, "summer", chans); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Rename("winter", "summer"); !errors.Is(err, fs.ErrExist) {
+		t.Fatalf("rename onto existing: %v", err)
+	}
+	if err := s.Rename("winter", "cold"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(presetPath(dir, "cold")); err != nil {
+		t.Fatal("renamed file missing")
+	}
+	if _, err := os.Stat(presetPath(dir, "winter")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatal("old file still there")
+	}
+}

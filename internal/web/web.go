@@ -461,6 +461,8 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/presets/{name}/apply", s.applyPreset)
 	m.HandleFunc("PUT /api/presets/{name}", s.savePreset)
 	m.HandleFunc("DELETE /api/presets/{name}", s.deletePreset)
+	m.HandleFunc("GET /api/presets/{name}", s.getPreset)
+	m.HandleFunc("POST /api/presets/{name}/rename", s.renamePreset)
 	m.HandleFunc("GET /api/log", s.getLog)
 	m.HandleFunc("GET /api/log/export", s.exportLog)
 	m.HandleFunc("DELETE /api/log", s.clearLog)

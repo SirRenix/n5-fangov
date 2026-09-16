@@ -880,3 +880,59 @@ func TestHandshakeFilter(t *testing.T) {
 		t.Errorf("handshakeIP = %q", ip)
 	}
 }
+
+func (p *fakePresetDeleter) Detail(name string) (PresetDetail, error) {
+	for _, e := range p.list {
+		if e.Name == name {
+			return PresetDetail{Name: name, Builtin: e.Builtin, Channels: []PresetChannel{{Name: "cpu", PWM: 1, Sensor: "k10temp", Curve: [][2]int{{40, 80}, {80, 255}}, Critical: 88, Stop: "auto"}}}, nil
+		}
+	}
+	return PresetDetail{}, fs.ErrNotExist
+}
+
+func (p *fakePresetDeleter) Rename(oldName, newName string) error {
+	for _, e := range p.list {
+		if e.Name == newName {
+			if e.Builtin {
+				return ErrPresetBuiltin
+			}
+			return fs.ErrExist
+		}
+	}
+	for i, e := range p.list {
+		if e.Name == oldName {
+			if e.Builtin {
+				return ErrPresetBuiltin
+			}
+			p.list[i].Name = newName
+			return nil
+		}
+	}
+	return fs.ErrNotExist
+}
+
+// TestPresetDetailRename: GET /api/presets/{name} shows the tables, rename
+// refuses built-ins and taken names, both are protected.
+func TestPresetDetailRename(t *testing.T) {
+	e, _, _, _ := v3Env(t, adminBasic)
+	wantCode(t, e.do(t, "GET", "/api/presets/quiet", "", nil), 401)
+	r := e.do(t, "GET", "/api/presets/quiet", "", basicAuth("admin", "pw"))
+	wantCode(t, r, 200)
+	if !strings.Contains(r.body, `"curve":[[40,80],[80,255]]`) || !strings.Contains(r.body, `"sensor":"k10temp"`) {
+		t.Errorf("detail = %s", r.body)
+	}
+	wantError(t, e.do(t, "GET", "/api/presets/none", "", basicAuth("admin", "pw")), 404, "unknown preset")
+	wantError(t, e.do(t, "GET", "/api/presets/Bad%20Name", "", basicAuth("admin", "pw")), 400, "invalid")
+	auth := basicAuth("admin", "pw")
+	auth[CSRFHeader] = "1"
+	wantError(t, e.do(t, "POST", "/api/presets/quiet/rename", `{"name":"n5pro-balanced"}`, auth), 409, "built-in")
+	wantError(t, e.do(t, "POST", "/api/presets/n5pro-balanced/rename", `{"name":"x"}`, auth), 409, "built-in")
+	wantError(t, e.do(t, "POST", "/api/presets/none/rename", `{"name":"x"}`, auth), 404, "unknown preset")
+	wantError(t, e.do(t, "POST", "/api/presets/quiet/rename", `{"name":"Bad Name"}`, auth), 400, "invalid")
+	r = e.do(t, "POST", "/api/presets/quiet/rename", `{"name":"silent"}`, auth)
+	wantCode(t, r, 200)
+	if !strings.Contains(r.body, `"name":"silent"`) {
+		t.Errorf("rename = %s", r.body)
+	}
+	wantCode(t, e.do(t, "GET", "/api/presets/silent", "", basicAuth("admin", "pw")), 200)
+}

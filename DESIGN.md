@@ -855,3 +855,15 @@ shows the description; the recommended one gets a second badge.
   `watched`/`extra`, template install into pmxcfs from inside the sandbox, test alert
   delivered via PVE::Notify, 403 on a wrong current password, sessions/alerts mirrors
   0600 in `/var/lib/n5-fangov`, RSS ~8 MB.
+
+### Presets: detail and rename (0.3.0-beta.3)
+
+```
+GET  /api/presets/{name}          → {"name","builtin","description","channels":[{name,pwm,sensor,curve,critical,stop}]}   protected; 404 unknown
+POST /api/presets/{name}/rename   {"name": new} → {"ok","name"}; 409 built-in (either side) or target exists; 404 unknown   protected
+```
+Optional store interfaces `web.PresetDetailer`, `web.PresetRenamer` (cmd `dirPresetStore`
+implements both; rename is `os.Rename` inside the preset directory, never over an
+existing file). UI: *Details* toggles the channel tables under the card (curve points as
+`temp → duty (%)`, critical, stop), *Rename* prompts for the new name (client-side
+name rule + built-in check, server decides).

@@ -199,9 +199,11 @@ const mock = (() => {
 			if (n === 'hdd' && opt.json.duty < 60) return fail('duty 40 below stall_min_duty 60 for hdd', 400);
 			overrides[n] = opt.json.duty; return ok({ ok: true }); }
 		if (p === '/api/presets') return ok(Object.entries(presets).map(([name, v]) => ({ name, channels: v.ch.map(c => c.name), builtin: !!v.builtin, description: v.description })));
-		if (p.startsWith('/api/presets/')) { const n = p.split('/')[3], b = presets[n] && presets[n].builtin;
+		if (p.startsWith('/api/presets/')) { const n = p.split('/')[3], b = presets[n] && presets[n].builtin, sub = p.split('/')[4];
 			if (m === 'PUT') { if (b) return fail('built-in preset', 409); presets[n] = { ch: cfg.channel }; return ok({ ok: true }); }
 			if (m === 'DELETE') { if (b) return fail('built-in preset', 409); if (!presets[n]) return fail('no such preset', 404); delete presets[n]; return ok({ ok: true }); }
+			if (m === 'GET') { if (!presets[n]) return fail('unknown preset ' + n, 404); return ok({ name: n, builtin: !!b, description: presets[n].description, channels: presets[n].ch }); }
+			if (sub === 'rename') { const nn = opt.json.name; if (b || (presets[nn] && presets[nn].builtin)) return fail('built-in preset', 409); if (presets[nn]) return fail('preset exists', 409); presets[nn] = presets[n]; delete presets[n]; return ok({ ok: true, name: nn }); }
 			return wait({ status: n === 'summer' ? 202 : 200, body: { ok: true } }); }
 		if (p === '/api/log' && m === 'DELETE') { logs.length = 0; return ok({ cleared: true, note: 'journal untouched' }); }
 		if (p === '/api/log') return ok({ lines: logs.slice(-(+u.searchParams.get('lines') || 100)), source: 'file' });
@@ -603,19 +605,37 @@ function renderManual() {
 
 // presets (built-ins: badge, no save-over, no delete)
 const chanSummary = chs => (chs || []).map(c => c.name || c).join(' · ');
+// preset details: channel tables loaded on demand (GET /api/presets/{name})
+const presetDetail = async (p, box, btn) => {
+	if (!box.hidden) { box.hidden = true; btn.textContent = 'Details'; return; }
+	try { const d = (await api('/api/presets/' + encodeURIComponent(p.name))).body; clear(box);
+		for (const c of d.channels || []) box.append(h('div', { class: 'pc' }, h('b', null, c.name), h('span', null, `pwm${c.pwm} · ${c.sensor}`),
+			h('span', { class: 'pts' }, ...(c.curve || []).map(([t, dty]) => h('span', null, `${fmtT(t, 0)}${unit()} → ${dty} (${pct(dty)} %)`))),
+			h('span', null, `crit ${fmtT(c.critical, 0)}${unit()} · stop ${c.stop}`)));
+		box.hidden = false; btn.textContent = 'Hide';
+	} catch (e) { toast(e.message, 'err'); }
+};
+const presetRename = async p => { const nn = prompt(`Rename preset “${p.name}” to:`, p.name); if (nn === null) return; const n = nn.trim();
+	if (!/^[a-z0-9_-]{1,64}$/.test(n)) return toast('Name: a-z, 0-9, _ and -, at most 64 characters', 'err');
+	if (builtinNames.includes(n)) return toast(`“${n}” is a built-in preset — pick another name`, 'err');
+	if (await act(() => api(`/api/presets/${encodeURIComponent(p.name)}/rename`, { method: 'POST', json: { name: n } }), `Preset renamed to “${n}”`)) loadPresets(); };
 async function loadPresets() {
 	const host = $('#presets'); try {
 		const list = (await api('/api/presets')).body || []; clear(host);
 		builtinNames = list.filter(p => p.builtin).map(p => p.name);
 		if (!list.length) host.append(h('p', { class: 'empty' }, 'No presets yet.'));
-		for (const p of list) host.append(h('div', { class: 'card ps' },
+		for (const p of list) { const box = h('div', { class: 'pd', hidden: true }), det = h('button', { class: 'btn', onclick: () => presetDetail(p, box, det) }, 'Details');
+			host.append(h('div', { class: 'card ps' },
 			h('span', { class: 'name' }, p.name, p.builtin ? h('span', { class: 'badge builtin' }, 'built-in') : null, /^recommended/i.test(p.description || '') || p.name === 'n5pro-balanced' ? h('span', { class: 'badge rec' }, 'recommended') : null),
 			h('span', { class: 'sum' }, p.description ? h('span', { class: 'desc' }, p.description) : null, chanSummary(p.channels)),
+			det,
 			h('button', { class: 'btn', onclick: async () => { if (!confirm(`Apply preset “${p.name}”? Curves change immediately.`)) return;
 				const r = await act(() => api(`/api/presets/${encodeURIComponent(p.name)}/apply`, { method: 'POST' }), `Preset ${p.name} applied`); if (!r) return;
 				const n = $('#ps-notice'); n.hidden = r.status !== 202; n.textContent = 'Preset written — restart required: systemctl restart n5-fangov'; await loadConfig(); loadEditor(); } }, 'Apply'),
+			p.builtin ? null : h('button', { class: 'btn', onclick: () => presetRename(p) }, 'Rename'),
 			p.builtin ? null : h('button', { class: 'btn danger', onclick: async () => { if (!confirm(`Delete preset “${p.name}”?`)) return;
-				if (await act(() => api('/api/presets/' + encodeURIComponent(p.name), { method: 'DELETE' }), `Preset ${p.name} deleted`)) loadPresets(); } }, 'Delete')));
+				if (await act(() => api('/api/presets/' + encodeURIComponent(p.name), { method: 'DELETE' }), `Preset ${p.name} deleted`)) loadPresets(); } }, 'Delete'),
+			box)); }
 	} catch (e) { clear(host).append(h('p', { class: 'empty' }, 'presets: ' + e.message)); }
 }
 on('#ps-save', 'submit', async ev => { ev.preventDefault(); const n = $('#ps-name').value.trim();
