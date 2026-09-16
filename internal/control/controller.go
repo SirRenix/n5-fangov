@@ -471,8 +471,27 @@ func (c *Controller) interval() time.Duration {
 	return c.cfg.Daemon.Interval
 }
 
-// cycle is one regulation step (port of the Bash loop body). It returns
-// ErrDeviceLost when the failsafe could not write any channel for
+// cycleState is what the four steps of a cycle hand each other: the
+// config and channel set taken under the lock at the start, the overrides
+// in effect, and what readSensors produced for the later steps.
+type cycleState struct {
+	n       int
+	d       config.Daemon
+	chans   []*channel
+	ovr     map[string]int   // overrides in effect (copy)
+	watched []*watchedSensor // watched sensors (dashboard)
+
+	// readSensors: channels with an unknown temperature, extra and
+	// watched readings for the snapshot.
+	nBad        int
+	extra       map[string]float64
+	watchedVals map[string]float64
+}
+
+// cycle is one regulation step (port of the Bash loop body): it takes the
+// config, channel set and overrides under the lock, then runs the four
+// steps readSensors → computeTargets → checkStall → writeAndFinish. It
+// returns ErrDeviceLost when the failsafe could not write any channel for
 // deviceLostCycles consecutive cycles.
 func (c *Controller) cycle() error {
 	c.opts.Notify()
@@ -497,12 +516,22 @@ func (c *Controller) cycle() error {
 		c.reresolve(chans)
 	}
 
-	// -- sensors ----------------------------------------------------------
-	// Every channel is judged on its own: a sensor that is unresolved,
-	// unreadable, implausible or frozen puts only its channel at the safe
-	// duty (mode sensor-error, see safeDuty); the other channels keep
-	// regulating. Only when every channel is affected does the cycle
-	// status become "sensor-error".
+	cs := &cycleState{n: n, d: d, chans: chans, ovr: ovr, watched: watched}
+	c.readSensors(cs)
+	c.computeTargets(cs)
+	c.checkStall(cs)
+	return c.writeAndFinish(cs)
+}
+
+// readSensors reads every channel sensor, the extra and watched sensors
+// and the tachometers, and raises the sensor alert on a transition.
+// Every channel is judged on its own: a sensor that is unresolved,
+// unreadable, implausible or frozen puts only its channel at the safe
+// duty (mode sensor-error, see safeDuty); the other channels keep
+// regulating. Only when every channel is affected does the cycle
+// status become "sensor-error".
+func (c *Controller) readSensors(cs *cycleState) {
+	n, d, chans, watched := cs.n, cs.d, cs.chans, cs.watched
 	for _, ch := range chans {
 		ch.tempOK = false
 		ch.sensorErr = ""
@@ -572,8 +601,8 @@ func (c *Controller) cycle() error {
 		}
 		ch.sensorBad = bad
 	}
-	extra := c.readExtra()
-	watchedVals := c.readWatched(watched, n)
+	cs.extra = c.readExtra()
+	cs.watchedVals = c.readWatched(watched, n)
 	c.readRPMs(chans)
 
 	if len(newlyBad) > 0 {
@@ -597,8 +626,14 @@ func (c *Controller) cycle() error {
 	} else {
 		c.logClear("sensor")
 	}
+	cs.nBad = nBad
+}
 
-	// -- targets ----------------------------------------------------------
+// computeTargets sets every channel's target and mode from the curve, the
+// override and the critical temperature (rules 4 and 5); a channel whose
+// temperature is unknown goes to its safe duty.
+func (c *Controller) computeTargets(cs *cycleState) {
+	chans, ovr := cs.chans, cs.ovr
 	crit := false
 	var critParts []string
 	for _, ch := range chans {
@@ -625,8 +660,14 @@ func (c *Controller) cycle() error {
 	if crit {
 		c.raise("temp", "critical temperature reached: "+strings.Join(critParts, " ")+" -> 255")
 	}
+}
 
-	// -- stall ------------------------------------------------------------
+// checkStall runs the stall detection and recovery on every channel with
+// a tachometer (rule 6): 0 RPM at a duty that should turn the fan for
+// stall_cycles → 255 and alert; back to the curve after stallRecoverCycles
+// with RPM > 0.
+func (c *Controller) checkStall(cs *cycleState) {
+	d, chans := cs.d, cs.chans
 	for _, ch := range chans {
 		if !ch.hasTach {
 			continue
@@ -658,8 +699,14 @@ func (c *Controller) cycle() error {
 			ch.stallCnt = 0
 		}
 	}
+}
 
-	// -- slew + write -----------------------------------------------------
+// writeAndFinish slews and writes the targets (writePhase), runs the
+// failsafe after repeated write errors, and publishes the snapshot,
+// history and the periodic log line (finishCycle). It returns
+// ErrDeviceLost from noteFailsafe.
+func (c *Controller) writeAndFinish(cs *cycleState) error {
+	n, d, chans, nBad := cs.n, cs.d, cs.chans, cs.nBad
 	werr, wrote := c.writePhase(chans, d, n)
 	status := StatusOK
 	var lost error
@@ -683,7 +730,7 @@ func (c *Controller) cycle() error {
 	if nBad > 0 && nBad == len(chans) {
 		status = StatusSensorError
 	}
-	c.finishCycle(chans, extra, watchedVals, status, d)
+	c.finishCycle(chans, cs.extra, cs.watchedVals, status, d)
 	return lost
 }
 
