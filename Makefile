@@ -28,7 +28,7 @@ export CGO_ENABLED = 0
 export GOOS        = linux
 export GOARCH      = $(ARCH)
 
-.PHONY: build check test-race verify-deploy deb release clean version
+.PHONY: build check test-race verify-deploy deb release hooks secrets clean version
 
 build:
 	mkdir -p $(DIST)
@@ -111,3 +111,14 @@ release: build
 # Over the Docker builder: tools/remote-go.ps1 -Image golang:1.26-bookworm -Cmd "make test-race".
 test-race:
 	CGO_ENABLED=1 go test -race -count=1 ./...
+
+# hooks: enable the repository's git hooks (pre-commit runs gitleaks over the
+# staged changes; see .githooks/pre-commit and .gitleaks.toml).
+hooks:
+	git config core.hooksPath .githooks
+	@echo "pre-commit hook enabled (needs gitleaks on PATH)"
+
+# secrets: scan the working tree and the whole history with the repository rules.
+secrets:
+	gitleaks dir . --config .gitleaks.toml --no-banner
+	gitleaks git . --config .gitleaks.toml --no-banner

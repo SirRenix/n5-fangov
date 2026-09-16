@@ -1,3 +1,56 @@
+# --- build output -----------------------------------------------------------
 dist/
+build/
 *.exe
+*.deb
+*.test
+*.out
+coverage.*
 /n5-fangov
+/n5-fangov-*
+
+# --- local environment / secrets (never commit) ------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.cer
+*.p12
+*.pfx
+sessions.json
+alerts.json
+*.token
+*.secret
+
+# --- local configuration and backups -----------------------------------------
+config.toml
+!deploy/config.example.toml
+*.bak
+*.bak-*
+*.orig
+*.rej
+*.swp
+*.swo
+*~
+
+# --- logs ---------------------------------------------------------------------
+*.log
+*.log.[0-9]*
+logs/
+
+# --- IDE / editor / OS ------------------------------------------------------------
+.vscode/
+.idea/
+*.iml
+.fleet/
+.claude/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- scratch ------------------------------------------------------------------------
+tmp/
+scratch/
+*.tmp
