@@ -12,8 +12,11 @@ community driver [`ltdstudio/minisforum-n5-it5571`](https://github.com/ltdstudio
 Generic hwmon profiles for Nuvoton NCT67xx and ITE IT87xx ship as *from documentation,
 untested* — the dashboard says so, per profile.
 
-> Status: pre-release. Validation data, the Bash predecessor `n5-fand` and the
-> measurement scripts live in [`minisforum-n5pro-fan-proxmox`](https://github.com/SirRenix/minisforum-n5pro-fan-proxmox).
+> Status: **pre-release** (`0.3.0-beta.1`; the dashboard header shows the `beta` badge
+> until a release tag drops the suffix — `n5-fangov version`, `GET /api/version` and
+> `/api/about` carry it as `prerelease`). Validation data, the Bash predecessor `n5-fand`
+> and the measurement scripts live in
+> [`minisforum-n5pro-fan-proxmox`](https://github.com/SirRenix/minisforum-n5pro-fan-proxmox).
 
 ## Why
 
@@ -40,7 +43,8 @@ untested* — the dashboard says so, per profile.
 | Critical temperature | 255 immediately, also in manual mode |
 
 Alerts go to the Proxmox notification stack (`PVE::Notify`, template `n5-fangov`) when
-running on PVE, otherwise `mail(1)`; always to the journal.
+running on PVE, otherwise `mail(1)`; always to the journal. The transport is configurable
+and testable from the dashboard (see [Alerts](#alerts)).
 
 ## Install
 
@@ -50,8 +54,8 @@ running on PVE, otherwise `mail(1)`; always to the journal.
 n5-fangov setup
 ```
 
-The installer puts the binary, the units, the apt hook and the log directory in
-place and enables the unit. It writes **no** config and starts nothing — that is
+The installer puts the binary, the units, the apt hook, the log directory and (on PVE)
+the notification template pair in place and enables the unit. It writes **no** config and starts nothing — that is
 `setup`. N5 Pro only: the kernel module must be installed first (DKMS package from
 the sibling repo, `experimental_write=1`); `setup` refuses without a detected profile.
 
@@ -81,8 +85,10 @@ systemctl enable --now n5-fangov
 n5-fangov status
 ```
 
-Change the password later with `n5-fangov passwd` (edits the file in place, restart to
-apply). The reference with every key explained is `/usr/share/doc/n5-fangov/config.example.toml`.
+Change the user or password later in the dashboard (settings gear → *Change password…* /
+*Change user…*, takes effect at once) or with `n5-fangov passwd` (edits the file in place,
+restart to apply). The reference with every key explained is
+`/usr/share/doc/n5-fangov/config.example.toml`.
 
 ## Use
 
@@ -95,11 +101,49 @@ n5-fangov log -n 50              log file (journal when no file is configured)
 n5-fangov test 3                 channel verification run (daemon must be stopped)
 n5-fangov export settings.json   config + presets as one JSON bundle
 n5-fangov cert info              dashboard certificate (see HTTPS)
+n5-fangov alerts status          alert transport, PVE template, recent alerts (see Alerts)
 ```
 
 Web dashboard: `http://127.0.0.1:8010` (`local`) or `https://<host>:8010` (`lan`). Tabs:
-Overview, Curves, Manual, Presets, Log, Compatibility; the lock icon in the header opens
-the certificate panel (download, trust, regenerate, upload).
+Overview, Curves, Manual, Presets, Alerts, Log, Compatibility, About; the lock icon in the
+header opens the certificate panel (download, trust, regenerate, upload), the gear the
+settings with the account forms.
+
+## Dashboard access
+
+With `auth = "basic"` the dashboard has two faces, enforced by the server (the UI only
+mirrors it):
+
+| | Anonymous | Signed in |
+|---|---|---|
+| Overview | channel cards and the two charts (`GET /api/state` and `/api/history` in a **reduced** form: name, pwm, sensor, temp, duty, target, rpm, mode — no hwmon path, no EC temperatures, no alert stamps, no extra sensors) | full: plus the Sensors card, the extra-sensor chart, System details, recent alerts |
+| About tab, version | full | full |
+| Curves, Manual, Presets, Alerts, Log, Compatibility, certificate panel, settings gear | hidden; the API answers 401 | full |
+
+Nothing pops up for an anonymous visitor: the reduced Overview is the landing page, the
+**Sign in** button in the header opens the form. Basic auth stays accepted on every
+protected request (CLI, curl, scripts), the cookie session is for browsers:
+
+- **Remember me** keeps the session for 30 days on that browser, otherwise 12 hours.
+  Sessions survive a daemon restart — including the restart a config change may
+  require — because they are mirrored to `/var/lib/n5-fangov/sessions.json` (0600, tokens
+  stored hashed; at most 50, oldest dropped).
+- **Sign out** revokes the session and clears the cookie. The settings gear lists the
+  active sessions (id, created, last seen, IP, remember) and offers *Sign out other
+  sessions*.
+- **Change password… / Change user…** (settings gear) ask for the current password, write
+  the new `password_hash` (or `user`) into the config file in place — comments and every
+  other key untouched — apply it at once and sign every *other* session out. User names
+  are `[A-Za-z0-9_.-]{1,32}`, passwords 8..128 characters. A wrong current password
+  counts as a failed login for the rate limiter. `n5-fangov passwd` still works from the
+  shell (restart to apply) — for a forgotten password, for instance.
+- With `auth = "none"` every visitor counts as signed in; the account forms answer
+  `409 auth is none`.
+
+The cookie is `HttpOnly; SameSite=Strict` (`Secure` over TLS); state-changing requests
+additionally need the `X-N5-Fangov-Csrf: 1` header the UI always sends, which is the
+CSRF defence for the cookie session. Failed logins throttle exactly like failed basic
+auth (5 free, then 250 ms doubling to 2 s per client IP).
 
 ## HTTPS
 
@@ -259,15 +303,17 @@ The API changes fan duties, so treat the port like a management interface.
   `listen` to `127.0.0.1:8010` and logs `auth misconfigured — web bound to loopback`.
   `auth = "none"` on a non-loopback address is allowed (still HTTPS) but logged as a
   warning at every start and by `n5-fangov check`.
-- **What auth covers.** With `auth = "basic"`, every write (PUT/POST/DELETE) plus
-  `GET /api/config`, `GET /api/log` and the export/import endpoints need credentials.
-  State, history, presets, profiles and the dashboard itself stay readable. Failed
-  logins are throttled per client IP (5 free, then 250 ms doubling to 2 s, reset after
-  10 min or a success) and logged with user name and IP — only when an `Authorization`
-  header was actually presented; the anonymous 401 the UI gets before login is not a
-  failure. At most 4 delayed attempts per IP are in flight at once; further ones get
-  an immediate `429` without a hash computation, so parallel requests cannot
-  side-step the delay or burn CPU on PBKDF2.
+- **What auth covers.** With `auth = "basic"`, everything under `/api/` needs
+  credentials (cookie session or Basic) except `GET /api/version`, `/api/about`,
+  `/api/session`, the login/logout endpoints and the **reduced** `GET /api/state` /
+  `/api/history` (channel temperatures, duties, RPM and modes — see Dashboard access).
+  Config, sensors, presets, profiles, log, certificate downloads, alerts, account and
+  every write are protected. Failed logins are throttled per client IP (5 free, then
+  250 ms doubling to 2 s, reset after 10 min or a success) and logged with user name and
+  IP — only when a credential was actually presented; the anonymous 401 the UI gets
+  before login is not a failure. At most 4 delayed attempts per IP are in flight at
+  once; further ones get an immediate `429` without a hash computation, so parallel
+  requests cannot side-step the delay or burn CPU on PBKDF2.
 - **The hash never leaves the daemon.** `GET /api/config` and the settings export show
   `password_hash = "<unchanged>"`; sending that text back keeps the stored hash.
 - **Host header check (DNS rebinding).** Requests are only served for IP literals,
@@ -277,8 +323,9 @@ The API changes fan duties, so treat the port like a management interface.
   `allowed_hosts`. `"*"` disables the check.
 - **CSRF.** Every write needs the header `X-N5-Fangov-Csrf: 1`; a browser form or
   cross-site fetch cannot add it without CORS, which the API does not offer.
-- Changing `[web]` or `[log]` settings takes a restart; `PUT /api/config` reloads curves,
-  sensors and `[daemon]` values only.
+- Changing `[web]` or `[log]` settings takes a restart (except user/password through the
+  account forms); `PUT /api/config` reloads curves, sensors, `[daemon]`, `[alert]` and
+  `[dashboard]` values.
 
 ## Configure
 
@@ -296,6 +343,100 @@ stop = 140            # fixed stop duty: the EC won't regulate this channel afte
 
 Sensor sources: `k10temp`, `coretemp`, `nvme:max`, `drivetemp:max`, `hwmon:<name>:tempN`,
 `ec:<label>` (N5 Pro EC temperatures). Invalid values fall back to defaults with a warning.
+
+In the Curves tab, *+ add point* inserts a point at the middle of the widest temperature
+gap (duty interpolated) and keeps the table sorted; editing a temperature re-sorts the
+rows when the field loses focus.
+
+### Presets
+
+`/etc/n5-fangov/presets/<name>.toml` holds only `[[channel]]` tables; *Save current
+curves as…* writes one, *Apply* replaces the channel set of the config file with it and
+reloads (a changed channel set or profile answers "restart required"), *Delete* removes a
+user preset. Three N5 Pro sets are **built in** (embedded in the binary, listed for the
+`n5pro` profile only, never saved over or deleted — the API answers 409):
+
+| Preset | cpu (`k10temp`, critical 88) | ssd (`nvme:max`, critical 72) | hdd (`drivetemp:max`, stop 140) |
+|---|---|---|---|
+| `n5pro-quiet` — lowest noise, HDD group settles around 45 °C | `[[30,25],[61,163],[85,255]]` | `[[35,55],[65,255]]` | `[[26,63],[55,92],[56,255]]`, critical 66 |
+| `n5pro-balanced` — **recommended**: HDD group held near 40 °C, audible under load only | `[[35,60],[60,150],[80,255]]` | `[[35,74],[55,160],[68,255]]` | `[[30,87],[42,140],[50,200],[55,255]]`, critical 60 |
+| `n5pro-cool` — drives first, noise second | `[[30,85],[55,170],[75,255]]` | `[[30,90],[50,180],[65,255]]` | `[[28,105],[38,150],[45,210],[50,255]]`, critical 58 |
+
+Duty → RPM on the N5 Pro (measured): CPU 85→2000, 140→3120, 255→5073; SSD 74→2130,
+255→4687; HDD 87→1237, 105→1650, 140→2250, 179→2725, 255→3540. The HDD channel keeps
+`stop = 140` in every set because the EC does not regulate it after a write. A user
+preset file with a built-in name is shadowed by the built-in (logged when listing).
+
+### Extra sensors on the dashboard
+
+```toml
+[dashboard]
+sensors = ["hwmon:amdgpu:temp1", "ec:system"]   # 0..8 ids, same forms as channel sensors
+```
+
+The signed-in Overview lists every readable temperature (`GET /api/sensors`, grouped
+CPU / SSD / HDD / GPU / NIC / EC / other); the *chart* toggle per row adds or removes the id
+here (`PUT /api/dashboard`). Watched sensors are read once per cycle after the channel
+sensors, recorded in the history (`history[].extra`) and drawn in the *Extra sensors*
+chart card; they never influence regulation. An id whose device is absent right now is
+kept with a warning and charted once it appears; an id that is not a known form is
+refused. The list applies without a restart, also when edited in the config file.
+
+## Alerts
+
+```toml
+[alert]
+transport = "auto"     # auto | pve | mail | log | off
+mail_to = "root"       # mail transport only: local user or address
+```
+
+`auto` (the default) takes `PVE::Notify` when `/usr/share/perl5/PVE/Notify.pm` and perl
+are present, else `mail(1)` to `mail_to`, else the journal only. `pve` or `mail` without
+their tool degrade in that same order and `n5-fangov check` says so; `off` drops every
+alert but still writes a `suppressed (transport off)` line to the journal. Cooldown per
+kind is `[daemon].alert_cooldown` (30 min default) for the daemon's alerts; the
+onfailure unit and the apt hook keep their own 30-min stamps.
+
+The **Alerts tab** shows the configured and the effective transport, which tools the box
+has, the PVE template state, the cooldown, every alert kind with its last delivery, and
+the recent alerts (newest first, the last 50, kept across restarts in
+`/var/lib/n5-fangov/alerts.json`). Actions:
+
+- **Save** transport and `mail_to` — written to the config file in place and hot-applied;
+  no restart. A `PUT /api/config`, a settings import or a preset apply re-applies whatever
+  `[alert]` the written file contains.
+- **Send test alert** — kind `test`, no cooldown, through the real transport; the response
+  carries the delivery error when perl/mail fail. It also lands in the recent list.
+- **Install / Update template** — writes the two PVE notification template files
+  (`n5-fangov-subject.txt.hbs`, `n5-fangov-body.txt.hbs`, embedded in the binary) to
+  `/etc/pve/notification-templates/default/`. The button is disabled with the reason when
+  the directory is missing or not writable: the daemon's sandbox may write *into* that
+  directory but cannot create it, so on a fresh box `install.sh` or `n5-fangov alerts
+  template` (root, outside the sandbox) create it. *Current* compares the installed files
+  with the embedded ones after an upgrade.
+
+**The PVE side.** Alerts arrive as severity *warning* with the fields `type = n5-fangov`,
+`hostname` and `kind = <alert kind>`. Without a matcher they follow the default matcher
+(mail to root). To route them: *Datacenter → Notifications → Notification Matchers →
+Add*, match field `type` = `n5-fangov` (or `kind` = `stall`, `temp`, …) and pick the
+target (SMTP, Gotify, webhook). The template gives the mail its subject
+`[<host>] n5-fangov: <kind>` and body.
+
+Alert kinds: `sensor` (channel sensor unusable → safe duty), `stall` (0 RPM → 255), `temp`
+(critical temperature → 255), `write` (write errors → failsafe), `config` (parse
+warnings, defaults in effect), `config-channels` (channel set corrected), `restart` /
+`failed` (onfailure unit), `kernel` (DKMS module missing for a bootable kernel), `tls`
+(custom certificate unreadable, automatic one served), `test`.
+
+```
+n5-fangov alerts status          transport, tools, template, last alert per kind, recent alerts
+n5-fangov alerts test            send a test alert now
+n5-fangov alerts template        install/update the PVE template pair
+```
+
+`status` and `test` go through the daemon's socket when it runs (the test then shows in
+the dashboard), otherwise they work on the config file. `template` asks the daemon first
+and writes the files itself when that fails for anything but "not a PVE host".
 
 ## Logs
 
@@ -332,8 +473,8 @@ n5-fangov export settings.json       # {"format":1, config: <toml>, presets: {na
 n5-fangov import settings.json       # validates everything, then writes and reloads
 ```
 
-The export is the config file text (comments included) plus every preset, with the
-password hash redacted to `<unchanged>`. `import` refuses the whole bundle when any
+The export is the config file text (comments included) plus every user preset (the
+built-in ones travel with the binary), with the password hash redacted to `<unchanged>`. `import` refuses the whole bundle when any
 part fails to parse — nothing is written in that case. `<unchanged>` is resolved from
 the password stored on the importing machine; on a fresh box run `n5-fangov passwd`
 first (or put a real hash into the bundle). Presets that exist locally but not in the
@@ -366,7 +507,8 @@ BIOS/EC control (safe, but unregulated for the drives). Two gates catch this:
 What a Proxmox upgrade **can** affect: the kernel (above), `dkms` itself, perl/
 `PVE::Notify` for alerts. What it **cannot**: the config, presets, TLS certificate and
 logs live under `/etc/n5-fangov` and `/var/log/n5-fangov` and are never touched by
-package scripts (purge removes them).
+package scripts (purge removes them). The state directory `/var/lib/n5-fangov`
+(sessions, alert history) is removed with the package; nothing in it is worth keeping.
 
 ## Hardening
 
@@ -376,13 +518,13 @@ on real hardware after every change — `/sys` writes are what most sandboxes fo
 | Setting | Effect |
 |---|---|
 | `NoNewPrivileges=yes`, `LockPersonality=yes`, `RestrictRealtime=yes` | no privilege escalation from the daemon |
-| `ProtectSystem=strict` + `ReadWritePaths=-/etc/n5-fangov -/run/n5-fangov -/var/log/n5-fangov -/sys/class/hwmon -/sys/devices -/var/spool/postfix/maildrop` | whole file system read-only except config/presets/tls, runtime dir, logs, the hwmon attributes and the postfix maildrop (alerts via `mail`); `-` = a missing path does not fail the start |
+| `ProtectSystem=strict` + `ReadWritePaths=-/etc/n5-fangov -/run/n5-fangov -/var/log/n5-fangov -/var/lib/n5-fangov -/sys/class/hwmon -/sys/devices -/var/spool/postfix/maildrop -/etc/pve/notification-templates` | whole file system read-only except config/presets/tls, runtime dir, logs, state dir, the hwmon attributes, the postfix maildrop (alerts via `mail`) and the PVE template directory (the Alerts tab's install button; verified on the reference host — the daemon may write into it but cannot create it); `-` = a missing path does not fail the start |
 | `ProtectKernelTunables=no` | **must stay `no`**: the pwm files are kernel tunables |
 | `ProtectHome=yes`, `PrivateTmp=yes`, `PrivateDevices=yes`, `ProtectControlGroups=yes` | no access to home, private /tmp, no physical devices in /dev, cgroups read-only |
 | `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK`, `RestrictNamespaces=yes` | socket, TCP/HTTP(S), netlink for the interface list (`net.Interfaces()` — the fallback when the TLS certificate needs the box's addresses), nothing else |
 | `MemoryDenyWriteExecute=yes`, `SystemCallArchitectures=native`, `SystemCallFilter=@system-service` | no JIT/exec tricks, native syscalls only, no module loading |
 | `CapabilityBoundingSet=` (empty) | the daemon runs as uid 0 but holds no capability: it never loads modules (modules-load.d does), never chowns, and root's own files and the root-owned sysfs attributes need none |
-| `UMask=0077`, `LogsDirectory=n5-fangov` (`0750`), `RuntimeDirectory=n5-fangov` (`0750`) | files private by default |
+| `UMask=0077`, `LogsDirectory=n5-fangov` (`0750`), `RuntimeDirectory=n5-fangov` (`0750`), `StateDirectory=n5-fangov` (`0700`) | files private by default; `/var/lib/n5-fangov` holds `sessions.json` (hashed session tokens — secrets, hence 0700) and `alerts.json`. `serve --state-dir DIR` / `N5FANGOV_STATE_DIR` move it; an unwritable one is logged once and the daemon runs without persistence (sessions and history in memory) |
 
 **Alert delivery under the sandbox.** Alerts run `perl -MPVE::Notify` or `mail(1)`
 from inside this sandbox. Verified: **PVE notification targets of type SMTP** (the
@@ -393,10 +535,10 @@ hand the message to postfix's `postdrop`, which writes into
 `0730 postfix:postdrop` and `NoNewPrivileges` suppresses the setgid bit `postdrop`
 relies on, so this path additionally needs `CAP_DAC_OVERRIDE`. Not verified; if you
 need it, add a drop-in (`systemctl edit n5-fangov`) with
-`CapabilityBoundingSet=CAP_DAC_OVERRIDE` and test with an alert the daemon itself
-sends from inside the sandbox (e.g. a deliberately invalid value in the config plus
-`systemctl restart n5-fangov` → `config` alert; `n5-fangov alert` from a shell runs
-outside the sandbox and proves nothing). A failed delivery is logged
+`CapabilityBoundingSet=CAP_DAC_OVERRIDE` and test with the Alerts tab's *Send test
+alert* — that one is sent by the daemon from inside the sandbox and reports the
+delivery error (`n5-fangov alert` or `alerts test` from a shell with the daemon stopped
+run outside the sandbox and prove nothing). A failed delivery is logged
 (`alert: ... failed`), the alert text is always in the journal.
 
 `make verify-deploy` runs `systemd-analyze verify` over the units and `apt-config`
@@ -418,6 +560,17 @@ No Go toolchain needed locally: `tools/remote-go.ps1` builds in a `golang:1.25-a
 container (static, `CGO_ENABLED=0`). Or plainly: `CGO_ENABLED=0 go build ./cmd/n5-fangov`.
 `make deb` builds the Debian package.
 
-## License
+## About and license
 
-GPL-2.0-only. Layout of the dashboard inspired by ProxFansX; no code shared.
+GPL-2.0-only ([text](https://www.gnu.org/licenses/old-licenses/gpl-2.0.html)). The
+dashboard's About tab (public, `GET /api/about`) carries name, version with the
+pre-release tag, license, repository and author links, the Go version the binary was
+built with, and the credits: [`ltdstudio/minisforum-n5-it5571`](https://github.com/ltdstudio/minisforum-n5-it5571)
+(the kernel driver for the IT5571 EC) and [`Sl0thC0der/proxfansx`](https://github.com/Sl0thC0der/proxfansx)
+(the dashboard idea; no code shared). A UI mock for screenshots and layout work runs with
+`?mock=1` (`&auth=none`, `&user=1` for the signed-in variants; login `admin`/`admin`).
+
+Versioning: `internal/version.Version` is `0.3.0-beta.1`; `make` overrides it with
+`git describe` (`v0.3.0-beta.1-3-gabcdef` on commits after a tag). The Debian package
+version maps `-alpha`/`-beta`/`-rc` to `~` (so `0.3.0~beta.1` sorts before `0.3.0`) and
+every other `-` to `+` (`0.3.0~beta.1+3+gabcdef` sorts after the tag it is based on).
