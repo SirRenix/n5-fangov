@@ -85,7 +85,7 @@ deb: build
 	install -m 0644 deploy/apt-90n5-fangov.conf        $(PKGDIR)/usr/share/n5-fangov/apt-90n5-fangov.conf
 	install -m 0644 deploy/pve-notification/*.hbs      $(PKGDIR)/usr/share/n5-fangov/pve-notification/
 	install -m 0644 deploy/README-DEPLOY.md DESIGN.md  $(PKGDIR)/usr/share/doc/n5-fangov/
-	install -m 0644 LICENSE                            $(PKGDIR)/usr/share/doc/n5-fangov/copyright
+	install -m 0644 deploy/debian/copyright            $(PKGDIR)/usr/share/doc/n5-fangov/copyright
 	sed -e 's/@VERSION@/$(DEBVER)/' -e 's/^Architecture: .*/Architecture: $(ARCH)/' \
 	    deploy/debian/control.in > $(PKGDIR)/DEBIAN/control
 	install -m 0755 deploy/debian/postinst deploy/debian/prerm deploy/debian/postrm $(PKGDIR)/DEBIAN/

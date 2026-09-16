@@ -73,6 +73,19 @@ MemoryDenyWriteExecute=yes
 RestrictRealtime=yes
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
+# Cost-free directives that back the empty capability set up (the daemon
+# runs as uid 0 without capabilities; these keep a code-execution bug in
+# the web handler from reaching what the capabilities would have guarded):
+# no module load/unload, no kernel log ring, no clock or hostname change,
+# no SUID/SGID files, other processes' /proc entries hidden. ProcSubset is
+# NOT set: sysinfo reads /proc/cpuinfo, meminfo, uptime, loadavg and
+# /proc/sys/kernel/osrelease.
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+ProtectProc=invisible
 # The daemon runs as root but needs no capability (M2): sysfs attributes
 # are writable for uid 0 without CAP_DAC_OVERRIDE, the files it writes are
 # its own, and the kernel module is loaded by modules-load.d, never from
