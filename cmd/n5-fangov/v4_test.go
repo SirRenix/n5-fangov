@@ -3,12 +3,10 @@ package main
 // Regression tests for the v0.4 audit fixes on the cmd side
 // (docs/AUDIT.md): password/user rules of setup and passwd, the legacy
 // hash advisory of check, the alert kind list, CLI argument validation,
-// journald priority prefixes and absolute path flags.
+// the TOML string quoter and the bundle hash restore.
 
 import (
-	"bytes"
 	"io"
-	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -142,18 +140,6 @@ func TestCheckLegacyHashAdvisory(t *testing.T) {
 	if _, ok := find(runChecks(cfg, dir), "web auth"); ok {
 		t.Fatal("pbkdf2 hash reported as legacy")
 	}
-}
-
-// logCapture redirects the standard logger for the duration of f.
-func logCapture(f func()) string {
-	var buf bytes.Buffer
-	old := log.Writer()
-	flags := log.Flags()
-	log.SetOutput(&buf)
-	log.SetFlags(0)
-	defer func() { log.SetOutput(old); log.SetFlags(flags) }()
-	f()
-	return buf.String()
 }
 
 // TestAlertKindsComplete: every alert kind raised anywhere in the code

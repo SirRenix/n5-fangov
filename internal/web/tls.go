@@ -343,7 +343,7 @@ func formPart(r *http.Request, name string) ([]byte, error) {
 		defer f.Close()
 		b, err := io.ReadAll(io.LimitReader(f, maxTLSUpload+1))
 		if err != nil {
-			return nil, fmt.Errorf("%s: %v", name, err)
+			return nil, fmt.Errorf("%s: %w", name, err)
 		}
 		if len(b) > maxTLSUpload {
 			return nil, fmt.Errorf("%s exceeds %d bytes", name, maxTLSUpload)

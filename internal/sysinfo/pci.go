@@ -89,7 +89,7 @@ func (c *Collector) pciDevices(fail func(string, error)) []pciDevice {
 	}
 	names, err := c.runLspci()
 	if err != nil {
-		fail("lspci", fmt.Errorf("%v (device names from ids only)", err))
+		fail("lspci", fmt.Errorf("%w (device names from ids only)", err))
 		return out
 	}
 	for i := range out {

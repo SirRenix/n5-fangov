@@ -143,8 +143,11 @@ func ParseMemoryModules(table []byte) ([]MemoryModule, error) {
 	arrayECC := map[uint16]bool{}
 	for _, s := range structs {
 		if s.Type == smbiosPhysicalMemoryArray {
-			ecc := s.u8(0x06) // Memory Error Correction: 03 none, 04 parity, 05/06 ECC, 07 CRC
-			arrayECC[s.Handle] = ecc == 0x05 || ecc == 0x06 || ecc == 0x07
+			// Memory Error Correction (DSP0134 7.17.3): 03 none, 04 parity,
+			// 05 single-bit ECC, 06 multi-bit ECC, 07 CRC. Only 05/06 correct
+			// errors; CRC detects them.
+			ecc := s.u8(0x06)
+			arrayECC[s.Handle] = ecc == 0x05 || ecc == 0x06
 		}
 	}
 	var out []MemoryModule
@@ -172,18 +175,20 @@ func ParseMemoryModules(table []byte) ([]MemoryModule, error) {
 		if m.Type == "" {
 			m.Type = fmt.Sprintf("type 0x%02x", s.u8(0x12))
 		}
-		// SMBIOS 2.7+: configured speed (what the module runs at) wins;
-		// 3.3+: the extended fields carry speeds above 65534 MT/s.
-		if v := s.u16(0x20); v != 0 && v != 0xFFFF {
+		// SMBIOS 2.7+: configured speed (0x20, what the module runs at)
+		// wins over the nominal speed (0x15); 3.3+: a value of 0xFFFF in
+		// either field means "see the extended field" (0x58 configured,
+		// 0x54 nominal) for speeds above 65534 MT/s.
+		switch v := s.u16(0x20); {
+		case v == 0xFFFF && s.u32(0x58) != 0:
+			m.SpeedMTs = int(s.u32(0x58))
+		case v != 0 && v != 0xFFFF:
 			m.SpeedMTs = int(v)
 		}
 		if m.SpeedMTs == 0xFFFF {
 			if v := s.u32(0x54); v != 0 {
 				m.SpeedMTs = int(v)
 			}
-		}
-		if v := s.u32(0x58); m.SpeedMTs == 0xFFFF && v != 0 {
-			m.SpeedMTs = int(v)
 		}
 		if m.SpeedMTs == 0xFFFF {
 			m.SpeedMTs = 0 // unknown
