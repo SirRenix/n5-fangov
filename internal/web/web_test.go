@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -1349,4 +1351,56 @@ func TestTabsHaveHandlers(t *testing.T) {
 			t.Errorf("tab %q has no handler in selectTab's dispatch map", tb[1])
 		}
 	}
+}
+
+// TestPrimaryButtonContrast (AUDIT hoch 5): the primary button's text must
+// keep WCAG AA contrast (4.5:1) on --info in both themes. The dark theme
+// uses var(--bg) as text, the light theme white.
+func TestPrimaryButtonContrast(t *testing.T) {
+	css, err := staticFS.ReadFile("static/app.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(css)
+	if !strings.Contains(s, ".btn.primary{background:var(--info);border-color:var(--info);color:var(--bg)}") || !strings.Contains(s, ":root[data-theme=light] .btn.primary{color:#fff}") {
+		t.Fatal("primary button rules changed; update this test with the new colours")
+	}
+	find := func(block, name string) string {
+		m := regexp.MustCompile(name + `:(#[0-9a-fA-F]{6})`).FindStringSubmatch(block)
+		if m == nil {
+			t.Fatalf("%s not found", name)
+		}
+		return m[1]
+	}
+	dark := s[:strings.Index(s, ":root[data-theme=light]")]
+	light := s[strings.Index(s, ":root[data-theme=light]"):]
+	if c := contrast(find(dark, "--info"), find(dark, "--bg")); c < 4.5 {
+		t.Errorf("dark primary button: %.2f:1 < 4.5", c)
+	}
+	if c := contrast(find(light, "--info"), "#ffffff"); c < 4.5 {
+		t.Errorf("light primary button: %.2f:1 < 4.5", c)
+	}
+}
+
+// contrast is the WCAG 2.x contrast ratio of two #rrggbb colours.
+func contrast(a, b string) float64 {
+	lum := func(hex string) float64 {
+		var rgb [3]float64
+		for i := 0; i < 3; i++ {
+			v, _ := strconv.ParseUint(hex[1+2*i:3+2*i], 16, 8)
+			c := float64(v) / 255
+			if c <= 0.03928 {
+				c /= 12.92
+			} else {
+				c = math.Pow((c+0.055)/1.055, 2.4)
+			}
+			rgb[i] = c
+		}
+		return 0.2126*rgb[0] + 0.7152*rgb[1] + 0.0722*rgb[2]
+	}
+	la, lb := lum(a), lum(b)
+	if la < lb {
+		la, lb = lb, la
+	}
+	return (la + 0.05) / (lb + 0.05)
 }
