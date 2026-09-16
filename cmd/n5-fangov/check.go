@@ -186,6 +186,11 @@ func runChecks(cfgPath, dir string) []checkResult {
 	default:
 		add(true, "web", fmt.Sprintf("listen %s, auth %s, tls %s", wspec.Listen, wspec.Auth, wspec.TLS))
 	}
+	// Legacy password hash (unsalted sha256): still accepted, re-hashed by
+	// the daemon after the next successful sign-in; `passwd` does it now.
+	if wspec.Auth == "basic" && isLegacyHash(wspec.PasswordHash) {
+		adv(false, "web auth", "legacy password hash (unsalted sha256), run: n5-fangov passwd")
+	}
 	// tls = "file" with a missing file: serve disables the web listener
 	// (no plain-HTTP fallback) and keeps regulating — advisory.
 	if wspec.Listen != "" && wspec.TLS == "file" {

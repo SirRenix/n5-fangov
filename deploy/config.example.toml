@@ -36,6 +36,9 @@ tls = "off"             # auto | off | file. Default: "off" on a loopback listen
                         # A non-loopback listen with "off" is forced to "auto": LAN traffic is never plain HTTP.
 cert_file = ""          # tls = "file": PEM certificate (chain); the dashboard upload sets these two to /etc/n5-fangov/tls/custom-*.pem
 key_file = ""           # tls = "file": PEM private key
+behind_tls_proxy = false # true when this (plain-HTTP, loopback) listener is only reached through a
+                        # TLS-terminating reverse proxy: the session cookie is then marked Secure so a
+                        # browser never sends it over plain HTTP. Not needed with tls = "auto"/"file".
 
 [log]
 file = "/var/log/n5-fangov/n5-fangov.log"   # rotating log file in addition to the journal; "" = journal only.

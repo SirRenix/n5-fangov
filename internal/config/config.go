@@ -87,6 +87,10 @@ type Web struct {
 	TLS          string   `toml:"tls"`                     // auto | off | file (see TLSModes)
 	CertFile     string   `toml:"cert_file"`               // tls = "file": PEM certificate (chain) path
 	KeyFile      string   `toml:"key_file"`                // tls = "file": PEM private key path
+	// BehindTLSProxy: the plain-HTTP listener is only reached through a
+	// TLS-terminating reverse proxy; the session cookie is then marked
+	// Secure although the daemon itself serves HTTP.
+	BehindTLSProxy bool `toml:"behind_tls_proxy"`
 }
 
 // TLS modes accepted in web.tls. "auto" is a self-signed certificate the
@@ -503,7 +507,7 @@ func (p *parser) daemon(sec map[string]toml.Primitive, d *Daemon) {
 
 func (p *parser) web(sec map[string]toml.Primitive, w *Web) {
 	const pre = "web"
-	p.unknown(pre, sec, "listen", "auth", "user", "password_hash", "allowed_hosts", "tls", "cert_file", "key_file")
+	p.unknown(pre, sec, "listen", "auth", "user", "password_hash", "allowed_hosts", "tls", "cert_file", "key_file", "behind_tls_proxy")
 	def := Default().Web
 	listen, _ := p.strField(pre, sec, "listen", def.Listen)
 	if _, _, err := net.SplitHostPort(listen); err != nil {
@@ -552,6 +556,22 @@ func (p *parser) web(sec map[string]toml.Primitive, w *Web) {
 		}
 	}
 	p.tls(sec, w)
+	w.BehindTLSProxy = p.boolField(pre, sec, "behind_tls_proxy", def.BehindTLSProxy)
+}
+
+// boolField decodes a boolean; on any problem the default is kept and a
+// warning recorded.
+func (p *parser) boolField(prefix string, sec map[string]toml.Primitive, key string, def bool) bool {
+	prim, ok := sec[key]
+	if !ok {
+		return def
+	}
+	var v bool
+	if err := p.md.PrimitiveDecode(prim, &v); err != nil {
+		p.warn(prefix+"."+key, "not a boolean, default %v used", def)
+		return def
+	}
+	return v
 }
 
 // tls validates web.tls after listen is final: the default depends on it

@@ -516,8 +516,9 @@ func TestJournalLogStoreClearUnsupported(t *testing.T) {
 	}
 }
 
-// M6: the password comes from a file, from stdin ("-") or — still
-// accepted — from the flag; empty sources are refused.
+// The password comes from a file or from stdin ("-"); a literal flag
+// value is refused (it would sit in ps and the shell history), empty
+// sources are refused.
 func TestPasswordFromArgs(t *testing.T) {
 	dir := t.TempDir()
 	pf := filepath.Join(dir, "pw")
@@ -527,8 +528,8 @@ func TestPasswordFromArgs(t *testing.T) {
 	if pw, err := passwordFromArgs("", pf, nil); err != nil || pw != "s3cret" {
 		t.Errorf("file: %q %v", pw, err)
 	}
-	if pw, err := passwordFromArgs("literal", pf, nil); err != nil || pw != "s3cret" {
-		t.Errorf("file wins over literal: %q %v", pw, err)
+	if pw, err := passwordFromArgs("literal", pf, nil); err == nil {
+		t.Errorf("literal next to a file accepted: %q", pw)
 	}
 	if pw, err := passwordFromArgs("-", "", strings.NewReader("from-stdin\nignored\n")); err != nil || pw != "from-stdin" {
 		t.Errorf("stdin: %q %v", pw, err)
@@ -536,8 +537,8 @@ func TestPasswordFromArgs(t *testing.T) {
 	if pw, err := passwordFromArgs("-", "", strings.NewReader("no-newline")); err != nil || pw != "no-newline" {
 		t.Errorf("stdin without newline: %q %v", pw, err)
 	}
-	if pw, err := passwordFromArgs("literal", "", nil); err != nil || pw != "literal" {
-		t.Errorf("literal: %q %v", pw, err)
+	if pw, err := passwordFromArgs("literal", "", nil); err == nil || !strings.Contains(err.Error(), "--password-file") {
+		t.Errorf("literal accepted: %q %v", pw, err)
 	}
 	if pw, err := passwordFromArgs("", "", nil); err != nil || pw != "" {
 		t.Errorf("nothing given must mean ask: %q %v", pw, err)

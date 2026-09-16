@@ -62,6 +62,9 @@ type webSpec struct {
 	TLS          string   // auto | off | file
 	CertFile     string
 	KeyFile      string
+	// BehindTLSProxy marks the session cookie Secure on a plain listener
+	// that sits behind a TLS reverse proxy ([web] behind_tls_proxy).
+	BehindTLSProxy bool
 }
 
 // logSpec is the [log] section.
@@ -87,6 +90,14 @@ func passwordHash(user, password string) string { return web.PasswordHash(user, 
 // verifyPassword checks a password against a stored hash of either form.
 func verifyPassword(user, password, stored string) bool {
 	return web.VerifyPassword(user, password, stored)
+}
+
+// isLegacyHash reports whether a stored password hash is the unsalted
+// sha256("user:password") form (the daemon re-hashes it after the next
+// successful login; `check` points at `passwd`).
+func isLegacyHash(stored string) bool {
+	ph, err := config.ParsePasswordHash(stored)
+	return err == nil && ph.Legacy != nil
 }
 
 // redactedHash is the placeholder the API and bundles use for the stored
@@ -137,6 +148,7 @@ func renderConfig(profileName string, chans []chanSpec, w webSpec) []byte {
 		Listen: w.Listen, Auth: w.Auth, User: w.User, PasswordHash: w.PasswordHash,
 		AllowedHosts: append([]string(nil), w.AllowedHosts...),
 		TLS:          w.TLS, CertFile: w.CertFile, KeyFile: w.KeyFile,
+		BehindTLSProxy: w.BehindTLSProxy,
 	}
 	return config.Marshal(cfg)
 }
@@ -246,14 +258,15 @@ func daemonOf(cfg config.Config) daemonSpec {
 
 func webOf(cfg config.Config) webSpec {
 	return webSpec{
-		Listen:       cfg.Web.Listen,
-		Auth:         cfg.Web.Auth,
-		User:         cfg.Web.User,
-		PasswordHash: cfg.Web.PasswordHash,
-		AllowedHosts: append([]string(nil), cfg.Web.AllowedHosts...),
-		TLS:          cfg.Web.TLS,
-		CertFile:     cfg.Web.CertFile,
-		KeyFile:      cfg.Web.KeyFile,
+		Listen:         cfg.Web.Listen,
+		Auth:           cfg.Web.Auth,
+		User:           cfg.Web.User,
+		PasswordHash:   cfg.Web.PasswordHash,
+		AllowedHosts:   append([]string(nil), cfg.Web.AllowedHosts...),
+		TLS:            cfg.Web.TLS,
+		CertFile:       cfg.Web.CertFile,
+		KeyFile:        cfg.Web.KeyFile,
+		BehindTLSProxy: cfg.Web.BehindTLSProxy,
 	}
 }
 
@@ -533,13 +546,14 @@ func newWebServer(d webDeps) webServer {
 			_, warns, err := config.Parse(raw)
 			return warningStrings(warns), err
 		},
-		Presets:      dirPresetStore{dir: d.PresetDir, cfgPath: d.ConfigPath, svc: d.Service, pin: d.ConfigPin, profile: active},
-		Profiles:     profiles,
-		Version:      version.Version,
-		Auth:         web.AuthConfig{Mode: d.Web.Auth, User: d.Web.User, PasswordHash: d.Web.PasswordHash},
-		Sensors:      sensors,
-		AllowedHosts: allowed,
-		Logf:         log.Printf,
+		Presets:        dirPresetStore{dir: d.PresetDir, cfgPath: d.ConfigPath, svc: d.Service, pin: d.ConfigPin, profile: active},
+		Profiles:       profiles,
+		Version:        version.Version,
+		Auth:           web.AuthConfig{Mode: d.Web.Auth, User: d.Web.User, PasswordHash: d.Web.PasswordHash},
+		Sensors:        sensors,
+		AllowedHosts:   allowed,
+		Logf:           log.Printf,
+		BehindTLSProxy: d.Web.BehindTLSProxy,
 	}
 	if d.Log == nil {
 		d.Log = journalLogStore{}
@@ -672,6 +686,7 @@ func configJSON(cfg config.Config, warns []config.Warning) map[string]any {
 			"password_hash": cfg.Web.PasswordHash, // redacted by the web layer before it leaves the daemon
 			"allowed_hosts": nonNilStrings(cfg.Web.AllowedHosts),
 			"tls":           cfg.Web.TLS, "cert_file": cfg.Web.CertFile, "key_file": cfg.Web.KeyFile,
+			"behind_tls_proxy": cfg.Web.BehindTLSProxy,
 		},
 		"log": map[string]any{
 			"file": cfg.Log.File, "max_size_mb": cfg.Log.MaxSizeMB, "max_files": cfg.Log.MaxFiles,
