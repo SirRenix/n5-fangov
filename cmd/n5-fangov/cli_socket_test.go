@@ -35,6 +35,8 @@ type fakeDaemon struct {
 	configRaw string
 	srv       *http.Server
 	dir       string
+	// extra installs further routes (token_cli_test.go); nil = none.
+	extra func(*http.ServeMux)
 }
 
 func (d *fakeDaemon) handler() http.Handler {
@@ -108,6 +110,9 @@ func (d *fakeDaemon) handler() http.Handler {
 		d.logClears++
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "cleared": true})
 	})
+	if d.extra != nil {
+		d.extra(mux)
+	}
 	return mux
 }
 

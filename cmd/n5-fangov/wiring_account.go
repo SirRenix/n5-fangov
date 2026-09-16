@@ -17,12 +17,13 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// State directory (/var/lib/n5-fangov: sessions.json, alerts.json).
+// State directory (/var/lib/n5-fangov: sessions.json, tokens.json, alerts.json).
 
 const (
 	defaultStateDir  = "/var/lib/n5-fangov"
 	stateDirEnv      = "N5FANGOV_STATE_DIR"
 	sessionsFileName = "sessions.json"
+	tokensFileName   = "tokens.json"
 	alertsFileName   = "alerts.json"
 )
 
@@ -43,18 +44,18 @@ func stateDir() string {
 
 // ensureStateDir creates dir (0700) and probes that a file can be written
 // there. On failure it logs once and returns "": the daemon then runs
-// without persistence (sessions and alert history in memory only).
+// without persistence (sessions, tokens and alert history in memory only).
 func ensureStateDir(dir string) string {
 	if dir == "" {
 		return ""
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		log.Printf("state-dir %s: %v (sessions and alert history kept in memory only)", dir, err)
+		log.Printf("state-dir %s: %v (sessions, tokens and alert history kept in memory only)", dir, err)
 		return ""
 	}
 	probe, err := os.CreateTemp(dir, ".probe-*")
 	if err != nil {
-		log.Printf("state-dir %s not writable: %v (sessions and alert history kept in memory only)", dir, err)
+		log.Printf("state-dir %s not writable: %v (sessions, tokens and alert history kept in memory only)", dir, err)
 		return ""
 	}
 	probe.Close()
@@ -67,6 +68,13 @@ func sessionsPath(dir string) string {
 		return ""
 	}
 	return filepath.Join(dir, sessionsFileName)
+}
+
+func tokensPath(dir string) string {
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, tokensFileName)
 }
 
 func alertsPath(dir string) string {

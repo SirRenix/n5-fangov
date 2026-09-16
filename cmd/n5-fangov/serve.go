@@ -39,7 +39,7 @@ func cmdServe(args []string) int {
 	dryRun := fs.Bool("dry-run", false, "read sensors and log decisions, never write pwm")
 	rdir := fs.String("run-dir", runDir(), "runtime directory (socket, state.json, alert stamps)")
 	listen := fs.String("listen", "", "override [web].listen (\"none\" disables the TCP listener)")
-	sdir := fs.String("state-dir", stateDir(), "state directory (sessions.json, alerts.json); unwritable = no persistence")
+	sdir := fs.String("state-dir", stateDir(), "state directory (sessions.json, tokens.json, alerts.json); unwritable = no persistence")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
@@ -290,11 +290,13 @@ func serveWeb(st *serveState) {
 		TLSHosts:    hosts,
 		ConfigPin:   tlsMgr.pinConfig,
 		SessionFile: sessionsPath(st.state),
+		TokenFile:   tokensPath(st.state),
 		Account:     accounts,
 		Alerts:      st.alertMgr,
 		Dashboard:   dashboard,
 		System:      newSystemCollector(st.hw, st.dev),
 	})
+	log.Printf("web: sessions %s, tokens %s", orMemory(sessionsPath(st.state)), orMemory(tokensPath(st.state)))
 	st.wspec, st.addr, st.useTLS, st.tlsMgr, st.hosts = wspec, addr, useTLS, tlsMgr, hosts
 }
 

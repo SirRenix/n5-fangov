@@ -555,6 +555,7 @@ type webDeps struct {
 	// Stores behind the dashboard APIs (wiring_account.go, wiring_alerts.go,
 	// wiring_dashboard.go).
 	SessionFile string          // <state dir>/sessions.json; "" = memory only
+	TokenFile   string          // <state dir>/tokens.json; "" = memory only
 	Account     *accountStore   // /api/account (nil: 501)
 	Alerts      *alertManager   // /api/alerts (nil: 501)
 	Dashboard   *dashboardStore // /api/dashboard (nil: 501)
@@ -659,10 +660,12 @@ func newWebServer(d webDeps) webServer {
 	return webServer{TCP: s.Handler(), Socket: s.SocketHandler(), serve: s.Serve, serveTLS: serveTLSFunc(s)}
 }
 
-// applyStoreDeps sets SessionFile, Account, Alerts, Dashboard and About. A
-// typed nil must not become a non-nil interface, hence the checks.
+// applyStoreDeps sets SessionFile, TokenFile, Account, Alerts, Dashboard
+// and About. A typed nil must not become a non-nil interface, hence the
+// checks.
 func applyStoreDeps(deps *web.Deps, d webDeps) {
 	deps.SessionFile = d.SessionFile
+	deps.TokenFile = d.TokenFile
 	if d.Account != nil {
 		deps.Account = d.Account
 	}
