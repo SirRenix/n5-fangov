@@ -48,12 +48,21 @@ max_size_mb = 5         # rotate above this size (1..100); rotated files: .1 .. 
 max_files = 5           # rotated files to keep (1..20)
 
 [alert]
-transport = "auto"      # auto | pve | mail | log | off
+transport = "auto"      # auto | pve | mail | webhook | log | off
                         # auto = PVE::Notify (Proxmox notification stack, template "n5-fangov") when present,
                         #        else mail(1) to mail_to, else the journal only.
                         # pve/mail without the tool degrade in the same order; off = journal line only.
+                        # webhook is never chosen by auto; without a usable webhook_url it falls back to auto + warning.
                         # Changed live from the dashboard's Alerts tab (or by editing here + PUT /api/config).
 mail_to = "root"        # mail transport only: local user or address, no spaces
+# webhook_url = "https://ntfy.example.test/n5"
+                        # webhook transport only: absolute http(s) URL with a host, no user:pass@, <= 2048 chars;
+                        # one POST per alert, 2xx = delivered, redirects not followed, system CA pool (no insecure
+                        # switch). ntfy: topic in the path; Gotify: /message?token=<app token> (the query is redacted
+                        # in logs and "alerts status"); Home Assistant: /api/webhook/<id>.
+# webhook_format = "json"
+                        # json (default): {"type":"n5-fangov","kind":..,"severity":"warning","hostname":..,"title":..,"message":..,"ts":..}
+                        # text: the alert text as text/plain. Headers on both: X-N5-Fangov-Kind, Title (ntfy reads it).
 
 [dashboard]
 sensors = []            # extra sensors charted on the Overview, 0..8 ids of the same forms as channel sensors,
@@ -62,12 +71,18 @@ sensors = []            # extra sensors charted on the Overview, 0..8 ids of the
 
 # CPU fan (pwm1) <- k10temp Tctl. EC idle duty was 85.
 [[channel]]
-name = "cpu"            # unique, [a-z0-9_]+
+name = "cpu"            # unique, [a-z0-9_]{1,32}
 pwm = 1                 # pwmN of the profile's hwmon device (1..8)
-sensor = "k10temp"      # k10temp | coretemp | nvme:max | drivetemp:max | hwmon:<name>:tempN | ec:<label>
+sensor = "k10temp"      # k10temp | coretemp | nvme:max | drivetemp:max | disk:<dev> | hwmon:<name>:tempN | ec:<label>
+                        # or an array of 1..4 ids = the maximum of them: ["drivetemp:max", "ec:hdd"]
+                        # (stored as "drivetemp:max,ec:hdd"; a part whose device is absent is skipped)
 curve = [[45, 85], [80, 255]]   # [temp_c, duty] points, ascending temp, 2..8 points, linear between
-critical = 88           # temp -> 255 immediately, no slew, even under manual override
+critical = 88           # temp -> 255 immediately, no slew, even under manual override (judged on the raw reading)
 stop = "auto"           # "auto" = hand the channel back to the EC/BIOS on stop, or a fixed duty 60..255 (n5pro pwm3: never "auto", forced to 140)
+hysteresis = 0          # 0..10 degrees C, integer; 0 = off. The curve follows a held temperature that moves only when the
+                        # reading differs from it by >= this many degrees. Reload, no restart.
+min_on = "0s"           # 0s..1h; 0s = off. A rise of the curve target is held for at least this long before the
+                        # curve may lower it again (a further rise restarts the timer). Reload, no restart.
 
 # SSD fan (pwm2) <- max NVMe composite (SN700 warns at 84 C); idle 44-46 C, EC idle 74.
 [[channel]]
@@ -89,3 +104,32 @@ sensor = "drivetemp:max"
 curve = [[36, 105], [46, 255]]
 critical = 56
 stop = 140
+hysteresis = 2          # drive temperatures move slowly: step the curve in 2 C steps instead of toggling at 44/45 C
+min_on = "60s"          # ... and keep a step-up for a minute so the disks actually cool before the fan drops
+
+# PCIe fan header (pwm4), OPTIONAL fourth channel on the N5 Pro: no tachometer (rpm = -1, never in the
+# stall check). The daemon neither adds nor corrects it; the built-in presets do not name it and an
+# apply keeps it (merge by pwm). Whether the EC regulates pwm4 again after a write is NOT measured
+# (idle state seen: enable 2, duty 255, 0 RPM) -- a fixed stop gives a defined state. Adding it needs
+# a restart (changed channel set).
+# [[channel]]
+# name = "pcie"
+# pwm = 4
+# sensor = "k10temp"
+# curve = [[45, 85], [80, 255]]
+# critical = 88
+# stop = 140
+
+# Preset schedules: switch presets by time of day (host local time). At most 16 entries; an entry
+# without from/to is the fallback (at most one) and applies whenever no window matches. The
+# scheduler acts on transitions only -- a manual apply or curve edit inside a window stays until the
+# next switch. A failed switch keeps the previous curves and raises the "schedule" alert. The
+# preset must exist when the switch happens (not checked when the file is read). Reload, no restart.
+# [[schedule]]
+# preset = "n5pro-quiet"          # [a-z0-9_-]{1,64}
+# from = "22:00"                  # HH:MM, both or neither; to < from = the window crosses midnight
+# to = "07:00"
+# days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]   # optional subset; missing = every day
+#
+# [[schedule]]
+# preset = "n5pro-balanced"       # no from/to: the fallback
