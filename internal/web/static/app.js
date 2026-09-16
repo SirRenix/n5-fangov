@@ -23,27 +23,37 @@ const cssVar = n => getComputedStyle(document.documentElement).getPropertyValue(
 // UI constants: bp mirror app.css, timings ms, geometry px; limits are defaults until GET /api/version merges into LIM
 const UI = Object.freeze({
 	bp: { xs: 480, sm: 700, md: 900, lg: 1100 },
-	timing: { toast: 5000, toastErr: 12000, toastLong: 15000, toastNotice: 8000, history: 30000, alerts: 60000, system: 30000, log: 10000, blobRevoke: 30000 },
-	chart: { windowS: 7200, gridS: 1800, maxPoints: 720, yMargin: .15, yRound: 5, minSpanTemp: 15, minSpanRpm: 1000, minSpan: 10, pad: { l: 40, r: 58, t: 8, b: 22 },
+	timing: { toast: 5000, toastErr: 12000, toastLong: 15000, toastNotice: 8000, alerts: 60000, system: 30000, log: 10000, schedules: 60000, blobRevoke: 30000 },
+	toastMax: 3,
+	chart: { yMargin: .15, yRound: 5, minSpanTemp: 15, minSpanRpm: 1000, minSpan: 10, pad: { l: 40, r: 58, t: 8, b: 22 },
 		lineW: 2, fillAlpha: .08, dotR: 4.5, dotStroke: 2, labelH: 13, labelGap: 6, tipGap: 12, dash: { hover: [3, 3], crit: [4, 3], now: [2, 3] } },
-	curve: { pad: { l: 34, r: 12, t: 10, b: 22 }, xMin: 100, xPad: 10, xStep: 20, yStep: 51, hitR: 14, hitRTouch: 22, addStep: 5, addDefault: 40, fillAlpha: .1, labelGap: 8 },
-	limits: { min_hdd_override: 60, critical_min: 30, critical_max: 150, curve_points_min: 2, curve_points_max: 8, dashboard_sensors_max: 8, password_min: 8, password_max: 128,
-		temp: [-20, 120], duty: 255, name: /^[a-z0-9_-]{1,64}$/, user: /^[A-Za-z0-9_.-]{1,32}$/, importBytes: 1 << 20, pemBytes: 65536, logLines: 200 },
+	curve: { pad: { l: 34, r: 12, t: 10, b: 22 }, xMin: 100, xPad: 10, xStep: 20, yStep: 51, hitR: 14, hitRTouch: 22, addStep: 5, addDefault: 40, fillAlpha: .1, labelGap: 8, keyT: 1, keyD: 5, keyShift: 5 },
+	limits: { min_hdd_override: 60, critical_min: 30, critical_max: 150, curve_points_min: 2, curve_points_max: 8, dashboard_sensors_max: 8, password_min: 8, password_max: 128, hysteresis_max: 10, min_on_max_s: 3600,
+		temp: [-20, 120], duty: 255, name: /^[a-z0-9_-]{1,64}$/, user: /^[A-Za-z0-9_.-]{1,32}$/, token: /^[A-Za-z0-9][A-Za-z0-9 ._-]{0,31}$/, importBytes: 1 << 20, pemBytes: 65536, logLines: 200 },
 	thresh: { warm: .8, hot: .92, certSoonDays: 30 },
 	font: (size, weight) => `${weight ? weight + ' ' : ''}${cssVar(size)} ${cssVar('--font-sans')}`,
 });
 const LIM = Object.assign({}, UI.limits);
 const TIP = { duty: 'duty = PWM value 0..255 written to the channel (100 % = 255)', stop: 'stop = duty left on the channel when the daemon stops; auto = driver/EC takes over',
-	critical: 'critical = temperature that forces 100 % at once', sensor: 'temperature source of this curve', slew: 'current → target: moved in step_up/step_down steps per cycle' };
+	critical: 'critical = temperature that forces 100 % at once', sensor: 'temperature source of this curve', slew: 'current → target: moved in step_up/step_down steps per cycle',
+	hyst: 'hysteresis = the curve follows the reading only when it moved by at least this many °C (0 = off)', minOn: 'min_on = a rise of the curve target is held at least this long (off = no hold)',
+	held: 'the hysteresis-held temperature the curve is evaluated at', hold: 'min_on: the curve target is held for the remaining time' };
 const Q = new URLSearchParams(location.search), MOCK = Q.get('mock') === '1';
 const REF = { // N5 Pro duty→RPM (measured)
 	cpu: [[85, 2000], [140, 3120], [179, 3830], [217, 4445], [255, 5073]],
 	ssd: [[74, 2130], [140, 3280], [179, 3790], [217, 4230], [255, 4687]],
 	hdd: [[87, 1237], [105, 1650], [140, 2250], [179, 2725], [217, 3160], [255, 3540]] };
 
-// settings
-const S = { unit: 'C', interval: 5, theme: 'system' };
-try { Object.assign(S, JSON.parse(localStorage.getItem('n5-fangov') || '{}')); } catch (e) {}
+// history ranges: minutes for the API, window/grid/label format for the charts, polling (2 h: since every 30 s; 24 h / 7 d: full reload every 60 s)
+const hm = ts => new Date(ts * 1000).toTimeString().slice(0, 5);
+const ddmm = ts => { const d = new Date(ts * 1000); return `${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')} ${hm(ts)}`; };
+const RANGES = { '2h': { label: '2 h', minutes: 120, windowS: 7200, gridS: 1800, maxPoints: 720, poll: 30000, since: true, fmt: hm },
+	'24h': { label: '24 h', minutes: 1440, windowS: 86400, gridS: 4 * 3600, maxPoints: 1500, poll: 60000, fmt: ts => new Date(ts * 1000).toLocaleDateString('en', { weekday: 'short' }) + ' ' + hm(ts) },
+	'7d': { label: '7 d', minutes: 10080, windowS: 7 * 86400, gridS: 86400, maxPoints: 2100, poll: 60000, fmt: ddmm } };
+// settings (whitelisted values; anything else falls back to the default)
+const S = { unit: 'C', interval: 5, theme: 'system', range: '2h' }, S_OK = { unit: ['C', 'F'], interval: [5, 10, 30], theme: ['system', 'dark', 'light'], range: Object.keys(RANGES) };
+try { const j = JSON.parse(localStorage.getItem('n5-fangov') || '{}'); for (const k in S_OK) if (S_OK[k].includes(j[k])) S[k] = j[k]; } catch (e) {}
+const R = () => RANGES[S.range];
 const saveS = () => { try { localStorage.setItem('n5-fangov', JSON.stringify(S)); } catch (e) {} };
 const tC = v => S.unit === 'F' ? v * 9 / 5 + 32 : v;
 const unit = () => S.unit === 'F' ? '°F' : '°C';
@@ -55,7 +65,6 @@ const fmtUp = s => { const d = s / 86400 | 0, hh = s % 86400 / 3600 | 0, m = s %
 // Go duration ("30m0s", "1h0m0s") → "30 min" / "1 h"
 const fmtDur = s => { const m = /^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+(?:\.\d+)?)s)?$/.exec(s || ''); if (!m || !m[0]) return s || '—';
 	const t = (+m[1] || 0) * 3600 + (+m[2] || 0) * 60 + (+m[3] || 0); return t && t % 3600 === 0 ? t / 3600 + ' h' : t && t % 60 === 0 ? t / 60 + ' min' : t + ' s'; };
-const hm = ts => new Date(ts * 1000).toTimeString().slice(0, 5);
 const toTs = v => typeof v === 'number' ? v : Date.parse(v) / 1000; // unix seconds or RFC 3339
 const abs = ts => new Date(ts * 1000).toLocaleString();
 const tm = (v, future) => { const ts = toTs(v); return !(ts > 0) ? '—' : h('time', { datetime: new Date(ts * 1000).toISOString(), title: future ? null : abs(ts) }, future ? abs(ts) : rel(ts)); };
@@ -75,7 +84,7 @@ const interp = (curve, t) => {
 const toast = (msg, kind, ms) => {
 	const t = h('div', { class: 'toast ' + (kind || '') }, msg,
 		h('button', { 'aria-label': 'Dismiss', onclick: () => t.remove() }, '×'));
-	$(kind === 'err' ? '#toasts-a' : '#toasts').append(t);
+	const host = $(kind === 'err' ? '#toasts-a' : '#toasts'); while (host.children.length >= UI.toastMax) host.firstChild.remove(); host.append(t); // at most 3 per region, oldest dropped
 	setTimeout(() => t.remove(), ms || (kind === 'err' ? UI.timing.toastErr : UI.timing.toast));
 };
 // confirm dialog (replaces window.confirm): ask(title, text, {ok, danger}) → Promise<boolean>
@@ -95,7 +104,7 @@ const signedIn = () => !!sess.authenticated;
 const sessionLost = () => { if (!signedIn()) return; sess = anon(sess.mode); if (edDirty) edStash = edState; toast('Session expired — sign in again' + (edDirty ? ' — curve edits kept' : ''), 'warn'); applyAuth(); };
 const api = async (path, opt) => {
 	opt = opt || {};
-	if (MOCK) return mock(path, opt).catch(e => { if (e.status === 401) sessionLost(); throw e; });
+	if (MOCK) return window.n5mock(path, opt).catch(e => { if (e.status === 401) sessionLost(); throw e; }); // mock.js, loaded at boot
 	const headers = Object.assign({}, opt.headers || {});
 	if (opt.method && opt.method !== 'GET') headers['X-N5-Fangov-Csrf'] = '1';
 	if (opt.json !== undefined) { headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(opt.json); }
@@ -129,162 +138,6 @@ const download = async (path, fallback) => {
 	return saveBlob(await r.blob(), m ? m[1] : fallback);
 };
 
-// mock flags: see the About tab (?mock=1 &user=1 &auth=none &tls= &tab= &syserr=1 &reject=1)
-const mock = (() => {
-	const t0 = Date.now() / 1000, MV = '0.3.0-rc1';
-	const M = { auth: Q.get('auth') === 'none' ? 'none' : 'basic', in: Q.get('user') === '1' || Q.get('auth') === 'none', user: 'admin', remember: false, exp: !!Q.get('expire') };
-	const cfg = { daemon: { interval: '10s', step_up: 40, step_down: 15, stall_min_duty: 60, stall_cycles: 2, profile: 'auto' },
-		web: { listen: '0.0.0.0:8010', auth: M.auth }, log: { file: '/var/log/n5-fangov/n5-fangov.log', max_size_mb: 10, max_files: 5 },
-		channel: [
-			{ name: 'cpu', pwm: 1, sensor: 'k10temp', curve: [[45, 85], [80, 255]], critical: 88, stop: 'auto' },
-			{ name: 'ssd', pwm: 2, sensor: 'nvme:max', curve: [[40, 74], [70, 255]], critical: 75, stop: 'auto' },
-			{ name: 'hdd', pwm: 3, sensor: 'drivetemp:max', curve: [[36, 105], [46, 255]], critical: 56, stop: 87 }] };
-	const shift = n => cfg.channel.map(c => Object.assign({}, c, { curve: c.curve.map(p => [p[0] + n, p[1]]) }));
-	const presets = {
-		'n5pro-balanced': { builtin: true, description: 'Recommended: HDDs held near 40 °C, audible under load only', ch: cfg.channel },
-		'n5pro-quiet': { builtin: true, description: 'Quiet: lowest noise, HDDs around 45 °C', ch: shift(4) }, summer: { ch: shift(-4) } };
-	const overrides = {};
-	const temp = (name, t) => ({ cpu: 38 + 9 * Math.sin(t / 900) + 3 * Math.sin(t / 130), ssd: 41 + 4 * Math.sin(t / 1400 + 1), hdd: 39 + 2.5 * Math.sin(t / 2600 + 2) })[name];
-	// sensor catalogue: id → [description, base curve, offset]
-	const SENS = { k10temp: ['CPU Tctl', 'cpu', 0], 'nvme:max': ['hottest NVMe', 'ssd', 0], 'drivetemp:max': ['hottest drive', 'hdd', 0], 'ec:ambient': ['EC ambient', 'sys', -6], 'ec:board': ['EC mainboard', 'sys', 2], 'ec:cpu': ['EC CPU probe', 'cpu', 1.5],
-		'ec:system': ['EC system', 'sys', 0], 'hwmon:acpitz:temp1': ['ACPI thermal zone', 'sys', 5], 'hwmon:nic1:temp1': ['NIC PHY', 'sys', 18],
-		'hwmon:spd5118:temp1': ['DIMM 0 SPD', 'sys', 8], 'hwmon:amdgpu:temp1': ['iGPU edge', 'cpu', -3], 'hwmon:minisforum_n5_it5571:temp1': ['EC chip', 'sys', 4] };
-	const PAT = [{ id: 'hwmon:<name>:tempN', description: 'any hwmon device by name and temperature index' }, { id: 'ec:<label>', description: 'extra temperature of the detected fan controller profile' }];
-	const sv = (id, t) => { const [, src, off] = SENS[id]; return +((src === 'sys' ? 32 + 1.5 * Math.sin(t / 700) : temp(src, t)) + off).toFixed(1); };
-	let dash = ['hwmon:amdgpu:temp1', 'hwmon:nic1:temp1'];
-	const rpmOf = (name, d) => Math.round(interp(REF[name], d) + 20 * Math.sin(d));
-	const point = t => { const p = { ts: Math.floor(t), temp: {}, duty: {}, rpm: {} };
-		for (const c of cfg.channel) { const tv = temp(c.name, t); const d = c.name in overrides ? overrides[c.name] : Math.round(interp(c.curve, tv));
-			p.temp[c.name] = +tv.toFixed(1); p.duty[c.name] = d; p.rpm[c.name] = rpmOf(c.name, d); }
-		if (dash.length) { p.extra = {}; for (const id of dash) if (SENS[id]) p.extra[id] = sv(id, t); } return p; };
-	const sec = n => `[${n}]\n` + Object.entries(cfg[n]).map(([k, v]) => `${k} = ${typeof v === 'string' ? `"${v}"` : v}`).join('\n') + '\n\n';
-	const raw = () => sec('daemon') + sec('web') + sec('log') + cfg.channel.map(tomlChannel).join('\n');
-	// strict PUT: the daemon's rules (rule 8 would substitute defaults with a warning)
-	const check = body => { const errs = [], re = /name = "(\w+)"[^]*?curve = \[(.*?)\]\n[^]*?critical = (\d+)\n[^]*?stop = (\S+)/g; let m;
-		while ((m = re.exec(body))) { const pts = [...m[2].matchAll(/\[(-?\d+), (\d+)\]/g)].map(x => [+x[1], +x[2]]), n = m[1], crit = +m[3], st = m[4];
-			pts.forEach((p, i) => { if (i && p[1] < pts[i - 1][1]) errs.push(`channel ${n}: point ${i} duty ${p[1]} below previous ${pts[i - 1][1]}`); });
-			const last = pts.length ? pts[pts.length - 1][0] : 0; if (crit < last + 1 || crit > 150) errs.push(`channel ${n}: critical ${crit} out of range ${last + 1}..150`);
-			if (st !== '"auto"' && +st < 60) errs.push(`channel ${n}: fixed stop duty ${st} below 60`); }
-		if (Q.get('reject')) errs.push('channel cpu: sensor "k10temp" not found (mock &reject=1)'); return errs; };
-	const logs = [];
-	for (let i = 0; i < 200; i++) { const t = t0 - (200 - i) * 300; const p = point(t);
-		logs.push(`${new Date(t * 1000).toISOString().slice(0, 19)} ${i % 37 === 5 ? 'WARN stall: hdd rpm=0 at duty=105' : i % 53 === 7 ? 'ERROR sensor drivetemp:max: no devices' : 'INFO'} cpu ${p.temp.cpu}/${p.duty.cpu} hdd ${p.temp.hdd}/${p.duty.hdd}`); }
-	const wait = v => new Promise(r => setTimeout(r, 120, v)), ok = (body, filename) => wait({ status: 200, body, filename });
-	const q = Q.get('tls'), T = { mode: q === 'off' || q === 'file' || q === 'fallback' ? (q === 'fallback' ? 'file' : q) : 'auto', fb: q === 'fallback', n: 0 };
-	const tlsInfo = () => { const up = T.mode === 'file' && !T.fb, cn = up ? 'CN=fans.example,O=Homelab' : 'CN=n5.lan,O=n5-fangov', d = new Date(t0 * 1000); d.setFullYear(d.getFullYear() + (up ? 1 : 10));
-		return { subject: cn, issuer: up ? 'CN=Homelab CA' : cn, dns_names: up ? ['fans.example'] : ['n5.lan', 'n5host', 'localhost'], ips: up ? [] : ['192.0.2.20', '127.0.0.1', '::1'],
-			not_before: new Date(t0 * 1000 - 36e5).toISOString(), not_after: q === 'soon' ? new Date(t0 * 1000 + 12 * 864e5).toISOString() : d.toISOString(), is_ca: !up, key_algo: up ? 'RSA 2048' : 'ECDSA P-256',
-			serial_hex: '3F0' + T.n + 'A9C1', fingerprint_sha256: Array.from({ length: 32 }, (_, i) => ((i * 37 + T.n * 11) % 256 | 256).toString(16).slice(1).toUpperCase()).join(':') }; };
-	const fail = (msg, status, extra) => Promise.reject(Object.assign(new Error(msg + (extra && extra.errors ? '\n' + extra.errors.join('\n') : '')), { status, body: Object.assign({ error: msg }, extra || {}) }));
-	const lacks = (...hs) => hs.map(x => 'SAN list lacks host ' + x);
-	const mockTLS = (p, opt) => {
-		if (p === '/api/tls') return ok({ mode: T.fb ? 'auto (fallback from file)' : T.mode, fallback: !!T.fb, info: T.mode === 'off' ? null : tlsInfo(), hosts: ['192.0.2.20', 'n5.lan', 'n5host', 'localhost'],
-			warnings: T.mode === 'file' && !T.fb ? lacks('192.0.2.20', 'n5.lan', 'n5host') : q === 'soon' ? ['certificate expires in 12 days'] : [] });
-		if (T.mode === 'off') return fail('tls is off', 409);
-		if (p === '/api/tls/cert.crt') return ok('-----BEGIN CERTIFICATE-----\nMIIBmock\n-----END CERTIFICATE-----\n', 'n5-fangov-n5host.crt');
-		if (p === '/api/tls/cert.cer') return ok('0mock', 'n5-fangov-n5host.cer');
-		if (p === '/api/tls/regenerate') { if (T.mode === 'file') return fail('custom certificate active; reset to auto first', 409);
-			T.n++; const keep = !opt.json || opt.json.keep_key !== false; return ok({ ok: true, keep_key: keep, info: tlsInfo(), warning: keep ? undefined : 'new private key: re-download and trust the certificate' }); }
-		if (p === '/api/tls/upload') { const j = opt.json || {}; if (!/BEGIN CERTIFICATE/.test(j.cert || '') || !/PRIVATE KEY/.test(j.key || '')) return fail('certificate: no PEM CERTIFICATE block', 400);
-			if (!j.force) return fail('certificate does not cover "' + location.hostname + '"', 400, { host: location.hostname, force_required: true });
-			T.mode = 'file'; T.fb = false; T.n++; return ok({ ok: true, mode: 'file', info: tlsInfo(), warnings: lacks('192.0.2.20', 'n5host') }); }
-		if (p === '/api/tls/reset') { T.mode = 'auto'; T.fb = false; return ok({ ok: true, mode: 'auto', info: tlsInfo() }); }
-		return fail('mock: not found ' + p, 404);
-	};
-	// alerts panel
-	const A = { transport: 'auto', mail_to: 'root', tpl: { installed: true, current: true, writable: true, path: '/etc/pve/notification-templates/default' } };
-	const KINDS = { sensor: 'sensor unreadable', stall: 'fan at 0 rpm', temp: 'critical temp', write: 'pwm write failed', device: 'hwmon device vanished', config: 'config replaced', 'config-channels': 'channel set changed', profile: 'profile changed',
-		start: 'daemon started', restart: 'restarted', failed: 'unit failed', kernel: 'kernel/DKMS changed', tls: 'cert unreadable', web: 'web listener failed', test: 'test alert' };
-	const recent = [[720, 'stall', 'hdd: rpm=0 at duty 105, raised to 255'], [5400, 'temp', 'cpu 91.5 °C ≥ critical 88, forced to 255', 'pve-notify: exit status 1'], [11220, 'sensor', 'drivetemp:max: no devices'], [93600, 'start', 'n5-fangov ' + MV + ' started'], [3 * 86400, 'tls', 'certificate unreadable']]
-		.map(([ago, kind, msg, error]) => Object.assign({ ts: Math.floor(t0 - ago), kind, msg }, error ? { error } : {}));
-	const effective = () => A.transport === 'auto' || A.transport === 'pve' ? 'pve-notify' : A.transport;
-	const alertStatus = () => ({ transport: A.transport, effective: effective(), mail_to: A.mail_to, pve_available: true, mail_available: false, template: Object.assign({}, A.tpl), cooldown: '30m0s', kinds: Object.entries(KINDS).map(([kind, description]) => ({ kind, description })) });
-	const iso = ago => new Date((t0 - ago) * 1000).toISOString();
-	const sessions = () => [{ id: 'a1b2c3d4', created: iso(5400), expires: iso(5400 - (M.remember ? 30 : .5) * 86400), last_seen: iso(30), remember: M.remember, ip: '192.0.2.30', current: true },
-		{ id: '9f8e7d6c', created: iso(6 * 86400), expires: iso(-24 * 86400), last_seen: iso(4 * 3600), remember: true, ip: '192.0.2.31', current: false }];
-	// system inventory (generic names, documentation MACs)
-	const G = 1 << 30, sysMock = now => ({ host: { hostname: 'n5host', os: 'Debian GNU/Linux 13 (trixie)', kernel: '7.0.12-1-pve', uptime_s: 435723, load1: +(.6 + .3 * Math.sin(now / 300)).toFixed(2), load5: .7, load15: .66 },
-		machine: { vendor: 'Example Vendor', product: 'N5-class mini server', board: 'EXB-01', board_vendor: 'Example Boards Ltd', bios_version: '1.05', bios_date: '03/31/2026' },
-		cpu: { model: 'Example Ryzen-class 12-core APU w/ Radeon-class iGPU', sockets: 1, cores: 12, threads: 24, max_mhz: 5157 },
-		memory: { total_bytes: 62.4 * G, available_bytes: (34 + 4 * Math.sin(now / 400)) * G, swap_total_bytes: 8 * G, swap_free_bytes: 8 * G, installed_bytes: 96 * G, smbios: '3.7',
-			modules: ['P0 CHANNEL A', 'P0 CHANNEL B'].map(bank => ({ slot: 'DIMM 0', bank, size_bytes: 48 * G, type: 'DDR5', form_factor: 'SODIMM', speed_mts: 5600, manufacturer: 'Example Memory', part: 'EX-DDR5-48G-5600', ecc: true })) },
-		gpus: [{ name: 'Example iGPU [Radeon-class 890M]', vendor: 'EXS/GFX', pci: '0000:c7:00.0', driver: 'amdgpu' }],
-		npus: [{ name: 'Example Neural Processing Unit', pci: '0000:c8:00.1', driver: 'amdxdna', driver_version: '2.23.0_20260412,0000000000000000000000000000000000000000', accel: 'accel0' }],
-		nics: [{ name: 'nic0', pci: '0000:c5:00.0', model: 'EX8126 5GbE Controller', driver: 'r8169', speed_mbit: -1, state: 'down', duplex: '', mac: '02:00:00:00:00:01', mtu: 1500 },
-			{ name: 'nic1', pci: '0000:c4:00.0', model: 'EXN113 NBase-T/IEEE 802.3an Ethernet Controller [10G]', driver: 'atlantic', speed_mbit: 2500, state: 'up', duplex: 'full', mac: '02:00:00:00:00:02', mtu: 1500 }],
-		storage: { controllers: [{ kind: 'sata', name: 'EXB58x AHCI SATA controller', pci: '0000:c1:00.0', driver: 'ahci' }, { kind: 'nvme', name: 'Example NVMe SSD Controller', pci: '0000:c2:00.0', driver: 'nvme' }, { kind: 'nvme', name: 'Example NVMe SSD Controller', pci: '0000:c3:00.0', driver: 'nvme' }],
-			disks: [['nvme0n1', 'Example NVMe 1000GB', 1000204886016, 0, 'nvme'], ['nvme1n1', 'Example NVMe 1000GB', 1000204886016, 0, 'nvme'], ['nvme2n1', 'Example NVMe 2000GB', 2000398934016, 0, 'nvme'],
-				['sda', 'EX HDD 20TB', 20000588955648, 1, 'sata'], ['sdb', 'EX HDD 20TB', 20000588955648, 1, 'sata'], ['sdc', 'EX HDD 8TB', 8001563222016, 1, 'sata'], ['sdd', 'EX SATA SSD 1TB', 1000204886016, 0, 'sata']]
-				.map(([name, model, size_bytes, rot, transport]) => ({ name, model, size_bytes, rotational: !!rot, transport })) },
-		fan_controller: { profile: 'n5pro', hwmon: '/sys/class/hwmon/hwmon14', module: 'minisforum_n5_it5571', module_version: '0.2.0' },
-		collected: Math.floor(now), static_at: Math.floor(t0), errors: Q.get('syserr') ? ['lspci: exec: "lspci": executable file not found in $PATH (device names from ids only)'] : [] });
-	const GH = 'https://github.com/', PUB = /^\/api\/(version|about|session|login|logout|state|history)$/;
-	return (path, opt) => {
-		const m = opt.method || 'GET', u = new URL(path, location.origin), p = u.pathname, now = Date.now() / 1000;
-		if (p === '/api/session') return ok({ authenticated: M.in, mode: M.auth, user: M.in ? M.user : undefined, remember: M.remember, via: M.in && M.auth === 'basic' ? 'cookie' : 'none' });
-		if (p === '/api/login') { const j = opt.json || {}; if (j.user !== M.user || j.password !== 'admin') return fail('invalid user or password', 401);
-			M.in = true; M.remember = !!j.remember; return ok({ ok: true, user: M.user, expires: Math.floor(now + (M.remember ? 30 : .5) * 86400), remember: M.remember }); }
-		if (p === '/api/logout') { M.in = M.auth === 'none'; return wait({ status: 204, body: null }); }
-		if (p === '/api/version') return ok({ name: 'n5-fangov', version: MV, prerelease: 'beta.4', auth: M.auth, tls: T.mode !== 'off',
-			limits: { min_hdd_override: 60, critical_min: 30, critical_max: 150, curve_points_max: 8, dashboard_sensors_max: 8, password_min: 8, password_max: 128 } });
-		if (p === '/api/about') return ok({ name: 'n5-fangov', version: MV, prerelease: 'beta.4', license: 'GPL-2.0-only', license_url: 'https://www.gnu.org/licenses/old-licenses/gpl-2.0.html',
-			repo: GH + 'SirRenix/n5-fangov', author: 'SirRenix', author_url: GH + 'SirRenix', go: M.in ? 'go1.25.1' : '',
-			credits: [['ltdstudio/minisforum-n5-it5571', 'the kernel driver'], ['Sl0thC0der/proxfansx', 'dashboard idea; nct67xx/it87xx profiles']].map(([name, note]) => ({ name, url: GH + name, note })) });
-		if (M.in && M.exp && now - t0 > 15 && p === '/api/state') { M.in = M.exp = false; return fail('unauthorized', 401); } // &expire=1: session dies once after 15 s
-		if (p === '/api/state') { const pt = point(now), stall = (now | 0) % 40 < 3;
-			const body = { ts: pt.ts, status: 'ok', profile: 'n5pro', verified: true, dry_run: false, uptime_s: 435723,
-				channels: cfg.channel.map(c => { const n = c.name, st = n === 'hdd' && stall; return { name: n, pwm: c.pwm, sensor: c.sensor, temp: pt.temp[n], duty: pt.duty[n], target: n === 'cpu' ? pt.duty.cpu + 22 : pt.duty[n], rpm: st ? 0 : pt.rpm[n],
-					mode: n in overrides ? 'manual' : st ? 'stall' : 'auto' }; }) };
-			if (M.in) Object.assign(body, { hwmon_path: '/sys/class/hwmon/hwmon14', extra_temps: { 'ec:cpu': +(pt.temp.cpu + 1.5).toFixed(1) }, alerts: { stall: Math.floor(now - 720) }, watched: pt.extra || {} });
-			return ok(body); }
-		if (p === '/api/history') { const since = +u.searchParams.get('since') || 0, out = [];
-			for (let t = now - 7200; t <= now; t += 10) if (t > since) { const pt = point(t); if (!M.in) delete pt.extra; out.push(pt); } return ok(out); }
-		if (!M.in && !PUB.test(p)) return fail('unauthorized', 401);
-		if (p === '/api/config' && m === 'GET') return ok({ config: cfg, raw: raw() });
-		if (p === '/api/config' && m === 'PUT') { const errs = check(opt.body);
-			if (u.searchParams.get('strict') === '1' && errs.length) return fail('config rejected', 400, { errors: errs });
-			const n = (opt.body.match(/\[\[channel\]\]/g) || []).length; return wait({ status: n === cfg.channel.length ? 200 : 202, body: { ok: true, warnings: errs } }); }
-		if (p === '/api/sensors') return ok(Object.entries(SENS).map(([id, [d]]) => ({ id, description: `${d} (now ${sv(id, now)} °C)`, temp: sv(id, now) })).concat(PAT));
-		if (p === '/api/dashboard') { if (m === 'PUT') { const ids = (opt.json || {}).sensors || []; if (ids.length > 8) return fail('at most 8 sensors', 400);
-				dash = ids; return ok({ ok: true, sensors: dash, warnings: ids.filter(i => !SENS[i]).map(i => i + ': unresolved') }); }
-			return ok({ sensors: dash }); }
-		if (p.startsWith('/api/override/')) { const n = p.split('/')[3];
-			if (m === 'DELETE') { delete overrides[n]; return ok({ ok: true }); }
-			if (n === 'hdd' && opt.json.duty < 60) return fail(`duty ${opt.json.duty} below stall_min_duty 60 for hdd`, 400);
-			overrides[n] = opt.json.duty; return ok({ ok: true }); }
-		if (p === '/api/presets') return ok(Object.entries(presets).map(([name, v]) => ({ name, channels: v.ch.map(c => c.name), builtin: !!v.builtin, description: v.description })));
-		if (p.startsWith('/api/presets/')) { const n = p.split('/')[3], b = presets[n] && presets[n].builtin, sub = p.split('/')[4];
-			if (m === 'PUT') { if (b) return fail('built-in preset', 409); presets[n] = { ch: cfg.channel }; return ok({ ok: true }); }
-			if (m === 'DELETE') { if (b) return fail('built-in preset', 409); if (!presets[n]) return fail('no such preset', 404); delete presets[n]; return ok({ ok: true }); }
-			if (m === 'GET') { if (!presets[n]) return fail('unknown preset ' + n, 404); return ok({ name: n, builtin: !!b, description: presets[n].description, channels: presets[n].ch }); }
-			if (sub === 'rename') { const nn = opt.json.name; if (b || (presets[nn] && presets[nn].builtin)) return fail('built-in preset', 409); if (presets[nn]) return fail('preset exists', 409); presets[nn] = presets[n]; delete presets[n]; return ok({ ok: true, name: nn }); }
-			if (presets[n]) cfg.channel = presets[n].ch.map(c => Object.assign({}, c)); return wait({ status: n === 'summer' ? 202 : 200, body: { ok: true } }); }
-		if (p === '/api/log' && m === 'DELETE') { logs.length = 0; return ok({ cleared: true, note: 'journal untouched' }); }
-		if (p === '/api/log') return ok({ lines: logs.slice(-(+u.searchParams.get('lines') || 100)), source: 'file' });
-		if (p === '/api/log/export') return ok(logs.join('\n') + '\n', 'n5-fangov-mock-20260915-120000.log');
-		if (p === '/api/config/export') return ok({ format: 1, version: MV, exported: Math.floor(t0), config: raw(), presets: {} }, 'n5-fangov-settings-mock.json');
-		if (p === '/api/config/import') { let j; try { j = JSON.parse(opt.body); } catch (e) { j = null; }
-			if (!j || j.format !== 1) return fail('import rejected: bundle format missing\nexpected "format": 1', 400);
-			return wait({ status: /restart/.test(opt.body) ? 202 : 200, body: { ok: true } }); }
-		if (p === '/api/profiles') return ok([{ name: 'n5pro', title: 'Minisforum N5 Pro (IT5571 EC)', verified: true, notes: 'EC does not resume HDD regulation after a write; stop = fixed duty.' }, { name: 'nct67xx', title: 'Nuvoton NCT67xx (SmartFan IV)', verified: false, notes: 'Auto = pwmN_enable 5.' }]);
-		if (p === '/api/alerts') { if (m === 'PUT') { const j = opt.json || {}; if (!/^(auto|pve|mail|log|off)$/.test(j.transport)) return fail('transport: unknown value', 400);
-				if (/[\s"']/.test(j.mail_to || '')) return fail('mail_to: no spaces or quotes', 400); A.transport = j.transport; A.mail_to = j.mail_to || 'root'; return ok({ ok: true, status: alertStatus() }); }
-			const last = {}; for (const r of recent) if (!(r.kind in last)) last[r.kind] = r.ts; return ok(Object.assign(alertStatus(), { last, recent: recent.slice(0, 50) })); }
-		if (p === '/api/alerts/test') { const e = effective(); if (e === 'mail') return fail('mail: exit status 127', 502, { transport: e });
-			recent.unshift({ ts: Math.floor(now), kind: 'test', msg: 'test alert from the dashboard' }); return ok({ ok: true, transport: e }); }
-		if (p === '/api/alerts/template') { A.tpl.installed = A.tpl.current = true; return ok({ ok: true, path: A.tpl.path }); }
-		if (p === '/api/account') return ok({ user: M.user, mode: M.auth, sessions: sessions() });
-		if (p.startsWith('/api/account/')) { const j = opt.json || {}; if (M.auth === 'none') return fail('auth is none', 409);
-			if (p.endsWith('/sessions/revoke')) return ok({ ok: true, revoked: j.others ? 1 : 0 });
-			if (j.current_password !== 'admin') return fail('current password wrong', 403);
-			if (p.endsWith('/password')) return ok({ ok: true });
-			if (p.endsWith('/user')) { if (!/^[A-Za-z0-9_.-]{1,32}$/.test(j.user || '')) return fail('user: invalid', 400); M.user = j.user; return ok({ ok: true, user: M.user }); } }
-		if (p.startsWith('/api/tls')) return mockTLS(p, opt);
-		if (p === '/api/system') return ok(sysMock(now));
-		return fail('mock: not found ' + p, 404);
-	};
-})();
-
 // chart engine
 const charts = [], C = UI.chart;
 function chart(wrap, series, opt) {
@@ -300,7 +153,7 @@ function chart(wrap, series, opt) {
 		const pad = C.pad, pw = W - pad.l - pad.r, ph = H - pad.t - pad.b;
 		const all = series.flatMap(s => s.data);
 		if (!all.length) { ctx.fillStyle = fg3; ctx.font = UI.font('--fs-12'); ctx.fillText('no history', pad.l, H / 2); return; }
-		const now = Date.now() / 1000, x0 = Math.min(now - C.windowS, all[0][0]), x1 = now;
+		const now = Date.now() / 1000, rg = R(), x0 = Math.min(now - rg.windowS, all[0][0]), x1 = now;
 		let yMin = opt.yMin, yMax = opt.yMax;
 		if (yMin === undefined || yMax === undefined) {
 			let lo = Infinity, hi = -Infinity; for (const [, v] of all) { if (v < lo) lo = v; if (v > hi) hi = v; }
@@ -317,9 +170,11 @@ function chart(wrap, series, opt) {
 			ctx.fillStyle = fg3; ctx.fillText(opt.fmt(v, true), pad.l - C.labelGap, y);
 		}
 		ctx.textAlign = 'center'; ctx.textBaseline = 'top';
-		for (let t = Math.ceil(x0 / C.gridS) * C.gridS; t <= x1; t += C.gridS) {
+		// grid lines on local-time multiples of the range's step (midnight for 7 d, not UTC midnight)
+		const g = rg.gridS, tz = new Date(x0 * 1000).getTimezoneOffset() * 60, minGap = ctx.measureText(rg.fmt(x0)).width + C.labelGap; let lastX = -Infinity;
+		for (let t = Math.ceil((x0 - tz) / g) * g + tz; t <= x1; t += g) {
 			const x = Math.round(X(t)) + .5; ctx.strokeStyle = line; seg(ctx, x, pad.t, x, pad.t + ph);
-			ctx.fillStyle = fg3; ctx.fillText(hm(t), x, pad.t + ph + C.labelGap);
+			if (x - lastX < minGap) continue; lastX = x; ctx.fillStyle = fg3; ctx.fillText(rg.fmt(t), x, pad.t + ph + C.labelGap);
 		}
 		const labels = [];
 		for (const s of series) {
@@ -346,8 +201,8 @@ function chart(wrap, series, opt) {
 		const move = ev => {
 			const r = cv.getBoundingClientRect(), x = ev.clientX - r.left, s = wrap._st;
 			if (!s.X || x < s.pad.l || x > s.pad.l + s.pw) return leave();
-			const now = Date.now() / 1000, x0 = now - C.windowS; s.hover = x0 + (x - s.pad.l) / s.pw * C.windowS; s.draw();
-			clear(tip); tip.append(h('div', { class: 't' }, hm(s.hover)));
+			const now = Date.now() / 1000, ws = R().windowS, x0 = now - ws; s.hover = x0 + (x - s.pad.l) / s.pw * ws; s.draw();
+			clear(tip); tip.append(h('div', { class: 't' }, R().fmt(s.hover)));
 			for (const sr of s.series) { const p = nearest(sr.data, s.hover); if (!p) continue;
 				const key = h('i'); key.style.background = cssVar(sr.color);
 				tip.append(h('div', null, h('span', null, key, sr.name), h('b', null, s.opt.fmt(p[1])))); }
@@ -420,10 +275,10 @@ const applyLimits = () => { const L = LIM;
 async function applyAuth() {
 	const on = signedIn(), basic = sess.mode !== 'none';
 	for (const t of $$('#tabs [data-auth]')) t.hidden = !on;
-	for (const [id, show] of [['#h-settings', on], ['#h-sec', on], ['#h-signin', !on && basic], ['#h-signout', on && basic], ['#h-user', on && basic], ['#s-account', on && basic], ['#ov-more', on]]) $(id).hidden = !show;
+	for (const [id, show] of [['#h-settings', on], ['#h-sec', on], ['#h-signin', !on && basic], ['#h-signout', on && basic], ['#h-user', on && basic], ['#s-account', on && basic], ['#ov-more', on], ['#ov-csv', on]]) $(id).hidden = !show;
 	$('#h-user').textContent = sess.user || ''; tabsFade();
 	if ($('#tab-' + curTab).hidden) selectTab('overview');
-	if (!on) { cert = null; cfg = null; edState = null; dirty(false); alerts = null; sysinfo = null; dash = []; profiles = []; SN.key = null; for (const id of ['#editors', '#presets', '#log']) clear($(id)); secState(); renderCharts(); return; }
+	if (!on) { cert = null; cfg = null; edState = null; dirty(false); alerts = null; sysinfo = null; dash = []; profiles = []; SN.key = null; for (const id of ['#editors', '#presets', '#log', '#sc-tbl tbody', '#sc-kv', '#ac-tok tbody']) clear($(id)); secState(); renderCharts(); return; }
 	hist = []; lastTs = 0; // history is re-read with the extra series
 	await loadConfig(); loadCert(); loadDash(); loadAlerts(); loadSystem(); resetHistory();
 	api('/api/profiles').then(r => { profiles = r.body || []; renderHeader(); renderSystem(); renderProfiles(); }).catch(() => {});
@@ -437,7 +292,7 @@ on('#l-close', 'click', () => ld.close()); backdrop(ld); ld.addEventListener('cl
 lf.addEventListener('submit', async ev => { ev.preventDefault(); const u = $('#l-user').value.trim(), p = $('#l-pass').value; if (!u || !p) return lErr('user and password needed');
 	const bt = $('#l-submit'); bt.disabled = true; lErr('');
 	try { const r = await api('/api/login', { method: 'POST', json: { user: u, password: p, remember: $('#l-remember').checked } });
-		sess = { authenticated: true, mode: 'basic', user: r.body.user || u }; ld.close(); toast('Signed in', 'ok'); applyAuth(); $('#tab-' + curTab).focus(); }
+		sess = { authenticated: true, mode: 'basic', user: r.body.user || u, via: 'cookie' }; ld.close(); toast('Signed in', 'ok'); applyAuth(); $('#tab-' + curTab).focus(); }
 	catch (e) { lErr(e.status === 401 ? 'invalid user or password' : e.status === 429 ? 'too many attempts' : e.message); $('#l-pass').value = ''; $('#l-pass').focus(); }
 	bt.disabled = false; });
 on('#h-signout', 'click', async () => { if (edDirty && !await ask('Sign out', 'Unsaved curve changes are discarded.', { ok: 'Sign out', danger: true })) return;
@@ -454,9 +309,9 @@ function renderCards() {
 		let k = cards[c.name];
 		if (!k) {
 			k = cards[c.name] = { el: h('div', { class: 'card ch' }) };
-			k.mode = h('span', { class: 'mode' }); k.dot = h('i', { class: 'dot' });
+			k.mode = h('span', { class: 'mode' }); k.dot = h('i', { class: 'dot' }); k.hold = h('span', { class: 'badge hold', title: TIP.hold, hidden: true });
 			k.temp = h('div', { class: 'temp' }); k.duty = h('span', { class: 'v' }); k.bar = h('i'); k.tgt = h('b', { hidden: true }); k.rpm = h('span', { class: 'v' });
-			k.el.append(h('div', { class: 'top' }, chanHead(c, k.dot), k.mode), k.temp,
+			k.el.append(h('div', { class: 'top' }, chanHead(c, k.dot), h('span', { class: 'badges' }, k.hold, k.mode)), k.temp,
 				h('div', { class: 'row' }, h('span', { class: 'k', title: TIP.duty }, 'duty'), h('div', { class: 'bar-h' }, k.bar, k.tgt), k.duty),
 				h('div', { class: 'row' }, h('span', { class: 'k' }, 'fan'), h('span'), k.rpm));
 			host.append(k.el);
@@ -465,7 +320,11 @@ function renderCards() {
 		const crit = critOf(c.name);
 		modeBadge(k.mode, c.mode);
 		k.temp.className = 'temp ' + tempClass(c.temp, crit);
+		const held = c.held_temp !== undefined && c.held_temp !== null && c.held_temp !== c.temp;
 		clear(k.temp).append(fmtT(c.temp), h('small', { title: crit ? TIP.critical : null }, unit() + (crit ? ` · crit ${fmtT(crit, 0)}` : '')));
+		if (held) k.temp.append(h('small', { class: 'held', title: TIP.held }, `held ${fmtT(c.held_temp)}`));
+		const left = c.hold_until > 0 ? Math.max(0, Math.round(c.hold_until - Date.now() / 1000)) : -1; k.hold.hidden = left < 0;
+		if (left >= 0) k.hold.textContent = 'hold ' + (left >= 60 ? `${Math.ceil(left / 60)} min` : `${left} s`);
 		k.bar.style.width = pct(c.duty) + '%'; k.bar.className = { critical: 'crit', failsafe: 'crit', stall: 'stall', auto: 'auto' }[c.mode] || '';
 		const slewing = c.target !== undefined && c.target !== c.duty && c.mode !== 'stall';
 		k.tgt.hidden = !slewing; k.tgt.style.left = `calc(${pct(c.target)}% - 1px)`;
@@ -517,7 +376,7 @@ function renderSystemTab() {
 	tb = clear($('#sy-nics tbody')); for (const n of s.nics) trow(tb, mono(n.name), n.state, n.speed_mbit > 0 ? fmtMb(n.speed_mbit) : '—', n.duplex, n.model, mono(n.driver), mono(n.mac), n.mtu, mono(n.pci));
 	if (!s.nics.length) trow(tb, 'no physical interfaces');
 	tb = clear($('#sy-ctl tbody')); for (const x of s.storage.controllers) trow(tb, x.kind, x.name, mono(x.driver), mono(x.pci));
-	tb = clear($('#sy-disks tbody')); for (const x of s.storage.disks) trow(tb, mono(x.name), fmtB(x.size_bytes), x.rotational ? 'HDD' : 'SSD', x.transport, x.model);
+	tb = clear($('#sy-disks tbody')); for (const x of s.storage.disks) trow(tb, mono(x.name), fmtB(x.size_bytes), x.rotational ? 'HDD' : 'SSD', x.transport, x.model, x.temp_c === null || x.temp_c === undefined ? '—' : `${fmtT(x.temp_c)} ${unit()}`);
 	trow(tb, { mono: diskSum(s.storage.disks) });
 }
 async function loadSystem() { if (!signedIn()) return;
@@ -531,16 +390,17 @@ const alNotice = notice('#al-notice');
 async function loadAlerts() { if (!signedIn()) return;
 	try { alerts = (await api('/api/alerts')).body; alertList($('#alerts'), alerts.recent || []); alNotice(''); if (curTab === 'alerts') renderAlertsTab(); }
 	catch (e) { if (e.status === 401) return; alerts = null; alertList($('#alerts'), [], 'alerts: unavailable'); alertList($('#al-recent'), []); alNotice('alerts: ' + e.message); } }
-// sensors card, grouped by id prefix / hwmon chip
+// sensors card, grouped by `kind` first (disk:* → SSD·NVMe or HDD), then id prefix / hwmon chip
 const GROUPS = [['CPU', /^(k10temp|coretemp)/], ['SSD · NVMe', /^nvme/], ['HDD', /^drivetemp/], ['GPU', /^(amdgpu|nouveau|i915|radeon)/], ['NIC', /^(nic|eth|mlx|igc|ixgbe|r8169|atlantic)/], ['EC · board', /^(ec$|minisforum|acpitz|spd5118)/]];
-const groupOf = id => { const k = id.startsWith('hwmon:') ? id.slice(6) : id.split(':')[0], g = GROUPS.find(x => x[1].test(k)); return g ? g[0] : 'other'; };
+const groupOf = s => { if (s.kind === 'ssd') return 'SSD · NVMe'; if (s.kind === 'hdd') return 'HDD';
+	const id = s.id, k = id.startsWith('hwmon:') ? id.slice(6) : id.split(':')[0], g = GROUPS.find(x => x[1].test(k)); return g ? g[0] : 'other'; };
 const SN = { key: null, rows: {} };
 const concrete = () => sensors.filter(s => !s.id.includes('<')); // id patterns (with <) are not selectable
 function renderSensors() {
 	const host = $('#sensors'), sensors = concrete(), key = sensors.map(s => s.id).join(','), max = LIM.dashboard_sensors_max;
 	$('#sn-hint').textContent = `chart = record in the history (${dash.length}/${max})`;
 	if (key !== SN.key) { SN.key = key; SN.rows = {}; clear(host); const by = {};
-		for (const s of sensors) (by[groupOf(s.id)] = by[groupOf(s.id)] || []).push(s);
+		for (const s of sensors) (by[groupOf(s)] = by[groupOf(s)] || []).push(s);
 		for (const g of [...GROUPS.map(x => x[0]), 'other']) { if (!by[g]) continue; const box = h('div', { class: 'sg' }, h('h3', null, g));
 			for (const s of by[g]) { const r = SN.rows[s.id] = { v: h('b', { class: 'v' }), b: h('button', { class: 'btn sm' }, 'chart') };
 				r.b.addEventListener('click', () => { const off = dash.includes(s.id); setDash(off ? dash.filter(x => x !== s.id) : dash.concat(s.id), n => off ? `${s.id} removed from the chart (${n}/${max})` : `${s.id} added to the chart (${n}/${max})`); });
@@ -563,30 +423,46 @@ function renderCharts() {
 	const legend = (el, ss, rm) => { clear(el); for (const s of ss) { const i = h('i'); i.style.background = `var(${s.color})`;
 		el.append(h('span', null, i, s.name, rm ? h('button', { class: 'x', 'aria-label': 'remove ' + s.name, title: 'remove from the chart', onclick: () => rm(s.name) }, '×') : null)); } };
 	const tf = { fmt: (v, ax) => v.toFixed(ax ? 0 : 1) + (ax ? '' : ' ' + unit()), minSpan: C.minSpanTemp };
-	const ts = mk('temp', tC); legend($('#lg-temp'), ts);
+	const ts = mk('temp', tC), last = ' · last ' + R().label; legend($('#lg-temp'), ts);
+	$('#ch-temp-title').textContent = 'Temperature' + last; $('#ch-extra-title').textContent = 'Extra sensors' + last;
 	chart($('#ch-temp'), ts, tf);
 	const fs = mk(fanMetric); legend($('#lg-fan'), fs);
-	$('#ch-fan-title').textContent = (fanMetric === 'rpm' ? 'Fan speed' : 'Duty') + ' · last 2 h';
+	$('#ch-fan-title').textContent = (fanMetric === 'rpm' ? 'Fan speed' : 'Duty') + last;
 	chart($('#ch-fan'), fs, fanMetric === 'rpm' ? { fmt: (v, ax) => ax ? String(Math.round(v)) : Math.round(v) + ' rpm', yMin: 0, minSpan: C.minSpanRpm } : { fmt: (v, ax) => ax ? String(Math.round(v)) : `${Math.round(v)} (${pct(v)} %)`, yMin: 0, yMax: LIM.duty });
 	// extra sensors chart, only while something is watched
 	const on = signedIn() && dash.length > 0; $('#extra-card').hidden = !on; if (!on) return;
 	const es = dash.map((id, i) => ({ name: id, color: seriesColor(names.length + i), data: hist.filter(p => p.extra && p.extra[id] > -900).map(p => [p.ts, tC(p.extra[id])]) }));
 	legend($('#lg-extra'), es, id => setDash(dash.filter(x => x !== id), n => `${id} removed from the chart (${n}/${LIM.dashboard_sensors_max})`)); chart($('#ch-extra'), es, tf);
 }
-$$('.seg button').forEach(b => b.addEventListener('click', () => { fanMetric = b.dataset.metric; $$('.seg button').forEach(x => { x.classList.toggle('on', x === b); x.setAttribute('aria-pressed', x === b); }); renderCharts(); }));
+const segOn = (sel, b) => $$(sel).forEach(x => { x.classList.toggle('on', x === b); x.setAttribute('aria-pressed', x === b); });
+$$('#fan-seg button').forEach(b => b.addEventListener('click', () => { fanMetric = b.dataset.metric; segOn('#fan-seg button', b); renderCharts(); }));
+// range selector: the tier changes with the range, so the history is reloaded and the poll timer re-armed
+const setRange = r => { if (!RANGES[r]) return; S.range = r; saveS(); segOn('#rg-seg button', $(`#rg-seg button[data-range="${r}"]`)); $('#ov-csv').title = `Download the last ${RANGES[r].label} as CSV`; };
+$$('#rg-seg button').forEach(b => b.addEventListener('click', () => { if (b.dataset.range === S.range) return; setRange(b.dataset.range); resetHistory(); schedule(); }));
+setRange(S.range);
+on('#ov-csv', 'click', () => act(() => download('/api/history.csv?minutes=' + R().minutes, 'n5-fangov-history.csv'), n => `History exported as ${n}`));
 
 // curves — edited in °C whatever the display unit; edState = working copy, edDirty = unsaved
 const ED = {}, drawEds = () => { for (const k in ED) ED[k].draw(); }; let edState = null, edStash = null, edDirty = false;
 const cvNotice = notice('#cv-notice'), K = UI.curve;
 const dirty = v => { edDirty = !!v; $('#cv-dirty').hidden = !v; $('#cv-badge').hidden = !v; };
 addEventListener('beforeunload', ev => { if (edDirty) ev.preventDefault(); });
-const tomlChannel = c => `[[channel]]\nname = "${c.name}"\npwm = ${c.pwm}\nsensor = "${c.sensor}"\ncurve = [${c.curve.map(p => `[${p[0]}, ${p[1]}]`).join(', ')}]\ncritical = ${c.critical}\nstop = ${c.stop === 'auto' || c.stop === '' || c.stop === undefined ? '"auto"' : c.stop}\n`;
+// Go durations ("1m0s") ↔ seconds; min_on is kept in the daemon's canonical form, the select lists the common values
+const durS = s => { const m = /^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+(?:\.\d+)?)s)?$/.exec(s || ''); return m && m[0] ? (+m[1] || 0) * 3600 + (+m[2] || 0) * 60 + (+m[3] || 0) : 0; };
+const MIN_ON = [['0s', 'off'], ['30s', '30 s'], ['1m0s', '1 min'], ['2m0s', '2 min'], ['5m0s', '5 min'], ['10m0s', '10 min'], ['30m0s', '30 min'], ['1h0m0s', '1 h']];
+const normDur = s => { const t = durS(s), o = MIN_ON.find(x => durS(x[0]) === t); return o ? o[0] : t ? `${t / 3600 | 0}h${t % 3600 / 60 | 0}m${t % 60}s`.replace(/^0h/, '').replace(/^0m/, '') : '0s'; };
+const parts = s => String(s || '').split(',').map(x => x.trim()).filter(Boolean);
+// [[channel]] tables: sensor as an array for a composite, hysteresis / min_on omitted at their defaults
+const tomlChannel = c => { const ps = parts(c.sensor);
+	return `[[channel]]\nname = "${c.name}"\npwm = ${c.pwm}\nsensor = ${ps.length > 1 ? `[${ps.map(x => `"${x}"`).join(', ')}]` : `"${ps[0] || ''}"`}\ncurve = [${c.curve.map(p => `[${p[0]}, ${p[1]}]`).join(', ')}]\ncritical = ${c.critical}\nstop = ${c.stop === 'auto' || c.stop === '' || c.stop === undefined ? '"auto"' : c.stop}\n`
+		+ (c.hysteresis > 0 ? `hysteresis = ${c.hysteresis}\n` : '') + (durS(c.min_on) ? `min_on = "${c.min_on}"\n` : ''); };
 const stripChannels = raw => { const out = []; let skip = false;
 	for (const ln of raw.split('\n')) { const t = ln.trim();
 		if (/^\[\[channel\]\]/.test(t)) { skip = true; continue; }
 		if (/^\[[^\[]/.test(t)) skip = false;
 		if (!skip) out.push(ln); } return out.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd() + '\n\n'; };
-const fromCfg = () => chList().map(c => ({ name: c.name, pwm: c.pwm, sensor: c.sensor, curve: (c.curve || []).map(p => [+p[0], +p[1]]), critical: +c.critical, stop: c.stop === undefined || c.stop === 'auto' ? 'auto' : String(c.stop) }));
+const fromCfg = () => chList().map(c => ({ name: c.name, pwm: c.pwm, sensor: parts(c.sensor).join(','), curve: (c.curve || []).map(p => [+p[0], +p[1]]), critical: +c.critical, stop: c.stop === undefined || c.stop === 'auto' ? 'auto' : String(c.stop),
+	hysteresis: +c.hysteresis || 0, min_on: normDur(c.min_on) }));
 function loadEditor() { edState = fromCfg(); dirty(false); buildEditors(); }
 function buildEditors() {
 	const host = clear($('#editors')); for (const k in ED) delete ED[k];
@@ -597,9 +473,12 @@ function buildEditors() {
 		const sel = h('select', { title: TIP.sensor, onchange: () => { c.sensor = sel.value; dirty(1); } });
 		const crit = h('input', { type: 'number', min: L.critical_min, max: L.critical_max, value: c.critical, title: TIP.critical, oninput: () => { c.critical = +crit.value; dirty(1); ed.draw(); } });
 		const stop = h('input', { type: 'text', value: c.stop, placeholder: 'auto', title: TIP.stop, oninput: () => { c.stop = stop.value.trim(); dirty(1); } });
-		const tbody = h('tbody');
+		const hyst = h('input', { type: 'number', min: 0, max: L.hysteresis_max, step: 1, value: c.hysteresis, title: TIP.hyst, oninput: () => { c.hysteresis = +hyst.value; dirty(1); } });
+		const mo = h('select', { title: TIP.minOn, onchange: () => { c.min_on = mo.value; dirty(1); } });
+		for (const [v, t] of MIN_ON.filter(x => durS(x[0]) <= L.min_on_max_s).concat(MIN_ON.some(x => x[0] === c.min_on) ? [] : [[c.min_on, fmtDur(c.min_on)]])) mo.append(h('option', { value: v, selected: v === c.min_on }, t));
+		const tbody = h('tbody'), ptsEl = h('div', { class: 'ptl' });
 		const ref = REF[c.name] && snap && snap.profile === 'n5pro' ? h('p', { class: 'ref' }, 'Duty → RPM (measured): ', ...REF[c.name].flatMap(([d, r], j) => [j ? ' · ' : '', h('b', null, `${d}→${r}`)])) : null;
-		ed.sel = sel; ed.cv = cv; ed.tbody = tbody;
+		ed.sel = sel; ed.cv = cv; ed.tbody = tbody; ed.ptsEl = ptsEl;
 		const fillTable = () => {
 			clear(tbody); c.curve.forEach((p, j) => tbody.append(h('tr', null,
 				h('td', null, h('input', { type: 'number', min: L.temp[0], max: L.temp[1], value: p[0], 'aria-label': `point ${j + 1} temp`, oninput: ev => { p[0] = +ev.target.value; dirty(1); ed.draw(); } })),
@@ -624,8 +503,9 @@ function buildEditors() {
 			at.value = t; ad.value = Math.round(interp(s, t)); addRow.hidden = false; at.focus(); at.select(); } }, '+ add point');
 		host.append(h('div', { class: 'card ed' },
 			h('div', { class: 'top' }, chanHead(c)),
-			h('div', { class: 'fields' }, h('label', null, 'sensor', sel), h('label', { title: TIP.critical }, 'critical °C', crit), h('label', { title: TIP.stop }, 'stop', stop)),
-			h('div', { class: 'cvs' }, cv),
+			h('div', { class: 'fields' }, h('label', null, 'sensor', sel), h('label', { title: TIP.critical }, 'critical °C', crit), h('label', { title: TIP.stop }, 'stop', stop),
+				h('label', { title: TIP.hyst }, 'hysteresis °C', hyst), h('label', { title: TIP.minOn }, 'min on', mo)),
+			h('div', { class: 'cvs' }, cv, ptsEl),
 			h('div', { class: 'pts' }, h('table', null, h('thead', null, h('tr', null, h('th', null, '°C'), h('th', { title: TIP.duty }, 'duty'), h('th'))), tbody), h('div', { class: 'addc' }, addBtn, addRow)),
 			ref));
 		fillTable();
@@ -636,8 +516,10 @@ function buildEditors() {
 	fillSensorSelects();
 }
 function fillSensorSelects() {
-	for (const k in ED) { const { c, sel } = ED[k]; const ids = new Set(concrete().map(s => s.id)); ids.add(c.sensor); clear(sel);
-		for (const id of ids) { const s = sensors.find(x => x.id === id); sel.append(h('option', { value: id, selected: id === c.sensor }, id + (s && s.temp !== undefined ? ` (${s.temp.toFixed(1)} °C)` : ''))); } }
+	// a composite id "a,b" is one option (never dropped by the editor); the catalogue's single ids follow
+	for (const k in ED) { const { c, sel } = ED[k]; const ids = new Set([c.sensor, ...concrete().map(s => s.id)]); clear(sel);
+		for (const id of ids) { const s = sensors.find(x => x.id === id), n = parts(id).length;
+			sel.append(h('option', { value: id, selected: id === c.sensor }, id + (n > 1 ? ` (max of ${n})` : s && s.temp !== undefined ? ` (${s.temp.toFixed(1)} °C)` : ''))); } }
 }
 const curveGeom = ed => { const W = ed.cv.clientWidth, H = ed.cv.clientHeight, pad = K.pad;
 	const xmax = clamp((ed.c.critical || 0) + K.xPad, K.xMin, LIM.critical_max + K.xPad);
@@ -665,7 +547,20 @@ function drawCurve(ed) {
 		ctx.strokeStyle = cssVar('--fg2'); seg(ctx, x, g.pad.t, x, g.H - g.pad.b, C.dash.now);
 		dot(ctx, x, y, cssVar('--fg'));
 		ctx.fillStyle = cssVar('--fg2'); ctx.textAlign = r ? 'right' : 'left'; ctx.textBaseline = 'bottom'; ctx.fillText(`now ${live.temp.toFixed(1)} °C → ${Math.round(interp(pts, live.temp))}`, x + (r ? -K.labelGap : K.labelGap), y - C.labelGap); }
+	syncPts(ed, g);
 }
+// keyboard: one focusable overlay per point (Tab reaches it, arrows move it by 1 °C / 5 duty, Shift × 5); pointer events fall through to the canvas drag
+function syncPts(ed, g) {
+	const { c, ptsEl } = ed, L = LIM;
+	while (ptsEl.children.length > c.curve.length) ptsEl.lastChild.remove();
+	while (ptsEl.children.length < c.curve.length) { const i = ptsEl.children.length; ptsEl.append(h('span', { class: 'pt', tabindex: '0', role: 'slider', onkeydown: ev => keyPt(ed, i, ev) })); }
+	c.curve.forEach((p, i) => { const el = ptsEl.children[i]; el.style.left = g.X(clamp(p[0], 0, g.xmax)) + 'px'; el.style.top = g.Y(clamp(p[1], 0, L.duty)) + 'px';
+		for (const [k, v] of [['aria-label', `${c.name} point ${i + 1}`], ['aria-valuemin', L.temp[0]], ['aria-valuemax', L.temp[1]], ['aria-valuenow', p[0]], ['aria-valuetext', `${p[0]} °C → duty ${p[1]} (${pct(p[1])} %)`]]) el.setAttribute(k, v); });
+}
+const keyPt = (ed, i, ev) => { const { c } = ed, d = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, 1], ArrowDown: [0, -1] }[ev.key]; if (!d) return; ev.preventDefault();
+	const m = ev.shiftKey ? K.keyShift : 1, lo = i ? c.curve[i - 1][0] + 1 : LIM.temp[0], hi = i < c.curve.length - 1 ? c.curve[i + 1][0] - 1 : LIM.temp[1];
+	c.curve[i] = [clamp(c.curve[i][0] + d[0] * K.keyT * m, lo, hi), clamp(c.curve[i][1] + d[1] * K.keyD * m, 0, LIM.duty)]; dirty(1);
+	const row = ed.tbody.rows[i]; if (row) { row.cells[0].firstChild.value = c.curve[i][0]; row.cells[1].firstChild.value = c.curve[i][1]; } ed.draw(); };
 function bindCurveDrag(ed) {
 	const { cv, c } = ed; let drag = -1;
 	const pos = ev => { const r = cv.getBoundingClientRect(); return [ev.clientX - r.left, ev.clientY - r.top]; };
@@ -690,7 +585,9 @@ const validateCurves = () => { const errs = [], L = LIM;
 			if (i && p[1] < c.curve[i - 1][1]) errs.push(`${q}: duty ${p[1]} below point ${i} (${c.curve[i - 1][1]}) — duty must not fall`); });
 		const last = n ? c.curve[n - 1][0] : 0, cmin = Math.max(L.critical_min, last + 1);
 		if (!(c.critical >= cmin && c.critical <= L.critical_max)) errs.push(`${nm}: critical ${c.critical || '—'} must be ${cmin}..${L.critical_max} °C (above the last point)`);
-		if (c.stop !== 'auto' && !(/^\d+$/.test(c.stop) && +c.stop >= L.min_hdd_override && +c.stop <= L.duty)) errs.push(`${nm}: stop must be "auto" or a fixed duty ${L.min_hdd_override}..${L.duty}`); }
+		if (c.stop !== 'auto' && !(/^\d+$/.test(c.stop) && +c.stop >= L.min_hdd_override && +c.stop <= L.duty)) errs.push(`${nm}: stop must be "auto" or a fixed duty ${L.min_hdd_override}..${L.duty}`);
+		if (!(Number.isInteger(c.hysteresis) && c.hysteresis >= 0 && c.hysteresis <= L.hysteresis_max)) errs.push(`${nm}: hysteresis must be 0..${L.hysteresis_max} °C`);
+		if (durS(c.min_on) > L.min_on_max_s) errs.push(`${nm}: min_on above ${fmtDur(normDur(L.min_on_max_s + 's'))}`); }
 	return errs; };
 on('#cv-apply', 'click', async () => {
 	for (const k in ED) ED[k].sort(); const errs = validateCurves();
@@ -733,7 +630,7 @@ function renderManual() {
 
 // presets (built-ins: badge, no save-over, no delete); active = channels equal the daemon config
 const chanSummary = chs => (chs || []).map(c => c.name || c).join(' · ');
-const chKey = chs => JSON.stringify((chs || []).map(c => [c.name, +c.pwm, c.sensor, (c.curve || []).map(p => [+p[0], +p[1]]), +c.critical, c.stop === undefined || c.stop === 'auto' ? 'auto' : String(c.stop)]).sort());
+const chKey = chs => JSON.stringify((chs || []).map(c => [c.name, +c.pwm, parts(c.sensor).join(','), (c.curve || []).map(p => [+p[0], +p[1]]), +c.critical, c.stop === undefined || c.stop === 'auto' ? 'auto' : String(c.stop), +c.hysteresis || 0, durS(c.min_on)]).sort());
 const psNotice = notice('#ps-notice'), psGet = p => api('/api/presets/' + encodeURIComponent(p.name)).then(r => r.body);
 // preset details: channel tables loaded on demand (GET /api/presets/{name})
 const presetDetail = async (p, box, btn) => {
@@ -741,7 +638,7 @@ const presetDetail = async (p, box, btn) => {
 	try { const d = await psGet(p); clear(box);
 		for (const c of d.channels || []) box.append(h('div', { class: 'pc' }, h('b', null, c.name), h('span', null, `pwm${c.pwm} · ${c.sensor}`),
 			h('span', { class: 'pts' }, ...(c.curve || []).map(([t, dty]) => h('span', null, `${fmtT(t, 0)}${unit()} → ${dty} (${pct(dty)} %)`))),
-			h('span', null, `crit ${fmtT(c.critical, 0)}${unit()} · stop ${c.stop}`)));
+			h('span', null, `crit ${fmtT(c.critical, 0)}${unit()} · stop ${c.stop}`), h('span', null, `hysteresis ${+c.hysteresis || 0} °C · min on ${durS(c.min_on) ? fmtDur(normDur(c.min_on)) : 'off'}`)));
 		box.hidden = false; btn.textContent = 'Hide';
 	} catch (e) { toast(e.message, 'err'); }
 };
@@ -777,15 +674,30 @@ on('#ps-save', 'submit', async ev => { ev.preventDefault(); const inp = $('#ps-n
 	hint.classList.toggle('field-err', !!bad); inp.setAttribute('aria-invalid', String(!!bad)); hint.textContent = bad || PS_HINT; if (bad) return inp.focus();
 	if (await act(() => api('/api/presets/' + encodeURIComponent(n), { method: 'PUT' }), `Saved current curves as ${n}`)) { inp.value = ''; loadPresets(); } });
 
+// schedules card (read-only; the list is edited in the config file): 501 → "unavailable" like the alerts card
+const scNotice = notice('#sc-notice'), inRel = ts => { const s = Math.max(0, ts - Date.now() / 1000 | 0); return 'in ' + (s < 3600 ? `${s / 60 | 0} min` : s < 86400 ? `${s / 3600 | 0} h ${s % 3600 / 60 | 0} min` : `${s / 86400 | 0} d ${s % 86400 / 3600 | 0} h`); };
+async function loadSchedules() { if (!signedIn()) return; const tb = clear($('#sc-tbl tbody')), kvEl = $('#sc-kv');
+	try { const s = (await api('/api/schedules')).body || {}, es = s.entries || [];
+		for (const e of es) tb.append(h('tr', { class: e.active ? 'active' : '' }, h('td', { class: 'mono' }, e.preset, e.active ? h('span', { class: 'act' }, 'ACTIVE') : null),
+			h('td', null, e.fallback ? h('i', null, 'fallback') : `${e.from}–${e.to}`), h('td', null, e.fallback ? '—' : e.days && e.days.length ? e.days.join(' ') : 'every day')));
+		if (!es.length) tb.append(h('tr', null, h('td', { colspan: 3, class: 'empty' }, 'no schedules configured')));
+		const n = s.next, l = s.last;
+		kv(kvEl, [['next switch', n ? h('dd', null, h('time', { datetime: new Date(n.ts * 1000).toISOString(), title: abs(n.ts) }, inRel(n.ts)), ` → ${n.preset || 'no preset (no fallback)'}`) : '—'],
+			['last switch', l ? h('dd', null, `${l.preset} · `, tm(l.ts), l.ok ? ' · ok' : ' · failed') : 'none yet'], ['timezone', s.timezone || '—']]);
+		scNotice(l && !l.ok ? `Last switch failed: ${l.error || 'unknown error'} — the previous curves stay; retried at the next transition.` : '', '');
+	} catch (e) { if (e.status === 401) return; clear(kvEl); tb.append(h('tr', null, h('td', { colspan: 3, class: 'empty' }, e.status === 501 ? 'schedules: unavailable' : 'schedules: ' + e.message))); scNotice(''); } }
+
 // alerts tab; unsaved form edits survive the refresh; missing transports are disabled
 let alDirty = false; on('#al-form', 'input', () => { alDirty = true; });
-const mailToVis = () => { $('#al-mailto-l').hidden = !/^(auto|mail)$/.test($('#al-transport').value); };
-on('#al-transport', 'change', mailToVis);
+// mail_to for auto/mail, webhook_url + webhook_format for webhook
+const transVis = () => { const t = $('#al-transport').value; $('#al-mailto-l').hidden = !/^(auto|mail)$/.test(t); $('#al-wh-l').hidden = $('#al-whf-l').hidden = t !== 'webhook'; };
+on('#al-transport', 'change', transVis);
 function renderAlertsTab() {
 	const a = alerts; if (!a) return; const t = a.template || {}, sel = $('#al-transport');
 	for (const o of sel.options) { const av = o.value === 'pve' ? a.pve_available : o.value === 'mail' ? a.mail_available : true; o.disabled = !av; o.textContent = o.value + (av ? '' : ' (not available)'); }
-	if (!alDirty) { sel.value = a.transport || 'auto'; $('#al-mailto').value = a.mail_to || ''; } mailToVis();
-	const av = x => x ? 'available' : 'not available'; kv($('#al-status'), [['effective', a.effective || '—'], ['pve-notify', av(a.pve_available)], ['mail(1)', av(a.mail_available) + (a.mail_available ? '' : ' — apt install bsd-mailx or choose pve/log')], ['cooldown', fmtDur(a.cooldown)]]);
+	if (!alDirty) { sel.value = a.transport || 'auto'; $('#al-mailto').value = a.mail_to || ''; $('#al-wh').value = a.webhook_url || ''; $('#al-whf').value = a.webhook_format || 'json'; } transVis();
+	const av = x => x ? 'available' : 'not available'; kv($('#al-status'), [['effective', a.effective || '—'], ['pve-notify', av(a.pve_available)], ['mail(1)', av(a.mail_available) + (a.mail_available ? '' : ' — apt install bsd-mailx or choose pve/log')],
+		['webhook', a.webhook_url ? h('dd', { class: 'mono' }, `${a.webhook_url} (${a.webhook_format || 'json'})`) : 'no URL configured'], ['cooldown', fmtDur(a.cooldown)]]);
 	$('#al-tpl-card').hidden = !a.pve_available;
 	const yn = x => x ? 'yes' : 'no'; kv($('#al-tpl'), [['installed', yn(t.installed)], ['current', !t.installed ? '—' : t.current ? 'yes' : 'no — outdated'], ['writable', yn(t.writable)], ['path', h('dd', { class: 'mono' }, t.path || '—')]]);
 	const b = $('#al-tpl-btn'), upToDate = t.installed && t.current; b.textContent = t.installed ? 'Update template' : 'Install template'; b.disabled = !t.writable || upToDate;
@@ -794,8 +706,10 @@ function renderAlertsTab() {
 	for (const k of a.kinds || []) tb.append(h('tr', null, h('td', { class: 'mono' }, k.kind), h('td', null, k.description || ''), h('td', null, tm(last[k.kind] || 0))));
 	alertList($('#al-recent'), a.recent || []);
 }
-on('#al-form', 'submit', async ev => { ev.preventDefault();
-	const r = await act(() => api('/api/alerts', { method: 'PUT', json: { transport: $('#al-transport').value, mail_to: $('#al-mailto').value.trim() } })); if (!r) return;
+on('#al-form', 'submit', async ev => { ev.preventDefault(); const t = $('#al-transport').value, j = { transport: t };
+	if (/^(auto|mail)$/.test(t)) j.mail_to = $('#al-mailto').value.trim();
+	if (t === 'webhook') { j.webhook_url = $('#al-wh').value.trim(); j.webhook_format = $('#al-whf').value; if (!/^https?:\/\/\S+$/.test(j.webhook_url)) { toast('Webhook: an absolute http(s) URL is required', 'err'); return $('#al-wh').focus(); } }
+	const r = await act(() => api('/api/alerts', { method: 'PUT', json: j })); if (!r) return;
 	alDirty = false; toast('Transport saved — effective: ' + (r.body.status && r.body.status.effective), 'ok'); loadAlerts(); });
 on('#al-test', 'click', async () => {
 	try { const r = await api('/api/alerts/test', { method: 'POST' }); toast('Test alert sent via ' + r.body.transport, 'ok'); }
@@ -808,6 +722,7 @@ function renderAbout(a) {
 	$('#ab-name').textContent = a.name || 'n5-fangov'; $('#ab-version').textContent = 'v' + (a.version || version || '?').replace(/^v/, ''); preBadge([$('#ab-beta')], a.prerelease);
 	const link = (id, href, text) => { const e = $(id); e.href = href || '#'; e.textContent = text || href || '—'; };
 	link('#ab-license', a.license_url, a.license); link('#ab-repo', a.repo, (a.repo || '').replace(/^https?:\/\//, '')); link('#ab-author', a.author_url, a.author); link('#ab-rel', a.repo + '/releases', 'GitHub releases');
+	link('#sc-doc', a.repo + '/blob/main/docs/06-configuration.md#schedules', 'configuration page');
 	$('#ab-go').textContent = a.go || '—'; $('#ab-go').hidden = $('#ab-go-t').hidden = !a.go; $('#ab-mock').hidden = !MOCK;
 	const ul = clear($('#ab-credits')); for (const c of a.credits || []) ul.append(h('li', null, h('a', { href: c.url, rel: 'noopener', target: '_blank' }, c.name), c.note ? ' — ' + c.note : ''));
 }
@@ -853,12 +768,14 @@ async function loadConfig() {
 }
 // a reset bumps the generation; a late answer of the old load is dropped
 let histGen = 0;
+// 2 h: incremental (since); 24 h / 7 d: the averaged tier is reloaded whole (bucket means change until the bucket closes)
 async function loadHistory() {
-	const g = histGen;
-	try { const r = await api('/api/history?minutes=120' + (lastTs ? '&since=' + lastTs : '')); if (g !== histGen) return;
-		const pts = (r.body || []).filter(p => p.ts > lastTs).sort((a, b) => a.ts - b.ts);
+	const g = histGen, rg = R(), inc = !!(rg.since && lastTs);
+	try { const r = await api(`/api/history?minutes=${rg.minutes}` + (inc ? '&since=' + lastTs : '')); if (g !== histGen) return;
+		const pts = (r.body || []).filter(p => !inc || p.ts > lastTs).sort((a, b) => a.ts - b.ts);
+		if (!inc) hist = [];
 		if (pts.length) { hist = hist.concat(pts); lastTs = hist[hist.length - 1].ts; }
-		const cut = Date.now() / 1000 - C.windowS; while (hist.length && (hist[0].ts < cut || hist.length > C.maxPoints)) hist.shift();
+		const cut = Date.now() / 1000 - rg.windowS; while (hist.length && (hist[0].ts < cut || hist.length > rg.maxPoints)) hist.shift();
 		renderCharts();
 	} catch (e) {}
 }
@@ -877,8 +794,9 @@ function schedule() {
 	for (const t of timers) clearInterval(t); timers = []; liveState();
 	if (document.hidden) return;
 	poll(); loadHistory(); const T = UI.timing;
-	timers = [setInterval(poll, S.interval * 1000), setInterval(loadHistory, T.history),
+	timers = [setInterval(poll, S.interval * 1000), setInterval(loadHistory, R().poll),
 		setInterval(() => { if (curTab === 'overview' || curTab === 'alerts') loadAlerts(); }, T.alerts),
+		setInterval(() => { if (curTab === 'presets') loadSchedules(); }, T.schedules),
 		setInterval(() => { if (curTab === 'overview' || curTab === 'system') loadSystem(); }, T.system), // live parts: memory, load, link state
 		setInterval(() => { if (curTab === 'log') loadLog(); }, T.log)];
 }
@@ -892,7 +810,7 @@ function selectTab(id, focus) {
 	curTab = id;
 	TABS.forEach(t => { const on = t.id === 'tab-' + id; t.setAttribute('aria-selected', on); t.tabIndex = on ? 0 : -1; $('#' + t.getAttribute('aria-controls')).hidden = !on; if (on) { t.scrollIntoView({ block: 'nearest', inline: 'nearest' }); if (focus) t.focus(); } });
 	// every tab needs an entry (TestTabsHaveHandlers); a missing one throws after the panel switch
-	(({ overview: () => { renderCharts(); pollSensors(); loadAlerts(); }, manual: () => { if (snap) renderManual(); }, presets: loadPresets, log: loadLog, compat: renderProfiles, alerts: () => { alDirty = false; renderAlertsTab(); loadAlerts(); }, about: () => {},
+	(({ overview: () => { renderCharts(); pollSensors(); loadAlerts(); }, manual: () => { if (snap) renderManual(); }, presets: () => { loadPresets(); loadSchedules(); }, log: loadLog, compat: renderProfiles, alerts: () => { alDirty = false; renderAlertsTab(); loadAlerts(); }, about: () => {},
 		system: () => { renderSystemTab(); loadSystem(); },
 		curves: () => { if (!edState) loadEditor();
 			pollSensors(1); drawEds(); } })[id] || (() => {}))();
@@ -932,14 +850,35 @@ on('#s-file', 'change', async () => {
 
 // account dialog (Settings → Account…)
 const acd = $('#account'), acNotice = notice('#ac-notice');
-const acReset = () => { for (const f of ['#ac-pw-f', '#ac-us-f']) { $(f).reset(); $(f).hidden = true; } };
+const acReset = () => { for (const f of ['#ac-pw-f', '#ac-us-f', '#ac-tk-f']) { $(f).reset(); $(f).hidden = true; } $('#ac-tk-new').hidden = true; $('#ac-tk-secret').value = ''; $('#ac-tk-never').hidden = true; };
 async function loadAccount() {
 	try { const a = (await api('/api/account')).body; $('#ac-user').textContent = a.user || sess.user || ''; const tb = clear($('#ac-sessions tbody')), ss = a.sessions || [];
 		for (const s of ss) tb.append(h('tr', { class: s.current ? 'active' : '' }, h('td', { class: 'mono' }, s.id, s.current ? h('span', { class: 'act' }, 'THIS SESSION') : null),
 			h('td', null, tm(s.created)), h('td', null, tm(s.last_seen)), h('td', null, tm(s.expires, true), s.remember ? ' · remembered' : null), h('td', { class: 'mono' }, s.ip || '')));
 			} catch (e) { acNotice('account: ' + e.message, 'err'); }
+	if (!$('#ac-tokens').hidden) loadTokens();
 }
-on('#s-acc', 'click', () => { showS(false); acNotice(''); acReset(); $('#ac-user').textContent = sess.user || ''; if (!acd.open) acd.showModal(); $('#ac-pw').focus(); loadAccount(); });
+// API tokens: session callers only (a token can never manage tokens); the secret is shown once, right after creation
+async function loadTokens() { const tb = clear($('#ac-tok tbody'));
+	try { const ts = (await api('/api/tokens')).body.tokens || [];
+		for (const t of ts) tb.append(h('tr', { class: t.expired ? 'dim' : '' }, h('td', null, t.name, h('span', { class: 'tid mono' }, t.id)), h('td', { class: 'mono' }, t.scope), h('td', null, tm(t.created)),
+			h('td', null, t.expires ? h('span', { class: t.expired ? 'expired' : '' }, tm(t.expires, true), t.expired ? ' · expired' : null) : 'never'), h('td', null, t.last_used ? tm(t.last_used) : 'never'), h('td', { class: 'mono' }, t.last_ip || '—'),
+			h('td', null, h('button', { class: 'btn sm danger', onclick: async () => { if (!await ask('Revoke token', `Revoke token ${t.name}? Every client using it stops working at once.`, { ok: 'Revoke', danger: true })) return;
+				if (await act(() => api('/api/tokens/' + encodeURIComponent(t.id), { method: 'DELETE' }), `Token ${t.name} revoked`)) loadTokens(); } }, 'Revoke'))));
+		if (!ts.length) tb.append(h('tr', null, h('td', { colspan: 7, class: 'empty' }, 'no tokens')));
+	} catch (e) { tb.append(h('tr', null, h('td', { colspan: 7, class: 'empty' }, e.status === 501 ? 'tokens: unavailable' : 'tokens: ' + e.message))); } }
+on('#ac-tk', 'click', () => { acReset(); $('#ac-tk-f').hidden = false; $('#ac-tk-name').focus(); });
+on('#ac-tk-ttl', 'change', () => { $('#ac-tk-never').hidden = $('#ac-tk-ttl').value !== '0'; });
+on('#ac-tk-f', 'submit', async ev => { ev.preventDefault(); const name = $('#ac-tk-name').value.trim(), ttl = +$('#ac-tk-ttl').value;
+	if (!LIM.token.test(name)) return acNotice('token name: letters, digits, space, . _ - (1–32), not starting with punctuation', 'err');
+	try { const r = await api('/api/tokens', { method: 'POST', json: { name, scope: $('#ac-tk-scope').value, ttl_days: ttl } }); acReset(); acNotice('');
+		$('#ac-tk-nn').textContent = r.body.name || name; $('#ac-tk-secret').value = r.body.token || ''; $('#ac-tk-new').hidden = false; $('#ac-tk-warn').hidden = !r.body.warning; $('#ac-tk-warn').textContent = r.body.warning ? r.body.warning + ' — revoke it here when the client is retired.' : '';
+		toast(`Token ${name} created`, 'ok'); $('#ac-tk-copy').focus(); loadTokens(); }
+	catch (e) { acNotice(e.message, 'err'); $('#ac-tk-name').focus(); } });
+on('#ac-tk-copy', 'click', () => { const inp = $('#ac-tk-secret'); const fb = () => { inp.focus(); inp.select(); toast('Clipboard blocked — the secret is selected, press Ctrl+C', 'warn'); };
+	navigator.clipboard ? navigator.clipboard.writeText(inp.value).then(() => toast('Token copied', 'ok'), fb) : fb(); });
+on('#ac-tk-done', 'click', () => { $('#ac-tk-new').hidden = true; $('#ac-tk-secret').value = ''; $('#ac-tk').focus(); });
+on('#s-acc', 'click', () => { showS(false); acNotice(''); acReset(); $('#ac-user').textContent = sess.user || ''; $('#ac-tokens').hidden = !/^(cookie|basic)$/.test(sess.via || ''); if (!acd.open) acd.showModal(); $('#ac-pw').focus(); loadAccount(); });
 on('#ac-close', 'click', () => acd.close()); backdrop(acd); acd.addEventListener('close', acReset);
 $$('#account [data-cancel]').forEach(b => b.addEventListener('click', acReset));
 for (const [b, f, i] of [['#ac-pw', '#ac-pw-f', '#ac-cur'], ['#ac-us', '#ac-us-f', '#ac-ucur']]) on(b, 'click', () => { acReset(); $(f).hidden = false; $(i).focus(); });
@@ -1003,8 +942,8 @@ on('#ct-upload-f', 'submit', async ev => { ev.preventDefault(); const c = $('#ct
 on('#ct-reset', 'click', async () => { if (!await ask('Back to auto', 'Back to the automatic certificate? The uploaded pair is deleted.', { ok: 'Back to auto', danger: true })) return;
 	const r = await act(() => api('/api/tls/reset', { method: 'POST' })); if (r) ctDone(r, 'Automatic certificate active'); });
 
-// boot: session first, protected bits via applyAuth
-(async () => {
+// boot: session first, protected bits via applyAuth. With ?mock=1 the boot waits for mock.js (never requested otherwise).
+const boot = async () => {
 	if (MOCK) toast('Mock mode', 'warn', UI.timing.toastNotice);
 	api('/api/version').then(r => { version = r.body.version || ''; if (typeof r.body.tls === 'boolean') tls = r.body.tls; if (r.body.prerelease !== undefined) preBadge($$('.beta'), r.body.prerelease);
 		if (r.body.limits) { Object.assign(LIM, r.body.limits); applyLimits(); } secState(); renderHeader(); }).catch(() => {});
@@ -1013,5 +952,7 @@ on('#ct-reset', 'click', async () => { if (!await ask('Back to auto', 'Back to t
 	await applyAuth(); if (MOCK && Q.get('tab')) selectTab(Q.get('tab'));
 	if (document.hidden) { poll(); loadHistory(); }
 	schedule();
-})();
+};
+if (MOCK) { const s = h('script', { src: 'mock.js' }); s.addEventListener('load', boot); s.addEventListener('error', () => toast('mock.js could not be loaded', 'err', UI.timing.toastLong)); document.head.append(s); }
+else boot();
 })();

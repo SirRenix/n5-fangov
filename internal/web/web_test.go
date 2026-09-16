@@ -1368,15 +1368,32 @@ func TestStaticIndex(t *testing.T) {
 		t.Errorf("app.js: %q %.100s", r.hdr.Get("Content-Type"), r.body)
 	}
 	if len(r.body) > 96*1024 {
-		t.Errorf("app.js is %d bytes, budget 96 KB (DESIGN \"System inventory\", v4 design fixes)", len(r.body))
+		t.Errorf("app.js is %d bytes, budget 96 KB (DESIGN \"Dashboard\")", len(r.body))
 	}
 	// UI assumptions the server honours: since-polling, {"lines"} log wrapper,
 	// "channel" key, "<unchanged>" hash placeholder passes through untouched,
-	// v0.2 endpoints (log export/clear, settings export/import, tls flag).
-	for _, want := range []string{"since=", "b.lines", "cfg.channel", "warnings", "/api/log/export", "/api/config/export", "/api/config/import", "b.source", ".tls", "/api/tls/regenerate", "/api/tls/upload", "/api/tls/reset", "cert.cer", "force_required", "c.warnings", "c.fallback", "Math.ceil((new Date(iso)", "/api/system"} {
+	// v0.2 endpoints (log export/clear, settings export/import, tls flag),
+	// 0.3.1 endpoints (history tiers + CSV, tokens, schedules, webhook alerts).
+	for _, want := range []string{"since=", "b.lines", "cfg.channel", "warnings", "/api/log/export", "/api/config/export", "/api/config/import", "b.source", ".tls", "/api/tls/regenerate", "/api/tls/upload", "/api/tls/reset", "/api/tls/cert.", "force_required", "c.warnings", "c.fallback", "Math.ceil((new Date(iso)", "/api/system",
+		"/api/history.csv?minutes=", "/api/tokens", "/api/schedules", "webhook_url", "webhook_format", "held_temp", "hold_until", "hysteresis", "min_on", "temp_c", "window.n5mock"} {
 		if !strings.Contains(r.body, want) {
 			t.Errorf("app.js lacks %q", want)
 		}
+	}
+	// the mock is the fourth static file: same content type, its own budget, never referenced by index.html
+	r = e.do(t, "GET", "/mock.js", "", nil)
+	wantCode(t, r, 200)
+	if !strings.HasPrefix(r.hdr.Get("Content-Type"), "text/javascript") || !strings.Contains(r.body, "window.n5mock") {
+		t.Errorf("mock.js: %q %.100s", r.hdr.Get("Content-Type"), r.body)
+	}
+	if len(r.body) > 40*1024 {
+		t.Errorf("mock.js is %d bytes, budget 40 KB (DESIGN \"Dashboard\")", len(r.body))
+	}
+	if html, _ := staticFS.ReadFile("static/index.html"); strings.Contains(string(html), "mock.js") {
+		t.Errorf("index.html references mock.js; the production page must never request it")
+	}
+	if js, _ := staticFS.ReadFile("static/app.js"); !strings.Contains(string(js), `src: 'mock.js'`) || !strings.Contains(string(js), "Q.get('mock') === '1'") {
+		t.Errorf("app.js must insert mock.js only behind ?mock=1")
 	}
 	r = e.do(t, "GET", "/app.css", "", nil)
 	wantCode(t, r, 200)
@@ -1386,6 +1403,8 @@ func TestStaticIndex(t *testing.T) {
 	wantCode(t, e.do(t, "GET", "/index.html", "", nil), 200)
 	wantCode(t, e.do(t, "GET", "/other.txt", "", nil), 404)
 	wantCode(t, e.do(t, "GET", "/static/app.js", "", nil), 404)
+	wantCode(t, e.do(t, "GET", "/static/mock.js", "", nil), 404)
+	wantCode(t, e.do(t, "GET", "/mock.js.map", "", nil), 404)
 }
 
 // addrListener reports a different address than the wrapped listener, to

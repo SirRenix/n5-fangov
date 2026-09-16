@@ -170,6 +170,9 @@ input[type=checkbox]{accent-color:var(--info)}
 .ch .temp{font-size:var(--fs-40);font-weight:var(--fw-semibold);line-height:var(--lh-display);letter-spacing:var(--ls-display);height:44px;display:flex;align-items:baseline;gap:var(--sp-15)}
 .ch .temp small{font-size:var(--fs-15);font-weight:var(--fw-medium);color:var(--fg2)}
 .ch .temp.na{color:var(--fg3)}
+.ch .temp .held{color:var(--fg3);font-size:var(--fs-12);font-weight:var(--fw-medium);margin-left:auto;white-space:nowrap}
+.ch .badges{display:inline-flex;gap:var(--sp-15);align-items:center;flex:none}
+.badge.hold{color:var(--man);border-color:color-mix(in srgb,var(--man) var(--tint-border),transparent);background:color-mix(in srgb,var(--man) var(--tint-bg),transparent);font-variant-numeric:tabular-nums}
 .t-ok{color:var(--ok)}.t-warm{color:var(--warn)}.t-hot{color:var(--hot)}.t-crit{color:var(--crit)}
 .ch .row{display:grid;grid-template-columns:var(--w-rowlabel) 1fr auto;align-items:center;gap:var(--sp-2);font-size:var(--fs-13);height:20px}
 .ch .row .k{color:var(--fg3);font-size:var(--fs-12)}
@@ -191,6 +194,8 @@ input[type=checkbox]{accent-color:var(--info)}
 .m-unknown{color:var(--fg2);border-color:var(--line2)}
 
 /* charts */
+.ov-bar{margin-bottom:var(--sp-25)}
+.ov-bar #ov-csv{margin-left:auto}
 .charts{display:grid;grid-template-columns:1fr;gap:var(--gap);margin-bottom:var(--gap)}
 @media (min-width:900px){.charts{grid-template-columns:1fr 1fr}}
 .card-h{display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-2) var(--sp-35);margin-bottom:var(--sp-15)}
@@ -231,8 +236,12 @@ input[type=checkbox]{accent-color:var(--info)}
 .ed .fields label{display:inline-flex;align-items:center;gap:var(--sp-15);font-size:var(--fs-12);color:var(--fg2)}
 .ed .fields select{max-width:var(--w-select)}
 .ed .fields input[type=text]{width:5em}
+.ed .fields input[type=number]{width:var(--w-num-sm)}
 .ed .cvs{position:relative;height:var(--curve-h)}
 .ed canvas{display:block;width:100%;height:100%;touch-action:none;cursor:crosshair;border-radius:var(--r-md)}
+/* keyboard points: focusable overlays on the canvas, invisible until focused; pointer events reach the canvas below */
+.ed .ptl span{position:absolute;width:var(--hit-min);height:var(--hit-min);margin:calc(-1*var(--hit-min)/2) 0 0 calc(-1*var(--hit-min)/2);border-radius:var(--r-full);pointer-events:none}
+.ed .ptl span:focus-visible{box-shadow:var(--focus);background:color-mix(in srgb,var(--info) var(--tint-active),transparent)}
 .ed table{border-collapse:collapse;font-size:var(--fs-12)}
 .ed td,.ed th{padding:var(--sp-05) var(--sp-15) var(--sp-05) 0;text-align:left;color:var(--fg2);font-weight:var(--fw-medium)}
 .ed td input{width:var(--w-num-sm);padding:3px var(--sp-15)}
@@ -279,6 +288,14 @@ input[type=checkbox]{accent-color:var(--info)}
 .tbl tr.active td{background:color-mix(in srgb,var(--ok) var(--tint-row),transparent)}
 .tbl .act{color:var(--ok);font-size:var(--fs-11);font-weight:var(--fw-semibold);margin-left:var(--sp-15)}
 .tbl.sm th,.tbl.sm td{padding:var(--sp-15) var(--sp-2);font-size:var(--fs-12);white-space:nowrap}
+.tbl td.empty{white-space:normal}
+.tbl tr.dim td{color:var(--fg3)}
+.tbl .expired{color:var(--warn)}
+.tbl td .tid{display:block;color:var(--fg3);font-size:var(--fs-11)}
+/* schedules card (Presets tab) */
+.sc{display:grid;gap:var(--sp-25);align-content:start;margin-top:var(--gap)}
+.sc .tbl-wrap{border:var(--bw) solid var(--line);border-radius:var(--r-md)}
+.sc .card-h .hint{flex:1;min-width:200px}
 
 /* toasts: two live regions (polite, assertive for errors) in one stack */
 .toasts{position:fixed;right:var(--sp-4);bottom:var(--sp-4);display:grid;gap:var(--sp-2);z-index:var(--z-toast);max-width:var(--toast-w)}
@@ -327,6 +344,10 @@ input[type=checkbox]{accent-color:var(--info)}
 .dlg h3{font-size:var(--fs-12);font-weight:var(--fw-semibold);color:var(--fg3);text-transform:uppercase;letter-spacing:var(--ls-caps);margin:var(--sp-1) 0 0}
 #ac-body{display:grid;gap:var(--sp-3)}
 .dlg .sub input:not([type=checkbox]):not([type=file]){flex:1;min-width:140px}
+#ac-tokens{display:grid;gap:var(--sp-25)}
+#ac-tokens .hint.sm{margin:0}
+#ac-tk-f select{flex:1;min-width:140px}
+#ac-tk-secret{font-size:var(--fs-12);background:var(--bg2)}
 
 /* overview: signed-in cards */
 .wide{margin-bottom:var(--gap)}
@@ -358,6 +379,8 @@ input[type=checkbox]{accent-color:var(--info)}
 .al .kv{margin:0}
 .al .inline label{flex-wrap:nowrap}
 .al .inline input{width:var(--w-text)}
+.al .inline input.wide{width:min(26em,100%);flex:1}
+.al .inline #al-wh-l{flex:1 1 100%}
 
 /* system tab */
 .sy{display:grid;gap:var(--sp-25);margin-bottom:var(--gap);align-content:start}
