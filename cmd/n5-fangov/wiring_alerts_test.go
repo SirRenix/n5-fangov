@@ -80,8 +80,9 @@ func TestAlertManagerConfigure(t *testing.T) {
 	if err != nil || st.Transport != "off" || st.Effective != "off" || st.MailTo != "root" || st.WebhookFormat != "json" {
 		t.Fatalf("configure off: %+v %v", st, err)
 	}
+	// only the keys the request set are written
 	raw, _ := os.ReadFile(cfgPath)
-	if !strings.Contains(string(raw), "[alert]\ntransport = \"off\"\nmail_to = \"root\"\nwebhook_url = \"\"\nwebhook_format = \"json\"") || !strings.Contains(string(raw), "# my config") {
+	if !strings.Contains(string(raw), "[alert]\ntransport = \"off\"\nmail_to = \"root\"\n") || strings.Contains(string(raw), "webhook") || !strings.Contains(string(raw), "# my config") {
 		t.Errorf("file:\n%s", raw)
 	}
 	if m.sw.Get().Name() != "off" {
@@ -118,6 +119,10 @@ func TestAlertManagerWebhook(t *testing.T) {
 	url := hook.URL + "/hook?token=secret-key"
 
 	cfgPath := writeStoreConfig(t)
+	// the file carries the section in effect (the merge basis is the file)
+	if err := os.WriteFile(cfgPath, []byte(storeConfig+"\n[alert]\ntransport = \"log\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	m := newAlertManager(cfgPath, "", config.Alert{Transport: "log", MailTo: "root", WebhookFormat: "json"}, nil)
 	var logged strings.Builder
 	m.logger = log.New(&logged, "", 0)
@@ -145,8 +150,10 @@ func TestAlertManagerWebhook(t *testing.T) {
 	if err != nil || st.Transport != "webhook" || st.Effective != "webhook" || st.WebhookURL != url || st.WebhookFormat != "text" || st.MailTo != "root" {
 		t.Fatalf("transport only: %+v %v", st, err)
 	}
+	// only the keys the requests set are written (transport in place, the
+	// webhook keys appended); mail_to was never set and is not in the file
 	raw, _ := os.ReadFile(cfgPath)
-	if !strings.Contains(string(raw), "[alert]\ntransport = \"webhook\"\nmail_to = \"root\"\nwebhook_url = \""+url+"\"\nwebhook_format = \"text\"") {
+	if !strings.Contains(string(raw), "[alert]\ntransport = \"webhook\"\nwebhook_url = \""+url+"\"\nwebhook_format = \"text\"\n") || strings.Contains(string(raw), "mail_to") {
 		t.Errorf("file:\n%s", raw)
 	}
 	if m.sw.Get().Name() != "webhook" {
@@ -197,6 +204,49 @@ func TestAlertManagerWebhook(t *testing.T) {
 	// back to log: the URL is kept in the file for the next switch
 	if st, err := m.Configure(settings("log", "")); err != nil || st.WebhookURL != url || st.Effective != "log" {
 		t.Errorf("back to log: %+v %v", st, err)
+	}
+}
+
+// TestAlertConfigureMergesOnFile: the merge basis of Configure is the
+// [alert] section of the file, not the section in effect — a PUT
+// /api/config that answered 202, or an edit by hand, put a webhook URL and
+// a recipient into the file that the manager never applied; a later PUT
+// /api/alerts {transport: webhook} must find the URL there and must not
+// write the stale recipient back. A file that does not parse falls back to
+// the section in effect.
+func TestAlertConfigureMergesOnFile(t *testing.T) {
+	cfgPath := writeStoreConfig(t)
+	m := newAlertManager(cfgPath, "", config.Alert{Transport: "log", MailTo: "root", WebhookFormat: "json"}, nil)
+	// another writer changes the file behind the manager's back
+	if err := os.WriteFile(cfgPath, []byte(storeConfig+"\n[alert]\ntransport = \"log\"\nmail_to = \"ops\"\nwebhook_url = \"https://ntfy.example.test/n5\"\nwebhook_format = \"text\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := m.Configure(web.AlertSettings{Transport: strp("webhook")})
+	if err != nil {
+		t.Fatalf("configure on the file's URL: %v", err)
+	}
+	if st.Transport != "webhook" || st.WebhookURL != "https://ntfy.example.test/n5" || st.WebhookFormat != "text" || st.MailTo != "ops" || st.Effective != "webhook" {
+		t.Errorf("status merged on the stale section: %+v", st)
+	}
+	raw, _ := os.ReadFile(cfgPath)
+	if s := string(raw); !strings.Contains(s, "transport = \"webhook\"") || !strings.Contains(s, "mail_to = \"ops\"") || !strings.Contains(s, "webhook_format = \"text\"") || strings.Count(s, "webhook_url") != 1 {
+		t.Errorf("file after the merge:\n%s", s)
+	}
+	// the section in effect follows the file
+	if m.cur.MailTo != "ops" || m.cur.WebhookURL != "https://ntfy.example.test/n5" {
+		t.Errorf("cur: %+v", m.cur)
+	}
+	// a refused merge writes nothing: the file keeps its bytes
+	before, _ := os.ReadFile(cfgPath)
+	if _, err := m.Configure(web.AlertSettings{MailTo: strp("two words")}); err == nil {
+		t.Fatal("bad mail_to must be refused")
+	}
+	if after, _ := os.ReadFile(cfgPath); string(after) != string(before) {
+		t.Errorf("refused request changed the file:\n%s", after)
+	}
+	// a request that sets nothing changes nothing and answers the file's state
+	if st, err := m.Configure(web.AlertSettings{}); err != nil || st.Transport != "webhook" || st.MailTo != "ops" {
+		t.Errorf("empty request: %+v %v", st, err)
 	}
 }
 

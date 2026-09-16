@@ -121,15 +121,28 @@ func TestHookedServiceReload(t *testing.T) {
 	if st := sched.Status().(scheduleStatus); len(st.Entries) != 1 || st.Entries[0].Preset != "night" {
 		t.Errorf("[[schedule]] must reach the scheduler after a successful reload: %+v", st.Entries)
 	}
-	// restart required: passed through, nothing applied
+	// restart required: the sentinel passes through, but the file is the
+	// truth for [alert] and [[schedule]] — both are taken from it
 	inner.err = errRestartRequired()
-	if err := svc.Reload([]byte(storeConfig)); !isRestartRequired(err) {
+	raw = []byte(storeConfig + "\n[alert]\ntransport = \"log\"\nmail_to = \"ops\"\n\n[[schedule]]\npreset = \"day\"\n")
+	if err := svc.Reload(raw); !isRestartRequired(err) {
 		t.Errorf("restart sentinel: %v", err)
 	}
-	if m.sw.Get().Name() != "off" {
-		t.Errorf("202 must not apply [alert]")
+	if m.sw.Get().Name() != "log" || m.Status().MailTo != "ops" {
+		t.Errorf("202 must still apply [alert] from the file: %s %+v", m.sw.Get().Name(), m.Status())
 	}
-	if st := sched.Status().(scheduleStatus); len(st.Entries) != 1 {
-		t.Errorf("202 must not change the schedules: %+v", st.Entries)
+	if st := sched.Status().(scheduleStatus); len(st.Entries) != 1 || st.Entries[0].Preset != "day" || !st.Entries[0].Fallback {
+		t.Errorf("202 must still hand the schedules over: %+v", st.Entries)
+	}
+	// any other reload error: nothing applied
+	inner.err = errors.New("channel cpu: pwm1_enable not writable")
+	if err := svc.Reload([]byte(storeConfig + "\n[alert]\ntransport = \"off\"\n")); err == nil || isRestartRequired(err) {
+		t.Errorf("reload error: %v", err)
+	}
+	if m.sw.Get().Name() != "log" {
+		t.Errorf("a failed reload must not apply [alert]")
+	}
+	if st := sched.Status().(scheduleStatus); len(st.Entries) != 1 || st.Entries[0].Preset != "day" {
+		t.Errorf("a failed reload must not change the schedules: %+v", st.Entries)
 	}
 }
