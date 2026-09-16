@@ -46,9 +46,21 @@ manual test before a release is [RELEASE-GATE.md](RELEASE-GATE.md).
 - Controller changes: the safety rules are pinned in `internal/control/safety_test.go`
   (fake `Device`, no hardware). `cmd/n5-fangov/serve_smoke_test.go` starts the real
   daemon in dry-run against the fake sysfs (TCP + socket, override, SIGTERM).
-- Frontend: `internal/web/web_test.go` checks the JS budget, that every tab has a
-  handler, the CSP and the contrast of the primary buttons. Everything else is checked
-  by hand against the mock.
+- `internal/history` (tiers, bucket means, save/load, corrupt file) and
+  `internal/schedule` (midnight crossing, days, fallback, next switch, a DST day) are
+  tested with a fake clock and fixed times. Disk sensors and the sysinfo disk
+  temperatures run in a temp copy of the fake sysfs with
+  `block/<dev>/device/hwmon/hwmonN/temp1_input` (plain directories, the Windows
+  checkout cannot hold the symlinks).
+- The API route table in `internal/web/openapi.go` is the only place a route is
+  declared: the mux registers from it, the guard takes the scope from it and
+  `GET /api/openapi.json` is rendered from it. `TestOpenAPICoversRoutes` pins every
+  registered pattern to the document and vice versa, `TestOpenAPIShape` the version,
+  summaries, responses and scope values — a new endpoint is one row plus its schema,
+  and the docs' endpoint table ([API](12-api.md#endpoints)) follows the row.
+- Frontend: `internal/web/web_test.go` checks the JS budgets, that `index.html` never
+  references `mock.js`, that every tab has a handler, the CSP and the contrast of the
+  primary buttons. Everything else is checked by hand against the mock.
 - Before a tag: the release is verified on the reference N5 Pro (channel mapping, stop
   behaviour, a multi-hour run) — the README's
   [Tested hardware](../README.md#tested-hardware) — and, before an `-rc` becomes a
@@ -61,13 +73,19 @@ manual test before a release is [RELEASE-GATE.md](RELEASE-GATE.md).
 in the `:root` block of `app.css` and the constant block after `cssVar` in `app.js`;
 new values go there, not inline.
 
-Serve the directory with any static server and open `index.html?mock=1` — anonymous;
-`&user=1` signed in (login `admin`/`admin`); `&auth=none`; `&tls=off|file|soon|fallback`;
-`&tab=<id>`; `&syserr=1`. The mock implements every endpoint; new endpoints get a mock
-branch in the same change.
+The mock is its own file, `mock.js`, served by the static handler but never referenced
+by `index.html`: with `?mock=1` `app.js` inserts the script tag and routes every
+`api()` call to `window.n5mock(path, opt)` instead of `fetch`; the production page
+never requests it. Serve the directory with any static server and open
+`index.html?mock=1` — anonymous; `&user=1` signed in (login `admin`/`admin`);
+`&auth=none`; `&tls=off|file|soon|fallback`; `&tab=<id>`; `&syserr=1`; `&schedfail=1`
+(the last schedule switch failed). The mock implements every endpoint — tokens
+(`n5t_mock…`), schedules, the 24 h / 7 d history tiers, CSV, the webhook status,
+`disk:*` sensors; new endpoints get a mock branch in the same change. The mock's
+version string is one constant in `mock.js`, bumped with the release.
 
-**JS budget:** `app.js` ≤ 96 KB raw (`web_test.go`). Do not raise the limit to make a
-change fit; move something to `index.html` markup or drop it.
+**JS budgets:** `app.js` ≤ 96 KB and `mock.js` ≤ 40 KB raw (`web_test.go`). Do not
+raise a limit to make a change fit; move something to `index.html` markup or drop it.
 
 ## Screenshots
 
@@ -81,7 +99,9 @@ them.
 
 [DESIGN.md](../DESIGN.md) is the package contract: non-negotiable safety rules, the
 layout, every package's responsibilities, the API and the deploy files. A change that
-touches a rule is written into DESIGN before it is implemented. The audits that shaped
+touches a rule is written into DESIGN before it is implemented. Files are named by
+topic, never by version or review round, and a test file carries the name of the file
+or topic it tests. The audits that shaped
 the current state are `AUDIT.md` and `DESIGN-AUDIT.md` in this directory; what the
 earlier review rounds found and where each finding is fixed is the legend
 [REVIEW-TAGS.md](REVIEW-TAGS.md) (the code carries no review tags); the planned

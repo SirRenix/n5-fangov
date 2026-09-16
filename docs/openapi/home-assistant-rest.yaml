@@ -1,0 +1,62 @@
+# n5-fangov — Home Assistant REST sensors and the preset command.
+#
+# Documentation values: n5host is the fan-control box, the token lives in
+# secrets.yaml as   n5_fangov_token: "Bearer n5t_..."   (a token with scope
+# "control" for rest_command; the sensors work with "read" or even without a
+# token, because the reduced /api/state already carries temp, rpm and mode).
+# Merge the two top-level keys into configuration.yaml (or !include them).
+# verify_ssl: false is for the daemon's self-signed automatic certificate; drop
+# it when the box serves a certificate Home Assistant trusts.
+
+rest:
+  - resource: https://n5host:8010/api/state
+    scan_interval: 30
+    timeout: 10
+    verify_ssl: false
+    headers:
+      Authorization: !secret n5_fangov_token
+    sensor:
+      - name: "N5 fan cpu temperature"
+        unique_id: n5_fangov_cpu_temp
+        value_template: "{{ (value_json.channels | selectattr('name', 'eq', 'cpu') | first).temp }}"
+        unit_of_measurement: "°C"
+        device_class: temperature
+        state_class: measurement
+      - name: "N5 fan cpu rpm"
+        unique_id: n5_fangov_cpu_rpm
+        value_template: "{{ (value_json.channels | selectattr('name', 'eq', 'cpu') | first).rpm }}"
+        unit_of_measurement: "rpm"
+        state_class: measurement
+      - name: "N5 fan cpu mode"
+        unique_id: n5_fangov_cpu_mode
+        value_template: "{{ (value_json.channels | selectattr('name', 'eq', 'cpu') | first).mode }}"
+      - name: "N5 fan hdd temperature"
+        unique_id: n5_fangov_hdd_temp
+        value_template: "{{ (value_json.channels | selectattr('name', 'eq', 'hdd') | first).temp }}"
+        unit_of_measurement: "°C"
+        device_class: temperature
+        state_class: measurement
+      - name: "N5 fan hdd rpm"
+        unique_id: n5_fangov_hdd_rpm
+        value_template: "{{ (value_json.channels | selectattr('name', 'eq', 'hdd') | first).rpm }}"
+        unit_of_measurement: "rpm"
+        state_class: measurement
+      - name: "N5 fan hdd mode"
+        unique_id: n5_fangov_hdd_mode
+        value_template: "{{ (value_json.channels | selectattr('name', 'eq', 'hdd') | first).mode }}"
+      - name: "N5 fan daemon status"
+        unique_id: n5_fangov_status
+        value_template: "{{ value_json.status }}"
+
+# Applies a preset by name: action rest_command.n5_fangov_apply_preset with
+# data: {preset: n5pro-quiet}. Needs a token with scope "control". No CSRF
+# header is needed for a Bearer token. 200 = applied, 202 = the daemon needs a
+# restart for a changed channel set, 404 = unknown preset, 403 = scope.
+rest_command:
+  n5_fangov_apply_preset:
+    url: "https://n5host:8010/api/presets/{{ preset }}/apply"
+    method: POST
+    timeout: 15
+    verify_ssl: false
+    headers:
+      Authorization: !secret n5_fangov_token

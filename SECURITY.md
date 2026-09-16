@@ -33,6 +33,12 @@ notes name the report (credit optional, say if you prefer not to be named).
 - `auth = "none"` is meant for loopback only; the daemon refuses plain HTTP on a
   LAN address. Reports that need `auth = "none"` on a LAN listener are
   configuration, not vulnerabilities.
+- API tokens are bounded by their scope (`read`, `control`, `admin`) and no
+  token may reach token or account management. A token that does something its
+  scope forbids — a `read` token that changes a duty, any token that creates a
+  token or changes the password — is a vulnerability: report it with the scope,
+  the request and the answer. A token that was handed out with too wide a scope
+  is configuration.
 - The kernel driver (`minisforum_n5_it5571`) is a separate project; report
   driver issues upstream.
 

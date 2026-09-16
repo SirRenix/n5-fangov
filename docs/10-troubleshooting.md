@@ -27,6 +27,12 @@ clear).
 | Dashboard banner `Connection to the daemon lost` | daemon restarting or down; fans stay on the daemon side (failsafe on exit) | `systemctl status n5-fangov`; `journalctl -u n5-fangov -n 50` |
 | `n5-fangov test` refuses: `daemon socket answers` | the daemon regulates that channel | `systemctl stop n5-fangov` first (or `--force` after stopping it yourself) |
 | Unit keeps restarting, `n5-fangov-onfailure` mails `failed` | `check` fails at every start (see the first rows) or the controller cannot write | `journalctl -u n5-fangov -b`; `n5-fangov check` by hand |
+| A `[[schedule]]` entry did not switch the preset | the preset name does not exist (checked at the switch, not when the file is read), the window's day or time is not what you think (host **local** time; `to < from` crosses midnight), or the switch happened and something applied another preset afterwards — the scheduler acts on transitions only | Presets tab → Schedules card / `GET /api/schedules` (active, next, last switch with its error, timezone); Alerts tab: kind `schedule`; `journalctl -u n5-fangov \| grep schedule:`; `timedatectl` for the host's zone ([Schedules](06-configuration.md#schedules)) |
+| Script gets `401` with a token that worked | the token expired or was revoked (`web: bearer token rejected from <ip>: expired\|unknown` in the journal); or `auth` is `none`, where a Bearer header is ignored and 401 comes from somewhere else | `n5-fangov token list` (expiry column); create a new one; `GET /api/session` with the token shows `via` and `scope` ([API tokens](08-https-security.md#api-tokens)) |
+| Script gets `403` | the endpoint is outside the token's scope (`required` in the answer), or it is a token on a session-only endpoint (`/api/tokens*`, `/api/account/*`), or a cookie/Basic caller without `X-N5-Fangov-Csrf: 1` | create a token with the scope the answer names; tokens and account changes go through the dashboard or Basic auth ([Scopes](12-api.md#scopes)) |
+| Script gets `429` | per-token rate limit (20 req/s sustained, burst 40) or the login throttling after rejected credentials | poll less often; one `/api/state` call carries every channel |
+| Webhook alerts fail (`webhook: <status or error>` on *Send test alert*) | the receiver did not answer 2xx (wrong path or token, a redirect — n5-fangov follows none), the TLS certificate is not in the system CA pool (no insecure switch), or the box has no route | use the final URL; the receiver's own log; a self-signed receiver needs its CA under `/usr/local/share/ca-certificates/` + `update-ca-certificates`, or plain `http` on the LAN; the log shows the URL without its query ([Webhook](07-alerts.md#webhook)) |
+| Chart history has a gap after a restart | `history.json` is written every 10 minutes and at a clean stop — a crash, kill or watchdog restart loses up to 10 minutes; an unwritable state directory keeps the history in memory only (one journal line at start) | expected after a hard restart; otherwise `ls -l /var/lib/n5-fangov/history.json` and the journal line about the state dir |
 
 ## What check reports
 
@@ -36,7 +42,8 @@ start: config (invalid values that fell back to their default, the misconfigured
 the running kernel). Exit 1 means `serve` could not run with this config; `--quiet`
 prints failures only; `--after-update` is the apt hook's
 [kernel gate](02-kernel-driver.md#the-kernel-update-gate). It also warns about
-`auth = "none"` on a non-loopback listener and a degraded alert transport.
+`auth = "none"` on a non-loopback listener and a degraded alert transport (including
+`webhook` without a usable URL).
 
 ## Logs
 
@@ -71,4 +78,4 @@ the source); a periodic status line every `[daemon] log_every` cycles shows what
 controller is doing.
 
 Next: [Kernel driver](02-kernel-driver.md) · [Alerts](07-alerts.md) ·
-[HTTPS and security](08-https-security.md)
+[API and integrations](12-api.md) · [HTTPS and security](08-https-security.md)
