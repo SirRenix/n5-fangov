@@ -291,10 +291,19 @@ func (s *Server) getAlerts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := alertStatusJSON(m.Status())
+	// last-sent times: the controller's stamps, overlaid by the ring (which
+	// also sees serve's own alerts: config, kernel, tls, test).
 	last := map[string]int64{}
 	if s.deps.Service != nil {
-		if a := s.deps.Service.Snapshot().Alerts; a != nil {
-			last = a
+		for k, v := range s.deps.Service.Snapshot().Alerts {
+			last[k] = v
+		}
+	}
+	if l, ok := m.(interface{ Last() map[string]int64 }); ok {
+		for k, v := range l.Last() {
+			if v > last[k] {
+				last[k] = v
+			}
 		}
 	}
 	out["last"] = last
