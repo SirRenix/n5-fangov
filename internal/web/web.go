@@ -36,7 +36,7 @@ import (
 	"github.com/SirRenix/n5-fangov/internal/tlscert"
 )
 
-//go:embed static/index.html static/app.js static/app.css
+//go:embed static/index.html static/app.js static/app.css static/mock.js
 var staticFS embed.FS
 
 // CSRFHeader must be present (value "1") on every state-changing request over TCP.
@@ -1507,8 +1507,9 @@ func (s *Server) getSensors(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, list)
 }
 
-// static serves the embedded UI. Only the three known files exist; everything
-// else is 404 (API paths get a JSON 404).
+// static serves the embedded UI. Only the four known files exist; everything
+// else is 404 (API paths get a JSON 404). mock.js is the dashboard mock, which
+// app.js requests only with ?mock=1; index.html never references it.
 func (s *Server) static(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(r.URL.Path, "/api/") {
 		writeError(w, http.StatusNotFound, "unknown endpoint")
@@ -1526,7 +1527,7 @@ func (s *Server) static(w http.ResponseWriter, r *http.Request) {
 	switch name {
 	case "index.html":
 		ctype = "text/html; charset=utf-8"
-	case "app.js":
+	case "app.js", "mock.js":
 		ctype = "text/javascript; charset=utf-8"
 	case "app.css":
 		ctype = "text/css; charset=utf-8"

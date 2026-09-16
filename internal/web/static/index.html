@@ -69,14 +69,22 @@
 <main>
 <section id="p-overview" role="tabpanel" aria-labelledby="tab-overview">
   <div class="cards" id="cards"></div>
+  <div class="bar ov-bar">
+    <span class="hint sm">History</span>
+    <div class="seg" role="group" aria-label="History range" id="rg-seg">
+      <button data-range="2h" aria-pressed="false">2 h</button><button data-range="24h" aria-pressed="false">24 h</button><button data-range="7d" aria-pressed="false">7 d</button>
+    </div>
+    <span class="hint sm mx">2 h at every cycle, 24 h as 1-min and 7 d as 5-min means</span>
+    <button class="btn sm" id="ov-csv" type="button" hidden>CSV</button>
+  </div>
   <div class="charts">
     <div class="card chart-card">
-      <div class="card-h"><h2>Temperature · last 2 h</h2><div class="legend" id="lg-temp"></div></div>
+      <div class="card-h"><h2 id="ch-temp-title">Temperature · last 2 h</h2><div class="legend" id="lg-temp"></div></div>
       <div class="chart" id="ch-temp"><canvas></canvas><div class="tip" hidden></div></div>
     </div>
     <div class="card chart-card">
       <div class="card-h"><h2 id="ch-fan-title">Fan speed · last 2 h</h2>
-        <div class="seg" role="group" aria-label="Fan chart metric">
+        <div class="seg" role="group" aria-label="Fan chart metric" id="fan-seg">
           <button class="on" data-metric="rpm" aria-pressed="true">RPM</button><button data-metric="duty" aria-pressed="false">Duty</button>
         </div>
         <div class="legend" id="lg-fan"></div></div>
@@ -85,7 +93,7 @@
   </div>
   <div id="ov-more" hidden>
     <div class="card chart-card wide" id="extra-card" hidden>
-      <div class="card-h"><h2>Extra sensors · last 2 h</h2><div class="legend rm" id="lg-extra"></div></div>
+      <div class="card-h"><h2 id="ch-extra-title">Extra sensors · last 2 h</h2><div class="legend rm" id="lg-extra"></div></div>
       <div class="chart" id="ch-extra"><canvas></canvas><div class="tip" hidden></div></div>
     </div>
     <div class="grid3 ov">
@@ -117,6 +125,13 @@
   </div>
   <div class="notice" id="ps-notice" hidden></div>
   <div class="list" id="presets"></div>
+  <div class="card sc" id="sc-card">
+    <div class="card-h"><h2>Schedules</h2><span class="hint sm">preset switches by time of day — the scheduler acts on transitions only, a manual apply inside a window is respected</span></div>
+    <div class="notice" id="sc-notice" role="status" hidden></div>
+    <div class="tbl-wrap"><table class="tbl sm" id="sc-tbl"><thead><tr><th>Preset</th><th>Window</th><th>Days</th></tr></thead><tbody></tbody></table></div>
+    <dl class="kv" id="sc-kv"></dl>
+    <p class="hint sm">Edit in the config file: <code>[[schedule]]</code> tables with <code>preset</code>, <code>from</code>/<code>to</code> (<code>HH:MM</code>, may cross midnight) and <code>days</code>; an entry without a window is the fallback — see the <a id="sc-doc" rel="noopener" target="_blank">configuration page</a>.</p>
+  </div>
 </section>
 
 <section id="p-alerts" role="tabpanel" aria-labelledby="tab-alerts" hidden>
@@ -125,11 +140,13 @@
     <div class="card al">
       <h2>Transport</h2>
       <form class="inline" id="al-form">
-        <label>Transport <select id="al-transport"><option value="auto">auto</option><option value="pve">pve</option><option value="mail">mail</option><option value="log">log</option><option value="off">off</option></select></label>
+        <label>Transport <select id="al-transport"><option value="auto">auto</option><option value="pve">pve</option><option value="mail">mail</option><option value="webhook">webhook</option><option value="log">log</option><option value="off">off</option></select></label>
         <label id="al-mailto-l">Mail to <input id="al-mailto" placeholder="root" maxlength="128" autocomplete="off"></label>
+        <label id="al-wh-l" hidden>URL <input id="al-wh" type="url" class="wide" placeholder="https://ntfy.example/n5" maxlength="2048" autocomplete="off" spellcheck="false"></label>
+        <label id="al-whf-l" hidden>Format <select id="al-whf"><option value="json">json</option><option value="text">text</option></select></label>
         <button class="btn primary" type="submit">Save</button>
       </form>
-      <p class="hint sm">auto: Proxmox notifications if available, otherwise local mail, otherwise only the log. Transports that are not installed are greyed out.</p>
+      <p class="hint sm">auto: Proxmox notifications if available, otherwise local mail, otherwise only the log. webhook: one POST per alert (ntfy, Gotify, Home Assistant) — <code>json</code> sends <code>{title, message, kind, …}</code>, <code>text</code> the message only. Transports that are not installed are greyed out.</p>
       <dl class="kv" id="al-status"></dl>
       <div class="act"><button class="btn" id="al-test" type="button">Send test alert</button><span class="hint sm">kind <code>test</code>, no cooldown</span></div>
     </div>
@@ -169,7 +186,7 @@
   </div>
   <div class="card sy"><h2>Storage</h2>
     <div class="tbl-wrap"><table class="tbl sm" id="sy-ctl"><thead><tr><th>Controller</th><th>Name</th><th>Driver</th><th>PCI</th></tr></thead><tbody></tbody></table></div>
-    <div class="tbl-wrap"><table class="tbl sm" id="sy-disks"><thead><tr><th>Disk</th><th>Size</th><th>Type</th><th>Transport</th><th>Model</th></tr></thead><tbody></tbody></table></div>
+    <div class="tbl-wrap"><table class="tbl sm" id="sy-disks"><thead><tr><th>Disk</th><th>Size</th><th>Type</th><th>Transport</th><th>Model</th><th>Temp</th></tr></thead><tbody></tbody></table></div>
   </div>
 </section>
 
@@ -201,7 +218,7 @@
       <dt id="ab-go-t">built with</dt><dd id="ab-go">—</dd>
       <dt>credits</dt><dd><ul class="credits" id="ab-credits"></ul></dd>
     </dl>
-    <p class="hint sm" id="ab-mock" hidden>Dashboard mock: <code>?mock=1</code> (<code>&amp;user=1</code> signed in, <code>&amp;auth=none</code> auth off, <code>&amp;tab=</code>, <code>&amp;tls=off|file|soon|fallback</code>, <code>&amp;syserr=1</code>, <code>&amp;reject=1</code> strict 400, <code>&amp;expire=1</code> session dies after 15 s).</p>
+    <p class="hint sm" id="ab-mock" hidden>Dashboard mock: <code>?mock=1</code> (<code>&amp;user=1</code> signed in, <code>&amp;auth=none</code> auth off, <code>&amp;tab=</code>, <code>&amp;tls=off|file|soon|fallback</code>, <code>&amp;syserr=1</code>, <code>&amp;reject=1</code> strict 400, <code>&amp;expire=1</code> session dies after 15 s, <code>&amp;schedfail=1</code> last schedule switch failed, <code>&amp;pwm4=1</code> fourth channel without tach). The mock is a separate script that the production page never requests.</p>
   </div>
 </section>
 </main>
@@ -249,6 +266,25 @@
     <div class="notice" id="ac-notice" role="alert" hidden></div>
     <h3>Sessions</h3>
     <div class="tbl-wrap"><table class="tbl sm" id="ac-sessions"><thead><tr><th>ID</th><th>Created</th><th>Last seen</th><th>Expires</th><th>IP</th></tr></thead><tbody></tbody></table></div>
+    <div id="ac-tokens" hidden>
+      <h3>API tokens</h3>
+      <p class="hint sm">For scripts, Home Assistant and agents: <code>Authorization: Bearer n5t_…</code> instead of the password. A token never manages tokens or the account; a password change leaves tokens valid — revoke them here.</p>
+      <div class="tbl-wrap"><table class="tbl sm" id="ac-tok"><thead><tr><th>Name</th><th>Scope</th><th>Created</th><th>Expires</th><th>Last used</th><th>Last address</th><th></th></tr></thead><tbody></tbody></table></div>
+      <div class="act"><button class="btn" id="ac-tk" type="button">Create token…</button></div>
+      <form class="sub" id="ac-tk-f" hidden novalidate>
+        <label>Name <input id="ac-tk-name" maxlength="32" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="home-assistant" required></label>
+        <label>Scope <select id="ac-tk-scope"><option value="read">read — state, history, system, sensors</option><option value="control">control — read + overrides, presets, chart sensors</option><option value="admin">admin — everything except tokens and account</option></select></label>
+        <label>Expires <select id="ac-tk-ttl"><option value="30">30 d</option><option value="90" selected>90 d</option><option value="365">1 y</option><option value="0">never</option></select></label>
+        <div class="notice" id="ac-tk-never" role="status" hidden>A token without expiry stays valid until it is revoked — prefer an expiry and rotate it.</div>
+        <div class="act"><button class="btn primary" type="submit">Create</button><button class="btn" type="button" data-cancel>Cancel</button></div>
+      </form>
+      <div class="sub" id="ac-tk-new" hidden>
+        <p class="hint">Token <b id="ac-tk-nn"></b> created — the secret is shown only now; copy it into the client, it cannot be displayed again.</p>
+        <div class="fp"><span class="k">secret</span><input id="ac-tk-secret" class="mono" readonly aria-label="token secret" spellcheck="false"><button class="btn sm" id="ac-tk-copy" type="button" title="Copy the token">Copy</button></div>
+        <div class="notice" id="ac-tk-warn" role="status" hidden></div>
+        <div class="act"><button class="btn" id="ac-tk-done" type="button">Done</button></div>
+      </div>
+    </div>
   </div>
 </dialog>
 

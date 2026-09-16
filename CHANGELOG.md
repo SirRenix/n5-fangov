@@ -164,12 +164,51 @@ curl path is re-run once at 0.4.0.
   `time` RFC 3339 local). The range selector and the CSV button are part of the frontend
   part.
 
+- Dashboard, Overview: a **range selector** `2 h · 24 h · 7 d` for the temperature, fan and
+  extra-sensor charts (persisted in `localStorage`; 2 h keeps the incremental `since`
+  poll every 30 s, 24 h and 7 d reload the averaged tier every 60 s; grid and axis labels
+  per range — `HH:MM`, `Www HH:MM`, `dd.mm HH:MM` — aligned to local time) and a **CSV**
+  button (`GET /api/history.csv?minutes=…`, signed in). Channel cards show the
+  hysteresis-held temperature (`held …`) and a `hold` badge with the remaining `min_on`
+  time; a channel without tachometer reads `no tach`. The Sensors card groups `disk:*`
+  ids into SSD · NVMe or HDD by the catalogue's `kind`.
+- Dashboard, Curves: **hysteresis** (0..`hysteresis_max`) and **min on** (`off · 30 s · 1 min
+  · 2 min · 5 min · 10 min · 30 min · 1 h`, Go duration strings both ways) next to
+  critical/stop; a composite sensor is one option `a,b (max of 2)`; the written
+  `[[channel]]` tables carry `sensor = ["a", "b"]`, `hysteresis` and `min_on` (omitted at
+  their defaults); client validation covers hysteresis. **Keyboard**: every curve point is
+  focusable (`role="slider"`, value text) and moves with the arrow keys by 1 °C / 5 duty,
+  Shift × 5. Preset details list hysteresis and min on.
+- Dashboard, Presets: a read-only **Schedules card** (`GET /api/schedules`, polled every
+  60 s while the tab is current): preset, window or *fallback*, days, ACTIVE, next switch
+  (relative, absolute on hover), last switch with a failed one as warn notice, timezone,
+  the hint that `[[schedule]]` is edited in the config; 501 → `schedules: unavailable`.
+- Dashboard, Alerts: transport **webhook** with URL (required) and format (`json` / `text`);
+  `mail_to` is shown for auto/mail only; the status lists the configured webhook URL.
+- Dashboard, System: the storage table has a **temperature** column (`temp_c`, unit aware,
+  `—` without a sensor).
+- Dashboard, Account dialog: **API tokens** section (cookie/basic sessions only): table
+  name · scope · created · expires · last used · last address, *Revoke* with confirm,
+  *Create token…* with scope explanations and expiry `30 d · 90 d · 1 y · never`
+  (`ttl_days` 30/90/365/0, warn notice for never); the secret appears once in a read-only
+  field with *Copy* (clipboard, fallback selects the text).
+- Mock flags `&schedfail=1` (last schedule switch failed) and `&pwm4=1` (fourth channel
+  `pcie` without tachometer); the mock implements tokens, schedules, history tiers with a
+  day/night shape, CSV, webhook alerts, `openapi.json`, `disk:*` sensors with `kind`,
+  storage `temp_c`, `hysteresis`/`min_on` and the new `/api/version` limits.
+
 ### Changed
 
 - Preset apply **merges by pwm** instead of replacing every `[[channel]]` table: a preset
   channel replaces the config channel with the same pwm (the config channel's name is
   kept), config channels the preset does not name stay, a pwm the config lacks is added
   (that case still answers 202). The scheduler uses the same path.
+- Dashboard: the mock is split out of the production bundle into `mock.js` (fourth static
+  file, `window.n5mock`), inserted by `app.js` only behind `?mock=1`; `index.html` never
+  references it. Budgets: `app.js` ≤ 96 KB, `mock.js` ≤ 40 KB (`web_test.go`). Settings in
+  `localStorage` are whitelisted per key (unit, interval, theme, range).
+- Dashboard: at most three toasts per live region; the oldest is dropped when a fourth
+  arrives (DESIGN-AUDIT B30).
 
 - Files are named by topic, never by version or review round. cmd: `wiring_v2.go` →
   `wiring_tls.go`; `wiring_v3.go` → `wiring_presets.go` (with the `dirPresetStore` parts
