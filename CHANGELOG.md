@@ -14,21 +14,65 @@ names; the audit that drove the *Unreleased* work is `docs/AUDIT.md` (code) and
 
 ### Planned (0.4.0) — decided 2026-09-16, not started
 
-- **API tokens** for automation and AI agents (Home Assistant, monitoring, scripts,
-  local LLM agents) instead of the admin password in scripts: named tokens with a
-  **scope** (`read` = state/history/system/sensors; `control` = overrides, presets,
-  dashboard sensors; `admin` = everything the dashboard can do), optional **expiry**
-  (e.g. 90 days; unlimited allowed, with a warning), individual **revocation**, and a
-  list with created / expires / last used / last address. Storage like the sessions
-  (`/var/lib/n5-fangov/tokens.json`, sha256 of the token, 0600), transport
+Scope rule for 0.4: the regulator (`internal/control`) is verified and stays as it is;
+everything below is API, dashboard, alerts and packaging. Attack surface stays small: no
+MQTT/discovery, no multi-host management, no new dependencies. The UI stays English.
+
+**1. Interface (foundation for automation and AI agents)**
+- **API tokens** instead of the admin password in scripts (Home Assistant, monitoring,
+  scripts, local LLM agents): named, with a **scope** (`read` = state/history/system/
+  sensors; `control` = overrides, presets, dashboard sensors; `admin` = everything the
+  dashboard can do), optional **expiry** (e.g. 90 days; unlimited allowed with a warning),
+  individual **revocation**, list with created / expires / last used / last address.
+  Storage like the sessions (`/var/lib/n5-fangov/tokens.json`, sha256, 0600), transport
   `Authorization: Bearer <token>`, rate limit per token, `read` as the default scope.
-  Dashboard: a *Tokens* section in the account dialog; CLI `n5-fangov token create|list|revoke`.
+  Dashboard: *Tokens* section in the settings; CLI `n5-fangov token create|list|revoke`.
   Basic auth and the unix socket stay as they are.
-- **OpenAPI description** (`GET /api/openapi.json`, public) so an agent can use the API
-  without reading the README; generated from the route table, kept in sync by a test.
-- Open design question (operator, 2026-09-16): the 0.3 dashboard work fixed contrast,
-  consistency and interaction, not the look. A visual redesign (layout, typography, card
-  style) would be a separate task on top of the token block in `app.css`; no decision yet.
+- **OpenAPI description** `GET /api/openapi.json` (public), generated from the route
+  table and kept in sync by a test, so an agent can use the API without the README.
+- **Home Assistant without tinkering**: README recipe with REST sensors (temperature, RPM,
+  mode per channel) and an automation that applies a preset through a `control` token.
+- **Webhook alert transport** (generic JSON POST; works for ntfy, Gotify, Home Assistant
+  webhooks) next to PVE::Notify and `mail(1)` — non-PVE hosts have only mail today.
+
+**2. Regulation add-ons (curve post-processing only; failsafe, stall and critical untouched)**
+- **Hysteresis and minimum on-time per channel** (`hysteresis = 2`, `min_on = "60s"`):
+  drive fans oscillate around a curve point at 44/45 °C today.
+- **Several sensors per channel** (`sensor = ["drivetemp:max", "ec:hdd"]` → maximum).
+- **Schedules** (`[[schedule]] preset = "n5pro-quiet" from = "22:00" to = "07:00"`) as
+  preset switches with an alert when a switch fails.
+- **pwm4** (PCIe header, no tachometer) as an optional fourth channel.
+
+**3. Dashboard**
+- **Longer history**: persist the ring in the state directory, views 2 h / 24 h / 7 d
+  (downsampled), CSV export.
+- **Structural redesign, scoped** (decision 2026-09-16: yes, on top of the 0.3 token block):
+  left sidebar navigation grouped Monitor / Control / Operate / Info (collapses to icons,
+  bottom bar on phones) instead of nine top tabs; a channel-centric **Fans** page that merges
+  Curves, Manual and Presets per channel (curve, override, preset apply side by side);
+  one **Settings** page that consolidates the gear popover, the account dialog, the
+  certificate panel, the alert transport and the new tokens; SVG icon set instead of
+  Unicode glyphs; empty states with a next step. Visual language (dark-first tokens,
+  cards, badges) stays; the anonymous overview stays as it is. Prototype first as a mock
+  build in a branch with screenshots for the operator's decision, then build.
+- Split the mock out of the production bundle (22 % of `app.js`) so the budget stops
+  binding; remaining low design findings (toast limit, keyboard for curve points).
+
+**4. Maintenance debt from the audit (before 1.0)**
+- Files named by topic instead of version (`wiring_v2/v3`, `v3_test`, `*_fix_test`),
+  split `cmdServe` and `cycle`, review tags out of the code into a legend,
+  `ReadWritePaths` narrowed to the profile's sysfs path.
+
+**5. Community and release**
+- Repository public after the history rewrite; upstream issues (driver validation data,
+  ProxFansX compatibility note); DKMS `.deb` in the sibling repository with the header
+  meta-package as dependency (user path: two `apt install` + `setup`); release workflow
+  uploads the `.deb`.
+- Reboot proof on the reference host (DKMS + daemon together) — the last open operations
+  question, no code.
+
+**Not planned**: MQTT/discovery (REST + token is enough and smaller), a German UI
+(audience is GitHub), multi-host management, a frontend framework.
 
 ## [0.3.0-rc1] — 2026-09-16
 
