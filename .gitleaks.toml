@@ -59,9 +59,9 @@ regexes = [
 
 [[rules]]
 id = "operator-names"
-description = "Operator host, domain, ssh alias or person names — use n5host / builder / example.test in examples"
-regex = '''(?i)\b(pve0[0-9]|pve-root|pve-me|debdock[e]r|hassio|glkvm|example\.test|redact[e]d|redacte[d])\b'''
-keywords = ["pve0", "pve-", "debdock", "hassio", "glkvm", "redacted", "redacted", "redacted"]
+description = "Operator host and ssh alias names — use n5host / builder in examples (personal names and domains live in the git-ignored .gitleaks.local.toml the hook also applies)"
+regex = '''(?i)\b(pve0[0-9]|pve-root|pve-me|debdock[e]r|hassio|glkvm)\b'''
+keywords = ["pve0", "pve-", "debdock", "hassio", "glkvm"]
 
 [[rules]]
 id = "disk-serial"

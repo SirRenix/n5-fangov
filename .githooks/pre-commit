@@ -40,6 +40,13 @@ if [ -z "$gl" ]; then
 fi
 
 if ! "$gl" protect --staged --config .gitleaks.toml --no-banner --redact --verbose; then
+  fail=1
+fi
+# Optional local rules (git-ignored): the operator's own domain, names, addresses.
+if [ -f .gitleaks.local.toml ] && ! "$gl" protect --staged --config .gitleaks.local.toml --no-banner --redact --verbose; then
+  fail=1
+fi
+if [ "${fail:-0}" = 1 ]; then
   echo >&2
   echo "pre-commit: gitleaks found secrets or infrastructure data in the staged changes." >&2
   echo "Replace them with documentation values (192.0.2.x, n5host, example.test) or move them out of the repo." >&2

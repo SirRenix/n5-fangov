@@ -54,3 +54,6 @@ desktop.ini
 tmp/
 scratch/
 *.tmp
+
+# local gitleaks rules with personal identifiers (never committed)
+.gitleaks.local.toml
