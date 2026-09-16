@@ -1,9 +1,11 @@
 # CLI reference
 
-What this page covers: every subcommand of `n5-fangov` with its flags, the exit codes,
-the environment variables and how the CLI talks to the running daemon.
+What this page covers: every subcommand of `n5-fangov` (19) with its flags, the API
+token commands, the exit codes, the environment variables and how the CLI talks to the
+running daemon.
 
 - [Subcommands](#subcommands)
+- [API tokens](#api-tokens)
 - [Exit codes](#exit-codes)
 - [Environment](#environment)
 - [The socket](#the-socket)
@@ -30,23 +32,45 @@ to the running daemon and fall back to the files or `state.json` when it is down
 | `failsafe` | — | put every configured channel into its safe state (`ExecStopPost`; works without the daemon) |
 | `passwd` | `--user U`, `--password-file F` \| `--password -` | set the web user/password (`auth = basic`), restart to apply; the dashboard changes both live |
 | `cert` | `info` \| `export [--der] [FILE]` \| `regen [--new-key]` \| `upload CERT KEY` \| `reset` | dashboard certificate (*socket* = hot swap, else on the files plus a restart hint) — [HTTPS](08-https-security.md#cli-equivalents) |
-| `alerts` | `status` \| `test` \| `template` | alert transport, test alert, PVE notification template (*socket*, else on the files) — [Alerts](07-alerts.md#from-the-shell) |
+| `alerts` | `status` \| `test` \| `template` | alert transport (`status` shows the webhook URL with its query redacted, and the format), test alert, PVE notification template (*socket*, else on the files) — [Alerts](07-alerts.md#from-the-shell) |
+| `token` | `create NAME [--scope read\|control\|admin] [--ttl DAYS]` \| `list` \| `revoke ID` | API tokens for scripts and Home Assistant (*socket* only: the daemon owns `tokens.json`) — [below](#api-tokens) |
 | `export [FILE]` | `--presets DIR` | settings bundle (config + presets, hash redacted) as JSON; `-`/no file = stdout — [Backup and restore](09-updates.md#backup-and-restore) |
 | `import FILE` | `--presets DIR` | restore a bundle (everything validated first), reload the daemon |
 | `version` | (also `-v`, `--version`) | print the version |
 | `help` | (also `-h`, `--help`) | usage |
 
+## API tokens
+
+```
+n5-fangov token create ha-control --scope control --ttl 365 > /root/ha-token   # secret once, stdout only
+n5-fangov token create monitor                                                 # scope read, 90 days
+n5-fangov token create agent --scope admin --ttl 0                             # never expires (warning on stderr)
+n5-fangov token list
+n5-fangov token revoke 3f9a1c2e
+```
+
+`create` prints the secret (`n5t_…`) once on stdout and nothing else there, so it can
+be captured into a file or a variable; name rule `[A-Za-z0-9][A-Za-z0-9 ._-]{0,31}`,
+unique; `--scope` defaults to `read`, `--ttl` to 90 days, `0` = never (with a
+warning). `list` prints a table — id, name, scope, created, expires, last used, last
+address; `revoke ID` takes the 8-hex id from the list. All three go through the socket
+because the daemon owns `/var/lib/n5-fangov/tokens.json`; without a running daemon
+they exit 1 with a hint. Tokens exist only with `auth = "basic"`. Scopes, storage,
+limits and what a token can never do: [API tokens](08-https-security.md#api-tokens);
+using one: [API and integrations](12-api.md).
+
 ## Exit codes
 
 `0` ok, `1` failure (`check`: serve could not run with this config; `test`: channel not
-verified), `2` usage error (unknown subcommand, bad flag).
+verified; `token`: daemon not running, name taken, unknown id), `2` usage error
+(unknown subcommand, bad flag).
 
 ## Environment
 
 | Variable | Default | Holds |
 |---|---|---|
 | `N5FANGOV_RUN_DIR` | `/run/n5-fangov` | socket, `state.json`, override and alert stamps |
-| `N5FANGOV_STATE_DIR` | `$STATE_DIRECTORY` from systemd, else `/var/lib/n5-fangov` | `sessions.json`, `alerts.json` |
+| `N5FANGOV_STATE_DIR` | `$STATE_DIRECTORY` from systemd, else `/var/lib/n5-fangov` | `sessions.json`, `tokens.json`, `alerts.json`, `history.json` |
 | `N5FANGOV_SYSFS` | `/sys` | sysfs root; tests point it at `testdata/sysfs/n5pro` |
 
 Relative paths are taken from the working directory — under the unit that is `/`.
@@ -57,8 +81,9 @@ Relative paths are taken from the working directory — under the unit that is `
 only root can enter (`RuntimeDirectoryMode=0750`). *socket* commands go through it when
 the daemon runs — same code path as the dashboard, changes take effect at once — and
 work on the files directly otherwise, printing the `systemctl restart n5-fangov` that
-applies the change. `state.json` in the same directory is the fallback for `status`.
-The web API needs credentials instead ([Security](08-https-security.md#what-auth-covers)).
+applies the change (`token` has no file fallback). `state.json` in the same directory
+is the fallback for `status`. The web API needs credentials instead — a session, Basic
+auth or an API token ([API and integrations](12-api.md#authentication)).
 
-Next: [Configuration](06-configuration.md) · [Alerts](07-alerts.md) ·
-[Troubleshooting](10-troubleshooting.md)
+Next: [Configuration](06-configuration.md) · [API and integrations](12-api.md) ·
+[Alerts](07-alerts.md) · [Troubleshooting](10-troubleshooting.md)

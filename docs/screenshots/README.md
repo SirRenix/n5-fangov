@@ -44,6 +44,11 @@ by clicking the same controls a user would.
 | `25a-mobile-overview-anonymous.png` | Mobile Overview, anonymous | 375×812 emulation, `?mock=1`, full page | 375×1375 |
 | `25b-mobile-overview-signed-in.png` | Mobile Overview, signed in | `?mock=1&user=1` | |
 | `26-mobile-curves.png` | Mobile Curves | `?mock=1&user=1&tab=curves` | touch drag on the points |
+| `27-overview-24h.png` | Overview, 24 h range | `?mock=1&user=1` → range `24 h` | averaged charts, range selector, CSV button |
+| `28-curves-fields.png` | Curves editor fields | `?mock=1&user=1&tab=curves` | sensor select with a composite entry, critical, stop, hysteresis, min on (crop) |
+| `29-schedules.png` | Presets, Schedules card | `?mock=1&user=1&tab=presets`, scrolled | entries with ACTIVE, next and last switch, timezone (`&schedfail=1` for the failed-switch variant) |
+| `30-alerts-webhook.png` | Alerts, webhook transport | `?mock=1&user=1&tab=alerts` → transport `webhook` | URL and format fields |
+| `31-account-tokens.png` | Account dialog, API tokens | ⚙ → *Account…* → *Create token…* | token table, create form, the secret shown once |
 
 Not reproducible from the mock and therefore not included: the browser's own
 certificate warning and the OS trust dialogs ([HTTPS](../08-https-security.md#the-certificate),

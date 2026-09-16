@@ -1,7 +1,7 @@
 # Dashboard
 
-What this page covers: every part of the web UI — header, tabs, settings gear, lock,
-account — with a screenshot each. The screenshots come from the built-in mock
+What this page covers: every part of the web UI — header, tabs, history ranges and
+CSV, schedules, settings gear, lock, account and API tokens — with a screenshot each. The screenshots come from the built-in mock
 (example values, `n5host`, `192.0.2.x`); the complete set is listed in
 [screenshots/README.md](screenshots/README.md).
 
@@ -17,6 +17,7 @@ account — with a screenshot each. The screenshots come from the built-in mock
 - [Compatibility and About](#compatibility-and-about)
 - [Settings gear](#settings-gear)
 - [Account](#account)
+- [API tokens](#api-tokens)
 - [Lock and certificate panel](#lock-and-certificate-panel)
 - [Extra sensors](#extra-sensors)
 - [On a phone](#on-a-phone)
@@ -44,6 +45,8 @@ the server, so the tabs that need a login are hidden until you have one.
 
 A banner *Connection to the daemon lost* appears after two failed polls; the fans stay
 on the daemon side (failsafe on exit), see [Troubleshooting](10-troubleshooting.md).
+Toasts (the small confirmations at the corner) show at most three at a time; a fourth
+drops the oldest.
 
 ![Connection-lost banner above the Overview](screenshots/23-connection-lost.png)
 
@@ -52,15 +55,31 @@ on the daemon side (failsafe on exit), see [Troubleshooting](10-troubleshooting.
 The landing page. Anonymous visitors see the channel cards — temperature coloured
 relative to the channel's critical value, the duty bar with the target marker (the slew
 is still moving there), the mode badge (`AUTO`, `MANUAL`, `CRITICAL`, `STALL`,
-`SENSOR-ERROR`, `FAILSAFE`), RPM — and the two charts of the last two hours (temperature;
-fan speed with an RPM/duty toggle).
+`SENSOR-ERROR`, `FAILSAFE`), RPM (`no tach` on a channel without a tachometer, such as
+pwm4 on the N5 Pro) — and the two charts (temperature; fan speed with an RPM/duty
+toggle). A channel with [hysteresis](06-configuration.md#hysteresis-and-minimum-on-time)
+shows the *held* temperature next to the reading when the two differ; a running
+minimum on-time shows a `hold` badge with the remaining time.
 
 ![Overview as an anonymous visitor: channel cards and the two charts](screenshots/01-overview-anonymous.png)
 
+The **range selector** above the charts switches between `2 h`, `24 h` and `7 d`
+(remembered in this browser). The 2 h view is one point per regulation cycle and
+polls every 30 s; 24 h and 7 d show one-minute and five-minute means and reload every
+60 s; the x-axis shows `HH:MM`, `Www HH:MM` or `dd.mm HH:MM` accordingly. The
+history survives restarts (`/var/lib/n5-fangov/history.json`, saved every 10 minutes
+and at stop — a crash can lose up to 10 minutes). Signed in, *CSV* downloads the
+selected range as `n5-fangov-history-<host>-<ts>.csv`
+([History and CSV](12-api.md#history-and-csv)).
+
+![Overview with the 24 h range: averaged charts, range selector, CSV button](screenshots/27-overview-24h.png)
+
 Signed in, the page adds the *Sensors* card (every readable temperature grouped
-CPU / SSD / HDD / GPU / NIC / EC / other, each with a *chart* toggle, see
-[Extra sensors](#extra-sensors)), the *Extra sensors* chart once something is toggled,
-the *System* card (the short form of the [System](#system) tab) and *Recent alerts*.
+CPU / SSD·NVMe / HDD / GPU / NIC / EC·board / other, each with a *chart* toggle, see
+[Extra sensors](#extra-sensors)) — per-disk ids `disk:sda`, `disk:nvme0n1` are sorted
+into SSD·NVMe or HDD by what the kernel reports —, the *Extra sensors* chart once
+something is toggled, the *System* card (the short form of the [System](#system) tab)
+and *Recent alerts*.
 
 ![Overview signed in: channel cards, charts](screenshots/03-overview-signed-in-top.png)
 ![Overview signed in, lower half: extra sensors chart, Sensors card, System card, recent alerts](screenshots/04-overview-signed-in-bottom.png)
@@ -78,19 +97,31 @@ One editor per channel. Terms used everywhere in the UI:
   [Kernel driver](02-kernel-driver.md#why-an-out-of-tree-module)).
 - **stall** — the guard that raises a channel to 255 when the fan reports 0 RPM at a
   duty that should turn it.
+- **hysteresis** (0..10 °C) and **min on** (`off · 30 s · 1 min · 2 min · 5 min · 10 min
+  · 30 min · 1 h`) — the curve post-processing per channel: the curve steps only when
+  the reading has moved by that many degrees, and a step-up is held for at least that
+  long ([Hysteresis and minimum on-time](06-configuration.md#hysteresis-and-minimum-on-time)).
+
+The **sensor** select lists the catalogue's ids; a channel configured with several
+sensors (the maximum of them) appears as one option `a,b (max of 2)` so the editor
+never drops it — the array form itself is edited in the config file
+([Sensor ids](06-configuration.md#sensor-ids)).
 
 Drag the points on the canvas or edit the table; *+ add point* inserts a point at the
 middle of the widest temperature gap and keeps the table sorted; editing a temperature
-re-sorts the rows when the field loses focus. The dashed line is `crit`, the dotted one
-the live reading (`now`), and on the N5 Pro the measured duty→RPM pairs sit under the
-table.
+re-sorts the rows when the field loses focus. A point can also be moved with the
+**keyboard**: tab to it and use the arrow keys (1 °C / 5 duty per step, ×5 with Shift).
+The dashed line is `crit`, the dotted one the live reading (`now`), and on the N5 Pro
+the measured duty→RPM pairs sit under the table.
 
 ![Curves editor: canvas, point table, add point, crit line, now marker, duty to RPM reference](screenshots/07-curves.png)
+![Curves editor fields: sensor select with a composite entry, critical, stop, hysteresis, min on](screenshots/28-curves-fields.png)
 
 The editor refuses what the daemon would replace by a default — 2..8 points,
 temperatures ascending, duties not descending, critical above the last point, stop
-`auto` or 60..255 ([curve rules](06-configuration.md#curve-rules)) — before it sends
-anything. *Apply to daemon* rewrites the `[[channel]]` tables of the config file and
+`auto` or 60..255, hysteresis 0..10 ([curve rules](06-configuration.md#curve-rules)) —
+before it sends anything. *Apply to daemon* rewrites the `[[channel]]` tables of the
+config file (sensor, curve, critical, stop, and hysteresis/min_on when set) and
 reloads without a restart, *Revert* reloads the daemon's curves. A changed channel set
 answers *restart required* (the notice tells you the command). Unsaved edits are marked;
 the editor keeps them across a session expiry until you sign in again.
@@ -111,23 +142,36 @@ whose temperature reacts minutes later. The same from the shell: `n5-fangov set`
 ## Presets
 
 Lists the built-in N5 Pro sets (badge *built-in*, the recommended one marked) and your
-own files from `/etc/n5-fangov/presets/`. *Apply* replaces the channel set of the config
-file and reloads; *Details* shows the preset's channel tables (sensor, curve points,
-critical, stop); *Rename* and *Delete* work on user presets only; *Save current as…*
-stores the curves the daemon runs now (not the unsaved editor state). The values of the
-three built-in sets and the file format: [Presets](06-configuration.md#presets).
+own files from `/etc/n5-fangov/presets/`. *Apply* merges the preset into the config
+file by pwm — channels the preset does not name (an optional pwm4) stay — and reloads;
+*Details* shows the preset's channel tables (sensor, curve points, critical, stop,
+hysteresis, min on); *Rename* and *Delete* work on user presets only; *Save current
+as…* stores the curves the daemon runs now (not the unsaved editor state). The values
+of the three built-in sets, the file format and the merge rule:
+[Presets](06-configuration.md#presets).
 
 ![Presets tab: built-in and recommended badges, Details with the channel tables](screenshots/11-presets.png)
+
+The **Schedules** card below the presets is read-only: one row per `[[schedule]]`
+entry (preset, window or *fallback*, days, an ACTIVE badge on the entry in effect),
+the next switch, the last switch — with its error as a warning when it failed — and
+the timezone the host's clock uses. The list is edited in the config file
+([Schedules](06-configuration.md#schedules)); the card refreshes every 60 s while the
+tab is open.
+
+![Presets tab, Schedules card: entries with the active one, next and last switch, timezone](screenshots/29-schedules.png)
 
 ## Alerts
 
 Shows the configured and the effective transport, which tools the box has, the PVE
 template state with *Install / Update template*, the cooldown, every alert kind with its
 last delivery and the recent alerts; *Send test alert* goes through the real transport
-and reports a delivery error. What each button does and the PVE side:
-[Alerts](07-alerts.md).
+and reports a delivery error. The transport form shows `mail_to` for `auto`/`mail` and
+the URL plus format (`json`/`text`) for `webhook`; *Save* applies without a restart.
+What each button does, the webhook payload and the PVE side: [Alerts](07-alerts.md).
 
 ![Alerts tab: transport form, template card, kinds table, recent alerts](screenshots/12-alerts.png)
+![Alerts tab with the webhook transport: URL and format fields](screenshots/30-alerts-webhook.png)
 ![Toast after Send test alert](screenshots/13-alerts-test-toast.png)
 
 ## System
@@ -135,7 +179,8 @@ and reports a delivery error. What each button does and the PVE side:
 The hardware inventory in full: host, machine/board/BIOS, CPU (model, cores/threads, top
 clock), fan controller (profile, hwmon path, driver module), memory with the installed
 modules, GPU · NPU (with driver version), network (physical NICs, link state, MACs, MTU),
-storage, load and uptime. The signed-in Overview carries the same as a card at a glance;
+storage — every disk with its **live temperature** (the same reading the `disk:<dev>`
+sensor uses; empty for a device without a hwmon) and a sum row —, load and uptime. The signed-in Overview carries the same as a card at a glance;
 `n5-fangov system` prints it from the shell (`--json` for the document; without a
 running daemon it collects locally). `GET /api/system` is protected like every other
 endpoint — the inventory names the operator's hardware.
@@ -147,15 +192,16 @@ Everything is read from files the daemon can reach inside its sandbox: `/sys/cla
 (machine), `/proc/cpuinfo` and cpufreq (CPU), `/proc/meminfo` (memory), `/sys/bus/pci/devices`
 with the driver links (GPU, NPU, NICs, storage controllers), `/sys/class/accel` and
 `/sys/class/drm`, `/sys/class/net` (interfaces with a device link — bridges, veth, tap and
-`lo` are skipped), `/sys/block` (zvols, loop, dm and ram devices skipped), `/sys/module`
-(driver versions), `/etc/os-release`, `/proc/uptime`, `/proc/loadavg`. The **memory
+`lo` are skipped), `/sys/block` (zvols, loop, dm and ram devices skipped; the disk
+temperature is `temp1_input` of the device's hwmon), `/sys/module` (driver versions),
+`/etc/os-release`, `/proc/uptime`, `/proc/loadavg`. The **memory
 modules** (size, type, speed, manufacturer, part number, ECC) come from the SMBIOS
 structure table the kernel exports as `/sys/firmware/dmi/tables/DMI` — parsed by the
 daemon itself, no `dmidecode` and no `/dev/mem` needed. PCI device **names** need `lspci`
 (package `pciutils`, present on Proxmox VE); without it the entries carry
 `PCI device <vendor>:<device>` ids and the tab shows a note. The static parts are cached
-for 10 minutes, memory usage, load, uptime and NIC link state are read on every request
-(the tab refreshes every 30 s). No serial numbers are read.
+for 10 minutes, memory usage, load, uptime, NIC link state and the disk temperatures
+are read on every request (the tab refreshes every 30 s). No serial numbers are read.
 
 ![System tab with a source notice: lspci missing](screenshots/19-system-error.png)
 
@@ -195,9 +241,9 @@ and *Account…*.
 
 ## Account
 
-*Account…* opens the dialog with *Change password…*, *Change user…* and the list of
+*Account…* opens the dialog with *Change password…*, *Change user…*, the list of
 active sessions (id, created, last seen, expiry, IP, remember) with *Sign out other
-sessions*. The current one is marked.
+sessions* — the current one is marked — and the [API tokens](#api-tokens) section.
 
 ![Account dialog: change password form and the sessions table](screenshots/17-account.png)
 
@@ -217,6 +263,21 @@ sessions*. The current one is marked.
 Session lifetime, persistence and what *Sign out* can and cannot do:
 [Sessions](08-https-security.md#sessions).
 
+## API tokens
+
+The *API tokens* section of the Account dialog lists every token — name, scope,
+created, expires, last used, last address — with *Revoke* (asks for confirmation).
+*Create token…* takes a name, the scope (`read`, `control`, `admin`, each with a
+one-line explanation) and the expiry (`30 d · 90 d · 1 y · never`); after creation the
+secret is shown **once** in a read-only field with *Copy* and the notice that it will
+not be shown again — *never* comes with a warning. A token stands in for the password
+in scripts and Home Assistant with just the rights its scope grants; what it can never
+do, where it is stored and how it is throttled: [API tokens](08-https-security.md#api-tokens);
+using it: [API and integrations](12-api.md). With `auth = "none"` the section is
+pointless — everyone is signed in — and a Bearer header is ignored.
+
+![Account dialog, API tokens: the token table, the create form, the secret shown once](screenshots/31-account-tokens.png)
+
 ## Lock and certificate panel
 
 `🔒 TLS` or `🔓 HTTP` in the header; the tooltip carries certificate mode and expiry,
@@ -234,9 +295,10 @@ recipes. What each action does: [HTTPS](08-https-security.md#the-certificate).
 ## Extra sensors
 
 The signed-in Overview lists every readable temperature (`GET /api/sensors`, grouped
-CPU / SSD / HDD / GPU / NIC / EC / other); the *chart* toggle per row adds or removes the
-sensor id in `[dashboard] sensors` (`PUT /api/dashboard`, 0..8 ids, same forms as channel
-sensors — [Configuration](06-configuration.md#configuration-reference)). Watched sensors
+CPU / SSD·NVMe / HDD / GPU / NIC / EC·board / other; one `disk:<dev>` row per disk with
+a hwmon, named by model); the *chart* toggle per row adds or removes the sensor id in
+`[dashboard] sensors` (`PUT /api/dashboard`, 0..8 ids, same forms as channel sensors —
+[Sensor ids](06-configuration.md#sensor-ids)). Watched sensors
 are read once per cycle after the channel sensors, recorded in the history
 (`history[].extra`) and drawn in the *Extra sensors* chart card; they never influence
 regulation. An id whose device is absent right now is kept with a warning and charted
@@ -253,4 +315,4 @@ can be dragged by touch.
 ![Mobile Curves editor with touch drag](screenshots/26-mobile-curves.png)
 
 Next: [CLI reference](05-cli.md) · [Configuration](06-configuration.md) ·
-[HTTPS and security](08-https-security.md)
+[API and integrations](12-api.md) · [HTTPS and security](08-https-security.md)
