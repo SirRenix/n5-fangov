@@ -37,8 +37,13 @@ the [kernel-update gate](02-kernel-driver.md#the-kernel-update-gate) watches —
 itself, and perl/`PVE::Notify` for alerts. What it **cannot**: the config, presets, TLS
 certificate and logs live under `/etc/n5-fangov` and `/var/log/n5-fangov` and are never
 touched by package scripts (purge removes them). The state directory
-`/var/lib/n5-fangov` (sessions, alert history) is removed with the package; nothing in
-it is worth keeping.
+`/var/lib/n5-fangov` is removed with the package (`apt remove` and `uninstall.sh`
+alike): sessions, the alert history and the chart history in it are disposable —
+**`tokens.json` is not**. It holds the hashes of the [API tokens](08-https-security.md#api-tokens)
+and is the only place they exist; the settings bundle never carries tokens. After a
+remove/reinstall every script and Home Assistant needs a new token, or copy
+`tokens.json` (0600) aside before and back afterwards. A package *upgrade* keeps the
+directory.
 
 ## Rollback
 
@@ -50,9 +55,13 @@ install -m0755 /root/n5-fangov-<version>.bak /usr/bin/n5-fangov && systemctl res
 
 The config is forward-compatible: a newer daemon reads an older file; an older daemon
 warns about unknown keys and ignores them (rule: config errors never prevent a start).
-Sessions are dropped when the credential epoch changes, nothing else is versioned. If
-`setup` replaced the config, the previous one is `config.toml.bak-<timestamp>` next to
-it.
+Going back below 0.3.1: `hysteresis`, `min_on`, `[[schedule]]` and the `[alert]`
+webhook keys become warnings; a `sensor` **array** is not a string for the old parser —
+run `n5-fangov check` after the rollback and keep the single-id form on channels you
+may roll back with; `tokens.json` and `history.json` are left alone but unused (no
+Bearer support, empty charts). Sessions are dropped when the credential epoch changes,
+nothing else is versioned. If `setup` replaced the config, the previous one is
+`config.toml.bak-<timestamp>` next to it.
 
 ## Backup and restore
 
@@ -61,8 +70,10 @@ n5-fangov export settings.json       # {"format":1, config: <toml>, presets: {na
 n5-fangov import settings.json       # validates everything, then writes and reloads
 ```
 
-The export is the config file text (comments included) plus every user preset (the
-built-in ones travel with the binary), with the password hash redacted to `<unchanged>`.
+The export is the config file text (comments included — so also `[[schedule]]` and the
+`[alert]` webhook keys) plus every user preset (the built-in ones travel with the
+binary), with the password hash redacted to `<unchanged>`. It never carries API
+tokens, sessions or the chart history.
 `import` refuses the whole bundle when any part fails to parse — nothing is written in
 that case. `<unchanged>` is resolved from the password stored on the importing machine;
 on a fresh box run `n5-fangov passwd` first (or put a real hash into the bundle). Presets
@@ -75,7 +86,7 @@ has both as buttons ([Settings gear](04-dashboard.md#settings-gear)).
 ## Uninstall
 
 ```
-./deploy/uninstall.sh            # stops and removes the unit, binary, apt hook, PVE template, state
+./deploy/uninstall.sh            # stops and removes the unit, binary, apt hook, PVE template, state (tokens, history)
 ./deploy/uninstall.sh --purge    # additionally /etc/n5-fangov (config, presets, certificate) and /var/log/n5-fangov
 ```
 

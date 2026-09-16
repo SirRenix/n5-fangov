@@ -92,7 +92,7 @@ pair later ([Alerts](07-alerts.md#the-pve-template)).
 | `/etc/n5-fangov/presets/`, `/etc/n5-fangov/tls/` | user presets; the automatic TLS certificate (created at the first HTTPS start) |
 | `/var/log/n5-fangov/` (0750) | rotating log file `n5-fangov.log`, `.1`..`.N`; the journal is unchanged |
 | `/etc/apt/apt.conf.d/90n5-fangov` | `DPkg::Post-Invoke` → `n5-fangov check --after-update`, the [kernel-update gate](02-kernel-driver.md#the-kernel-update-gate) |
-| `/var/lib/n5-fangov/` (0700) | `sessions.json` (hashed dashboard sessions), `alerts.json` (recent alerts); removed on uninstall |
+| `/var/lib/n5-fangov/` (0700) | `sessions.json` (hashed dashboard sessions), `tokens.json` (hashed [API tokens](08-https-security.md#api-tokens)), `alerts.json` (recent alerts), `history.json` (chart history 2 h / 24 h / 7 d, saved every 10 min); all 0600, removed on uninstall — the settings bundle never contains them |
 | `/run/n5-fangov/` (0750) | `n5-fangov.sock` (CLI), `state.json` (fallback for `status`), override and alert stamps |
 | `/usr/share/doc/n5-fangov/config.example.toml` | reference with every key explained ([Configuration](06-configuration.md)) |
 | `/usr/share/n5-fangov/pve-notification/*.hbs` | copied to `/etc/pve/notification-templates/default/` when `/etc/pve` exists |

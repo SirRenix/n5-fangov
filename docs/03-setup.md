@@ -65,7 +65,9 @@ handled in [HTTPS](08-https-security.md#the-certificate).
   dashboard drops every persisted browser session at the next start.
 
 The reference with every key explained is `/usr/share/doc/n5-fangov/config.example.toml`;
-the table is in [Configuration](06-configuration.md).
+the table is in [Configuration](06-configuration.md). Scripts and Home Assistant do
+not get the password: create an API token with the scope they need
+([API and integrations](12-api.md#authentication)).
 
 Next: [Dashboard](04-dashboard.md) · [Configuration](06-configuration.md) ·
 [HTTPS and security](08-https-security.md)
