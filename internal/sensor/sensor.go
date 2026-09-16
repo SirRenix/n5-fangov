@@ -43,10 +43,92 @@ type Source interface {
 	Read() (int, error)
 }
 
-// Info describes a sensor id for the UI dropdown.
+// Info describes a sensor id for the UI dropdown. Kind is "ssd" or "hdd"
+// for disk:<dev> ids (NVMe or non-rotational → ssd, rotational → hdd),
+// empty for every other id and when the block device does not say.
 type Info struct {
 	ID          string `json:"id"`
 	Description string `json:"description"`
+	Kind        string `json:"kind,omitempty"`
+}
+
+// Composite id limits: "a,b" is the maximum of 2..MaxParts single ids.
+const (
+	MinParts = 2
+	MaxParts = 4
+)
+
+// composite reads several sources and returns the highest value. Parts
+// that could not be resolved at Parse time are absent (the controller
+// re-resolves the whole id every 60 cycles, so they are picked up later);
+// parts that fail to read now are ignored as long as one succeeds.
+type composite struct {
+	id    string
+	parts []Source
+}
+
+func (m *composite) ID() string { return m.id }
+
+func (m *composite) Read() (int, error) {
+	best := 0
+	ok := false
+	var firstErr error
+	for _, s := range m.parts {
+		v, err := s.Read()
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if !ok || v > best {
+			best, ok = v, true
+		}
+	}
+	if !ok {
+		return 0, fmt.Errorf("sensor %s: no readable part: %w", m.id, firstErr)
+	}
+	return best, nil
+}
+
+// parseComposite resolves "a,b[,c[,d]]": every part is parsed on its own,
+// parts that do not resolve now are skipped, at least one must resolve
+// (else the first part's error). The id is the canonical form (trimmed
+// parts, configured order, joined by ",").
+func parseComposite(id string, fs *hwmon.FS, dev profile.Device) (Source, error) {
+	raw := strings.Split(id, ",")
+	if len(raw) < MinParts || len(raw) > MaxParts {
+		return nil, fmt.Errorf("sensor: composite %q has %d parts, want %d..%d", id, len(raw), MinParts, MaxParts)
+	}
+	ids := make([]string, 0, len(raw))
+	seen := map[string]bool{}
+	for _, part := range raw {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return nil, fmt.Errorf("sensor: composite %q has an empty part", id)
+		}
+		if seen[part] {
+			return nil, fmt.Errorf("sensor: composite %q lists %q twice", id, part)
+		}
+		seen[part] = true
+		ids = append(ids, part)
+	}
+	c := &composite{id: strings.Join(ids, ",")}
+	var firstErr error
+	for _, part := range ids {
+		s, err := Parse(part, fs, dev)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		c.parts = append(c.parts, s)
+	}
+	if len(c.parts) == 0 {
+		return nil, fmt.Errorf("sensor: composite %s: no part resolves: %w", c.id, firstErr)
+	}
+	return c, nil
 }
 
 // checkPlausible rejects readings outside the plausibility window.
@@ -115,12 +197,14 @@ func (m *maximum) Read() (int, error) {
 
 var (
 	hwmonIDRe = regexp.MustCompile(`^hwmon:([^:]+):temp([0-9]+)$`)
+	diskIDRe  = regexp.MustCompile(`^disk:([a-z0-9]{1,32})$`)
 	tempInRe  = regexp.MustCompile(`^temp([0-9]+)_input$`)
 )
 
 // Parse resolves id against fs (and dev for "ec:*" ids; dev may be nil for
 // all other ids). Device lookup happens once here; Read only touches the
-// resolved files.
+// resolved files. A composite id "a,b" (2..MaxParts single ids) reads the
+// maximum of its parts (parseComposite).
 func Parse(id string, fs *hwmon.FS, dev profile.Device) (Source, error) {
 	id = strings.TrimSpace(id)
 	if fs == nil {
@@ -129,6 +213,18 @@ func Parse(id string, fs *hwmon.FS, dev profile.Device) (Source, error) {
 	switch {
 	case id == "":
 		return nil, errors.New("sensor: empty id")
+	case strings.Contains(id, ","):
+		return parseComposite(id, fs, dev)
+	case strings.HasPrefix(id, "disk:"):
+		m := diskIDRe.FindStringSubmatch(id)
+		if m == nil {
+			return nil, fmt.Errorf("sensor: malformed id %q (want disk:<dev>, e.g. disk:sda)", id)
+		}
+		p, err := fs.DiskHwmon(m[1])
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrNoDevice, err)
+		}
+		return &single{id: id, fs: fs, path: filepath.Join(p, "temp1_input")}, nil
 	case id == "k10temp":
 		devs := fs.FindByName("k10temp")
 		if len(devs) == 0 {
@@ -229,24 +325,71 @@ func tempInputs(devPath string) []string {
 
 func sortedKeys(m map[string]string) []string { return slices.Sorted(maps.Keys(m)) }
 
+// diskModel is block/<dev>/device/model with its whitespace collapsed
+// (SATA pads the field), or "disk".
+func diskModel(fs *hwmon.FS, dev string) string {
+	s, err := fs.ReadString(filepath.Join("block", dev, "device", "model"))
+	if err != nil {
+		return "disk"
+	}
+	if s = strings.Join(strings.Fields(s), " "); s == "" {
+		return "disk"
+	}
+	return s
+}
+
+// hwmonName is the name file of a hwmon directory, or its base name.
+func hwmonName(fs *hwmon.FS, hw string) string {
+	if s, err := fs.ReadString(filepath.Join(hw, "name")); err == nil && s != "" {
+		return s
+	}
+	return filepath.Base(hw)
+}
+
+// DiskKind classifies block device dev for the dashboard: "ssd" for an
+// NVMe name or queue/rotational = 0, "hdd" for rotational = 1, "" when the
+// device does not say.
+func DiskKind(fs *hwmon.FS, dev string) string {
+	if strings.HasPrefix(dev, "nvme") {
+		return "ssd"
+	}
+	switch v, err := fs.ReadInt(filepath.Join("block", dev, "queue", "rotational")); {
+	case err != nil:
+		return ""
+	case v == 1:
+		return "hdd"
+	case v == 0:
+		return "ssd"
+	}
+	return ""
+}
+
 // Known lists the sensor ids usable on this machine: the concrete ids that
 // resolve right now (with the current reading in the description when
 // readable), the profile's extra temps, one hwmon:<name>:tempN entry per
 // temperature input, and finally the generic patterns. dev may be nil.
 func Known(fs *hwmon.FS, dev profile.Device) []Info {
 	var out []Info
-	add := func(id, desc string) {
+	addKind := func(id, desc, kind string) {
 		if src, err := Parse(id, fs, dev); err == nil {
 			if v, err := src.Read(); err == nil {
 				desc = fmt.Sprintf("%s (now %.1f C)", desc, float64(v)/1000)
 			}
-			out = append(out, Info{ID: id, Description: desc})
+			out = append(out, Info{ID: id, Description: desc, Kind: kind})
 		}
 	}
+	add := func(id, desc string) { addKind(id, desc, "") }
 	add("k10temp", "AMD CPU temperature (Tctl)")
 	add("coretemp", "Intel CPU temperature (hottest core/package)")
 	add("nvme:max", "hottest NVMe SSD")
 	add("drivetemp:max", "hottest SATA/SAS drive")
+	for _, d := range fs.BlockDevices() {
+		hw, err := fs.DiskHwmon(d)
+		if err != nil {
+			continue
+		}
+		addKind("disk:"+d, fmt.Sprintf("%s (%s, %s)", diskModel(fs, d), d, hwmonName(fs, hw)), DiskKind(fs, d))
+	}
 	if dev != nil {
 		for _, id := range sortedKeys(dev.ExtraTemps()) {
 			add(id, fmt.Sprintf("%s sensor %s", dev.Profile().Title(), strings.TrimPrefix(id, "ec:")))

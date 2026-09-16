@@ -141,6 +141,104 @@ func TestPresetBuiltinOtherProfile(t *testing.T) {
 	}
 }
 
+// TestPresetApplyMergesByPWM: a preset channel replaces the config channel
+// with the same pwm (the config name is kept), channels the preset does not
+// name stay (an optional pwm4 channel survives a built-in preset), a pwm
+// the config lacks is added.
+func TestPresetApplyMergesByPWM(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+	src := storeConfig + `
+[[channel]]
+name = "disks"
+pwm = 3
+sensor = ["drivetemp:max", "ec:hdd"]
+curve = [[36,105],[46,255]]
+critical = 56
+hysteresis = 2
+min_on = "60s"
+
+[[channel]]
+name = "pcie"
+pwm = 4
+sensor = "k10temp"
+curve = [[40,80],[70,255]]
+critical = 90
+`
+	if err := os.WriteFile(cfgPath, []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	svc := &fakeService{}
+	s := dirPresetStore{dir: filepath.Join(t.TempDir(), "presets"), cfgPath: cfgPath, svc: svc, profile: "n5pro"}
+	if err := s.Apply("n5pro-balanced"); err != nil || svc.reloads() != 1 {
+		t.Fatalf("apply: %v", err)
+	}
+	cfg, warns, err := config.Load(cfgPath)
+	if err != nil || len(warns) != 0 {
+		t.Fatalf("load: %v %v", err, warns)
+	}
+	var names []string
+	for _, c := range cfg.Channels {
+		names = append(names, c.Name)
+	}
+	if !reflect.DeepEqual(names, []string{"cpu", "disks", "pcie", "ssd"}) {
+		t.Fatalf("channels after merge: %v", names)
+	}
+	// pwm3: preset values, config name; the preset lacks hysteresis/min_on → defaults
+	if d := cfg.Channel("disks"); d.PWM != 3 || d.Critical != 60 || d.Sensor != "drivetemp:max" || d.Stop != "140" || d.Hysteresis != 0 || d.MinOn != 0 {
+		t.Errorf("pwm3 not replaced by the preset: %+v", d)
+	}
+	// pwm1: replaced (balanced cpu curve starts at 35)
+	if c := cfg.Channel("cpu"); c.PWM != 1 || c.Curve[0][0] != 35 {
+		t.Errorf("pwm1 not replaced: %+v", c)
+	}
+	// pwm4: untouched
+	if p := cfg.Channel("pcie"); p.PWM != 4 || p.Critical != 90 || p.Curve[0][0] != 40 {
+		t.Errorf("pwm4 changed by the merge: %+v", p)
+	}
+	// pwm2: added from the preset
+	if s := cfg.Channel("ssd"); s.PWM != 2 || s.Critical != 72 {
+		t.Errorf("pwm2 not added: %+v", s)
+	}
+	// the daemon saw the merged text
+	if back, _, _ := config.Parse(svc.raws[0]); len(back.Channels) != 4 {
+		t.Errorf("reload text has %d channels", len(back.Channels))
+	}
+}
+
+// TestMergeChannelsByPWM: the pure merge, including a preset name that
+// collides with a kept config channel on another pwm.
+func TestMergeChannelsByPWM(t *testing.T) {
+	cfgChans := []config.Channel{
+		{Name: "cpu", PWM: 1, Sensor: "k10temp", Curve: [][2]int{{45, 85}, {80, 255}}, Critical: 88, Stop: "auto"},
+		{Name: "ssd", PWM: 4, Sensor: "nvme:max", Curve: [][2]int{{45, 85}, {80, 255}}, Critical: 72, Stop: "auto"},
+	}
+	preset := []config.Channel{
+		{Name: "processor", PWM: 1, Sensor: "k10temp", Curve: [][2]int{{30, 60}, {80, 255}}, Critical: 85, Stop: "auto", Hysteresis: 3},
+		{Name: "ssd", PWM: 2, Sensor: "nvme:max", Curve: [][2]int{{35, 74}, {68, 255}}, Critical: 72, Stop: "auto"},
+	}
+	out := mergeChannelsByPWM(cfgChans, preset)
+	if len(out) != 3 {
+		t.Fatalf("merged: %+v", out)
+	}
+	if out[0].Name != "cpu" || out[0].PWM != 1 || out[0].Critical != 85 || out[0].Hysteresis != 3 {
+		t.Errorf("pwm1: %+v", out[0])
+	}
+	if out[1].Name != "ssd" || out[1].PWM != 4 || out[1].Critical != 72 {
+		t.Errorf("pwm4 must stay: %+v", out[1])
+	}
+	if out[2].Name != "pwm2" || out[2].PWM != 2 {
+		t.Errorf("added channel with a colliding name must be renamed: %+v", out[2])
+	}
+	// the inputs are not aliased
+	out[0].Curve[0][0] = 1
+	if cfgChans[0].Curve[0][0] != 45 || preset[0].Curve[0][0] != 30 {
+		t.Errorf("merge aliased its inputs")
+	}
+	if got := mergeChannelsByPWM(nil, preset); len(got) != 2 || got[0].Name != "processor" {
+		t.Errorf("empty config: %+v", got)
+	}
+}
+
 // TestPresetApplyReloadError: a preset that is written but not taken
 // by the daemon comes back as web.ReloadError with the "written, reload
 // failed" text — the file carries the preset; the restart sentinel passes

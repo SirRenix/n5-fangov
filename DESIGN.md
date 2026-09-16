@@ -61,7 +61,8 @@ cmd/n5-fangov/
   about.go           aboutInfo (GET /api/about: name, version, licence, credits)
   common.go, prompt.go   socket client, helpers, no-echo prompts
 internal/config/     TOML config: Parse (defaults on error), Load, Save, SetKey (in-place edit), presets, built-in presets
-internal/hwmon/      sysfs discovery + read/write helpers (root from N5FANGOV_SYSFS); hwmontest fixtures
+internal/hwmon/      sysfs discovery + read/write helpers (root from N5FANGOV_SYSFS); block-device helpers
+                     (BlockDevices, DiskHwmon, DiskTemp, VirtualBlock) shared by sensor and sysinfo; hwmontest fixtures
 internal/profile/    Profile/Device interfaces; n5pro, nct67xx, it87xx, monitor; Detect()
 internal/sensor/     sensor sources: k10temp, coretemp, nvme:max, drivetemp:max, disk:<dev>, ec:*,
                      hwmon:<name>:tempN, composite "a,b" (maximum)
@@ -170,13 +171,15 @@ their keys live). A changed channel set or profile makes `Service.Reload` return
 every reload as well.
 
 Presets: name `^[a-z0-9_-]{1,64}$`. A preset file holds `[[channel]]` tables with every
-channel key including `hysteresis` and `min_on` (a preset written before 0.3.1 lacks them:
-defaults). **Apply merges by pwm:** a channel of the preset replaces the config channel with
-the same `pwm` (the config channel's `name` is kept when the preset uses another name for
-that pwm), config channels the preset does not name are kept unchanged — so an optional
+channel key; `hysteresis` and `min_on` are written only when set (`Marshal` omits them at
+their defaults, like the dashboard does), so a preset written before 0.3.1 simply reads as
+the defaults. **Apply merges by pwm:** a channel of the preset replaces the config channel
+with the same `pwm` (the config channel's `name` is kept when the preset uses another name
+for that pwm), config channels the preset does not name are kept unchanged — so an optional
 `pwm4` channel survives a built-in preset and the apply never needs a restart for it. A
 preset channel whose pwm the config lacks is added (that is the case that still returns
-202). Built-in N5 Pro sets (listed for the `n5pro` profile
+202); when its name collides with a kept config channel it is added as `pwm<N>` so the
+file stays valid. Built-in N5 Pro sets (listed for the `n5pro` profile
 only; `PUT` on a built-in name → 409, apply on another profile → 404; a user file with a
 built-in name is shadowed and logged):
 
@@ -232,7 +235,8 @@ generic patterns that do not parse as ids. `Parse(id)` yields a `Source`; the co
   the temperature is `temp1_input` of the device's hwmon: `block/<dev>/device/hwmon/hwmon*/`
   (SATA/SAS, drivetemp) or `block/<dev>/device/hwmon*/` (NVMe controller). No hwmon →
   `ErrNoDevice`. `Known()` lists one `disk:<dev>` per block device that has one (sorted by
-  name, virtual devices `dm-*`, `loop*`, `zd*`, `md*`, `sr*` skipped), description
+  name, virtual devices `dm-*`, `loop*`, `zd*`, `md*`, `sr*`, `ram*`, `zram*`, `nbd*`,
+  `drbd*`, `rbd*`, `fd*` skipped — `hwmon.VirtualBlock`, the same rule sysinfo uses), description
   `"<model> (<dev>, <hwmon name>)"` with `model` from `block/<dev>/device/model`
   (trimmed; NVMe: same path) or `"disk"`, plus the live reading. `SensorInfo` gains
   `Kind` = `"ssd"` for NVMe / non-rotational, `"hdd"` for rotational (`queue/rotational`),
@@ -270,9 +274,12 @@ stall, failsafe, slew and the safe duty are exactly as before):
 - *Minimum on-time* (`min_on = D`): when the curve target (after hysteresis) rises above
   the previous cycle's curve target, that higher value is **held** for D: until
   `now < holdUntil` the curve target is `max(curve target, held target)`; a further rise
-  replaces the held value and restarts the timer. `Options.Now` is the clock (monotonic in
-  production). The hold is cleared by a sensor error, a manual override (an override
-  replaces the target anyway) and by `min_on = 0s`.
+  **above the held value** replaces it and restarts the timer (a rise that stays below a
+  running hold changes nothing — the fan already runs faster). The first curve value after
+  start, a sensor error or a sensor change is never a rise. `Options.Now` is the clock
+  (monotonic in production). The hold is cleared by a sensor error, a manual override (an
+  override replaces the target anyway) and by `min_on = 0s`; `hold_until` is reported while
+  the channel is in mode `auto`.
 - Order: raw → held temperature → `Interpolate` → min_on → override → critical → stall.
   Both mechanisms are per channel and reload-safe: `Apply` swaps the values with the rest
   of the channel config; a reduced `hysteresis` takes effect on the next reading, a

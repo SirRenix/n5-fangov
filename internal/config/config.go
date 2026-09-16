@@ -55,6 +55,13 @@ const (
 	// HDDStop is the stop duty used when a channel fed by drivetemp:max has
 	// no or an invalid stop value (~2250 RPM on the N5 Pro HDD channel).
 	HDDStop = "140"
+	// HysteresisMax bounds [[channel]].hysteresis (degrees C; 0 = off).
+	HysteresisMax = 10
+	// MinOnMax bounds [[channel]].min_on (0 = off).
+	MinOnMax = time.Hour
+	// MaxSensorParts is how many sensor ids one channel may combine
+	// (sensor = ["a", "b"] → the maximum of the parts).
+	MaxSensorParts = 4
 )
 
 // Profiles accepted in daemon.profile.
@@ -169,12 +176,29 @@ const MaxDashboardSensors = 8
 
 // Channel is one regulated PWM output.
 type Channel struct {
-	Name     string   `toml:"name"`
-	PWM      int      `toml:"pwm"`
+	Name string `toml:"name"`
+	PWM  int    `toml:"pwm"`
+	// Sensor is the canonical sensor id: one id, or several joined by ","
+	// (the file may write them as an array; Sensors splits them again).
 	Sensor   string   `toml:"sensor"`
 	Curve    [][2]int `toml:"curve"` // [temp_c, duty], ascending temp
 	Critical int      `toml:"critical"`
 	Stop     string   `toml:"stop"` // "auto" or "0".."255"
+	// Hysteresis in degrees C: the curve is evaluated at a held temperature
+	// that follows the reading only when it moved by at least this much;
+	// 0 = off. MinOn holds a rise of the curve target for that long; 0 =
+	// off. Both are curve post-processing (DESIGN "Controller").
+	Hysteresis int           `toml:"hysteresis,omitzero"`
+	MinOn      time.Duration `toml:"min_on,omitzero"`
+}
+
+// Sensors returns the parts of the canonical sensor id (one element for a
+// single id).
+func (ch Channel) Sensors() []string {
+	if ch.Sensor == "" {
+		return nil
+	}
+	return strings.Split(ch.Sensor, ",")
 }
 
 // Config is the whole configuration file.
@@ -801,7 +825,7 @@ func (p *parser) channels(secs []map[string]toml.Primitive) []Channel {
 		if ok && nameRe.MatchString(name) {
 			pre = "channel." + name
 		}
-		p.unknown(pre, sec, "name", "pwm", "sensor", "curve", "critical", "stop")
+		p.unknown(pre, sec, "name", "pwm", "sensor", "curve", "critical", "stop", "hysteresis", "min_on")
 		if !ok || !nameRe.MatchString(name) {
 			p.warn(pre+".name", "missing or not [a-z0-9_]{1,32}, channel dropped")
 			continue
@@ -821,10 +845,8 @@ func (p *parser) channels(secs []map[string]toml.Primitive) []Channel {
 			p.warn(pre+".pwm", "pwm%d already used by another channel, channel dropped", ch.PWM)
 			continue
 		}
-		sensor, _ := p.strField(pre, sec, "sensor", "")
-		sensor = strings.TrimSpace(sensor)
-		if sensor == "" {
-			p.warn(pre+".sensor", "missing, channel dropped")
+		sensor, ok := p.sensorField(pre, sec)
+		if !ok {
 			continue
 		}
 		ch.Sensor = sensor
@@ -839,11 +861,68 @@ func (p *parser) channels(secs []map[string]toml.Primitive) []Channel {
 			p.warn(pre+".critical", "missing, default %d used", defCrit)
 		}
 		ch.Stop = p.stop(pre, sec, ch.Sensor)
+		ch.Hysteresis = p.intField(pre, sec, "hysteresis", 0, 0, HysteresisMax)
+		ch.MinOn = p.durField(pre, sec, "min_on", 0, 0, MinOnMax)
 		names[name] = true
 		pwms[ch.PWM] = true
 		out = append(out, ch)
 	}
 	return out
+}
+
+// sensorField decodes the mandatory sensor id: a string ("k10temp", or
+// several ids joined by ",") or an array of 1..MaxSensorParts strings.
+// Every part is trimmed and must be non-empty and distinct; the result is
+// the canonical comma-joined id. ok is false (with one warning) when the
+// key is missing or unusable — the channel is then dropped, a sensor has
+// no default.
+func (p *parser) sensorField(pre string, sec map[string]toml.Primitive) (string, bool) {
+	prim, ok := sec["sensor"]
+	if !ok {
+		p.warn(pre+".sensor", "missing, channel dropped")
+		return "", false
+	}
+	var parts []string
+	var s string
+	if err := p.md.PrimitiveDecode(prim, &s); err == nil {
+		parts = strings.Split(s, ",")
+	} else if err := p.md.PrimitiveDecode(prim, &parts); err != nil {
+		p.warn(pre+".sensor", "not a string or an array of strings, channel dropped")
+		return "", false
+	}
+	id, err := JoinSensors(parts)
+	if err != nil {
+		p.warn(pre+".sensor", "%v, channel dropped", err)
+		return "", false
+	}
+	return id, true
+}
+
+// JoinSensors validates 1..MaxSensorParts sensor ids (trimmed, non-empty,
+// without ",", distinct) and returns the canonical comma-joined id.
+func JoinSensors(parts []string) (string, error) {
+	if len(parts) == 0 {
+		return "", errors.New("no sensor id")
+	}
+	if len(parts) > MaxSensorParts {
+		return "", fmt.Errorf("%d sensor ids, at most %d", len(parts), MaxSensorParts)
+	}
+	out := make([]string, 0, len(parts))
+	seen := map[string]bool{}
+	for i, part := range parts {
+		part = strings.TrimSpace(part)
+		switch {
+		case part == "":
+			return "", fmt.Errorf("sensor id %d is empty", i+1)
+		case strings.Contains(part, ","):
+			return "", fmt.Errorf("sensor id %q contains a comma", part)
+		case seen[part]:
+			return "", fmt.Errorf("sensor id %q listed twice", part)
+		}
+		seen[part] = true
+		out = append(out, part)
+	}
+	return strings.Join(out, ","), nil
 }
 
 // pwmField decodes the mandatory pwm index (1..MaxPWM); 0 with one warning
@@ -918,11 +997,13 @@ func ValidateCurve(pts [][]int64) ([][2]int, error) {
 
 // DefaultStop is the stop value used when a channel has none or an invalid
 // one: "auto" hands the channel back to the chip, except for channels fed by
-// drivetemp:max, whose fans must keep turning even when nobody regulates
-// them (HDDStop).
+// drivetemp:max (alone or as a part of a composite id), whose fans must
+// keep turning even when nobody regulates them (HDDStop).
 func DefaultStop(sensor string) string {
-	if sensor == "drivetemp:max" {
-		return HDDStop
+	for _, part := range (Channel{Sensor: sensor}).Sensors() {
+		if strings.TrimSpace(part) == "drivetemp:max" {
+			return HDDStop
+		}
 	}
 	return "auto"
 }

@@ -48,11 +48,11 @@ MQTT/discovery, no multi-host management, no new dependencies. The UI stays Engl
 
 **2. Regulation add-ons (curve post-processing only; failsafe, stall and critical untouched)**
 - **Hysteresis and minimum on-time per channel** (`hysteresis = 2`, `min_on = "60s"`):
-  drive fans oscillate around a curve point at 44/45 °C today.
-- **Several sensors per channel** (`sensor = ["drivetemp:max", "ec:hdd"]` → maximum).
+  drive fans oscillate around a curve point at 44/45 °C today. — done, see Added
+- **Several sensors per channel** (`sensor = ["drivetemp:max", "ec:hdd"]` → maximum). — done
 - **Schedules** (`[[schedule]] preset = "n5pro-quiet" from = "22:00" to = "07:00"`) as
   preset switches with an alert when a switch fails.
-- **pwm4** (PCIe header, no tachometer) as an optional fourth channel.
+- **pwm4** (PCIe header, no tachometer) as an optional fourth channel. — done
 
 **3. Dashboard**
 - **Longer history**: persist the ring in the state directory, views 2 h / 24 h / 7 d
@@ -61,7 +61,8 @@ MQTT/discovery, no multi-host management, no new dependencies. The UI stays Engl
   name (`hwmon:nvme:temp1`) are addressable — a box with three NVMe SSDs and four HDDs
   shows two temperatures. New ids per device (`disk:sda`, `disk:nvme1n1`, resolved through
   `/sys/block/<dev>/device/hwmon`) for the Sensors card, the extra charts and the curve
-  sensor selection; the System tab lists every disk with its temperature.
+  sensor selection; the System tab lists every disk with its temperature. — backend done
+  (ids, catalogue, `GET /api/system` temperatures), dashboard part open
 - Split the mock out of the production bundle (22 % of `app.js`) so the budget stops
   binding; remaining low design findings (toast limit, keyboard for curve points).
 
@@ -114,7 +115,41 @@ curl path is re-run once at 0.4.0.
 **Not planned**: MQTT/discovery (REST + token is enough and smaller), a German UI
 (audience is GitHub), multi-host management, a frontend framework.
 
+### Added
+
+- **Hysteresis and minimum on-time per channel** (`[[channel]] hysteresis = 0..10`,
+  `min_on = "0s".."1h"`, both off by default): the curve is evaluated at a held temperature
+  that follows the reading only on a move of `hysteresis` degrees or more, and a rise of
+  the curve target is held for `min_on` (a further rise above the held value restarts the
+  timer). Only the curve output is touched — override, critical (judged on the raw
+  reading), stall, failsafe, slew and the safe duty are unchanged and the safety tests pin
+  that. Both keys reload live; a reduced `min_on` shortens a running hold. The snapshot
+  carries `held_temp` (when it differs from `temp`) and `hold_until` (unix time) per
+  channel; `GET /api/version` `limits` gains `hysteresis_max` and `min_on_max_s`; preset
+  details and `GET /api/config` carry the two keys per channel.
+- **Several sensors per channel**: `sensor = ["drivetemp:max", "ec:hdd"]` (1..4 ids, also
+  accepted as `"a,b"`) regulates on the maximum of the parts; a part whose device is absent
+  is skipped as long as one resolves (picked up at the next re-resolve). The stored id is
+  the comma-joined form; a composite that contains `drivetemp:max` defaults to `stop = 140`
+  like the plain id.
+- **Per-disk sensors** `disk:<dev>` (`disk:sda`, `disk:nvme0n1`): the temperature of one
+  block device from its hwmon (`/sys/block/<dev>/device/hwmon/hwmonN` for SATA/SAS,
+  `/sys/block/<dev>/device/hwmonN` for NVMe). `GET /api/sensors` lists one per disk with
+  the model, the hwmon name and `kind` (`ssd`/`hdd`); `GET /api/system` reports the live
+  `temp_c` (null without a sensor) and the matching `sensor` id per disk, re-read on every
+  call. Backend part; the dashboard grouping and the System tab column follow.
+- **pwm4** on the N5 Pro (PCIe header, no tachometer) as an optional fourth channel: a
+  `[[channel]] pwm = 4` is managed as configured (`rpm = -1`, never in the stall check,
+  `stop = "auto"` hands it back to the EC); `SanitizeChannels` neither adds nor corrects it
+  and a built-in preset keeps it (see the merge rule below). `test`, `detect` and `check`
+  treat it as a channel without tach.
+
 ### Changed
+
+- Preset apply **merges by pwm** instead of replacing every `[[channel]]` table: a preset
+  channel replaces the config channel with the same pwm (the config channel's name is
+  kept), config channels the preset does not name stay, a pwm the config lacks is added
+  (that case still answers 202). The scheduler uses the same path.
 
 - Files are named by topic, never by version or review round. cmd: `wiring_v2.go` →
   `wiring_tls.go`; `wiring_v3.go` → `wiring_presets.go` (with the `dirPresetStore` parts
