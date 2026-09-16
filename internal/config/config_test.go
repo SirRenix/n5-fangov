@@ -988,10 +988,80 @@ func TestAlertSection(t *testing.T) {
 	}
 	// round trip
 	cfg = Default()
-	cfg.Alert = Alert{Transport: "log", MailTo: "admin"}
+	cfg.Alert = Alert{Transport: "log", MailTo: "admin", WebhookFormat: "json"}
 	back, warns, err := Parse(Marshal(cfg))
 	if err != nil || len(warns) != 0 || !reflect.DeepEqual(cfg, back) {
 		t.Errorf("alert round trip: %v %v\n%+v", err, warns, back)
+	}
+}
+
+// TestAlertWebhook: the webhook keys of [alert] (DESIGN "Config"):
+// transport webhook needs a valid URL, else auto with a warning; the URL
+// rule (absolute http/https, host, no userinfo, length); format json|text.
+func TestAlertWebhook(t *testing.T) {
+	cfg, warns, err := Parse([]byte("[alert]\ntransport = \"webhook\"\nwebhook_url = \"https://ntfy.example.test/n5?k=1\"\nwebhook_format = \"text\"\n"))
+	if err != nil || len(warns) != 0 {
+		t.Fatalf("valid: %v %v", warns, err)
+	}
+	if cfg.Alert.Transport != "webhook" || cfg.Alert.WebhookURL != "https://ntfy.example.test/n5?k=1" || cfg.Alert.WebhookFormat != "text" {
+		t.Errorf("alert: %+v", cfg.Alert)
+	}
+	// default format, case-normalised transport and format
+	cfg, warns, _ = Parse([]byte("[alert]\ntransport = \" Webhook \"\nwebhook_url = \"http://192.0.2.10:8080/hook\"\nwebhook_format = \" JSON \"\n"))
+	if len(warns) != 0 || cfg.Alert.Transport != "webhook" || cfg.Alert.WebhookFormat != "json" {
+		t.Errorf("normalised: %+v %v", cfg.Alert, warns)
+	}
+	if cfg, _, _ := Parse([]byte("[alert]\nwebhook_url = \"https://n5host.example.test/\"\n")); cfg.Alert.WebhookFormat != DefaultWebhookFormat || cfg.Alert.Transport != "auto" {
+		t.Errorf("defaults: %+v", cfg.Alert)
+	}
+	// webhook without a URL → auto + warning
+	cfg, warns, _ = Parse([]byte("[alert]\ntransport = \"webhook\"\n"))
+	hasWarn(t, warns, "alert.transport")
+	if cfg.Alert.Transport != "auto" || cfg.Alert.WebhookURL != "" {
+		t.Errorf("webhook without url: %+v", cfg.Alert)
+	}
+	// webhook with an invalid URL → URL dropped, transport auto, two warnings
+	cfg, warns, _ = Parse([]byte("[alert]\ntransport = \"webhook\"\nwebhook_url = \"ftp://x/\"\n"))
+	hasWarn(t, warns, "alert.webhook_url")
+	hasWarn(t, warns, "alert.transport")
+	if cfg.Alert.Transport != "auto" || cfg.Alert.WebhookURL != "" {
+		t.Errorf("webhook with bad url: %+v", cfg.Alert)
+	}
+	// an invalid URL under another transport is only dropped
+	cfg, warns, _ = Parse([]byte("[alert]\ntransport = \"log\"\nwebhook_url = \"https://user:pw@h.example.test/\"\n"))
+	hasWarn(t, warns, "alert.webhook_url")
+	if cfg.Alert.Transport != "log" || cfg.Alert.WebhookURL != "" || len(warns) != 1 {
+		t.Errorf("userinfo url: %+v %v", cfg.Alert, warns)
+	}
+	// unknown format → default + warning; an empty one is silent
+	cfg, warns, _ = Parse([]byte("[alert]\nwebhook_format = \"xml\"\n"))
+	hasWarn(t, warns, "alert.webhook_format")
+	if cfg.Alert.WebhookFormat != "json" {
+		t.Errorf("bad format: %+v", cfg.Alert)
+	}
+	if cfg, warns, _ := Parse([]byte("[alert]\nwebhook_url = \"\"\nwebhook_format = \"\"\n")); len(warns) != 0 || cfg.Alert.WebhookFormat != "json" || cfg.Alert.WebhookURL != "" {
+		t.Errorf("empty keys: %+v %v", cfg.Alert, warns)
+	}
+	// round trip keeps the webhook keys
+	cfg = Default()
+	cfg.Alert = Alert{Transport: "webhook", MailTo: "root", WebhookURL: "https://gotify.example.test/message?token=abc", WebhookFormat: "json"}
+	back, warns, err := Parse(Marshal(cfg))
+	if err != nil || len(warns) != 0 || !reflect.DeepEqual(cfg, back) {
+		t.Errorf("webhook round trip: %v %v\n%+v", err, warns, back)
+	}
+}
+
+func TestValidWebhookURL(t *testing.T) {
+	for _, ok := range []string{"https://ntfy.example.test/n5", "http://192.0.2.10:8080/hook", "https://gotify.example.test/message?token=abc", "http://[2001:db8::1]:8123/api/webhook/x", "https://h.example.test"} {
+		if err := ValidWebhookURL(ok); err != nil {
+			t.Errorf("%q refused: %v", ok, err)
+		}
+	}
+	long := "https://h.example.test/" + strings.Repeat("a", MaxWebhookURLLen)
+	for _, bad := range []string{"", "ntfy.example.test/n5", "ftp://h.example.test/", "https://", "https:///path", "https://user:pw@h.example.test/", "https://user@h.example.test/", "/relative", "http://h.example.test/\x7f", long} {
+		if err := ValidWebhookURL(bad); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
 	}
 }
 
