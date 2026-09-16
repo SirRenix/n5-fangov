@@ -9,10 +9,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/SirRenix/n5-fangov/internal/fsutil"
 )
 
 // Cookie sessions (DESIGN.md "Sessions"): the browser holds a random token
@@ -290,7 +291,7 @@ func (s *sessionStore) saveLocked() {
 	sort.Slice(f.Sessions, func(i, j int) bool { return f.Sessions[i].Key < f.Sessions[j].Key })
 	data, err := json.MarshalIndent(f, "", "  ")
 	if err == nil {
-		err = writeFileAtomic(s.path, append(data, '\n'), 0o600)
+		err = fsutil.WriteAtomic(s.path, append(data, '\n'), 0o600)
 	}
 	if err != nil {
 		if !s.writeFailed {
@@ -300,34 +301,4 @@ func (s *sessionStore) saveLocked() {
 		return
 	}
 	s.writeFailed = false
-}
-
-// writeFileAtomic writes data to a temp file in path's directory and renames
-// it over path, so a crash mid-write never leaves a half file.
-func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*.tmp")
-	if err != nil {
-		return err
-	}
-	name := tmp.Name()
-	if err := tmp.Chmod(perm); err != nil {
-		tmp.Close()
-		os.Remove(name)
-		return err
-	}
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		os.Remove(name)
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(name)
-		return err
-	}
-	if err := os.Rename(name, path); err != nil {
-		os.Remove(name)
-		return err
-	}
-	return nil
 }

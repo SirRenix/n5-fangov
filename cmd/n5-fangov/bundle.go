@@ -7,11 +7,11 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/SirRenix/n5-fangov/internal/fsutil"
 	"github.com/SirRenix/n5-fangov/internal/version"
 )
 
@@ -44,6 +44,9 @@ type fileBundle struct {
 	// pin (M2): applied to the imported config text before it is written
 	// and reloaded; the certificate manager keeps its [web] tls keys.
 	pin func(raw []byte) []byte
+	// logf receives the config warnings of an import (the daemon: the
+	// journal and the log file); nil = the CLI prints them itself.
+	logf func(format string, args ...any)
 }
 
 // Export builds the bundle. A missing config file exports the built-in
@@ -78,19 +81,21 @@ func (b fileBundle) Export() ([]byte, error) {
 // and syntax, password placeholder resolvable) before it writes anything,
 // then writes presets and config atomically and reloads the daemon.
 // restartRequired is true when the daemon says the channel set or profile
-// changed. Presets present locally but absent from the bundle stay.
-func (b fileBundle) Import(data []byte) (bool, error) {
+// changed. warnings are the config's per-field warnings (values the daemon
+// replaces by defaults); they are logged and returned to the caller.
+// Presets present locally but absent from the bundle stay.
+func (b fileBundle) Import(data []byte) (restartRequired bool, warnings []string, err error) {
 	var in settingsBundle
 	dec := json.NewDecoder(strings.NewReader(string(data)))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&in); err != nil {
-		return false, fmt.Errorf("bundle: not a settings bundle: %v", err)
+		return false, nil, fmt.Errorf("bundle: not a settings bundle: %w", err)
 	}
 	if in.Format != bundleFormat {
-		return false, fmt.Errorf("bundle: format %d not supported (want %d)", in.Format, bundleFormat)
+		return false, nil, fmt.Errorf("bundle: format %d not supported (want %d)", in.Format, bundleFormat)
 	}
 	if strings.TrimSpace(in.Config) == "" {
-		return false, errors.New("bundle: config is empty")
+		return false, nil, errors.New("bundle: config is empty")
 	}
 	// R-L4: the current hash is read from the file and the file rewritten
 	// below; no other store may write in between. Released before the
@@ -112,7 +117,9 @@ func (b fileBundle) Import(data []byte) (bool, error) {
 		if h == "" {
 			errs = append(errs, "config keeps the current password ("+redactedHash+") but none is stored here; run `n5-fangov passwd` first or put a password_hash into the bundle")
 		} else {
-			raw = strings.ReplaceAll(raw, redactedHash, h)
+			// only the password_hash assignment, as PUT /api/config does; a
+			// comment or another value that mentions the placeholder stays
+			raw = restoreHash(raw, h)
 		}
 	}
 	_, warns, err := parseConfigErr([]byte(raw))
@@ -138,11 +145,14 @@ func (b fileBundle) Import(data []byte) (bool, error) {
 		}
 	}
 	if len(errs) > 0 {
-		return false, &bundleError{errs}
+		return false, nil, &bundleError{errs}
 	}
-	for _, w := range warns {
-		fmt.Fprintf(os.Stderr, "import: config warning: %s\n", w)
+	if b.logf != nil {
+		for _, w := range warns {
+			b.logf("import: config warning: %s", w)
+		}
 	}
+	warnings = warns
 	// L1: every preset is written to a temp name first; only when all of
 	// them and the config are on disk are the presets renamed into place.
 	// A write error leaves the preset directory as it was.
@@ -154,14 +164,14 @@ func (b fileBundle) Import(data []byte) (bool, error) {
 	}
 	if len(names) > 0 {
 		if err := os.MkdirAll(b.presetDir, 0o755); err != nil {
-			return false, fmt.Errorf("presets: %w", err)
+			return false, warnings, fmt.Errorf("presets: %w", err)
 		}
 	}
 	for _, name := range names {
 		tmp, err := stageFile(presetPath(b.presetDir, name), []byte(in.Presets[name]), 0o644)
 		if err != nil {
 			unstage()
-			return false, fmt.Errorf("preset %s: %w", name, err)
+			return false, warnings, fmt.Errorf("preset %s: %w", name, err)
 		}
 		staged = append(staged, tmp)
 	}
@@ -170,56 +180,33 @@ func (b fileBundle) Import(data []byte) (bool, error) {
 	}
 	if err := saveConfig(b.cfgPath, []byte(raw)); err != nil {
 		unstage()
-		return false, fmt.Errorf("config: %w", err)
+		return false, warnings, fmt.Errorf("config: %w", err)
 	}
 	for i, name := range names {
 		if err := os.Rename(staged[i], presetPath(b.presetDir, name)); err != nil {
 			unstage()
-			return false, fmt.Errorf("preset %s: config written, presets from %q on not: %w", name, name, err)
+			return false, warnings, fmt.Errorf("preset %s: config written, presets from %q on not: %w", name, name, err)
 		}
 	}
 	unlock()
 	if b.reload == nil {
-		return false, nil
+		return false, warnings, nil
 	}
 	err = b.reload([]byte(raw))
 	switch {
 	case err == nil:
-		return false, nil
+		return false, warnings, nil
 	case isRestartRequired(err):
-		return true, nil
+		return true, warnings, nil
 	default:
-		return false, fmt.Errorf("files written, but the daemon did not reload: %w", err)
+		return false, warnings, fmt.Errorf("files written, but the daemon did not reload: %w", err)
 	}
 }
 
 // stageFile writes data to an unpredictable temp file next to path (same
 // directory, so the later rename is atomic) and returns its name.
 func stageFile(path string, data []byte, perm os.FileMode) (string, error) {
-	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".import-*.tmp")
-	if err != nil {
-		return "", err
-	}
-	tmp := f.Name()
-	fail := func(err error) (string, error) {
-		f.Close()
-		os.Remove(tmp)
-		return "", err
-	}
-	if _, err := f.Write(data); err != nil {
-		return fail(err)
-	}
-	if err := f.Sync(); err != nil {
-		return fail(err)
-	}
-	if err := f.Chmod(perm); err != nil {
-		return fail(err)
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(tmp)
-		return "", err
-	}
-	return tmp, nil
+	return fsutil.Stage(path, data, perm)
 }
 
 // bundleError carries every validation problem of an import so the API
@@ -291,7 +278,10 @@ func cmdImport(args []string) int {
 	if online {
 		b.reload = socketReload(dir)
 	}
-	restart, err := b.Import(data)
+	restart, warnings, err := b.Import(data)
+	for _, w := range warnings {
+		fmt.Fprintln(os.Stderr, "import: config warning:", w)
+	}
 	if err != nil {
 		var be *bundleError
 		if errors.As(err, &be) {

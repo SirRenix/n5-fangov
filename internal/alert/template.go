@@ -9,6 +9,8 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
+
+	"github.com/SirRenix/n5-fangov/internal/fsutil"
 )
 
 // The PVE notification template pair (subject + body) is embedded here so
@@ -123,29 +125,13 @@ func installTemplateIn(dir, notifyPM string) (string, error) {
 }
 
 // writeTemplate writes data to path atomically inside its directory. The
-// chmod is best effort: pmxcfs reports every file as 0640 root:www-data
-// and refuses chmod.
+// mode is left as created (0600) and widened to 0640 best effort after
+// the rename: pmxcfs reports every file as 0640 root:www-data and refuses
+// chmod, so a strict chmod would fail exactly where the templates live.
 func writeTemplate(path string, data []byte) error {
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*.tmp")
-	if err != nil {
+	if err := fsutil.WriteAtomic(path, data, fsutil.ModeKeep); err != nil {
 		return fmt.Errorf("%s: %w", path, err)
 	}
-	name := tmp.Name()
-	cleanup := func() { _ = os.Remove(name) }
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		cleanup()
-		return fmt.Errorf("%s: %w", path, err)
-	}
-	if err := tmp.Close(); err != nil {
-		cleanup()
-		return fmt.Errorf("%s: %w", path, err)
-	}
-	_ = os.Chmod(name, 0o640)
-	if err := os.Rename(name, path); err != nil {
-		cleanup()
-		return fmt.Errorf("%s: %w", path, err)
-	}
+	_ = os.Chmod(path, 0o640)
 	return nil
 }

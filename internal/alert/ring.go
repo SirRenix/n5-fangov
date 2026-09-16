@@ -5,20 +5,24 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
-	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/SirRenix/n5-fangov/internal/fsutil"
 )
 
 // RingSize is how many delivered alerts the Ring keeps (the dashboard's
 // "recent alerts" list).
 const RingSize = 50
 
-// Record is one alert that passed through the Ring.
+// Record is one alert that passed through the Ring. Error carries the
+// delivery failure when the wrapped sink reported one, so the history does
+// not suggest a delivery that never happened.
 type Record struct {
-	TS   int64  `json:"ts"`
-	Kind string `json:"kind"`
-	Msg  string `json:"msg"`
+	TS    int64  `json:"ts"`
+	Kind  string `json:"kind"`
+	Msg   string `json:"msg"`
+	Error string `json:"error,omitempty"`
 }
 
 // Ring wraps a Sink and records every alert that passes through it —
@@ -57,25 +61,39 @@ func (r *Ring) Name() string {
 	return r.inner.Name()
 }
 
-// Alert records the alert and delivers it through the wrapped sink.
+// Alert delivers the alert through the wrapped sink and records it with
+// the delivery outcome; a failure is logged here (the sink's Send does not
+// log it itself).
 func (r *Ring) Alert(kind, msg string) {
-	r.record(kind, msg)
-	if r.inner != nil {
-		r.inner.Alert(kind, msg)
+	if err := r.SendCtx(context.Background(), kind, msg); err != nil {
+		r.logger.Printf("alert: %v", err)
 	}
 }
 
-// Send records the alert and delivers it, returning the wrapped sink's
+// Send delivers the alert and records it, returning the wrapped sink's
 // delivery error (nil for a plain Sink).
 func (r *Ring) Send(kind, msg string) error { return r.SendCtx(context.Background(), kind, msg) }
 
 // SendCtx is Send bounded by ctx where the wrapped sink supports it (R-L9).
+// The record carries the time the delivery started and, on failure, the
+// error text.
 func (r *Ring) SendCtx(ctx context.Context, kind, msg string) error {
-	r.record(kind, msg)
+	ts := r.now().Unix()
+	var err error
 	if r.inner == nil {
-		return errors.New("no alert sink configured")
+		err = errors.New("no alert sink configured")
+	} else {
+		err = sendCtx(ctx, r.inner, kind, msg)
 	}
-	return sendCtx(ctx, r.inner, kind, msg)
+	r.record(Record{TS: ts, Kind: kind, Msg: msg, Error: errText(err)})
+	return err
+}
+
+func errText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // Recent returns the newest n records, newest first (n <= 0: all).
@@ -105,10 +123,10 @@ func (r *Ring) Last() map[string]int64 {
 	return out
 }
 
-func (r *Ring) record(kind, msg string) {
+func (r *Ring) record(rec Record) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.recs = append(r.recs, Record{TS: r.now().Unix(), Kind: kind, Msg: msg})
+	r.recs = append(r.recs, rec)
 	if len(r.recs) > RingSize {
 		r.recs = append(r.recs[:0], r.recs[len(r.recs)-RingSize:]...)
 	}
@@ -156,31 +174,7 @@ func (r *Ring) load() {
 	r.mu.Unlock()
 }
 
-// writePrivate writes data to path with mode 0600 via temp file + rename.
+// writePrivate writes data to path with mode 0600 (temp file + rename).
 func writePrivate(path string, data []byte) error {
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*.tmp")
-	if err != nil {
-		return err
-	}
-	name := tmp.Name()
-	cleanup := func() { _ = os.Remove(name) }
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		cleanup()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		cleanup()
-		return err
-	}
-	if err := os.Chmod(name, 0o600); err != nil {
-		cleanup()
-		return err
-	}
-	if err := os.Rename(name, path); err != nil {
-		cleanup()
-		return err
-	}
-	return nil
+	return fsutil.WriteAtomic(path, data, 0o600)
 }
