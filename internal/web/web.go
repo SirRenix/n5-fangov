@@ -802,6 +802,10 @@ func remoteIP(r *http.Request) string {
 	if h, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
 		return h
 	}
+	if r.RemoteAddr == "" || r.RemoteAddr == "@" {
+		// unix socket: net/http reports the peer as "@" (unnamed) or ""
+		return "local"
+	}
 	return r.RemoteAddr
 }
 
