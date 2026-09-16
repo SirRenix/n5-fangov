@@ -12,7 +12,6 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
-	"math/big"
 	"strings"
 	"testing"
 	"time"
@@ -73,48 +72,15 @@ func newKey(t *testing.T, kind string) crypto.Signer {
 }
 
 // issue signs tmpl for pub with parent/parentKey (self-signed when parent
-// is nil) and returns the DER.
+// is nil) and returns the DER (signCert in helpers_test.go; certPEM and
+// pkcs8PEM live there as well).
 func issue(t *testing.T, tmpl *x509.Certificate, pub any, parent *x509.Certificate, parentKey crypto.Signer) []byte {
 	t.Helper()
-	if tmpl.SerialNumber == nil {
-		s, _ := rand.Int(rand.Reader, big.NewInt(1<<62))
-		tmpl.SerialNumber = s
-	}
-	if tmpl.NotAfter.IsZero() {
-		tmpl.NotBefore = time.Now().Add(-time.Hour)
-		tmpl.NotAfter = time.Now().Add(365 * 24 * time.Hour)
-	}
-	if parent == nil {
-		parent = tmpl
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, parent, pub, parentKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return der
+	return signCert(t, tmpl, pub, parent, parentKey)
 }
 
-func certPEM(der ...[]byte) []byte {
-	var out []byte
-	for _, d := range der {
-		out = append(out, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: d})...)
-	}
-	return out
-}
-
-func pkcs8PEM(t *testing.T, k crypto.Signer) []byte {
-	t.Helper()
-	der, err := x509.MarshalPKCS8PrivateKey(k)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
-}
-
-func leafTmpl(cn string) *x509.Certificate {
-	return &x509.Certificate{Subject: pkix.Name{CommonName: cn}, DNSNames: []string{cn},
-		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
-}
+// leafTmpl is a server-auth template whose CN is also its only DNS SAN.
+func leafTmpl(cn string) *x509.Certificate { return sanTemplate(cn, cn) }
 
 // serveOnce runs one real TLS connection against ServerConfig with cert
 // and returns the peer chain the client saw.

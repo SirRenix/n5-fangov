@@ -1,15 +1,12 @@
 package tlscert
 
 import (
-	"crypto/ecdsa"
-	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
-	"math/big"
 	"net"
 	"os"
 	"path/filepath"
@@ -20,41 +17,13 @@ import (
 	"time"
 )
 
-// selfSigned builds a PEM pair for tests. key nil → fresh P-256.
-func selfSigned(t *testing.T, key any, tmpl *x509.Certificate) (certPEM, keyPEM []byte) {
+// selfSigned builds a server-auth PEM pair from tmpl (testCertPairTmpl in
+// helpers_test.go). key nil → fresh P-256.
+func selfSigned(t *testing.T, key any, tmpl *x509.Certificate) (c, k []byte) {
 	t.Helper()
-	if key == nil {
-		k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-		if err != nil {
-			t.Fatal(err)
-		}
-		key = k
-	}
-	if tmpl.SerialNumber == nil {
-		tmpl.SerialNumber = big.NewInt(7)
-	}
-	if tmpl.NotAfter.IsZero() {
-		tmpl.NotBefore = time.Now().Add(-time.Hour)
-		tmpl.NotAfter = time.Now().Add(365 * 24 * time.Hour)
-	}
 	tmpl.KeyUsage |= x509.KeyUsageDigitalSignature
 	tmpl.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}
-	var pub any
-	switch k := key.(type) {
-	case *ecdsa.PrivateKey:
-		pub = &k.PublicKey
-	case *rsa.PrivateKey:
-		pub = &k.PublicKey
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, pub, key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	kd, err := x509.MarshalPKCS8PrivateKey(key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: kd})
+	return testCertPairTmpl(t, key, tmpl)
 }
 
 // TestStoreSwap: Get serves what Set stored, Current returns a copy, an

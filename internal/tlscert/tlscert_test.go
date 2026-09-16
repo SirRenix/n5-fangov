@@ -3,14 +3,11 @@ package tlscert
 import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
-	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
-	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"math/big"
 	"net"
 	"os"
 	"path/filepath"
@@ -295,23 +292,17 @@ func TestNameConstraints(t *testing.T) {
 	pool.AddCert(leaf)
 	mint := func(dns string, ip net.IP) *x509.Certificate {
 		t.Helper()
-		k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-		tmpl := &x509.Certificate{
-			SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: dns},
-			NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
-			KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		}
-		if dns != "" {
-			tmpl.DNSNames = []string{dns}
-		}
+		k := newKey(t, "p256")
+		hosts := []string{dns}
 		if ip != nil {
-			tmpl.IPAddresses = []net.IP{ip}
+			hosts = append(hosts, ip.String())
 		}
-		der, err := x509.CreateCertificate(rand.Reader, tmpl, leaf, &k.PublicKey, cert.PrivateKey)
+		tmpl := sanTemplate(dns, hosts...)
+		tmpl.NotBefore, tmpl.NotAfter = time.Now().Add(-time.Hour), time.Now().Add(time.Hour)
+		c, err := x509.ParseCertificate(signCert(t, tmpl, k.Public(), leaf, cert.PrivateKey))
 		if err != nil {
 			t.Fatal(err)
 		}
-		c, _ := x509.ParseCertificate(der)
 		return c
 	}
 	if _, err := mint("evil.example", nil).Verify(x509.VerifyOptions{Roots: pool, DNSName: "evil.example"}); err == nil {
@@ -366,17 +357,12 @@ func TestRegenerateKeepsKeyOnSANChange(t *testing.T) {
 	}
 	// expired: write an expired certificate for the same key, then a fresh key is made
 	key := second.PrivateKey.(*ecdsa.PrivateKey)
-	tmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(3), Subject: pkix.Name{CommonName: "old"},
-		NotBefore: time.Now().Add(-48 * time.Hour), NotAfter: time.Now().Add(-24 * time.Hour),
-		KeyUsage: x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign, BasicConstraintsValid: true, IsCA: true,
-		DNSNames: []string{"localhost", "n5.lan"}, IPAddresses: []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1"), net.ParseIP("192.0.2.20")},
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, CertFile), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600); err != nil {
+	tmpl := sanTemplate("old", "localhost", "n5.lan", "127.0.0.1", "::1", "192.0.2.20")
+	tmpl.NotBefore, tmpl.NotAfter = time.Now().Add(-48*time.Hour), time.Now().Add(-24*time.Hour)
+	tmpl.KeyUsage |= x509.KeyUsageCertSign
+	tmpl.BasicConstraintsValid, tmpl.IsCA = true, true
+	expiredPEM := certPEM(signCert(t, tmpl, &key.PublicKey, nil, key))
+	if err := os.WriteFile(filepath.Join(dir, CertFile), expiredPEM, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	logged = nil
