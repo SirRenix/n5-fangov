@@ -633,7 +633,7 @@ counts as signed in, `via: "none"`):
 
 | Endpoint | Class | Request | Answer |
 |---|---|---|---|
-| `GET /api/version` | public | — | `{name, version, prerelease, tls, auth, limits{…}}`; `limits` = validation bounds for the UI (curve points 2..8, temp −20..120, critical ≤ 150, stop ≥ 60, hdd override ≥ 60, password 8..128, user/preset/channel name rules, dashboard sensors ≤ 8, `hysteresis_max`, `min_on_max_s`); the OpenAPI `Version.limits` schema lists exactly these keys (test) |
+| `GET /api/version` | public | — | `{name, version, prerelease, tls, auth, limits{…}}`; `limits` = the validation bounds the UI takes from the daemon: `min_hdd_override`, `critical_min`, `critical_max`, `curve_points_max`, `dashboard_sensors_max`, `password_min`, `password_max`, `hysteresis_max`, `min_on_max_s` (temperature range, point minimum and the name rules are UI constants); the OpenAPI `Version.limits` schema lists exactly these keys (test) |
 | `GET /api/about` | public | — | `{name, version, prerelease, license, license_url, repo, author, author_url, go, credits[{name,url,note}]}` |
 | `GET /api/session` | public | — | `{authenticated, mode: none\|basic, user, expires?, remember?, via: cookie\|basic\|bearer\|none, scope?, token_id?}` (token caller: `user` = token name) |
 | `GET /api/openapi.json` | public | — | OpenAPI 3.1 document (above) |

@@ -15,71 +15,25 @@ drove the *Unreleased* work is `docs/AUDIT.md` (code) and `docs/DESIGN-AUDIT.md`
 
 ### Version plan (operator decision 2026-09-16, 22:30)
 
-- **0.3.x** (`0.3.0-rc*` → `0.3.0`, then `0.3.1`…): every feature below (interface, regulation
-  add-ons, dashboard history and per-device sensors, maintenance debt), each as pre-releases
-  on the private repository, each verified on the reference host.
+- **0.3.x** (`0.3.1-rc*` → `0.3.1`, then `0.3.2`…; 0.3.0 stayed an rc): every feature of the
+  plan (interface, regulation add-ons, dashboard history and per-device sensors, maintenance
+  debt), as pre-releases on the private repository, each verified on the reference host.
 - **0.4.0**: the dashboard redesign (`docs/design/REDESIGN-CONCEPT.md`) with new documentation
   screenshots — the release that goes **public**. The repository stays private until every
   test has passed, at the latest when all 0.3.x features are in.
 - Each rc becomes a release only through the release gate below.
 
-### Planned (0.3.x) — decided 2026-09-16, not started
+### Still open from the 0.3.x plan (decided 2026-09-16)
 
-Scope rule for 0.3.x: the regulator (`internal/control`) is verified and stays as it is;
-everything below is API, dashboard, alerts and packaging. Attack surface stays small: no
-MQTT/discovery, no multi-host management, no new dependencies. The UI stays English.
+Points 1–4 of the plan (interface, regulation add-ons, dashboard, maintenance debt) shipped
+in 0.3.1-rc1 below. Open:
 
-**1. Interface (foundation for automation and AI agents)** — done except the HA recipe, see Added below
-- **API tokens** (done) instead of the admin password in scripts (Home Assistant, monitoring,
-  scripts, local LLM agents): named, with a **scope** (`read` = state/history/system/
-  sensors; `control` = overrides, presets, dashboard sensors; `admin` = everything the
-  dashboard can do), optional **expiry** (e.g. 90 days; unlimited allowed with a warning),
-  individual **revocation**, list with created / expires / last used / last address.
-  Storage like the sessions (`/var/lib/n5-fangov/tokens.json`, sha256, 0600), transport
-  `Authorization: Bearer <token>`, rate limit per token, `read` as the default scope.
-  Dashboard: *Tokens* section in the settings; CLI `n5-fangov token create|list|revoke`.
-  Basic auth and the unix socket stay as they are.
-- **OpenAPI description** (done) `GET /api/openapi.json` (public), generated from the route
-  table and kept in sync by a test, so an agent can use the API without the README.
-- **Home Assistant without tinkering** (open, docs): README recipe with REST sensors
-  (temperature, RPM, mode per channel) and an automation that applies a preset through a
-  `control` token.
-- **Webhook alert transport** (done; generic JSON POST; works for ntfy, Gotify, Home Assistant
-  webhooks) next to PVE::Notify and `mail(1)` — non-PVE hosts have only mail today.
-
-**2. Regulation add-ons (curve post-processing only; failsafe, stall and critical untouched)**
-- **Hysteresis and minimum on-time per channel** (`hysteresis = 2`, `min_on = "60s"`):
-  drive fans oscillate around a curve point at 44/45 °C today. — done, see Added
-- **Several sensors per channel** (`sensor = ["drivetemp:max", "ec:hdd"]` → maximum). — done
-- **Schedules** (`[[schedule]] preset = "n5pro-quiet" from = "22:00" to = "07:00"`) as
-  preset switches with an alert when a switch fails. — done
-- **pwm4** (PCIe header, no tachometer) as an optional fourth channel. — done
-
-**3. Dashboard**
-- **Longer history**: persist the ring in the state directory, views 2 h / 24 h / 7 d
-  (downsampled), CSV export — backend done, see Added below (range selector and CSV
-  button in the dashboard open).
-- **Per-device sensors**: today only `nvme:max`, `drivetemp:max` and the *first* device of a
-  name (`hwmon:nvme:temp1`) are addressable — a box with three NVMe SSDs and four HDDs
-  shows two temperatures. New ids per device (`disk:sda`, `disk:nvme1n1`, resolved through
-  `/sys/block/<dev>/device/hwmon`) for the Sensors card, the extra charts and the curve
-  sensor selection; the System tab lists every disk with its temperature. — backend done
-  (ids, catalogue, `GET /api/system` temperatures), dashboard part open
-- Split the mock out of the production bundle (22 % of `app.js`) so the budget stops
-  binding; remaining low design findings (toast limit, keyboard for curve points).
-
-**4. Maintenance debt from the audit (before 1.0)** — done, see Changed below
-- Files named by topic instead of version (`wiring_v2/v3`, `v3_test`, `*_fix_test`),
-  split `cmdServe` and `cycle`, review tags out of the code into a legend,
-  `ReadWritePaths` narrowed to the profile's sysfs path.
-
-**5. Community and release**
 - Repository public after the history rewrite; upstream issues (driver validation data,
   ProxFansX compatibility note); DKMS `.deb` in the sibling repository with the header
-  meta-package as dependency (user path: two `apt install` + `setup`); release workflow
-  uploads the `.deb`.
+  meta-package as dependency (user path: two `apt install` + `setup`).
 - Reboot proof on the reference host (DKMS + daemon together) — the last open operations
-  question, no code.
+  question, no code; part of the release-gate test.
+- Measure whether the EC regulates pwm4 again after a write (DESIGN §6 says "not measured").
 
 ### Planned (0.4.0, separate session) — dashboard redesign, public release
 
@@ -116,6 +70,15 @@ curl path is re-run once at 0.4.0.
 
 **Not planned**: MQTT/discovery (REST + token is enough and smaller), a German UI
 (audience is GitHub), multi-host management, a frontend framework.
+
+## [0.3.1-rc1] — 2026-09-17
+
+The 0.3.x feature set in one release candidate (0.3.0-rc1 was never released — the gate
+test runs on this one): API tokens, OpenAPI, webhook alerts, curve post-processing,
+composite and per-disk sensors, pwm4, schedules, tiered history with CSV, the dashboard
+for all of it, the maintenance debt from the audit, and the findings of the three review
+rounds that followed the merge. Verified in the Docker builder (`go vet`, `go test`,
+`-race`); the live verification on the reference host is recorded in the release notes.
 
 ### Added
 
@@ -179,13 +142,13 @@ curl path is re-run once at 0.4.0.
   `/sys/block/<dev>/device/hwmonN` for NVMe). `GET /api/sensors` lists one per disk with
   the model, the hwmon name and `kind` (`ssd`/`hdd`); `GET /api/system` reports the live
   `temp_c` (null without a sensor) and the matching `sensor` id per disk, re-read on every
-  call. Backend part; the dashboard grouping and the System tab column follow.
+  call. The dashboard groups them by `kind`; the System tab shows the column.
 - **pwm4** on the N5 Pro (PCIe header, no tachometer) as an optional fourth channel: a
   `[[channel]] pwm = 4` is managed as configured (`rpm = -1`, never in the stall check,
   `stop = "auto"` hands it back to the EC); `SanitizeChannels` neither adds nor corrects it
   and a built-in preset keeps it (see the merge rule below). `test`, `detect` and `check`
   treat it as a channel without tach.
-- **Schedules** (backend): `[[schedule]] preset = "n5pro-quiet" from = "22:00" to = "07:00"
+- **Schedules**: `[[schedule]] preset = "n5pro-quiet" from = "22:00" to = "07:00"
   days = ["fri", "sat"]` switches presets by local time; an entry without `from`/`to` is
   the fallback outside every window (at most 16 entries, one fallback, invalid entries
   dropped with a warning). The scheduler (`cmd/n5-fangov/scheduler.go`, `internal/schedule`)
@@ -195,15 +158,14 @@ curl path is re-run once at 0.4.0.
   switch fails — the previous curves stay, the retry happens at the next transition. Every
   reload (config PUT, import, preset apply) hands the list to the scheduler. New endpoint
   `GET /api/schedules` (`{entries, active, next, last, timezone}`), `GET /api/config` carries
-  `schedule[]`. Dashboard card and docs follow in the frontend part.
-- **Longer history** (backend): the chart history is a tiered store (`internal/history`):
+  `schedule[]`. The Presets tab shows the Schedules card (below).
+- **Longer history**: the chart history is a tiered store (`internal/history`):
   raw points for 2 h, 1-minute means for 24 h, 5-minute means for 7 days, persisted to
   `/var/lib/n5-fangov/history.json` (0600, every 10 min and on stop; an unwritable state dir
   keeps it in memory) and reloaded at start. `GET /api/history?minutes=N` accepts up to 10080
   and answers from the tier that matches the span; `GET /api/history.csv?minutes=N`
   (protected) exports it as CSV (`ts,time,<ch>_temp,<ch>_duty,<ch>_rpm,…,<extra id>…`,
-  `time` RFC 3339 local). The range selector and the CSV button are part of the frontend
-  part.
+  `time` RFC 3339 local). The Overview has the range selector and the CSV button (below).
 
 - Dashboard, Overview: a **range selector** `2 h · 24 h · 7 d` for the temperature, fan and
   extra-sensor charts (persisted in `localStorage`; 2 h keeps the incremental `since`
