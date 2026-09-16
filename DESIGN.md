@@ -58,6 +58,7 @@ cmd/n5-fangov/
   wiring_dashboard.go dashboardStore, hookedService (reload re-applies [alert] and the schedules)
   wiring_tls.go      TLS deps, serveTLS adapter
   wiring_sysinfo.go  system collector
+  about.go           aboutInfo (GET /api/about: name, version, licence, credits)
   common.go, prompt.go   socket client, helpers, no-echo prompts
 internal/config/     TOML config: Parse (defaults on error), Load, Save, SetKey (in-place edit), presets, built-in presets
 internal/hwmon/      sysfs discovery + read/write helpers (root from N5FANGOV_SYSFS); hwmontest fixtures

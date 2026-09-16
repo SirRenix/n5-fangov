@@ -6,9 +6,10 @@ versions follow [Semantic Versioning](https://semver.org/). The version string o
 pre-release suffix to `~` (`0.3.0~beta.4`).
 
 Review findings referenced as `M1`…`M7`, `H1`…`H4`, `L1`…`L9` (reviews of v0.1/v0.2) and
-`R-M*`/`R-L*` (review of v0.3.0-beta) are the tags that remain in code comments and test
-names; the audit that drove the *Unreleased* work is `docs/AUDIT.md` (code) and
-`docs/DESIGN-AUDIT.md` (dashboard).
+`R-M*`/`R-L*` (review of v0.3.0-beta) are the tags of the review rounds; since 0.3.1 they
+live in [`docs/REVIEW-TAGS.md`](docs/REVIEW-TAGS.md), not in the code. The audit that
+drove the *Unreleased* work is `docs/AUDIT.md` (code) and `docs/DESIGN-AUDIT.md`
+(dashboard).
 
 ## [Unreleased]
 
@@ -64,7 +65,7 @@ MQTT/discovery, no multi-host management, no new dependencies. The UI stays Engl
 - Split the mock out of the production bundle (22 % of `app.js`) so the budget stops
   binding; remaining low design findings (toast limit, keyboard for curve points).
 
-**4. Maintenance debt from the audit (before 1.0)**
+**4. Maintenance debt from the audit (before 1.0)** — done, see Changed below
 - Files named by topic instead of version (`wiring_v2/v3`, `v3_test`, `*_fix_test`),
   split `cmdServe` and `cycle`, review tags out of the code into a legend,
   `ReadWritePaths` narrowed to the profile's sysfs path.
@@ -112,6 +113,42 @@ curl path is re-run once at 0.4.0.
 
 **Not planned**: MQTT/discovery (REST + token is enough and smaller), a German UI
 (audience is GitHub), multi-host management, a frontend framework.
+
+### Changed
+
+- Files are named by topic, never by version or review round. cmd: `wiring_v2.go` →
+  `wiring_tls.go`; `wiring_v3.go` → `wiring_presets.go` (with the `dirPresetStore` parts
+  of `wiring.go`), `wiring_alerts.go`, `wiring_account.go`, `wiring_dashboard.go`,
+  `about.go`. web: `v3.go` → `session_api.go`, `account_api.go`, `alerts_api.go`,
+  `dashboard_api.go`, `presets_api.go` (`decodeJSON` joins the helpers in `web.go`);
+  `v3_types.go` → `types.go`. Tests: `v2_test`, `v3_test`, `v3_fix_test`, `v4_test`,
+  `v4_fix_test`, `tlsmgr_fix_test` in cmd, alert, config, control, logfile, sysinfo and
+  web are regrouped into files named after the file or topic they test (cmd: `bundle`,
+  `setup`, `cert`, `cli`, `wiring`, `wiring_account`, `wiring_alerts`, `wiring_dashboard`,
+  `wiring_presets`, `about`, merged into `check`, `common`, `alert_cooldown`, `tlsmgr`;
+  web: `session`, `account`, `alerts`, `dashboard`, `presets`, `ratelimit`, `config_api`,
+  `errlog`, `log_api`, `bundle`, merged into `web`, `tls`; alert: `template`, `ring`,
+  merged into `alert`; config: `presets`, merged into `config`; control: `alert`, merged
+  into `controller`; logfile and sysinfo merged into their existing test files). Test
+  bodies are unchanged.
+- `cmdServe` is split into the stages `serveConfig` (config, warnings, run dir, state dir,
+  alert manager, log file), `serveDevice` (profile detection, controller), `serveWeb`
+  (TLS manager, listener decision, stores, web server) and `serveRun` (goroutines,
+  watchdog ticker, READY, wait, stop), sharing a `serveState`; same log lines, exit codes
+  and order of side effects.
+- The controller `cycle` is split into `readSensors`, `computeTargets`, `checkStall` and
+  `writeAndFinish`, called in that order; the regulation logic is unchanged (the safety
+  tests pin it).
+- Review tags (`H1`…`H4`, `M1`…`M7`, `L1`…`L9`, `R-M1`…`R-M3`, `R-L4`…`R-L11`, `R-U8`)
+  are gone from code comments and test names; the comments keep the reason, the legend
+  is [`docs/REVIEW-TAGS.md`](docs/REVIEW-TAGS.md) (tag, finding, where fixed, release,
+  per package). The safety tests are named after what they pin
+  (`TestN5ProMissingChannelsAdded`, `TestDeviceLostEndsRun`, …).
+- Unit: `ReadWritePaths` carries `-/sys/devices/platform` instead of `-/sys/devices` —
+  the pwm files of it5571, nct6775 and it87 live under
+  `/sys/devices/platform/<driver>/hwmon/hwmonN`, `/sys/class/hwmon` holds the symlinks;
+  the rest of `/sys` (sensors, DMI, disk temperatures) is read-only. To be verified on the
+  reference host with the next install test (release gate).
 
 ## [0.3.0-rc1] — 2026-09-16
 
