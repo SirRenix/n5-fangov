@@ -70,17 +70,30 @@ type TemplateStatus struct {
 	Reason    string `json:"reason,omitempty"`
 }
 
-// AlertStatus is the alert transport state for GET /api/alerts.
+// AlertStatus is the alert transport state for GET /api/alerts. WebhookURL
+// is the full URL (the endpoint is protected); logs and the CLI show it
+// redacted (alert.RedactURL).
 type AlertStatus struct {
-	Transport     string         `json:"transport"` // configured: auto | pve | mail | log | off
-	Effective     string         `json:"effective"` // pve-notify | mail | log | off
+	Transport     string         `json:"transport"` // configured: auto | pve | mail | webhook | log | off
+	Effective     string         `json:"effective"` // pve-notify | mail | webhook | log | off
 	MailTo        string         `json:"mail_to"`
+	WebhookURL    string         `json:"webhook_url"`
+	WebhookFormat string         `json:"webhook_format"` // json | text
 	PVEAvailable  bool           `json:"pve_available"`
 	MailAvailable bool           `json:"mail_available"`
 	Template      TemplateStatus `json:"template"`
 	Cooldown      string         `json:"cooldown"`   // Go duration text ("30m0s"), kept for older clients
 	CooldownS     int64          `json:"cooldown_s"` // the same in seconds (0 offline) for the dashboard to format
 	Kinds         []AlertKind    `json:"kinds"`
+}
+
+// AlertSettings is the [alert] section as PUT /api/alerts sets it. A nil
+// member keeps the value in effect (the JSON key was omitted).
+type AlertSettings struct {
+	Transport     *string
+	MailTo        *string
+	WebhookURL    *string
+	WebhookFormat *string
 }
 
 // AlertMgr backs the alerts panel (implemented in cmd). nil → 501.
@@ -95,7 +108,9 @@ type AlertMgr interface {
 	// errors.ErrUnsupported without PVE.
 	InstallTemplate() (path string, err error)
 	// Configure validates, writes [alert] to the config and applies it.
-	Configure(transport, mailTo string) (AlertStatus, error)
+	// A validation failure is a plain error (400); an I/O failure wraps
+	// ErrStore or an OS error (500).
+	Configure(s AlertSettings) (AlertStatus, error)
 }
 
 // DashboardStore is the watched extra-sensor list (implemented in cmd).

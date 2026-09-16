@@ -131,7 +131,7 @@ func serveConfig(st *serveState) bool {
 	st.state = ensureStateDir(st.sdir)
 	st.alertMgr = newAlertManager(st.cfgPath, alertsPath(st.state), cfg.Alert, nil)
 	st.alerter = st.alertMgr.sink()
-	log.Printf("alerts: transport %s (%s), history %s", cfg.Alert.Transport, st.alertMgr.effective, orMemory(alertsPath(st.state)))
+	log.Printf("alerts: transport %s (%s)%s, history %s", cfg.Alert.Transport, st.alertMgr.effective, transportNote(cfg.Alert), orMemory(alertsPath(st.state)))
 	if len(warns) > 0 {
 		// Asynchronous like the controller's alerts: a PVE::Notify delivery
 		// may take 30 s and must not delay the first cycle and READY=1.

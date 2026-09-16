@@ -26,12 +26,21 @@ func (a *fakeAlerts) InstallTemplate() (string, error) {
 	return "/etc/pve/notification-templates/default", a.templateErr
 }
 
-func (a *fakeAlerts) Configure(transport, mailTo string) (AlertStatus, error) {
+// Configure mirrors the manager's merge: a nil member keeps the value.
+func (a *fakeAlerts) Configure(s AlertSettings) (AlertStatus, error) {
 	if a.configErr != nil {
 		return AlertStatus{}, a.configErr
 	}
-	a.configured = append(a.configured, [2]string{transport, mailTo})
-	a.status.Transport, a.status.MailTo = transport, mailTo
+	set := func(dst *string, src *string) {
+		if src != nil {
+			*dst = *src
+		}
+	}
+	set(&a.status.Transport, s.Transport)
+	set(&a.status.MailTo, s.MailTo)
+	set(&a.status.WebhookURL, s.WebhookURL)
+	set(&a.status.WebhookFormat, s.WebhookFormat)
+	a.configured = append(a.configured, [2]string{a.status.Transport, a.status.MailTo})
 	return a.status, nil
 }
 
@@ -43,7 +52,7 @@ func TestAlertsEndpoints(t *testing.T) {
 	r := e.do(t, "GET", "/api/alerts", "", ok)
 	wantCode(t, r, 200)
 	m := keys(t, r.body)
-	for _, k := range []string{"transport", "effective", "mail_to", "pve_available", "mail_available", "template", "cooldown", "kinds", "last", "recent"} {
+	for _, k := range []string{"transport", "effective", "mail_to", "webhook_url", "webhook_format", "pve_available", "mail_available", "template", "cooldown", "kinds", "last", "recent"} {
 		if _, has := m[k]; !has {
 			t.Errorf("alerts lacks %q: %s", k, r.body)
 		}
@@ -85,9 +94,30 @@ func TestAlertsEndpoints(t *testing.T) {
 	if !strings.Contains(r.body, `"ok":true`) || !strings.Contains(r.body, `"transport":"log"`) || !strings.Contains(r.body, `"mail_to":"ops"`) || len(al.configured) != 1 {
 		t.Errorf("configure = %s %v", r.body, al.configured)
 	}
+	// webhook keys: omitted ones keep their value, the log line carries
+	// the URL without its query
+	r = e.do(t, "PUT", "/api/alerts", `{"transport":"webhook","webhook_url":"https://gotify.example.test/message?token=secret-key","webhook_format":"text"}`, ok)
+	wantCode(t, r, 200)
+	if !strings.Contains(r.body, `"webhook_url":"https://gotify.example.test/message?token=secret-key"`) || !strings.Contains(r.body, `"webhook_format":"text"`) || !strings.Contains(r.body, `"mail_to":"ops"`) || al.status.Transport != "webhook" {
+		t.Errorf("configure webhook = %s", r.body)
+	}
+	if logs := e.logLines(); strings.Contains(logs, "secret-key") || !strings.Contains(logs, "webhook https://gotify.example.test/message text") {
+		t.Errorf("log lines: %s", logs)
+	}
+	r = e.do(t, "PUT", "/api/alerts", `{"mail_to":"root"}`, ok)
+	wantCode(t, r, 200)
+	if al.status.Transport != "webhook" || al.status.WebhookURL != "https://gotify.example.test/message?token=secret-key" || al.status.MailTo != "root" {
+		t.Errorf("omitted keys must keep their value: %+v", al.status)
+	}
+	// the full URL is in the protected status document
+	r = e.do(t, "GET", "/api/alerts", "", ok)
+	if !strings.Contains(r.body, `"webhook_url":"https://gotify.example.test/message?token=secret-key"`) {
+		t.Errorf("status = %s", r.body)
+	}
 	al.configErr = errors.New("unknown transport \"fax\"")
 	wantError(t, e.do(t, "PUT", "/api/alerts", `{"transport":"fax","mail_to":"ops"}`, ok), 400, "fax")
 	wantError(t, e.do(t, "PUT", "/api/alerts", `{"transport":`, ok), 400, "invalid JSON")
+	wantError(t, e.do(t, "PUT", "/api/alerts", `{"bogus":1}`, ok), 400, "invalid JSON")
 	// all protected
 	wantError(t, e.do(t, "POST", "/api/alerts/test", "", csrf), 401, "authentication")
 	wantError(t, e.do(t, "PUT", "/api/alerts", `{"transport":"log"}`, csrf), 401, "authentication")

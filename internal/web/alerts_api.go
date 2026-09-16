@@ -100,24 +100,32 @@ func (s *Server) alertsTemplate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "path": path})
 }
 
-// putAlerts: {"transport","mail_to"} → the manager validates and applies.
+// alertsUpdate is the PUT /api/alerts body; an omitted key keeps the
+// value in effect.
+type alertsUpdate struct {
+	Transport     *string `json:"transport"`
+	MailTo        *string `json:"mail_to"`
+	WebhookURL    *string `json:"webhook_url"`
+	WebhookFormat *string `json:"webhook_format"`
+}
+
+// putAlerts: {"transport","mail_to","webhook_url","webhook_format"} →
+// the manager validates, writes and applies. The log line names the
+// webhook URL without its query (a Gotify key lives there).
 func (s *Server) putAlerts(w http.ResponseWriter, r *http.Request) {
 	m, ok := s.alerts(w)
 	if !ok {
 		return
 	}
-	var b struct {
-		Transport string `json:"transport"`
-		MailTo    string `json:"mail_to"`
-	}
+	var b alertsUpdate
 	if !decodeJSON(w, r, &b) {
 		return
 	}
-	st, err := m.Configure(b.Transport, b.MailTo)
+	st, err := m.Configure(AlertSettings{Transport: b.Transport, MailTo: b.MailTo, WebhookURL: b.WebhookURL, WebhookFormat: b.WebhookFormat})
 	if err != nil {
 		writeError(w, storeStatus(err), err.Error())
 		return
 	}
-	s.logf("web: alert transport set to %q (mail_to %q) by %s", b.Transport, b.MailTo, remoteIP(r))
+	s.logf("web: alert transport set to %q (mail_to %q, webhook %s %s) by %s", st.Transport, st.MailTo, alert.RedactURL(st.WebhookURL), st.WebhookFormat, remoteIP(r))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": alertStatusJSON(st)})
 }

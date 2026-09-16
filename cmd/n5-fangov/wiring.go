@@ -377,7 +377,7 @@ func knownSensors(fs *hwmon.FS, dev profile.Device) []sensorInfo {
 // also recorded in the state directory's history when that file exists.
 func newAlerter() alert.Sink {
 	cfg, _, _ := config.Load(defaultConfigPath)
-	sink, _ := alert.NewFor(cfg.Alert.Transport, cfg.Alert.MailTo, log.Default())
+	sink, _ := alert.NewForConfig(alertConfig(cfg.Alert), log.Default())
 	path := alertsPath(stateDir())
 	if _, err := os.Stat(path); err != nil {
 		path = ""
@@ -815,6 +815,7 @@ func configJSON(cfg config.Config, warns []config.Warning) map[string]any {
 		},
 		"alert": map[string]any{
 			"transport": cfg.Alert.Transport, "mail_to": cfg.Alert.MailTo,
+			"webhook_url": cfg.Alert.WebhookURL, "webhook_format": cfg.Alert.WebhookFormat,
 		},
 		"dashboard": map[string]any{
 			"sensors": nonNilStrings(cfg.Dashboard.Sensors),

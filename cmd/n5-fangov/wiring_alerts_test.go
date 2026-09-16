@@ -4,17 +4,31 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/SirRenix/n5-fangov/internal/alert"
 	"github.com/SirRenix/n5-fangov/internal/config"
 	"github.com/SirRenix/n5-fangov/internal/control"
+	"github.com/SirRenix/n5-fangov/internal/web"
 )
+
+// settings is the transport/mail_to pair as PUT /api/alerts sends it
+// (the webhook keys omitted).
+func settings(transport, mailTo string) web.AlertSettings {
+	return web.AlertSettings{Transport: &transport, MailTo: &mailTo}
+}
+
+func strp(s string) *string { return &s }
 
 func TestAlertManagerConfigure(t *testing.T) {
 	cfgPath := writeStoreConfig(t)
@@ -55,19 +69,19 @@ func TestAlertManagerConfigure(t *testing.T) {
 		t.Errorf("ring wraps the sink: %+v", rec)
 	}
 	// Configure: validation
-	if _, err := m.Configure("pigeon", ""); err == nil {
+	if _, err := m.Configure(settings("pigeon", "")); err == nil {
 		t.Errorf("unknown transport must be refused")
 	}
-	if _, err := m.Configure("mail", "two words"); err == nil {
+	if _, err := m.Configure(settings("mail", "two words")); err == nil {
 		t.Errorf("bad mail_to must be refused")
 	}
 	// Configure: off is written, hot-applied, comments kept
-	st, err = m.Configure(" OFF ", "")
-	if err != nil || st.Transport != "off" || st.Effective != "off" || st.MailTo != "root" {
+	st, err = m.Configure(settings(" OFF ", ""))
+	if err != nil || st.Transport != "off" || st.Effective != "off" || st.MailTo != "root" || st.WebhookFormat != "json" {
 		t.Fatalf("configure off: %+v %v", st, err)
 	}
 	raw, _ := os.ReadFile(cfgPath)
-	if !strings.Contains(string(raw), "[alert]\ntransport = \"off\"\nmail_to = \"root\"") || !strings.Contains(string(raw), "# my config") {
+	if !strings.Contains(string(raw), "[alert]\ntransport = \"off\"\nmail_to = \"root\"\nwebhook_url = \"\"\nwebhook_format = \"json\"") || !strings.Contains(string(raw), "# my config") {
 		t.Errorf("file:\n%s", raw)
 	}
 	if m.sw.Get().Name() != "off" {
@@ -84,6 +98,105 @@ func TestAlertManagerConfigure(t *testing.T) {
 	m2 := newAlertManager(cfgPath, alertsPath(state), config.Alert{Transport: "log"}, nil)
 	if got := m2.Recent(0); len(got) != 2 || got[0].Kind != "stall" {
 		t.Errorf("history reload: %+v", got)
+	}
+}
+
+// TestAlertManagerWebhook: the webhook transport through the manager —
+// Configure merges omitted keys, validates the merged section, writes the
+// four keys, swaps the sink; the test alert is delivered by POST; the log
+// line and the CLI view carry the URL without its query.
+func TestAlertManagerWebhook(t *testing.T) {
+	var mu sync.Mutex
+	var got []string
+	hook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		got = append(got, r.URL.RawQuery+" "+r.Header.Get("Content-Type")+" "+string(b))
+		mu.Unlock()
+	}))
+	defer hook.Close()
+	url := hook.URL + "/hook?token=secret-key"
+
+	cfgPath := writeStoreConfig(t)
+	m := newAlertManager(cfgPath, "", config.Alert{Transport: "log", MailTo: "root", WebhookFormat: "json"}, nil)
+	var logged strings.Builder
+	m.logger = log.New(&logged, "", 0)
+	// webhook without a URL, in the same request or in effect: refused
+	if _, err := m.Configure(web.AlertSettings{Transport: strp("webhook")}); err == nil || !strings.Contains(err.Error(), "webhook_url") {
+		t.Errorf("webhook without url: %v", err)
+	}
+	for _, bad := range []string{"ntfy.example.test/n5", "ftp://h.example.test/", "https://user:pw@h.example.test/"} {
+		if _, err := m.Configure(web.AlertSettings{Transport: strp("webhook"), WebhookURL: strp(bad)}); err == nil || !strings.Contains(err.Error(), "webhook_url") {
+			t.Errorf("%q: %v", bad, err)
+		}
+	}
+	if _, err := m.Configure(web.AlertSettings{WebhookFormat: strp("xml")}); err == nil || !strings.Contains(err.Error(), "webhook_format") {
+		t.Errorf("bad format: %v", err)
+	}
+	if m.sw.Get().Name() != "log" {
+		t.Fatalf("sink swapped on refusal: %s", m.sw.Get().Name())
+	}
+	// valid: URL first (transport stays log), then the transport alone
+	st, err := m.Configure(web.AlertSettings{WebhookURL: strp(" " + url + " "), WebhookFormat: strp(" TEXT ")})
+	if err != nil || st.Transport != "log" || st.WebhookURL != url || st.WebhookFormat != "text" || st.Effective != "log" {
+		t.Fatalf("url only: %+v %v", st, err)
+	}
+	st, err = m.Configure(web.AlertSettings{Transport: strp("webhook")})
+	if err != nil || st.Transport != "webhook" || st.Effective != "webhook" || st.WebhookURL != url || st.WebhookFormat != "text" || st.MailTo != "root" {
+		t.Fatalf("transport only: %+v %v", st, err)
+	}
+	raw, _ := os.ReadFile(cfgPath)
+	if !strings.Contains(string(raw), "[alert]\ntransport = \"webhook\"\nmail_to = \"root\"\nwebhook_url = \""+url+"\"\nwebhook_format = \"text\"") {
+		t.Errorf("file:\n%s", raw)
+	}
+	if m.sw.Get().Name() != "webhook" {
+		t.Errorf("sink: %s", m.sw.Get().Name())
+	}
+	// the log line names the redacted URL and the format
+	if l := logged.String(); !strings.Contains(l, "alerts: transport webhook (webhook), webhook "+hook.URL+"/hook (text)") || strings.Contains(l, "secret-key") {
+		t.Errorf("log: %s", l)
+	}
+	// the test alert goes out as a POST with the text body
+	if eff, err := m.Test(); err != nil || eff != "webhook" {
+		t.Fatalf("test: %s %v", eff, err)
+	}
+	mu.Lock()
+	reqs := append([]string(nil), got...)
+	mu.Unlock()
+	if len(reqs) != 1 || !strings.HasPrefix(reqs[0], "token=secret-key text/plain; charset=utf-8 test alert from n5-fangov") {
+		t.Errorf("requests: %q", reqs)
+	}
+	// a fresh manager on the file parses the same section; the apply of
+	// an unchanged section is a no-op, a format switch swaps
+	cfg, _, err := config.Load(cfgPath)
+	if err != nil || cfg.Alert.Transport != "webhook" || cfg.Alert.WebhookURL != url || cfg.Alert.WebhookFormat != "text" {
+		t.Fatalf("reload: %+v %v", cfg.Alert, err)
+	}
+	if m.apply(cfg.Alert) != "webhook" {
+		t.Errorf("apply same")
+	}
+	cfg.Alert.WebhookFormat = "json"
+	m.apply(cfg.Alert)
+	if eff, err := m.Test(); err != nil || eff != "webhook" {
+		t.Fatalf("test json: %s %v", eff, err)
+	}
+	mu.Lock()
+	last := got[len(got)-1]
+	mu.Unlock()
+	if !strings.HasPrefix(last, "token=secret-key application/json {") || !strings.Contains(last, `"kind":"test"`) {
+		t.Errorf("json request: %q", last)
+	}
+	// CLI view: the status prints the redacted URL and the format
+	var r alertsResp
+	s := m.Status()
+	r.Transport, r.Effective, r.WebhookURL, r.WebhookFormat = s.Transport, s.Effective, s.WebhookURL, s.WebhookFormat
+	out, _, _ := captureOutput(t, func() int { printAlertStatus(r, "test"); return 0 })
+	if !strings.Contains(out, "webhook:      "+hook.URL+"/hook (json)") || strings.Contains(out, "secret-key") {
+		t.Errorf("status output:\n%s", out)
+	}
+	// back to log: the URL is kept in the file for the next switch
+	if st, err := m.Configure(settings("log", "")); err != nil || st.WebhookURL != url || st.Effective != "log" {
+		t.Errorf("back to log: %+v %v", st, err)
 	}
 }
 
@@ -123,7 +236,7 @@ func TestAlertTemplateProbeCache(t *testing.T) {
 		t.Errorf("after InstallTemplate: %d", probes)
 	}
 	// Configure invalidates; its own Status re-probes once
-	if _, err := m.Configure("log", "root"); err != nil {
+	if _, err := m.Configure(settings("log", "root")); err != nil {
 		t.Fatal(err)
 	}
 	if probes != 4 {
