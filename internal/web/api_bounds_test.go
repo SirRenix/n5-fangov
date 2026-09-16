@@ -121,6 +121,7 @@ func TestLogLinesBoundsAPI(t *testing.T) {
 	for i := range e.logs {
 		e.logs[i] = "l" + strconv.Itoa(i)
 	}
+	e.withDeps(t, AuthConfig{}, func(d *Deps) { d.Log = &fakeLogStore{lines: e.logs} }) // the store copies the slice at construction
 	for _, c := range []struct {
 		lines string
 		code  int

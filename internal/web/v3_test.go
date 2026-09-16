@@ -1201,7 +1201,9 @@ func TestSessionStoreConcurrentCreate(t *testing.T) {
 }
 
 // TestLoginConcurrentCap: 60 parallel logins over HTTP all succeed and the
-// store ends at the cap; the mirror file is intact afterwards.
+// store ends at the cap; the mirror file is intact afterwards. The global
+// password-check semaphore answers 429 to the surplus callers; like a real
+// client they retry, so every login eventually lands.
 func TestLoginConcurrentCap(t *testing.T) {
 	e, _, _, _ := v3Env(t, adminBasic)
 	const n = sessionMax + 10
@@ -1211,12 +1213,18 @@ func TestLoginConcurrentCap(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			r, err := e.try("POST", "/api/login", `{"user":"admin","password":"pw"}`, csrf)
-			if err != nil {
-				codes[i] = -1
-				return
+			for try := 0; try < 500; try++ {
+				r, err := e.try("POST", "/api/login", `{"user":"admin","password":"pw"}`, csrf)
+				if err != nil {
+					codes[i] = -1
+					return
+				}
+				codes[i] = r.code
+				if r.code != http.StatusTooManyRequests {
+					return
+				}
+				time.Sleep(5 * time.Millisecond)
 			}
-			codes[i] = r.code
 		}(i)
 	}
 	if !waitTimeout(&wg, 60*time.Second) {

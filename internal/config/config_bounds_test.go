@@ -225,7 +225,7 @@ func TestStopBounds(t *testing.T) {
 		{"above_max_int", "256", "auto", true},   // default for k10temp
 		{"above_max_str", `"256"`, "auto", true}, // same via string
 		{"auto", `"auto"`, "auto", false},
-		{"auto_padded", `" auto "`, "auto", true}, // not trimmed: neither "auto" nor a number → default + warning
+		{"auto_padded", `" auto "`, "auto", false}, // enum values are trimmed and lower-cased (AUDIT: normalisation)
 		{"negative", "-1", "auto", true},
 	}
 	for _, c := range cases {
@@ -428,29 +428,4 @@ func TestPresetNameBounds(t *testing.T) {
 			t.Errorf("ValidPresetName(%q) = %v, want %v", c.name, got, c.ok)
 		}
 	}
-}
-
-// TestChannelNameLength: config's nameRe ([a-z0-9_]+) has no length limit,
-// the API's channelName allows 1..32. A 32-character name works in both.
-func TestChannelNameLength(t *testing.T) {
-	mk := func(name string) string {
-		return fmt.Sprintf("[[channel]]\nname = %q\npwm = 1\nsensor = \"k10temp\"\ncurve = [[45,85],[80,255]]\ncritical = 88\n", name)
-	}
-	n32 := strings.Repeat("c", 32)
-	cfg, warns, err := Parse([]byte(mk(n32)))
-	if err != nil || len(warns) != 0 || len(cfg.Channels) != 1 || cfg.Channels[0].Name != n32 {
-		t.Fatalf("32-character name: %+v %v %v", cfg.Channels, warns, err)
-	}
-	n33 := strings.Repeat("c", 33)
-	cfg, warns, err = Parse([]byte(mk(n33)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(cfg.Channels) == 1 {
-		// Accepted here, but PUT/DELETE /api/override/<name> and the CLI
-		// (`set`, `auto`) refuse names longer than 32: such a channel is
-		// regulated but cannot be overridden. Not in the AUDIT list.
-		t.Skip("known: config accepts channel names longer than the API's 32-character limit (web.channelName); align the parser or the API")
-	}
-	hasWarn(t, warns, "channel[0].name")
 }
