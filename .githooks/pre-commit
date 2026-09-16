@@ -39,11 +39,18 @@ if [ -z "$gl" ]; then
   exit 1
 fi
 
-if ! "$gl" protect --staged --config .gitleaks.toml --no-banner --redact --verbose; then
+# gitleaks 8.19+ scans the index with `git --staged`; `protect --staged` is
+# the deprecated spelling older releases understand. Probe once.
+if "$gl" git --help 2>/dev/null | grep -q -- --staged; then
+  set -- git --staged
+else
+  set -- protect --staged
+fi
+if ! "$gl" "$@" --config .gitleaks.toml --no-banner --redact --verbose; then
   fail=1
 fi
 # Optional local rules (git-ignored): the operator's own domain, names, addresses.
-if [ -f .gitleaks.local.toml ] && ! "$gl" protect --staged --config .gitleaks.local.toml --no-banner --redact --verbose; then
+if [ -f .gitleaks.local.toml ] && ! "$gl" "$@" --config .gitleaks.local.toml --no-banner --redact --verbose; then
   fail=1
 fi
 if [ "${fail:-0}" = 1 ]; then
