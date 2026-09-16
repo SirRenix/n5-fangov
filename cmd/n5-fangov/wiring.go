@@ -311,7 +311,20 @@ func knownSensors(fs *hwmon.FS, dev profile.Device) []sensorInfo {
 // ---------------------------------------------------------------------------
 // Alerts, controller, sd_notify (agent B).
 
-func newAlerter() alert.Sink { return alert.New(log.Default()) }
+// newAlerter builds the sink for the [alert] section of the default
+// config file (offline paths: the onfailure `alert` command, the apt
+// hook's `check --after-update`), so "off" or "log" are honoured there
+// too. An unreadable config means transport "auto". The delivery is
+// also recorded in the state directory's history when that file exists.
+func newAlerter() alert.Sink {
+	cfg, _, _ := config.Load(defaultConfigPath)
+	sink, _ := alert.NewFor(cfg.Alert.Transport, cfg.Alert.MailTo, log.Default())
+	path := alertsPath(stateDir())
+	if _, err := os.Stat(path); err != nil {
+		path = ""
+	}
+	return alert.NewRing(sink, path, log.Default())
+}
 
 // sendAlert delivers one alert immediately (no cooldown). Used by the
 // hidden `alert` subcommand (onfailure unit); serve uses sendAlertCooled.
@@ -394,6 +407,9 @@ func stopController(c *control.Controller) { c.Stop() }
 func controllerLastCycle(c *control.Controller) time.Time    { return c.LastCycle() }
 func controllerInterval(c *control.Controller) time.Duration { return c.Interval() }
 
+// controllerConfig is a copy of the configuration the controller runs with.
+func controllerConfig(c *control.Controller) config.Config { return c.Config() }
+
 func notifyReady()    { _ = sdnotify.Ready() }
 func notifyStopping() { _ = sdnotify.Stopping() }
 func notifyWatchdog() { _ = sdnotify.Watchdog() }
@@ -418,6 +434,12 @@ type webDeps struct {
 	// (PUT /api/config, preset apply; the bundle carries its own): the
 	// certificate manager re-applies its [web] tls keys (M2). nil: none.
 	ConfigPin func(raw []byte) []byte
+
+	// v0.3.0-beta members (see wiring_v3.go).
+	SessionFile string          // <state dir>/sessions.json; "" = memory only
+	Account     *accountStore   // /api/account (nil: 501)
+	Alerts      *alertManager   // /api/alerts (nil: 501)
+	Dashboard   *dashboardStore // /api/dashboard (nil: 501)
 }
 
 // logStore is the log read side (DESIGN v0.2 "Log store"): implemented by
@@ -498,7 +520,7 @@ func newWebServer(d webDeps) webServer {
 			_, warns, err := config.Parse(raw)
 			return warningStrings(warns), err
 		},
-		Presets:      dirPresetStore{dir: d.PresetDir, cfgPath: d.ConfigPath, svc: d.Service, pin: d.ConfigPin},
+		Presets:      dirPresetStore{dir: d.PresetDir, cfgPath: d.ConfigPath, svc: d.Service, pin: d.ConfigPin, profile: active},
 		Profiles:     profiles,
 		Version:      version.Version,
 		Auth:         web.AuthConfig{Mode: d.Web.Auth, User: d.Web.User, PasswordHash: d.Web.PasswordHash},
@@ -511,6 +533,7 @@ func newWebServer(d webDeps) webServer {
 	}
 	// Log, Bundle and TLS are the v0.2 members of web.Deps; see wiring_v2.go.
 	applyV2Deps(&deps, d)
+	applyV3Deps(&deps, d)
 	s := web.New(deps)
 	return webServer{TCP: s.Handler(), Socket: s.SocketHandler(), serve: s.Serve, serveTLS: serveTLSFunc(s)}
 }
@@ -637,6 +660,12 @@ func configJSON(cfg config.Config, warns []config.Warning) map[string]any {
 		"log": map[string]any{
 			"file": cfg.Log.File, "max_size_mb": cfg.Log.MaxSizeMB, "max_files": cfg.Log.MaxFiles,
 		},
+		"alert": map[string]any{
+			"transport": cfg.Alert.Transport, "mail_to": cfg.Alert.MailTo,
+		},
+		"dashboard": map[string]any{
+			"sensors": nonNilStrings(cfg.Dashboard.Sensors),
+		},
 		"channel":  chans,
 		"warnings": warningStrings(warns),
 	}
@@ -650,30 +679,63 @@ func nonNilStrings(s []string) []string {
 }
 
 // dirPresetStore backs /api/presets with <dir>/<name>.toml files that hold
-// only [[channel]] tables.
+// only [[channel]] tables, plus the built-in presets embedded for the
+// active profile (config.BuiltinPresets): listed with Builtin=true and
+// their description, applied like a file, never saved over or deleted.
+// A file whose name collides with a built-in is shadowed (the built-in
+// wins) and logged once per List.
 type dirPresetStore struct {
 	dir     string
 	cfgPath string
 	svc     control.Service
 	pin     func([]byte) []byte // M2, see fileConfigStore
+	profile string              // active profile name (built-in filter); "" = none
 }
 
-// List returns every preset with the channel names it contains.
+// List returns the built-in presets of the active profile first, then
+// every user preset with the channel names it contains.
 func (s dirPresetStore) List() ([]web.Preset, error) {
+	var out []web.Preset
+	for _, b := range builtinPresetsFor(s.profile) {
+		chans, _, err := config.ParseChannels(b.Raw)
+		if err != nil {
+			continue
+		}
+		out = append(out, web.Preset{Name: b.Name, Channels: channelNames(chans), Builtin: true, Description: b.Description})
+	}
 	all := config.LoadPresets(s.dir)
-	out := make([]web.Preset, 0, len(all))
 	for _, name := range config.PresetNames(s.dir) {
 		chans, ok := all[name]
 		if !ok {
 			continue // did not parse; LoadPresets skipped it
 		}
-		names := make([]string, 0, len(chans))
-		for _, c := range chans {
-			names = append(names, c.Name)
+		if isBuiltinPreset(name) {
+			log.Printf("preset %s: %s/%s.toml is shadowed by the built-in preset of that name", name, s.dir, name)
+			continue
 		}
-		out = append(out, web.Preset{Name: name, Channels: names})
+		out = append(out, web.Preset{Name: name, Channels: channelNames(chans)})
+	}
+	if out == nil {
+		out = []web.Preset{}
 	}
 	return out, nil
+}
+
+func channelNames(chans []config.Channel) []string {
+	names := make([]string, 0, len(chans))
+	for _, c := range chans {
+		names = append(names, c.Name)
+	}
+	return names
+}
+
+// load returns the channel tables of a preset: the embedded text for a
+// built-in name, else the file.
+func (s dirPresetStore) load(name string) ([]config.Channel, []config.Warning, error) {
+	if raw, ok := builtinPresetRaw(name); ok {
+		return config.ParseChannels(raw)
+	}
+	return config.LoadPreset(s.dir, name)
 }
 
 // Apply replaces the [[channel]] tables of the config file with the preset,
@@ -681,7 +743,7 @@ func (s dirPresetStore) List() ([]web.Preset, error) {
 // parsed config, so comments in it are lost. control.ErrRestartRequired
 // passes through unchanged (the web layer answers 202 for it).
 func (s dirPresetStore) Apply(name string) error {
-	chans, warns, err := config.LoadPreset(s.dir, name)
+	chans, warns, err := s.load(name)
 	if err != nil {
 		return err
 	}
@@ -707,8 +769,12 @@ func (s dirPresetStore) Apply(name string) error {
 	return s.svc.Reload(raw)
 }
 
-// Save stores the channel tables of the current config file as preset name.
+// Save stores the channel tables of the current config file as preset
+// name. A built-in name is refused (web.ErrPresetBuiltin → 409).
 func (s dirPresetStore) Save(name string) error {
+	if isBuiltinPreset(name) {
+		return fmt.Errorf("preset %q: %w", name, errPresetBuiltin())
+	}
 	cfg, _, err := config.Load(s.cfgPath)
 	if err != nil {
 		return fmt.Errorf("current config: %w", err)
@@ -717,6 +783,19 @@ func (s dirPresetStore) Save(name string) error {
 		return errors.New("current config has no channels to save")
 	}
 	return config.SavePreset(s.dir, name, cfg.Channels)
+}
+
+// Delete removes a user preset file (web.PresetDeleter). A built-in name
+// → web.ErrPresetBuiltin (409), a missing file → fs.ErrNotExist (404).
+func (s dirPresetStore) Delete(name string) error {
+	if isBuiltinPreset(name) {
+		return fmt.Errorf("preset %q: %w", name, errPresetBuiltin())
+	}
+	if err := deletePreset(s.dir, name); err != nil {
+		return err
+	}
+	log.Printf("preset %s deleted from %s", name, s.dir)
+	return nil
 }
 
 // serveIPC serves handler on the unix socket until ctx is done.

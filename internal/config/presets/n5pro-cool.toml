@@ -1,0 +1,33 @@
+# n5-fangov built-in preset for the Minisforum N5 Pro (profile n5pro)
+# description: Cool: drives first, noise second; the HDD group stays below 40 C, fans always audible
+# profile: n5pro
+#
+# Duty -> RPM measured on the N5 Pro (14.09.2026):
+#   CPU  85->2000  140->3120  255->5073
+#   SSD  74->2130  255->4687
+#   HDD  87->1237  105->1650  140->2250  179->2725  255->3540
+# The HDD channel keeps stop = 140: the EC does not regulate pwm3 after a write.
+
+[[channel]]
+name = "cpu"
+pwm = 1
+sensor = "k10temp"
+curve = [[30, 85], [55, 170], [75, 255]]
+critical = 88
+stop = "auto"
+
+[[channel]]
+name = "ssd"
+pwm = 2
+sensor = "nvme:max"
+curve = [[30, 90], [50, 180], [65, 255]]
+critical = 72
+stop = "auto"
+
+[[channel]]
+name = "hdd"
+pwm = 3
+sensor = "drivetemp:max"
+curve = [[28, 105], [38, 150], [45, 210], [50, 255]]
+critical = 58
+stop = 140

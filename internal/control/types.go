@@ -37,8 +37,11 @@ type Snapshot struct {
 	DryRun     bool               `json:"dry_run"`
 	Channels   []ChannelState     `json:"channels"`
 	ExtraTemps map[string]float64 `json:"extra_temps"`
-	Alerts     map[string]int64   `json:"alerts"` // type → unix ts of last alert
-	Uptime     int64              `json:"uptime_s"`
+	// Watched carries the live values of the [dashboard].sensors ids that
+	// could be read this cycle (v0.3); never nil.
+	Watched map[string]float64 `json:"watched"`
+	Alerts  map[string]int64   `json:"alerts"` // type → unix ts of last alert
+	Uptime  int64              `json:"uptime_s"`
 }
 
 // HistoryPoint is one ring-buffer entry for charts.
@@ -47,6 +50,9 @@ type HistoryPoint struct {
 	Temp map[string]float64 `json:"temp"` // by channel name
 	Duty map[string]int     `json:"duty"`
 	RPM  map[string]int     `json:"rpm"`
+	// Extra holds the watched dashboard sensors ([dashboard].sensors) by
+	// id, degrees C; absent ids could not be read that cycle (v0.3).
+	Extra map[string]float64 `json:"extra,omitempty"`
 }
 
 // Service is what the web/ipc layer needs from the controller.

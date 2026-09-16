@@ -206,6 +206,20 @@ func runChecks(cfgPath, dir string) []checkResult {
 	} else {
 		add(true, "log", "journal only ([log].file empty)")
 	}
+	// 4d. alert transport (advisory): "pve" without the Proxmox stack, or
+	// "mail" without mail(1), degrades to the next transport; say so.
+	aspec := alertOf(cfg)
+	pve, mail := alertToolsAvailable()
+	switch {
+	case aspec.Transport == "pve" && !pve:
+		adv(false, "alerts", fmt.Sprintf("[alert].transport = \"pve\" but PVE::Notify (or perl) is absent; alerts go to %s instead", alertEffective(aspec)))
+	case aspec.Transport == "mail" && !mail:
+		adv(false, "alerts", fmt.Sprintf("[alert].transport = \"mail\" but mail(1) is absent; alerts go to %s instead", alertEffective(aspec)))
+	case aspec.Transport == "off":
+		adv(false, "alerts", "[alert].transport = \"off\": alerts are only written to the journal")
+	default:
+		add(true, "alerts", fmt.Sprintf("transport %s (%s)", aspec.Transport, alertEffective(aspec)))
+	}
 
 	// 5. socket answers when the unit is active (skipped during ExecStartPre,
 	// where the unit is "activating")

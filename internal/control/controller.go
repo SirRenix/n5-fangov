@@ -158,6 +158,11 @@ type Controller struct {
 	alerts    map[string]int64 // kind → unix ts of last delivered alert
 	extra     map[string]string
 	pending   *config.Config // accepted by Apply, swapped in by the loop
+	// watched are the [dashboard].sensors readers (v0.3); rebuilt by the
+	// loop at the start of a cycle when watchDirty is set (Apply with a
+	// changed list, SetWatched). Read by the loop goroutine only.
+	watched    []*watchedSensor
+	watchDirty bool
 
 	logMu   sync.Mutex
 	lastMsg map[string]string
@@ -245,6 +250,7 @@ func New(cfg config.Config, dev profile.Device, sensors SensorFactory, alerter A
 	c.cfg.Channels, notes = SanitizeChannels(dev.Profile().Name(), c.cfg.Channels)
 	c.chans, dropped = c.buildChannels(c.cfg)
 	c.reportNotes("config corrected at start", append(notes, dropped...))
+	c.watched = c.buildWatched(c.cfg.Dashboard.Sensors)
 	if c.opts.RunDir != "" {
 		c.loadOverrides()
 	}
@@ -461,8 +467,13 @@ func (c *Controller) cycle() error {
 
 	c.mu.Lock()
 	c.applyPendingLocked()
+	if c.watchDirty {
+		c.watched = c.buildWatched(c.cfg.Dashboard.Sensors)
+		c.watchDirty = false
+	}
 	d := c.cfg.Daemon
 	chans := c.chans
+	watched := c.watched
 	ovr := make(map[string]int, len(c.overrides))
 	for k, v := range c.overrides {
 		ovr[k] = v
@@ -547,6 +558,7 @@ func (c *Controller) cycle() error {
 		ch.sensorBad = bad
 	}
 	extra := c.readExtra()
+	watchedVals := c.readWatched(watched, n)
 	c.readRPMs(chans)
 
 	if len(newlyBad) > 0 {
@@ -654,7 +666,7 @@ func (c *Controller) cycle() error {
 	if nBad > 0 && nBad == len(chans) {
 		status = "sensor-error"
 	}
-	c.finishCycle(chans, extra, status, d)
+	c.finishCycle(chans, extra, watchedVals, status, d)
 	return lost
 }
 
@@ -732,14 +744,14 @@ func (c *Controller) noteFailsafe(allFailed bool) error {
 }
 
 // finishCycle publishes the snapshot, appends history and logs periodically.
-func (c *Controller) finishCycle(chans []*channel, extra map[string]float64, status string, d config.Daemon) {
+func (c *Controller) finishCycle(chans []*channel, extra, watched map[string]float64, status string, d config.Daemon) {
 	if c.opts.DryRun && status == "ok" {
 		status = "dry-run"
 	}
 	now := c.opts.Now()
 	c.mu.Lock()
-	c.snap = c.buildSnapshotLocked(status, extra, now)
-	c.pushHistoryLocked(chans, now)
+	c.snap = c.buildSnapshotLocked(status, extra, watched, now)
+	c.pushHistoryLocked(chans, watched, now)
 	snap := c.snap
 	c.mu.Unlock()
 	c.writeState(snap)
@@ -1026,6 +1038,7 @@ func (c *Controller) Snapshot() Snapshot {
 	s.Uptime = int64(c.opts.Now().Sub(c.started).Seconds())
 	s.Channels = append([]ChannelState(nil), s.Channels...)
 	s.ExtraTemps = copyMapF(s.ExtraTemps)
+	s.Watched = copyMapF(s.Watched)
 	s.Alerts = copyMapI(s.Alerts)
 	return s
 }
@@ -1166,6 +1179,9 @@ func (c *Controller) applyPendingLocked() {
 	if firstSensorChanged {
 		c.haveRaw, c.sameRaw = false, 0
 	}
+	if !sameStrings(cfg.Dashboard.Sensors, old.Dashboard.Sensors) {
+		c.watchDirty = true
+	}
 	if cfg.Daemon.Interval != old.Daemon.Interval {
 		c.histCap = historyCapacity(cfg.Daemon.Interval)
 		if len(c.hist) > c.histCap {
@@ -1237,10 +1253,10 @@ func (c *Controller) findLocked(name string) *channel {
 func (c *Controller) buildSnapshot(status string) Snapshot {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.buildSnapshotLocked(status, nil, c.opts.Now())
+	return c.buildSnapshotLocked(status, nil, nil, c.opts.Now())
 }
 
-func (c *Controller) buildSnapshotLocked(status string, extra map[string]float64, now time.Time) Snapshot {
+func (c *Controller) buildSnapshotLocked(status string, extra, watched map[string]float64, now time.Time) Snapshot {
 	s := Snapshot{
 		TS:         now.Unix(),
 		Status:     status,
@@ -1250,11 +1266,15 @@ func (c *Controller) buildSnapshotLocked(status string, extra map[string]float64
 		DryRun:     c.opts.DryRun,
 		Channels:   make([]ChannelState, 0, len(c.chans)),
 		ExtraTemps: extra,
+		Watched:    watched,
 		Alerts:     copyMapI(c.alerts),
 		Uptime:     int64(now.Sub(c.started).Seconds()),
 	}
 	if s.ExtraTemps == nil {
 		s.ExtraTemps = map[string]float64{}
+	}
+	if s.Watched == nil {
+		s.Watched = map[string]float64{}
 	}
 	for _, ch := range c.chans {
 		cs := ChannelState{
@@ -1269,8 +1289,11 @@ func (c *Controller) buildSnapshotLocked(status string, extra map[string]float64
 	return s
 }
 
-func (c *Controller) pushHistoryLocked(chans []*channel, now time.Time) {
+func (c *Controller) pushHistoryLocked(chans []*channel, watched map[string]float64, now time.Time) {
 	p := HistoryPoint{TS: now.Unix(), Temp: map[string]float64{}, Duty: map[string]int{}, RPM: map[string]int{}}
+	if len(watched) > 0 {
+		p.Extra = copyMapF(watched)
+	}
 	for _, ch := range chans {
 		if ch.tempOK {
 			p.Temp[ch.cfg.Name] = float64(ch.temp) / 1000

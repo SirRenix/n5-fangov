@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Removes n5-fangov (daemon, units, helper, templates, apt hook). Keeps
+# Removes n5-fangov (daemon, units, helper, templates, apt hook, state dir). Keeps
 # /etc/n5-fangov (config, presets, TLS certificate) and /var/log/n5-fangov
 # unless --purge is given. The channels are put into their configured safe
 # state before the binary goes away. Run as root.
@@ -28,6 +28,8 @@ rm -f /etc/apt/apt.conf.d/90n5-fangov
 rm -f /etc/pve/notification-templates/default/n5-fangov-subject.txt.hbs \
       /etc/pve/notification-templates/default/n5-fangov-body.txt.hbs 2>/dev/null || true
 rm -rf /run/n5-fangov
+# sessions.json (dashboard cookies) and alerts.json: nothing worth keeping
+rm -rf /var/lib/n5-fangov
 if [[ $PURGE -eq 1 ]]; then
     rm -rf /etc/n5-fangov /var/log/n5-fangov
     echo "  --purge: /etc/n5-fangov and /var/log/n5-fangov removed"

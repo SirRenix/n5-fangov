@@ -119,6 +119,38 @@ const (
 	LogRootEnv = "N5FANGOV_LOG_ROOT"
 )
 
+// Alert holds the alert transport settings (v0.3: the alerts panel).
+type Alert struct {
+	Transport string `toml:"transport"` // auto | pve | mail | log | off (see AlertTransports)
+	MailTo    string `toml:"mail_to"`   // mail transport only: local user or address
+}
+
+// AlertTransports accepted in alert.transport. "auto" picks PVE::Notify
+// when the Proxmox stack is present, else mail(1), else the log; "off"
+// drops every alert (the journal line stays).
+var AlertTransports = []string{"auto", "pve", "mail", "log", "off"}
+
+// DefaultMailTo is the mail recipient when mail_to is absent or invalid.
+const DefaultMailTo = "root"
+
+// mailToRe: a local user name or an address; no spaces, quotes or shell
+// metacharacters (the value becomes an argv element of mail(1), never a
+// shell string, but a recipient with spaces is a typo, not an address).
+var mailToRe = regexp.MustCompile(`^[A-Za-z0-9._%+-]+(@[A-Za-z0-9.-]+)?$`)
+
+// ValidMailTo reports whether s is acceptable as alert.mail_to.
+func ValidMailTo(s string) bool { return len(s) <= 254 && mailToRe.MatchString(s) }
+
+// Dashboard holds the dashboard-only settings: extra sensors recorded in
+// the history for the chart (v0.3).
+type Dashboard struct {
+	Sensors []string `toml:"sensors"` // sensor ids, 0..MaxDashboardSensors
+}
+
+// MaxDashboardSensors caps [dashboard].sensors; more are dropped with a
+// warning (each one costs a sysfs read per cycle and a chart series).
+const MaxDashboardSensors = 8
+
 // Channel is one regulated PWM output.
 type Channel struct {
 	Name     string   `toml:"name"`
@@ -131,10 +163,12 @@ type Channel struct {
 
 // Config is the whole configuration file.
 type Config struct {
-	Daemon   Daemon    `toml:"daemon"`
-	Web      Web       `toml:"web"`
-	Log      Log       `toml:"log"`
-	Channels []Channel `toml:"channel"`
+	Daemon    Daemon    `toml:"daemon"`
+	Web       Web       `toml:"web"`
+	Log       Log       `toml:"log"`
+	Alert     Alert     `toml:"alert"`
+	Dashboard Dashboard `toml:"dashboard"`
+	Channels  []Channel `toml:"channel"`
 }
 
 // Warning describes one value that was replaced by its default (or dropped).
@@ -170,6 +204,11 @@ func Default() Config {
 			MaxSizeMB: 5,
 			MaxFiles:  5,
 		},
+		Alert: Alert{
+			Transport: "auto",
+			MailTo:    DefaultMailTo,
+		},
+		Dashboard: Dashboard{Sensors: []string{}},
 	}
 }
 
@@ -209,6 +248,8 @@ func (c *Config) Channel(name string) *Channel {
 func (c Config) Clone() Config {
 	out := c
 	out.Channels = CloneChannels(c.Channels)
+	out.Web.AllowedHosts = append([]string(nil), c.Web.AllowedHosts...)
+	out.Dashboard.Sensors = append([]string{}, c.Dashboard.Sensors...)
 	return out
 }
 
@@ -240,7 +281,7 @@ func Parse(raw []byte) (Config, []Warning, error) {
 
 	for _, k := range sortedKeys(top) {
 		switch k {
-		case "daemon", "web", "log", "channel":
+		case "daemon", "web", "log", "alert", "dashboard", "channel":
 		default:
 			p.warn(k, "unknown section, ignored")
 		}
@@ -270,6 +311,22 @@ func Parse(raw []byte) (Config, []Warning, error) {
 			p.warn("log", "not a table, defaults used")
 		} else {
 			p.log(sec, &cfg.Log)
+		}
+	}
+	if prim, ok := top["alert"]; ok {
+		var sec map[string]toml.Primitive
+		if md.Type("alert") != "Hash" || md.PrimitiveDecode(prim, &sec) != nil {
+			p.warn("alert", "not a table, defaults used")
+		} else {
+			p.alert(sec, &cfg.Alert)
+		}
+	}
+	if prim, ok := top["dashboard"]; ok {
+		var sec map[string]toml.Primitive
+		if md.Type("dashboard") != "Hash" || md.PrimitiveDecode(prim, &sec) != nil {
+			p.warn("dashboard", "not a table, defaults used")
+		} else {
+			p.dashboard(sec, &cfg.Dashboard)
 		}
 	}
 	if prim, ok := top["channel"]; ok {
@@ -543,6 +600,58 @@ func (p *parser) log(sec map[string]toml.Primitive, l *Log) {
 	l.File = file
 	l.MaxSizeMB = p.intField(pre, sec, "max_size_mb", def.MaxSizeMB, MinLogSizeMB, MaxLogSizeMB)
 	l.MaxFiles = p.intField(pre, sec, "max_files", def.MaxFiles, MinLogFiles, MaxLogFiles)
+}
+
+func (p *parser) alert(sec map[string]toml.Primitive, a *Alert) {
+	const pre = "alert"
+	p.unknown(pre, sec, "transport", "mail_to")
+	def := Default().Alert
+	tr, _ := p.strField(pre, sec, "transport", def.Transport)
+	tr = strings.ToLower(strings.TrimSpace(tr))
+	if !contains(AlertTransports, tr) {
+		p.warn(pre+".transport", "%q unknown (%s), default %q used", tr, strings.Join(AlertTransports, "|"), def.Transport)
+		tr = def.Transport
+	}
+	a.Transport = tr
+	to, present := p.strField(pre, sec, "mail_to", def.MailTo)
+	to = strings.TrimSpace(to)
+	if present && !ValidMailTo(to) {
+		p.warn(pre+".mail_to", "%q is not a local user or address, default %q used", to, def.MailTo)
+		to = def.MailTo
+	}
+	a.MailTo = to
+}
+
+// dashboard validates [dashboard].sensors: an array of at most
+// MaxDashboardSensors non-empty strings. Only the shape is checked here;
+// whether an id resolves on this machine is the controller's business
+// (an unresolvable id is kept in the file and skipped with a warning).
+func (p *parser) dashboard(sec map[string]toml.Primitive, d *Dashboard) {
+	const pre = "dashboard"
+	p.unknown(pre, sec, "sensors")
+	d.Sensors = []string{}
+	prim, ok := sec["sensors"]
+	if !ok {
+		return
+	}
+	var ids []string
+	if err := p.md.PrimitiveDecode(prim, &ids); err != nil {
+		p.warn(pre+".sensors", "not an array of strings, ignored")
+		return
+	}
+	seen := map[string]bool{}
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			continue
+		}
+		if len(d.Sensors) >= MaxDashboardSensors {
+			p.warn(pre+".sensors", "more than %d ids, %q and the rest dropped", MaxDashboardSensors, id)
+			break
+		}
+		seen[id] = true
+		d.Sensors = append(d.Sensors, id)
+	}
 }
 
 // logRoot is LogRoot, or the test override, always with a trailing slash.

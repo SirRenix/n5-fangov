@@ -34,6 +34,10 @@ RuntimeDirectoryPreserve=yes
 # /var/log/n5-fangov: rotating log file ([log].file); journal stays primary
 LogsDirectory=n5-fangov
 LogsDirectoryMode=0750
+# /var/lib/n5-fangov: sessions.json (dashboard "remember me" cookies) and
+# alerts.json (recent alert history); root only, the session tokens are secrets
+StateDirectory=n5-fangov
+StateDirectoryMode=0700
 UMask=0077
 
 # --- sandbox (DESIGN v0.2; verify on the real box after every change) ----
@@ -47,7 +51,12 @@ ProtectSystem=strict
 # PVE::Notify with an SMTP target needs no extra path. NOTE: that mail path
 # also needs CAP_DAC_OVERRIDE (maildrop is 0730 postfix:postdrop and
 # NoNewPrivileges suppresses postdrop's setgid) — see README "Hardening".
-ReadWritePaths=-/etc/n5-fangov -/run/n5-fangov -/var/log/n5-fangov -/sys/class/hwmon -/sys/devices -/var/spool/postfix/maildrop
+# /etc/pve/notification-templates: the dashboard's "install template" button
+# writes the two n5-fangov .hbs files there (pmxcfs; verified on the reference
+# host: a process under this sandbox creates and removes a file in that
+# directory). The directory itself must exist — a fresh box gets it from
+# install.sh or `n5-fangov alerts template` (both run outside the sandbox).
+ReadWritePaths=-/etc/n5-fangov -/run/n5-fangov -/var/log/n5-fangov -/var/lib/n5-fangov -/sys/class/hwmon -/sys/devices -/var/spool/postfix/maildrop -/etc/pve/notification-templates
 ProtectHome=yes
 PrivateTmp=yes
 # /dev holds only the pseudo devices; [log].file must be under /var/log

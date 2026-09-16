@@ -44,6 +44,19 @@ file = "/var/log/n5-fangov/n5-fangov.log"   # rotating log file in addition to t
 max_size_mb = 5         # rotate above this size (1..100); rotated files: .1 .. .N
 max_files = 5           # rotated files to keep (1..20)
 
+[alert]
+transport = "auto"      # auto | pve | mail | log | off
+                        # auto = PVE::Notify (Proxmox notification stack, template "n5-fangov") when present,
+                        #        else mail(1) to mail_to, else the journal only.
+                        # pve/mail without the tool degrade in the same order; off = journal line only.
+                        # Changed live from the dashboard's Alerts tab (or by editing here + PUT /api/config).
+mail_to = "root"        # mail transport only: local user or address, no spaces
+
+[dashboard]
+sensors = []            # extra sensors charted on the Overview, 0..8 ids of the same forms as channel sensors,
+                        # e.g. ["hwmon:amdgpu:temp1", "ec:system"]. Never influence regulation; an id without a
+                        # device is kept and charted once the device appears. The Sensors card toggles these.
+
 # CPU fan (pwm1) <- k10temp Tctl. EC idle duty was 85.
 [[channel]]
 name = "cpu"            # unique, [a-z0-9_]+

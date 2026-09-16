@@ -7,13 +7,17 @@
 #   make check   -> go vet + go test
 #   make verify-deploy -> systemd-analyze verify on the units and apt-config
 #                   on the apt hook (each skipped with a note when the tool
-#                   is absent, e.g. in the build container)
+#                   is absent, e.g. in the build container); always diffs the
+#                   PVE template copies (deploy/ vs. the embedded ones)
 #   make clean
 
 MODULE   := github.com/SirRenix/n5-fangov
 VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo 0.0.0-dev)
-# Debian version: strip a leading v, "-" is not allowed in upstream versions
-DEBVER   := $(shell echo '$(VERSION)' | sed -e 's/^v//' -e 's/-/+/g')
+# Debian version: strip a leading v; "-" is not allowed in upstream versions.
+# A pre-release tag (-alpha/-beta/-rc) becomes "~" so it sorts BEFORE the
+# release (0.3.0~beta.1 < 0.3.0); every other "-" (git describe's -N-gHASH,
+# -dirty) becomes "+" so it sorts after the tag it is based on.
+DEBVER   := $(shell echo '$(VERSION)' | sed -e 's/^v//' -e 's/-\(alpha\|beta\|rc\)/~\1/' -e 's/-/+/g')
 ARCH     ?= amd64
 LDFLAGS  := -s -w -X $(MODULE)/internal/version.Version=$(VERSION)
 DIST     := dist
@@ -39,7 +43,14 @@ check:
 # temp dir; on a host without the package installed the Exec* paths are
 # pointed at /bin/true so verify judges the directives, not the install.
 # apt-config parses the hook the way apt does (exit 100 on a syntax error).
+# The PVE template pair exists twice — deploy/pve-notification for install.sh
+# and postinst (shell cannot read the binary's embed) and
+# internal/alert/templates for the daemon/CLI — and must stay identical.
 verify-deploy:
+	@for f in n5-fangov-subject.txt.hbs n5-fangov-body.txt.hbs; do \
+	    cmp -s deploy/pve-notification/$$f internal/alert/templates/$$f \
+	        || { echo "PVE template $$f: deploy/pve-notification and internal/alert/templates differ"; exit 1; }; \
+	done; echo "PVE templates: deploy copy matches the embedded copy"
 	@if command -v systemd-analyze >/dev/null 2>&1; then \
 	    tmp=$$(mktemp -d); cp deploy/n5-fangov.service deploy/n5-fangov-onfailure.service $$tmp/; \
 	    if [ ! -x /usr/bin/n5-fangov ]; then \
