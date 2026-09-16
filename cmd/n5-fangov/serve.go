@@ -33,6 +33,7 @@ func cmdServe(args []string) int {
 	dryRun := fs.Bool("dry-run", false, "read sensors and log decisions, never write pwm")
 	rdir := fs.String("run-dir", runDir(), "runtime directory (socket, state.json, alert stamps)")
 	listen := fs.String("listen", "", "override [web].listen (\"none\" disables the TCP listener)")
+	sdir := fs.String("state-dir", stateDir(), "state directory (sessions.json, alerts.json); unwritable = no persistence")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
@@ -44,9 +45,7 @@ func cmdServe(args []string) int {
 	// journald adds timestamps; keep the lines bare.
 	log.SetFlags(0)
 	log.SetOutput(os.Stdout)
-	log.Printf("n5-fangov %s starting (config %s, run-dir %s, dry-run %v)", version.Version, *cfgPath, *rdir, *dryRun)
-
-	alerter := newAlerter()
+	log.Printf("n5-fangov %s starting (config %s, run-dir %s, state-dir %s, dry-run %v)", version.Version, *cfgPath, *rdir, *sdir, *dryRun)
 
 	// The run dir first: the start-up alerts below keep their cooldown
 	// stamps there (a restart loop must not send one notification per try).
@@ -59,6 +58,14 @@ func cmdServe(args []string) int {
 	for _, w := range warns {
 		log.Printf("config: %s", w)
 	}
+
+	// State dir (sessions, alert history) and the alert chain: the
+	// configured transport behind a swappable sink (the panel and every
+	// config reload re-apply [alert]), wrapped in the ring the panel reads.
+	state := ensureStateDir(*sdir)
+	alertMgr := newAlertManager(*cfgPath, alertsPath(state), cfg.Alert, nil)
+	alerter := alertMgr.sink()
+	log.Printf("alerts: transport %s (%s), history %s", cfg.Alert.Transport, alertMgr.effective, orMemory(alertsPath(state)))
 	if len(warns) > 0 {
 		sendAlertCooled(*rdir, alerter, "config", fmt.Sprintf("%d config problem(s), built-in defaults in effect:\n%s",
 			len(warns), strings.Join(warns, "\n")))
@@ -173,19 +180,32 @@ func cmdServe(args []string) int {
 		tlsMgr.ownsConfig = false
 	}
 
+	// v0.3 stores. Every config write of theirs goes through the tls pin
+	// like the others; svc wraps Reload so a PUT /api/config, an import or
+	// a preset apply re-applies [alert] ([dashboard] is the controller's).
+	alertMgr.pin = tlsMgr.pinConfig
+	alertMgr.cooldown = func() time.Duration { return controllerConfig(ctrl).Daemon.AlertCooldown }
+	svc := hookedService{Service: ctrl, alerts: alertMgr}
+	accounts := newAccountStore(*cfgPath, wspec, tlsMgr.pinConfig)
+	dashboard := newDashboardStore(*cfgPath, ctrl, factory, tlsMgr.pinConfig)
+
 	ws := newWebServer(webDeps{
-		Service:    ctrl,
-		ConfigPath: *cfgPath,
-		PresetDir:  defaultPresetDir,
-		Device:     dev,
-		Sysfs:      hw,
-		Web:        wspec,
-		Log:        store,
-		Bundle:     fileBundle{cfgPath: *cfgPath, presetDir: defaultPresetDir, reload: ctrl.Reload, pin: tlsMgr.pinConfig},
-		TLS:        useTLS,
-		TLSMgr:     tlsMgr,
-		TLSHosts:   hosts,
-		ConfigPin:  tlsMgr.pinConfig,
+		Service:     svc,
+		ConfigPath:  *cfgPath,
+		PresetDir:   defaultPresetDir,
+		Device:      dev,
+		Sysfs:       hw,
+		Web:         wspec,
+		Log:         store,
+		Bundle:      fileBundle{cfgPath: *cfgPath, presetDir: defaultPresetDir, reload: svc.Reload, pin: tlsMgr.pinConfig},
+		TLS:         useTLS,
+		TLSMgr:      tlsMgr,
+		TLSHosts:    hosts,
+		ConfigPin:   tlsMgr.pinConfig,
+		SessionFile: sessionsPath(state),
+		Account:     accounts,
+		Alerts:      alertMgr,
+		Dashboard:   dashboard,
 	})
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)

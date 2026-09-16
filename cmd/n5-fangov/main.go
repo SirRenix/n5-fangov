@@ -47,13 +47,13 @@ func register(name string, c command) { commands[name] = c }
 var order = []string{
 	"setup", "serve", "status", "set", "auto", "curve", "log",
 	"check", "detect", "test", "failsafe",
-	"passwd", "cert", "export", "import", "version",
+	"passwd", "cert", "alerts", "export", "import", "version",
 }
 
 // helpText is the usage line per subcommand.
 var helpText = map[string]string{
 	"setup":    "[--listen local|lan|HOST:PORT] [--user U] [--password-file F | --password -] [--yes]  write the config for this machine",
-	"serve":    "[--config PATH] [--dry-run] [--run-dir DIR] [--listen ADDR]  run the daemon",
+	"serve":    "[--config PATH] [--dry-run] [--run-dir DIR] [--state-dir DIR] [--listen ADDR]  run the daemon",
 	"status":   "                       show channels, temperatures, duty, rpm, mode",
 	"set":      "<ch> <duty|NN%>        manual override for one channel",
 	"auto":     "<ch|all>               return channel(s) to the curve",
@@ -63,8 +63,9 @@ var helpText = map[string]string{
 	"detect":   "                       list profiles with detection result (read-only)",
 	"test":     "<ch> [--force]         channel verification run (writes duty, daemon must be stopped)",
 	"failsafe": "                       put all configured channels into their safe state",
-	"passwd":   "[--user U] [--password-file F | --password -]  set the web user/password (auth = basic), restart to apply",
+	"passwd":   "[--user U] [--password-file F | --password -]  set the web user/password (auth = basic), restart to apply; the dashboard (signed in) changes both live",
 	"cert":     "info | export [--der] [FILE] | regen [--new-key] | upload CERT KEY | reset  dashboard certificate (live via the daemon)",
+	"alerts":   "status | test | template  alert transport, test alert, PVE notification template (live via the daemon)",
 	"export":   "[FILE]                 settings bundle (config + presets, hash redacted) as JSON",
 	"import":   "FILE                   restore a settings bundle (validated first), reload the daemon",
 	"version":  "                       print version",
@@ -116,5 +117,5 @@ func usage(w io.Writer) {
 		fmt.Fprintf(w, "  %-9s %s\n", n, helpText[n])
 	}
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Environment: N5FANGOV_RUN_DIR (default /run/n5-fangov), N5FANGOV_SYSFS (default /sys)")
+	fmt.Fprintln(w, "Environment: N5FANGOV_RUN_DIR (default /run/n5-fangov), N5FANGOV_STATE_DIR (default /var/lib/n5-fangov), N5FANGOV_SYSFS (default /sys)")
 }
