@@ -113,7 +113,7 @@ func (s *Server) routeTable() []route {
 			Responses: map[int]string{200: "array of history points", 400: "bad query"}},
 		// ---- protected, read ---------------------------------------------
 		{Method: "GET", Path: "/api/history.csv", Handler: s.historyCSV, Class: classProtected, Scope: scopeRead,
-			Summary: "History as CSV (ts, time, per channel temp/duty/rpm, extra sensors)",
+			Summary:   "History as CSV (ts, time, per channel temp/duty/rpm, extra sensors)",
 			Params:    []paramSpec{{Name: "minutes", Type: "integer", Description: "span in minutes, 1..10080 (default 120); tier by span as for /api/history"}},
 			Responses: map[int]string{200: "text/csv attachment", 400: "bad query", 401: "sign in first"}},
 		{Method: "GET", Path: "/api/schedules", Handler: s.getSchedules, Class: classProtected, Scope: scopeRead,
