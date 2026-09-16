@@ -2,6 +2,10 @@ package web
 
 import (
 	"context"
+	"crypto/pbkdf2"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SirRenix/n5-fangov/internal/config"
 	"github.com/SirRenix/n5-fangov/internal/control"
 )
 
@@ -209,7 +214,11 @@ func newEnv(t *testing.T, auth AuthConfig) *env {
 	}
 	e.srv = New(e.deps(auth))
 	e.ts = httptest.NewServer(e.srv.Handler())
-	t.Cleanup(e.ts.Close)
+	// Closed in the background: after a 413 net/http keeps the server
+	// connection open for rstAvoidanceDelay (500 ms) and Close waits for
+	// it — that, not PBKDF2, was the half second behind every "too large"
+	// test. Nothing in the tests reads from the server after cleanup.
+	t.Cleanup(func() { go e.ts.Close() })
 	return e
 }
 
@@ -268,6 +277,23 @@ func waitTimeout(wg *sync.WaitGroup, d time.Duration) bool {
 }
 
 var csrf = map[string]string{CSRFHeader: "1"}
+
+// fastHash is the stored PBKDF2 form at config.PBKDF2MinIter (1000)
+// iterations instead of the production 210000: same syntax, same verifier
+// path, 200x cheaper per basicAuth request (AUDIT 7: five of the six
+// slowest tests were PBKDF2 cost). Tests that check the production form
+// (TestVerifyPasswordFormats, the legacy cases) call PasswordHash.
+func fastHash(user, password string) string {
+	salt := make([]byte, config.PBKDF2SaltLen)
+	if _, err := rand.Read(salt); err != nil {
+		panic(err)
+	}
+	key, err := pbkdf2.Key(sha256.New, password, salt, config.PBKDF2MinIter, config.PBKDF2KeyLen)
+	if err != nil {
+		panic(err)
+	}
+	return fmt.Sprintf("%s$%d$%s$%s", config.PBKDF2Prefix, config.PBKDF2MinIter, hex.EncodeToString(salt), hex.EncodeToString(key))
+}
 
 func basicAuth(u, p string) map[string]string {
 	req, _ := http.NewRequest("GET", "/", nil)
@@ -519,7 +545,7 @@ func TestCSRFHeaderRequired(t *testing.T) {
 }
 
 func TestBasicAuth(t *testing.T) {
-	hash := PasswordHash("admin", "s3cret")
+	hash := fastHash("admin", "s3cret")
 	e := newEnv(t, AuthConfig{Mode: "basic", User: "admin", PasswordHash: hash})
 	// GET state open without auth.
 	wantCode(t, e.do(t, "GET", "/api/state", "", nil), 200)
@@ -561,7 +587,7 @@ func TestBasicAuth(t *testing.T) {
 // TestAuthRequiredOnAllWrites: every state-changing endpoint answers 401
 // without credentials when auth = basic, and nothing changes.
 func TestAuthRequiredOnAllWrites(t *testing.T) {
-	e := newEnv(t, AuthConfig{Mode: "basic", User: "admin", PasswordHash: PasswordHash("admin", "pw")})
+	e := newEnv(t, AuthConfig{Mode: "basic", User: "admin", PasswordHash: fastHash("admin", "pw")})
 	wantError(t, e.do(t, "DELETE", "/api/override/hdd", "", csrf), 401, "authentication")
 	wantError(t, e.do(t, "PUT", "/api/config", sampleTOML, csrf), 401, "authentication")
 	wantError(t, e.do(t, "POST", "/api/presets/quiet/apply", "", csrf), 401, "authentication")
@@ -580,7 +606,7 @@ func TestAuthRequiredOnAllWrites(t *testing.T) {
 // every read that is not public needs credentials; state/history stay open
 // (reduced) for dashboards, the UI files and version/about/session too.
 func TestProtectedReadsNeedAuth(t *testing.T) {
-	e := newEnv(t, AuthConfig{Mode: "basic", User: "admin", PasswordHash: PasswordHash("admin", "pw")})
+	e := newEnv(t, AuthConfig{Mode: "basic", User: "admin", PasswordHash: fastHash("admin", "pw")})
 	wantError(t, e.do(t, "GET", "/api/config", "", nil), 401, "authentication")
 	wantError(t, e.do(t, "GET", "/api/log", "", nil), 401, "authentication")
 	wantError(t, e.do(t, "GET", "/api/presets", "", nil), 401, "authentication")
@@ -606,7 +632,7 @@ func TestProtectedReadsNeedAuth(t *testing.T) {
 // TestConfigHashRedaction (H1): the hash never leaves the daemon; a PUT that
 // carries the placeholder keeps the stored hash, a real value replaces it.
 func TestConfigHashRedaction(t *testing.T) {
-	hash := PasswordHash("admin", "pw")
+	hash := fastHash("admin", "pw")
 	withHash := strings.Replace(sampleTOML, "[web]\n", "[web]\nauth = \"basic\"\nuser = \"admin\"\npassword_hash = \""+hash+"\"\n", 1)
 	e := newEnv(t, AuthConfig{Mode: "basic", User: "admin", PasswordHash: hash})
 	pc := &fakeParsedConfig{fakeConfig{raw: []byte(withHash)}}
@@ -657,7 +683,7 @@ func TestConfigHashRedaction(t *testing.T) {
 		t.Fatal("reload got a different text than the file")
 	}
 	// A new real hash is written as given.
-	newHash := PasswordHash("admin", "other")
+	newHash := fastHash("admin", "other")
 	wantCode(t, e.do(t, "PUT", "/api/config", strings.Replace(raw, RedactedHash, newHash, 1), ok), 200)
 	if !strings.Contains(string(pc.saved[len(pc.saved)-1]), newHash) {
 		t.Fatal("new hash not written")
@@ -678,7 +704,7 @@ func TestConfigHashRedaction(t *testing.T) {
 // the dotted key web.password_hash and an inline table are all redacted;
 // the PUT placeholder substitution keeps the quote style.
 func TestRedactRawForms(t *testing.T) {
-	hash := PasswordHash("admin", "pw")
+	hash := fastHash("admin", "pw")
 	cases := map[string]string{
 		"double":   "[web]\nauth = \"basic\"\nuser = \"admin\"\npassword_hash = \"" + hash + "\"\n",
 		"single":   "[web]\nauth = \"basic\"\nuser = \"admin\"\npassword_hash = '" + hash + "'\n",
@@ -903,7 +929,7 @@ func TestAuthRateLimit(t *testing.T) {
 }
 
 func TestAuthorizedConstantTime(t *testing.T) {
-	s := New(Deps{Auth: AuthConfig{Mode: "basic", User: "admin", PasswordHash: PasswordHash("admin", "pw")}})
+	s := New(Deps{Auth: AuthConfig{Mode: "basic", User: "admin", PasswordHash: fastHash("admin", "pw")}})
 	mk := func(u, p string) *http.Request {
 		r := httptest.NewRequest("PUT", "/api/config", nil)
 		r.SetBasicAuth(u, p)
@@ -1311,7 +1337,7 @@ func TestServeWarnsNonLoopbackWithoutAuth(t *testing.T) {
 	if logs := run(AuthConfig{}, &net.TCPAddr{IP: net.ParseIP("198.51.100.20"), Port: 8010}); !has(logs, "non-loopback") {
 		t.Errorf("no warning for LAN IP without auth: %v", logs)
 	}
-	if logs := run(AuthConfig{Mode: "basic", User: "a", PasswordHash: PasswordHash("a", "b")}, lan); has(logs, "non-loopback") {
+	if logs := run(AuthConfig{Mode: "basic", User: "a", PasswordHash: fastHash("a", "b")}, lan); has(logs, "non-loopback") {
 		t.Errorf("warning although basic auth: %v", logs)
 	}
 	if logs := run(AuthConfig{}, nil); has(logs, "non-loopback") {

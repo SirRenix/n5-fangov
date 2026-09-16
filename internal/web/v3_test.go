@@ -110,7 +110,7 @@ func (p *fakePresetDeleter) Delete(name string) error {
 	return fs.ErrNotExist
 }
 
-var adminBasic = AuthConfig{Mode: "basic", User: "admin", PasswordHash: PasswordHash("admin", "pw")}
+var adminBasic = AuthConfig{Mode: "basic", User: "admin", PasswordHash: fastHash("admin", "pw")}
 
 // v3Env is newEnv plus the v0.3 stores (account, alerts, dashboard,
 // deletable presets, session file in a temp dir).
@@ -969,4 +969,264 @@ func TestPresetDetailRename(t *testing.T) {
 		t.Errorf("rename = %s", r.body)
 	}
 	wantCode(t, e.do(t, "GET", "/api/presets/silent", "", basicAuth("admin", "pw")), 200)
+}
+
+// ---- session expiry over HTTP ------------------------------------------------
+
+// fakeStoreClock replaces the session store's clock with a settable one.
+// It must be installed before the first request: handlers read the func
+// from their own goroutines, the value behind it is mutex-guarded.
+type fakeStoreClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func installStoreClock(e *env, base time.Time) *fakeStoreClock {
+	c := &fakeStoreClock{now: base}
+	e.srv.sessions.(*sessionStore).now = func() time.Time {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return c.now
+	}
+	return c
+}
+
+func (c *fakeStoreClock) set(t time.Time) {
+	c.mu.Lock()
+	c.now = t
+	c.mu.Unlock()
+}
+
+// TestSessionExpiresOverHTTP (AUDIT 7): a plain login stops working once
+// the store's clock reaches Created + 12 h, a "remember me" login at
+// Created + 30 d; the protected tree answers 401, /api/session reports an
+// anonymous caller, and the mirror file drops the expired entry.
+func TestSessionExpiresOverHTTP(t *testing.T) {
+	e, _, _, _ := v3Env(t, adminBasic)
+	if sessionTTL != 12*time.Hour || sessionRememberTTL != 30*24*time.Hour {
+		t.Fatalf("TTLs changed: %s / %s", sessionTTL, sessionRememberTTL)
+	}
+	base := time.Now().Truncate(time.Second)
+	clock := installStoreClock(e, base)
+	plain, plainCk, r := e.login(t, "admin", "pw", false)
+	wantCode(t, r, 200)
+	remember, _, r := e.login(t, "admin", "pw", true)
+	wantCode(t, r, 200)
+	sessionOf := func(hdr map[string]string) map[string]any {
+		t.Helper()
+		var m map[string]any
+		decode(t, e.do(t, "GET", "/api/session", "", map[string]string{"Cookie": hdr["Cookie"]}).body, &m)
+		return m
+	}
+	if s := sessionOf(plain); s["authenticated"] != true || s["via"] != "cookie" || s["expires"].(float64) != float64(base.Add(sessionTTL).Unix()) {
+		t.Fatalf("plain session = %v", s)
+	}
+	if s := sessionOf(remember); s["remember"] != true || s["expires"].(float64) != float64(base.Add(sessionRememberTTL).Unix()) {
+		t.Fatalf("remember session = %v", s)
+	}
+
+	// one second before the 12 h mark both still work
+	clock.set(base.Add(sessionTTL - time.Second))
+	wantCode(t, e.do(t, "GET", "/api/config", "", plain), 200)
+	wantCode(t, e.do(t, "GET", "/api/config", "", remember), 200)
+	// at exactly 12 h the plain session is gone (Expires is not after now)
+	clock.set(base.Add(sessionTTL))
+	wantError(t, e.do(t, "GET", "/api/config", "", plain), 401, "authentication")
+	if s := sessionOf(plain); s["authenticated"] != false || s["via"] != "none" {
+		t.Errorf("expired plain session reports %v", s)
+	}
+	wantCode(t, e.do(t, "GET", "/api/config", "", remember), 200)
+	// the expired session left the mirror file; the remember one stayed
+	mirror := readSessionFile(t, e)
+	if len(mirror.Sessions) != 1 || !mirror.Sessions[0].Remember {
+		t.Errorf("mirror after 12 h: %+v", mirror.Sessions)
+	}
+	// a fresh login after expiry works and gets a new token
+	plain2, plain2Ck, r := e.login(t, "admin", "pw", false)
+	wantCode(t, r, 200)
+	if plain2Ck.Value == plainCk.Value {
+		t.Error("expired token reissued")
+	}
+	wantCode(t, e.do(t, "GET", "/api/config", "", plain2), 200)
+
+	// 30 d: the remember session expires at Created + 30 d, not later
+	clock.set(base.Add(sessionRememberTTL - time.Second))
+	wantCode(t, e.do(t, "GET", "/api/config", "", remember), 200)
+	clock.set(base.Add(sessionRememberTTL))
+	wantError(t, e.do(t, "GET", "/api/config", "", remember), 401, "authentication")
+	// the second plain session (created at +12 h) is long gone as well
+	wantError(t, e.do(t, "GET", "/api/config", "", plain2), 401, "authentication")
+	if l := e.srv.sessions.List(); len(l) != 0 {
+		t.Errorf("sessions left after 30 d: %+v", l)
+	}
+	if mirror := readSessionFile(t, e); len(mirror.Sessions) != 0 {
+		t.Errorf("mirror after 30 d: %+v", mirror.Sessions)
+	}
+	// logout with an expired cookie is still a clean 204
+	wantCode(t, e.do(t, "POST", "/api/logout", "", plain), 204)
+}
+
+// readSessionFile decodes the env's mirror file.
+func readSessionFile(t *testing.T, e *env) sessionFile {
+	t.Helper()
+	data, err := os.ReadFile(e.srv.deps.SessionFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var f sessionFile
+	if err := json.Unmarshal(data, &f); err != nil {
+		t.Fatalf("%s: %v", e.srv.deps.SessionFile, err)
+	}
+	return f
+}
+
+// TestSessionRestartKeepsExpiry: after a restart (new store on the same
+// mirror file) the loaded sessions keep their original Expires — the
+// restart does not extend them.
+func TestSessionRestartKeepsExpiry(t *testing.T) {
+	e, acc, _, _ := v3Env(t, adminBasic)
+	base := time.Now().Truncate(time.Second)
+	installStoreClock(e, base)
+	remember, _, r := e.login(t, "admin", "pw", true)
+	wantCode(t, r, 200)
+	file := e.srv.deps.SessionFile
+	// restart at +29 d: still valid
+	restartEnv(t, e, file, adminBasic, acc)
+	clock := installStoreClock(e, base.Add(29*24*time.Hour))
+	wantCode(t, e.do(t, "GET", "/api/config", "", remember), 200)
+	// move to +30 d on the same instance
+	clock.set(base.Add(sessionRememberTTL))
+	wantError(t, e.do(t, "GET", "/api/config", "", remember), 401, "authentication")
+	// a restart after the deadline does not load it at all: load() skips
+	// expired entries, so the store starts empty
+	restartEnv(t, e, file, adminBasic, acc)
+	installStoreClock(e, base.Add(sessionRememberTTL+time.Hour))
+	wantError(t, e.do(t, "GET", "/api/config", "", remember), 401, "authentication")
+	if l := e.srv.sessions.List(); len(l) != 0 {
+		t.Errorf("expired session loaded after restart: %+v", l)
+	}
+}
+
+// TestSessionStoreConcurrentCreate (AUDIT 7): 50 goroutines creating
+// sessions at once on a file-backed store yield 50 distinct live sessions
+// and a consistent mirror; 50 more concurrent creates keep the cap at
+// sessionMax with the newest surviving. Run under -race.
+func TestSessionStoreConcurrentCreate(t *testing.T) {
+	if sessionMax != 50 {
+		t.Fatalf("sessionMax = %d", sessionMax)
+	}
+	path := filepath.Join(t.TempDir(), "sessions.json")
+	var logged []string
+	var logMu sync.Mutex
+	st := NewSessionStore(path, func(f string, a ...any) {
+		logMu.Lock()
+		logged = append(logged, fmt.Sprintf(f, a...))
+		logMu.Unlock()
+	}).(*sessionStore)
+	// distinct Created per goroutine so the cap has a defined "oldest";
+	// anchored at the real clock because the reload below uses time.Now
+	var clockMu sync.Mutex
+	tick := time.Now()
+	st.now = func() time.Time {
+		clockMu.Lock()
+		defer clockMu.Unlock()
+		tick = tick.Add(time.Millisecond)
+		return tick
+	}
+	create := func(n int) []string {
+		tokens := make([]string, n)
+		errs := make([]error, n)
+		var wg sync.WaitGroup
+		for i := 0; i < n; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				tokens[i], _, errs[i] = st.Create("admin", i%2 == 0, "192.0.2.7")
+			}(i)
+		}
+		if !waitTimeout(&wg, 30*time.Second) {
+			t.Fatal("concurrent Create did not finish")
+		}
+		for i, err := range errs {
+			if err != nil {
+				t.Fatalf("Create %d: %v", i, err)
+			}
+		}
+		return tokens
+	}
+	first := create(sessionMax)
+	seen := map[string]bool{}
+	for _, tok := range first {
+		if seen[tok] {
+			t.Fatal("duplicate token")
+		}
+		seen[tok] = true
+		if _, ok := st.Lookup(tok); !ok {
+			t.Fatal("fresh session not found")
+		}
+	}
+	if l := st.List(); len(l) != sessionMax {
+		t.Fatalf("List = %d after %d creates", len(l), sessionMax)
+	}
+	// reload from the mirror: the file is complete and consistent
+	st2 := NewSessionStore(path, nil).(*sessionStore)
+	if l := st2.List(); len(l) != sessionMax {
+		t.Fatalf("mirror holds %d sessions, want %d", len(l), sessionMax)
+	}
+	// a second wave: the cap holds, every new token is live, the first
+	// wave is gone entirely (its Created values are all older)
+	second := create(sessionMax)
+	if l := st.List(); len(l) != sessionMax {
+		t.Fatalf("List = %d after the second wave", len(l))
+	}
+	for _, tok := range second {
+		if _, ok := st.Lookup(tok); !ok {
+			t.Fatal("second-wave session dropped")
+		}
+	}
+	for _, tok := range first {
+		if _, ok := st.Lookup(tok); ok {
+			t.Fatal("first-wave session survived the cap")
+		}
+	}
+	logMu.Lock()
+	defer logMu.Unlock()
+	if len(logged) != 0 {
+		t.Errorf("unexpected log lines: %v", logged)
+	}
+}
+
+// TestLoginConcurrentCap: 60 parallel logins over HTTP all succeed and the
+// store ends at the cap; the mirror file is intact afterwards.
+func TestLoginConcurrentCap(t *testing.T) {
+	e, _, _, _ := v3Env(t, adminBasic)
+	const n = sessionMax + 10
+	codes := make([]int, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			r, err := e.try("POST", "/api/login", `{"user":"admin","password":"pw"}`, csrf)
+			if err != nil {
+				codes[i] = -1
+				return
+			}
+			codes[i] = r.code
+		}(i)
+	}
+	if !waitTimeout(&wg, 60*time.Second) {
+		t.Fatal("parallel logins did not finish")
+	}
+	for i, c := range codes {
+		if c != 200 {
+			t.Fatalf("login %d: status %d", i, c)
+		}
+	}
+	if l := e.srv.sessions.List(); len(l) != sessionMax {
+		t.Errorf("sessions after %d logins: %d, want %d", n, len(l), sessionMax)
+	}
+	if f := readSessionFile(t, e); len(f.Sessions) != sessionMax {
+		t.Errorf("mirror after %d logins: %d entries", n, len(f.Sessions))
+	}
 }
