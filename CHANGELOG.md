@@ -75,14 +75,14 @@ consolidated Settings page, SVG icons, sparklines) — concept and hand-over in
 0.4.0 so tokens, schedules and the longer history have their place in the new structure;
 prototype in the mock first, operator decides on screenshots.
 
-### Before the public release (documentation)
+### Before the public release (documentation) — done 2026-09-16
 
-- **Split the README**: a short landing page (what it is, one screenshot, three-step
+- **Split the README** (done): a short landing page (what it is, one screenshot, three-step
   install, links) and a `docs/` set with one page per topic (install, kernel driver on the
   N5 Pro, setup, dashboard guide with screenshots, CLI, configuration, alerts, HTTPS and
   security, updates and rollback, troubleshooting, development). The 880-line README is
   complete but tiring; a reader needs a table of contents and separation.
-- **Kernel driver page**: what the EC driver is, what DKMS does for it, install from the
+- **Kernel driver page** (done, `docs/02-kernel-driver.md`): what the EC driver is, what DKMS does for it, install from the
   sibling repository (later its `.deb`), verification (`dkms status`, `sensors`,
   `n5-fangov detect`), the kernel-update gate, removal — the topic first-time users
   stumble over.

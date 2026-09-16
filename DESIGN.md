@@ -10,8 +10,8 @@ This file is the contract between packages as it stands for the current pre-rele
 (`n5-fangov version`; history in [CHANGELOG.md](CHANGELOG.md)). Every builder follows it;
 deviations are written here first, then implemented. Where the text and the code
 disagree, the code is a bug or the text is — never a third state; fix one. Operator-facing
-behaviour is described in [README.md](README.md), the deploy file layout in
-[deploy/README-DEPLOY.md](deploy/README-DEPLOY.md).
+behaviour is described in [docs/](docs/README.md), the deploy file layout in
+[docs/01-install.md](docs/01-install.md#file-layout).
 
 ## 1. Non-negotiable rules
 
@@ -532,7 +532,7 @@ version string is one constant in that block, bumped with the release.
 `SystemCallArchitectures=native`, `SystemCallFilter=@system-service`,
 `CapabilityBoundingSet=` (empty). Verified on the reference host: the sandbox writes pwm
 files, reads the DMI tables, runs `lspci`, writes into pmxcfs. The `mail(1)` path on
-non-PVE hosts additionally needs `CAP_DAC_OVERRIDE` (README "Hardening").
+non-PVE hosts additionally needs `CAP_DAC_OVERRIDE` (docs/08-https-security.md "Hardening").
 
 Watchdog: the loop sends `WATCHDOG=1` every cycle; serve pings every 10 s from a ticker
 **only while the loop is alive** (`LastCycle()` within 3 × interval); `interval` is capped

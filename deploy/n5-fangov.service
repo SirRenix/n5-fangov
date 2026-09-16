@@ -50,7 +50,7 @@ ProtectSystem=strict
 # maildrop is for the mail(1)/sendmail alert path on non-PVE hosts (H4);
 # PVE::Notify with an SMTP target needs no extra path. NOTE: that mail path
 # also needs CAP_DAC_OVERRIDE (maildrop is 0730 postfix:postdrop and
-# NoNewPrivileges suppresses postdrop's setgid) — see README "Hardening".
+# NoNewPrivileges suppresses postdrop's setgid) — see docs/08-https-security.md "Hardening".
 # /etc/pve/notification-templates: the dashboard's "install template" button
 # writes the two n5-fangov .hbs files there (pmxcfs; verified on the reference
 # host: a process under this sandbox creates and removes a file in that
