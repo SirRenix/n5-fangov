@@ -19,6 +19,7 @@ import (
 	"github.com/SirRenix/n5-fangov/internal/hwmon"
 	"github.com/SirRenix/n5-fangov/internal/logfile"
 	"github.com/SirRenix/n5-fangov/internal/profile"
+	"github.com/SirRenix/n5-fangov/internal/schedule"
 	"github.com/SirRenix/n5-fangov/internal/version"
 )
 
@@ -102,6 +103,7 @@ type serveState struct {
 	tlsMgr *tlsManager
 	hosts  []string
 	ws     webServer
+	sched  *scheduler // preset schedules; Run starts after READY
 }
 
 // serveConfig sets up the logger, creates the run dir, loads the config
@@ -190,7 +192,7 @@ func serveDevice(st *serveState) bool {
 	}
 
 	st.factory = newSensorFactory(st.hw, dev)
-	ctrl, err := newController(st.cfg, dev, st.factory, st.alerter, controlOpts{DryRun: st.dryRun, RunDir: st.rdir})
+	ctrl, err := newController(st.cfg, dev, st.factory, st.alerter, controlOpts{DryRun: st.dryRun, RunDir: st.rdir, HistoryFile: historyPath(st.state)})
 	if err != nil {
 		log.Printf("controller: %v", err)
 		sendAlertCooled(st.rdir, st.alerter, "start", "n5-fangov could not start the controller: "+err.Error())
@@ -272,7 +274,15 @@ func serveWeb(st *serveState) {
 	// ([dashboard] is the controller's).
 	st.alertMgr.pin = tlsMgr.pinConfig
 	st.alertMgr.cooldown = func() time.Duration { return controllerConfig(ctrl).Daemon.AlertCooldown }
-	svc := hookedService{Service: ctrl, alerts: st.alertMgr}
+	// The scheduler applies [[schedule]] presets through the same preset
+	// store the API uses; every successful Reload hands it the new list
+	// (hookedService), so Set below sees the start-up config and later
+	// ones. Run starts in serveRun after READY.
+	sched := newScheduler(nil, func(msg string) { sendAlertCooled(rdir, alerter, "schedule", msg) }, log.Printf, time.Now)
+	svc := hookedService{Service: ctrl, alerts: st.alertMgr, sched: sched}
+	presets := dirPresetStore{dir: defaultPresetDir, cfgPath: cfgPath, svc: svc, pin: tlsMgr.pinConfig, profile: st.dev.Profile().Name()}
+	sched.apply = presets.Apply
+	sched.Set(schedule.FromConfig(st.cfg.Schedules))
 	accounts := newAccountStore(cfgPath, wspec, tlsMgr.pinConfig)
 	dashboard := newDashboardStore(cfgPath, ctrl, st.factory, tlsMgr.pinConfig)
 
@@ -294,7 +304,10 @@ func serveWeb(st *serveState) {
 		Alerts:      st.alertMgr,
 		Dashboard:   dashboard,
 		System:      newSystemCollector(st.hw, st.dev),
+		Schedules:   sched,
+		Channels:    ctrl.Channels,
 	})
+	st.sched = sched
 	st.wspec, st.addr, st.useTLS, st.tlsMgr, st.hosts = wspec, addr, useTLS, tlsMgr, hosts
 }
 
@@ -370,6 +383,11 @@ func serveRun(st *serveState) int {
 		}
 		if ctx.Err() == nil {
 			notifyReady()
+			// Preset schedules: one evaluation now (applies the active
+			// entry), then every schedulerTick.
+			if st.sched != nil {
+				st.sched.Run(ctx)
+			}
 		}
 	}()
 

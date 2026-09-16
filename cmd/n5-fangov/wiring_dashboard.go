@@ -12,6 +12,7 @@ import (
 
 	"github.com/SirRenix/n5-fangov/internal/config"
 	"github.com/SirRenix/n5-fangov/internal/control"
+	"github.com/SirRenix/n5-fangov/internal/schedule"
 	"github.com/SirRenix/n5-fangov/internal/sensor"
 )
 
@@ -97,12 +98,14 @@ func tomlStringArray(ids []string) string {
 
 // ---------------------------------------------------------------------------
 // Reload hook: every config text that reaches Service.Reload (PUT
-// /api/config, settings import, preset apply) re-applies [alert] on
-// success. [dashboard] is applied by the controller's own Reload.
+// /api/config, settings import, preset apply) re-applies [alert] and
+// hands the [[schedule]] list to the scheduler on success. [dashboard] is
+// applied by the controller's own Reload.
 
 type hookedService struct {
 	control.Service
 	alerts *alertManager
+	sched  *scheduler
 }
 
 func (h hookedService) Reload(raw []byte) error {
@@ -111,8 +114,13 @@ func (h hookedService) Reload(raw []byte) error {
 		// ErrRestartRequired: nothing was applied; the restart reads the file.
 		return err
 	}
-	if cfg, _, perr := config.Parse(raw); perr == nil && h.alerts != nil {
-		h.alerts.apply(cfg.Alert)
+	if cfg, _, perr := config.Parse(raw); perr == nil {
+		if h.alerts != nil {
+			h.alerts.apply(cfg.Alert)
+		}
+		if h.sched != nil {
+			h.sched.Set(schedule.FromConfig(cfg.Schedules))
+		}
 	}
 	return nil
 }

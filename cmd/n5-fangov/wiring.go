@@ -472,17 +472,19 @@ func failsafeDevice(dev profile.Device, cfg config.Config, logger *log.Logger) e
 
 // controlOpts is what serve passes to the controller besides config/device.
 type controlOpts struct {
-	DryRun bool
-	RunDir string // state.json, override.<name>, alert stamps
+	DryRun      bool
+	RunDir      string // state.json, override.<name>, alert stamps
+	HistoryFile string // <state dir>/history.json; "" = memory only
 }
 
 func newController(cfg config.Config, dev profile.Device, f sensorFactory, a alert.Sink, o controlOpts) (*control.Controller, error) {
 	return control.New(cfg, dev, f.controlFactory(), a, control.Options{
-		DryRun: o.DryRun,
-		RunDir: o.RunDir,
-		Logger: log.Default(),
-		Notify: func() { noteNotify("WATCHDOG=1", sdnotify.Watchdog()) },
-		Status: func(s string) { noteNotify("STATUS", sdnotify.Status(s)) },
+		DryRun:      o.DryRun,
+		RunDir:      o.RunDir,
+		HistoryFile: o.HistoryFile,
+		Logger:      log.Default(),
+		Notify:      func() { noteNotify("WATCHDOG=1", sdnotify.Watchdog()) },
+		Status:      func(s string) { noteNotify("STATUS", sdnotify.Status(s)) },
 	})
 }
 
@@ -560,6 +562,11 @@ type webDeps struct {
 	Dashboard   *dashboardStore // /api/dashboard (nil: 501)
 	// System backs GET /api/system (hardware inventory; see wiring_sysinfo.go). nil: 501.
 	System *systemCollector
+	// Schedules backs GET /api/schedules (scheduler.go). nil: 501.
+	Schedules *scheduler
+	// Channels is the controller's channel order for the history CSV
+	// columns; nil: the snapshot's order.
+	Channels func() []string
 }
 
 // logStore is the log read side (web.LogStore, DESIGN "Web and API"): implemented by
@@ -655,6 +662,10 @@ func newWebServer(d webDeps) webServer {
 	applyTLSDeps(&deps, d)
 	applyStoreDeps(&deps, d)
 	applySystemDeps(&deps, d.System)
+	if d.Schedules != nil {
+		deps.Schedules = d.Schedules.Status
+	}
+	deps.Channels = d.Channels
 	s := web.New(deps)
 	return webServer{TCP: s.Handler(), Socket: s.SocketHandler(), serve: s.Serve, serveTLS: serveTLSFunc(s)}
 }
@@ -797,6 +808,12 @@ func configJSON(cfg config.Config, warns []config.Warning) map[string]any {
 			"critical": c.Critical, "stop": c.Stop,
 		})
 	}
+	scheds := make([]map[string]any, 0, len(cfg.Schedules))
+	for _, s := range cfg.Schedules {
+		scheds = append(scheds, map[string]any{
+			"preset": s.Preset, "from": s.From, "to": s.To, "days": nonNilStrings(s.Days),
+		})
+	}
 	return map[string]any{
 		"daemon": map[string]any{
 			"interval": d.Interval.String(), "step_up": d.StepUp, "step_down": d.StepDown,
@@ -820,6 +837,7 @@ func configJSON(cfg config.Config, warns []config.Warning) map[string]any {
 			"sensors": nonNilStrings(cfg.Dashboard.Sensors),
 		},
 		"channel":  chans,
+		"schedule": scheds,
 		"warnings": warningStrings(warns),
 	}
 }

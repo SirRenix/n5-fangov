@@ -109,13 +109,17 @@ func TestHookedServiceReload(t *testing.T) {
 	cfgPath := writeStoreConfig(t)
 	m := newAlertManager(cfgPath, "", config.Alert{Transport: "log", MailTo: "root"}, nil)
 	inner := &fakeService{}
-	svc := hookedService{Service: inner, alerts: m}
-	raw := []byte(storeConfig + "\n[alert]\ntransport = \"off\"\n")
+	sched := newScheduler(func(string) error { return nil }, nil, nil, nil)
+	svc := hookedService{Service: inner, alerts: m, sched: sched}
+	raw := []byte(storeConfig + "\n[alert]\ntransport = \"off\"\n\n[[schedule]]\npreset = \"night\"\nfrom = \"22:00\"\nto = \"07:00\"\n")
 	if err := svc.Reload(raw); err != nil || inner.reloads() != 1 {
 		t.Fatalf("reload: %v", err)
 	}
 	if m.sw.Get().Name() != "off" {
 		t.Errorf("[alert] must be re-applied after a successful reload: %s", m.sw.Get().Name())
+	}
+	if st := sched.Status().(scheduleStatus); len(st.Entries) != 1 || st.Entries[0].Preset != "night" {
+		t.Errorf("[[schedule]] must reach the scheduler after a successful reload: %+v", st.Entries)
 	}
 	// restart required: passed through, nothing applied
 	inner.err = errRestartRequired()
@@ -124,5 +128,8 @@ func TestHookedServiceReload(t *testing.T) {
 	}
 	if m.sw.Get().Name() != "off" {
 		t.Errorf("202 must not apply [alert]")
+	}
+	if st := sched.Status().(scheduleStatus); len(st.Entries) != 1 {
+		t.Errorf("202 must not change the schedules: %+v", st.Entries)
 	}
 }

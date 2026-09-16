@@ -24,6 +24,7 @@ const (
 	stateDirEnv      = "N5FANGOV_STATE_DIR"
 	sessionsFileName = "sessions.json"
 	alertsFileName   = "alerts.json"
+	historyFileName  = "history.json"
 )
 
 // stateDir returns the state directory: N5FANGOV_STATE_DIR, else the
@@ -74,6 +75,14 @@ func alertsPath(dir string) string {
 		return ""
 	}
 	return filepath.Join(dir, alertsFileName)
+}
+
+// historyPath is <state dir>/history.json, the persisted chart history.
+func historyPath(dir string) string {
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, historyFileName)
 }
 
 // readConfigRaw reads the config file; a missing file reads as empty

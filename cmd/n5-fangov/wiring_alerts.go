@@ -39,6 +39,7 @@ var alertKinds = []web.AlertKind{
 	{Kind: "profile", Description: "no fan controller was detected at start; nothing is regulated, fans stay in BIOS/EC control"},
 	{Kind: "start", Description: "the controller could not be set up at start (see the journal)"},
 	{Kind: "web", Description: "the web UI listener could not be started (TLS setup or bind failed); the CLI socket keeps working"},
+	{Kind: "schedule", Description: "a scheduled preset switch failed (preset missing, invalid, write or reload error); the previous curves stay"},
 	{Kind: "test", Description: "a test alert sent from the dashboard or `n5-fangov alerts test`"},
 }
 
