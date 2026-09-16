@@ -8,16 +8,16 @@
 <link rel="stylesheet" href="app.css">
 </head>
 <body>
-<header class="hdr">
+<header class="hdr" id="hdr">
   <div class="hdr-l">
-    <span class="brand">n5-fangov</span>
+    <h1 class="brand">n5-fangov</h1>
     <span class="prof" id="h-profile">—</span>
-    <span class="badge" id="h-verified" hidden></span>
+    <span class="badge verified mx" id="h-verified" hidden></span>
   </div>
   <div class="hdr-r">
     <span class="chip" id="h-status" role="status">…</span>
-    <span class="meta" id="h-uptime" title="daemon uptime">up —</span>
-    <span class="meta ver"><span id="h-version">v —</span><span class="badge beta" id="h-beta" hidden>beta</span></span>
+    <span class="meta uptime mx" title="daemon uptime">up —</span>
+    <span class="meta ver mx"><span class="version">v —</span><span class="badge beta" hidden>beta</span></span>
     <button class="meta sec" id="h-sec" type="button" title="transport" aria-haspopup="dialog" aria-controls="cert" hidden>—</button>
     <span class="live" id="h-live" aria-live="polite"><i></i>live</span>
     <span class="meta user" id="h-user" title="signed in as" hidden></span>
@@ -25,13 +25,14 @@
     <button class="btn sm" id="h-signout" type="button" hidden>Sign out</button>
     <button class="btn icon" id="h-settings" aria-expanded="false" aria-controls="settings" title="Settings" hidden>⚙<span class="sr">Settings</span></button>
   </div>
-  <div class="popover" id="settings" hidden>
+  <div class="popover" id="settings" role="group" aria-label="Settings" hidden>
+    <div id="s-meta"><span class="meta uptime" title="daemon uptime">up —</span><span class="meta ver"><span class="version">v —</span><span class="badge beta" hidden>beta</span></span><span class="badge verified" hidden></span></div>
     <label>Temperature unit
       <select id="s-unit"><option value="C">°C</option><option value="F">°F</option></select></label>
     <label>Refresh interval
       <select id="s-interval"><option value="5">5 s</option><option value="10">10 s</option><option value="30">30 s</option></select></label>
     <label>Theme
-      <select id="s-theme"><option value="dark">dark</option><option value="light">light</option><option value="system">system</option></select></label>
+      <select id="s-theme"><option value="system">system</option><option value="dark">dark</option><option value="light">light</option></select></label>
     <hr>
     <button class="btn" id="s-export" type="button">Export settings</button>
     <button class="btn" id="s-import" type="button">Import settings…</button>
@@ -51,9 +52,10 @@
 <div class="banner" id="banner" role="alert" hidden>Connection to the daemon lost — retrying. Fans keep running on the daemon side.</div>
 <div class="banner warn" id="g-notice" role="status" hidden></div>
 
+<div class="tabs-w" id="tabs-w">
 <nav class="tabs" role="tablist" aria-label="Sections" id="tabs">
   <button role="tab" id="tab-overview" aria-controls="p-overview" aria-selected="true">Overview</button>
-  <button role="tab" id="tab-curves" aria-controls="p-curves" aria-selected="false" tabindex="-1" data-auth hidden>Curves</button>
+  <button role="tab" id="tab-curves" aria-controls="p-curves" aria-selected="false" tabindex="-1" data-auth hidden>Curves<span class="dirty" id="cv-dirty" role="img" aria-label="unsaved changes" title="unsaved changes" hidden></span></button>
   <button role="tab" id="tab-manual" aria-controls="p-manual" aria-selected="false" tabindex="-1" data-auth hidden>Manual</button>
   <button role="tab" id="tab-presets" aria-controls="p-presets" aria-selected="false" tabindex="-1" data-auth hidden>Presets</button>
   <button role="tab" id="tab-alerts" aria-controls="p-alerts" aria-selected="false" tabindex="-1" data-auth hidden>Alerts</button>
@@ -62,6 +64,7 @@
   <button role="tab" id="tab-compat" aria-controls="p-compat" aria-selected="false" tabindex="-1" data-auth hidden>Compatibility</button>
   <button role="tab" id="tab-about" aria-controls="p-about" aria-selected="false" tabindex="-1">About</button>
 </nav>
+</div>
 
 <main>
 <section id="p-overview" role="tabpanel" aria-labelledby="tab-overview">
@@ -86,7 +89,7 @@
       <div class="chart" id="ch-extra"><canvas></canvas><div class="tip" hidden></div></div>
     </div>
     <div class="grid3 ov">
-      <div class="card sensors"><div class="card-h"><h2>Sensors</h2><span class="hint sm">chart = record in the history (max 8)</span></div><div id="sensors"></div></div>
+      <div class="card sensors"><div class="card-h"><h2>Sensors</h2><span class="hint sm" id="sn-hint">chart = record in the history</span></div><div id="sensors"></div></div>
       <div class="card"><h2>System</h2><dl class="kv" id="sys"></dl></div>
       <div class="card"><h2>Recent alerts</h2><ul class="alerts" id="alerts"></ul></div>
     </div>
@@ -95,10 +98,11 @@
 
 <section id="p-curves" role="tabpanel" aria-labelledby="tab-curves" hidden>
   <div class="bar">
-    <p class="hint">Drag points or edit the table. 2–8 points, temperatures ascending. Applying rewrites the <code>[[channel]]</code> tables and keeps <code>[daemon]</code>/<code>[web]</code>.</p>
-    <div class="actions"><button class="btn" id="cv-revert">Revert</button><button class="btn primary" id="cv-apply">Apply to daemon</button></div>
+    <p class="hint" id="cv-hint">Drag points or edit the table. 2–8 points, temperatures ascending, duty never falling. Applying rewrites the <code>[[channel]]</code> tables and keeps <code>[daemon]</code>/<code>[web]</code>.</p>
+    <div class="actions"><button class="btn" id="cv-revert">Revert</button><button class="btn primary" id="cv-apply">Apply to daemon <span class="badge dirty-b" id="cv-badge" hidden>unsaved</span></button></div>
   </div>
-  <div class="notice" id="cv-notice" hidden></div>
+  <p class="gloss"><b>duty</b> is the PWM value 0–255 the daemon writes (100 % = 255). Each cycle a channel moves from its current duty towards the curve's target in <code>step_up</code>/<code>step_down</code> steps (slew, shown as “current → target” on the Overview). <b>critical</b> forces 100 % at once whatever the curve says; a <b>stall</b> (fan reports 0 rpm) kicks the channel up until it spins. <b>stop</b> is the duty left on the channel when the daemon stops: <code>auto</code> hands it back to the driver, a number keeps a fixed duty. Curves are stored and edited in °C regardless of the display unit.</p>
+  <div class="notice" id="cv-notice" role="alert" hidden></div>
   <div class="editors" id="editors"></div>
 </section>
 
@@ -109,23 +113,23 @@
 
 <section id="p-presets" role="tabpanel" aria-labelledby="tab-presets" hidden>
   <div class="bar">
-    <form class="inline" id="ps-save"><label>Save current as <input id="ps-name" placeholder="name" pattern="[a-z0-9_\-]{1,64}" maxlength="64" title="a-z, 0-9, _ and -, at most 64 characters" required></label><button class="btn" type="submit">Save</button></form>
+    <form class="inline" id="ps-save" novalidate><label>Save current as <input id="ps-name" placeholder="name" maxlength="64" autocapitalize="off" spellcheck="false" aria-describedby="ps-hint" required></label><button class="btn primary" type="submit">Save</button><span class="hint sm" id="ps-hint">a–z, 0–9, _ and -, at most 64 characters · current = the curves the daemon runs now (apply the editor first)</span></form>
   </div>
   <div class="notice" id="ps-notice" hidden></div>
   <div class="list" id="presets"></div>
 </section>
 
 <section id="p-alerts" role="tabpanel" aria-labelledby="tab-alerts" hidden>
-  <div class="notice err" id="al-notice" hidden></div>
+  <div class="notice err" id="al-notice" role="alert" hidden></div>
   <div class="grid2">
     <div class="card al">
       <h2>Transport</h2>
       <form class="inline" id="al-form">
         <label>Transport <select id="al-transport"><option value="auto">auto</option><option value="pve">pve</option><option value="mail">mail</option><option value="log">log</option><option value="off">off</option></select></label>
-        <label>Mail to <input id="al-mailto" placeholder="root" maxlength="128" autocomplete="off"></label>
+        <label id="al-mailto-l">Mail to <input id="al-mailto" placeholder="root" maxlength="128" autocomplete="off"></label>
         <button class="btn primary" type="submit">Save</button>
       </form>
-      <p class="hint sm">auto = pve-notify when PVE::Notify and perl exist, else mail(1), else the log.</p>
+      <p class="hint sm">auto: Proxmox notifications if available, otherwise local mail, otherwise only the log. Transports that are not installed are greyed out.</p>
       <dl class="kv" id="al-status"></dl>
       <div class="act"><button class="btn" id="al-test" type="button">Send test alert</button><span class="hint sm">kind <code>test</code>, no cooldown</span></div>
     </div>
@@ -173,7 +177,7 @@
   <div class="bar">
     <label class="grow">Filter <input id="lg-filter" type="search" placeholder="substring…"></label>
     <label class="chk"><input id="lg-auto" type="checkbox" checked> auto-scroll</label>
-    <span class="meta" id="lg-src" title="log source">—</span>
+    <span class="meta" id="lg-meta">—</span>
     <button class="btn" id="lg-refresh">Refresh</button>
     <button class="btn" id="lg-export" title="Download the whole log file">Export</button>
     <button class="btn danger" id="lg-clear" title="Truncate the current log file (rotated files and journal untouched)">Clear</button>
@@ -190,14 +194,14 @@
     <p class="ab-t"><b id="ab-name">n5-fangov</b> <span class="mono" id="ab-version"></span> <span class="badge beta" id="ab-beta" hidden>beta</span></p>
     <p>A fan governor for small servers whose EC or Super-I/O exports its fan outputs through a kernel hwmon driver. The daemon takes over the <code>pwm</code> channels the driver exposes, drives each from its own curve with a selectable temperature source (CPU package, NVMe max, drive max, EC and other hwmon sensors), slews between steps and stands guard: a critical temperature forces full duty, a stall (fan reports 0 rpm) kicks the channel up, a systemd watchdog restarts a hung daemon and the failsafe leaves the channels at a safe duty when it stops. This dashboard and the <code>n5-fangov</code> CLI share one API.</p>
     <dl class="kv">
-      <dt>licence</dt><dd><a id="ab-license" rel="noopener" target="_blank">GPL-2.0-only</a></dd>
+      <dt>license</dt><dd><a id="ab-license" rel="noopener" target="_blank">GPL-2.0-only</a></dd>
       <dt>repository</dt><dd><a id="ab-repo" rel="noopener" target="_blank"></a></dd>
       <dt>author</dt><dd><a id="ab-author" rel="noopener" target="_blank"></a></dd>
       <dt>releases</dt><dd><a id="ab-rel" rel="noopener" target="_blank"></a></dd>
-      <dt>built with</dt><dd id="ab-go">—</dd>
+      <dt id="ab-go-t">built with</dt><dd id="ab-go">—</dd>
       <dt>credits</dt><dd><ul class="credits" id="ab-credits"></ul></dd>
     </dl>
-    <p class="hint sm">Dashboard mock: <code>?mock=1</code> (<code>&amp;user=1</code> signed in, <code>&amp;auth=none</code> auth off).</p>
+    <p class="hint sm" id="ab-mock" hidden>Dashboard mock: <code>?mock=1</code> (<code>&amp;user=1</code> signed in, <code>&amp;auth=none</code> auth off, <code>&amp;tab=</code>, <code>&amp;tls=off|file|soon|fallback</code>, <code>&amp;syserr=1</code>, <code>&amp;reject=1</code> strict 400, <code>&amp;expire=1</code> session dies after 15 s).</p>
   </div>
 </section>
 </main>
@@ -208,9 +212,17 @@
     <label>User <input id="l-user" autocomplete="username" required autocapitalize="off" spellcheck="false"></label>
     <label>Password <input id="l-pass" type="password" autocomplete="current-password" required></label>
     <label class="chk"><input type="checkbox" id="l-remember"> <span>Remember me <span class="hint sm">30 days on this browser</span></span></label>
-    <div class="notice err" id="l-err" hidden></div>
+    <div class="notice err" id="l-err" role="alert" hidden></div>
     <div class="act"><button class="btn primary" id="l-submit" type="submit">Sign in</button></div>
   </form>
+</dialog>
+
+<dialog class="dlg narrow" id="confirm" aria-labelledby="cf-title" aria-describedby="cf-text">
+  <div id="cf-body">
+    <div class="dlg-h"><h2 id="cf-title">Confirm</h2><button class="btn icon" id="cf-close" type="button" aria-label="Close">×</button></div>
+    <p id="cf-text"></p>
+    <div class="act"><button class="btn" id="cf-cancel" type="button">Cancel</button><button class="btn primary" id="cf-ok" type="button">Confirm</button></div>
+  </div>
 </dialog>
 
 <dialog class="dlg" id="account" aria-labelledby="ac-title">
@@ -222,7 +234,7 @@
       <button class="btn" id="ac-revoke" type="button">Sign out other sessions</button>
     </div>
     <form class="sub" id="ac-pw-f" hidden novalidate>
-      <p class="hint">8–128 characters. Every other session is signed out; this one stays.</p>
+      <p class="hint" id="ac-pw-hint">8–128 characters. Every other session is signed out; this one stays.</p>
       <label>Current password <input type="password" id="ac-cur" autocomplete="current-password" required></label>
       <label>New password <input type="password" id="ac-new" autocomplete="new-password" minlength="8" maxlength="128" required></label>
       <label>Confirm <input type="password" id="ac-new2" autocomplete="new-password" required></label>
@@ -234,7 +246,7 @@
       <label>New user name <input id="ac-uname" autocomplete="off" autocapitalize="off" spellcheck="false" pattern="[A-Za-z0-9_.\-]{1,32}" maxlength="32" required></label>
       <div class="act"><button class="btn primary" type="submit">Change user</button><button class="btn" type="button" data-cancel>Cancel</button></div>
     </form>
-    <div class="notice" id="ac-notice" hidden></div>
+    <div class="notice" id="ac-notice" role="alert" hidden></div>
     <h3>Sessions</h3>
     <div class="tbl-wrap"><table class="tbl sm" id="ac-sessions"><thead><tr><th>ID</th><th>Created</th><th>Last seen</th><th>Expires</th><th>IP</th></tr></thead><tbody></tbody></table></div>
   </div>
@@ -247,7 +259,7 @@
     <dl class="kv" id="ct-kv"></dl>
     <div class="chips" id="ct-san" aria-label="Subject alternative names"></div>
     <div class="fp"><span class="k">SHA-256</span><code id="ct-fp"></code><button class="btn sm" id="ct-copy" type="button" title="Copy fingerprint">copy</button></div>
-    <div class="notice" id="ct-notice" hidden></div>
+    <div class="notice" id="ct-notice" role="alert" hidden></div>
     <div class="act">
       <button class="btn" id="ct-crt" type="button" title="PEM — Firefox, macOS, Linux">Download .crt</button>
       <button class="btn" id="ct-cer" type="button" title="DER — Windows, Android">Download .cer</button>
@@ -282,7 +294,7 @@
   </div>
 </dialog>
 
-<div class="toasts" id="toasts" aria-live="polite" aria-relevant="additions"></div>
+<div class="toasts"><div id="toasts" aria-live="polite" aria-relevant="additions"></div><div id="toasts-a" role="alert" aria-live="assertive" aria-relevant="additions"></div></div>
 <script src="app.js"></script>
 </body>
 </html>
