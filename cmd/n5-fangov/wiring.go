@@ -405,42 +405,59 @@ func sendAlert(a alert.Sink, kind, msg string) { a.Alert(kind, msg) }
 const startAlertCooldown = 30 * time.Minute
 
 // sendAlertCooled delivers an alert unless one of the same kind went out
-// within startAlertCooldown. The stamp lives in <runDir>/alert.<kind> in the
-// same format the controller uses (unix seconds), so the two cooldowns are
-// one: a "config" alert from serve also silences the controller's "config"
-// alert for the period and vice versa. An unusable run dir means no
+// within startAlertCooldown (see stampAlert). An unusable run dir means no
 // cooldown (alert always sent).
 func sendAlertCooled(runDir string, a alert.Sink, kind, msg string) {
-	if runDir != "" {
-		stamp := filepath.Join(runDir, "alert."+kind)
-		now := time.Now().Unix()
-		if b, err := os.ReadFile(stamp); err == nil {
-			if last, err := strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64); err == nil && now-last >= 0 && now-last < int64(startAlertCooldown.Seconds()) {
-				log.Printf("ALERT[%s] suppressed (last one %s ago, cooldown %s): %s", kind,
-					(time.Duration(now-last) * time.Second).String(), startAlertCooldown, firstLine(msg))
-				return
-			}
-		}
-		if err := os.WriteFile(stamp, []byte(strconv.FormatInt(now, 10)+"\n"), 0o644); err != nil {
-			log.Printf("alert stamp %s: %v", stamp, err)
-		}
+	if !stampAlert(runDir, kind, msg) {
+		return
 	}
 	a.Alert(kind, msg)
 }
 
-// startAlert is sendAlertCooled on its own goroutine for the alerts serve
-// raises before the loop runs: the cooldown stamp is written synchronously
-// (so a restart loop still sees it), the delivery — up to Timeout plus
-// WaitDelay of perl or mail — does not hold up the first cycle and READY=1.
-// A sink panic costs the alert, not the daemon.
+// stampAlert is the cooldown half of a start-up alert: false when one of
+// the same kind went out within startAlertCooldown (logged as suppressed),
+// else the stamp is written and true says "deliver". The stamp lives in
+// <runDir>/alert.<kind> in the same format the controller uses (unix
+// seconds), so the two cooldowns are one: a "config" alert from serve also
+// silences the controller's "config" alert for the period and vice versa.
+// Without a run dir there is no cooldown (always true).
+func stampAlert(runDir, kind, msg string) bool {
+	if runDir == "" {
+		return true
+	}
+	stamp := filepath.Join(runDir, "alert."+kind)
+	now := time.Now().Unix()
+	if b, err := os.ReadFile(stamp); err == nil {
+		if last, err := strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64); err == nil && now-last >= 0 && now-last < int64(startAlertCooldown.Seconds()) {
+			log.Printf("ALERT[%s] suppressed (last one %s ago, cooldown %s): %s", kind,
+				(time.Duration(now-last) * time.Second).String(), startAlertCooldown, firstLine(msg))
+			return false
+		}
+	}
+	if err := os.WriteFile(stamp, []byte(strconv.FormatInt(now, 10)+"\n"), 0o644); err != nil {
+		log.Printf("alert stamp %s: %v", stamp, err)
+	}
+	return true
+}
+
+// startAlert delivers a start-up alert on its own goroutine for the alerts
+// serve raises before the loop runs. The cooldown stamp is checked and
+// written here, synchronously, before the goroutine starts: a restart loop
+// (or an early exit of serve right after this call) must still see it
+// (L5). The delivery — up to Timeout plus WaitDelay of perl or mail — does
+// not hold up the first cycle and READY=1. A sink panic costs the alert,
+// not the daemon.
 func startAlert(runDir string, a alert.Sink, kind, msg string) {
+	if !stampAlert(runDir, kind, msg) {
+		return
+	}
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
 				log.Printf("%salert sink panicked delivering %s: %v", logError, kind, r)
 			}
 		}()
-		sendAlertCooled(runDir, a, kind, msg)
+		a.Alert(kind, msg)
 	}()
 }
 
@@ -878,7 +895,9 @@ func (s dirPresetStore) load(name string) ([]config.Channel, []config.Warning, e
 // Apply replaces the [[channel]] tables of the config file with the preset,
 // writes the file and reloads the daemon. The file is rewritten from the
 // parsed config, so comments in it are lost. control.ErrRestartRequired
-// passes through unchanged (the web layer answers 202 for it).
+// passes through unchanged (the web layer answers 202 for it); any other
+// reload failure comes back as web.ReloadError — "preset written, reload
+// failed" — so it is told apart from a write error (L7).
 func (s dirPresetStore) Apply(name string) error {
 	chans, warns, err := s.load(name)
 	if err != nil {
@@ -895,7 +914,13 @@ func (s dirPresetStore) Apply(name string) error {
 		return err
 	}
 	log.Printf("preset %s applied to %s (%d channels)", name, s.cfgPath, len(chans))
-	return s.svc.Reload(raw)
+	if err := s.svc.Reload(raw); err != nil {
+		if isRestartRequired(err) {
+			return err
+		}
+		return fmt.Errorf("preset %s written, %w", name, &web.ReloadError{Err: err})
+	}
+	return nil
 }
 
 // write is Apply's read-modify-write of the config file, under the file

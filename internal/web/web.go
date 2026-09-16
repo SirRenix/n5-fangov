@@ -24,6 +24,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -103,6 +104,22 @@ func storeStatus(err error) int {
 		return http.StatusInternalServerError
 	}
 	return http.StatusBadRequest
+}
+
+// ReloadError marks a failure after the file was written: the daemon did
+// not take the new content. A store returns it (wrapped as it likes) so
+// the API can answer 500 with the text — the file is changed, the running
+// configuration is not — instead of the 400 a refusal gets (L7); the same
+// distinction PUT /api/config makes with "config saved, reload failed".
+type ReloadError struct{ Err error }
+
+func (e *ReloadError) Error() string { return "reload failed: " + e.Err.Error() }
+func (e *ReloadError) Unwrap() error { return e.Err }
+
+// isReloadError reports whether err carries a ReloadError.
+func isReloadError(err error) bool {
+	var re *ReloadError
+	return errors.As(err, &re)
 }
 
 // PresetStore lists, applies and saves curve presets.
@@ -234,6 +251,9 @@ type Server struct {
 	// every successful AccountStore.Update. Read per request without a lock.
 	auth     atomic.Pointer[AuthConfig]
 	sessions SessionStore
+	// upgradeMu serialises upgradeLegacyHash: two successful logins in
+	// the same instant must not both rewrite the file (L4).
+	upgradeMu sync.Mutex
 	// tlsNoise summarises rejected TLS handshakes (browsers without the CA).
 	tlsNoise *handshakeFilter
 }
@@ -632,14 +652,23 @@ func (s *Server) resolveCaller(w http.ResponseWriter, r *http.Request) (Caller, 
 // as PBKDF2 after a successful verification — the only moment the
 // password is at hand. Needs an AccountStore; without one the legacy form
 // simply stays. The sessions are kept: the epoch follows the new hash so
-// the mirror file is still loaded after a restart.
+// the mirror file is still loaded after a restart. Concurrent successful
+// verifications are serialised; the second one finds the PBKDF2 hash in
+// effect and returns (one Account.Update, not one per request).
 func (s *Server) upgradeLegacyHash(user, password string) {
 	if s.deps.Account == nil {
 		return
 	}
-	cfg := s.authCfg()
-	ph, err := config.ParsePasswordHash(cfg.PasswordHash)
-	if err != nil || ph.Legacy == nil {
+	isLegacy := func() bool {
+		ph, err := config.ParsePasswordHash(s.authCfg().PasswordHash)
+		return err == nil && ph.Legacy != nil
+	}
+	if !isLegacy() {
+		return
+	}
+	s.upgradeMu.Lock()
+	defer s.upgradeMu.Unlock()
+	if !isLegacy() {
 		return
 	}
 	next, err := s.deps.Account.Update("", PasswordHash(user, password))
@@ -921,9 +950,12 @@ func (s *Server) getConfig(w http.ResponseWriter, r *http.Request) {
 // putConfig: read (413 on overflow) → restore a redacted hash → validate
 // (400, nothing written) → save → reload. Order matters (M2): a syntax
 // error never reaches the file. With ?strict=1 (the dashboard editor)
-// validation warnings refuse the PUT as well — 400 with the warning list —
-// instead of writing a file whose invalid values the daemon replaces by
-// defaults (rule 8 is for the start, not for an interactive edit).
+// validation warnings on the [[channel]] tables refuse the PUT as well —
+// 400 with the warning list — instead of writing a file whose invalid
+// values the daemon replaces by defaults (rule 8 is for the start, not for
+// an interactive edit). Warnings on the other tables (an unknown key in
+// [web], say) are not the editor's doing and cannot be fixed there: they
+// come back as "warnings" with 200/202 as without strict.
 func (s *Server) putConfig(w http.ResponseWriter, r *http.Request) {
 	if s.deps.Config == nil || s.deps.Service == nil {
 		writeError(w, http.StatusNotImplemented, "no config store")
@@ -949,6 +981,12 @@ func (s *Server) putConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		body = []byte(RestoreHash(string(body), currentHash(string(cur))))
+		if parsedHash(string(body)) == RedactedHash {
+			// the placeholder sits where RestoreHash does not reach (an
+			// inline table): written as is it would be the stored hash
+			writeError(w, http.StatusBadRequest, "config rejected: password_hash "+RedactedHash+" not restored; write the assignment on its own line under [web]")
+			return
+		}
 	}
 	var warnings []string
 	if s.deps.Validate != nil {
@@ -957,9 +995,11 @@ func (s *Server) putConfig(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "config rejected: " + err.Error(), "errors": nonNil(warns)})
 			return
 		}
-		if len(warns) > 0 && strictQuery(r) {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "config rejected", "errors": warns})
-			return
+		if strictQuery(r) {
+			if errs, rest := splitChannelWarnings(warns); len(errs) > 0 {
+				writeJSON(w, http.StatusBadRequest, map[string]any{"error": "config rejected", "errors": errs, "warnings": nonNil(rest)})
+				return
+			}
 		}
 		warnings = warns
 	}
@@ -980,6 +1020,22 @@ func (s *Server) putConfig(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusInternalServerError, "config saved, reload failed: "+err.Error())
 	}
+}
+
+// splitChannelWarnings separates the warnings on the [[channel]] tables
+// ("channel.<name>.<key>: …", "channel[<i>].<key>: …" for a nameless
+// table, "channel: …" for a broken array) from the rest. Deps.Validate
+// renders config.Warning as "<field>: <msg>".
+func splitChannelWarnings(warns []string) (channel, rest []string) {
+	for _, w := range warns {
+		tail, ok := strings.CutPrefix(w, "channel")
+		if ok && tail != "" && strings.ContainsRune(".[:", rune(tail[0])) {
+			channel = append(channel, w)
+		} else {
+			rest = append(rest, w)
+		}
+	}
+	return channel, rest
 }
 
 // strictQuery reports ?strict=1 (or true/yes) on a request.
@@ -1148,6 +1204,10 @@ func (s *Server) applyPreset(w http.ResponseWriter, r *http.Request) {
 			// R-L8: no such preset for this profile (a built-in of another
 			// profile counts as missing).
 			writeError(w, http.StatusNotFound, "unknown preset "+name)
+		case isReloadError(err):
+			// written, not reloaded (L7): not the caller's fault, and the
+			// file already carries the preset
+			writeError(w, http.StatusInternalServerError, "apply preset: "+err.Error())
 		default:
 			writeError(w, storeStatus(err), "apply preset: "+err.Error())
 		}

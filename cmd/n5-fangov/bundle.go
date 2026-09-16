@@ -122,9 +122,14 @@ func (b fileBundle) Import(data []byte) (restartRequired bool, warnings []string
 			raw = restoreHash(raw, h)
 		}
 	}
-	_, warns, err := parseConfigErr([]byte(raw))
+	cfg, warns, err := parseConfigErr([]byte(raw))
 	if err != nil {
 		errs = append(errs, "config: "+err.Error())
+	} else if webOf(cfg).PasswordHash == redactedHash {
+		// L6: the placeholder sits where restoreHash does not reach (an
+		// inline table `web = { … }`); written as is it would become the
+		// stored hash and lock the account out
+		errs = append(errs, "config: password_hash "+redactedHash+" not restored; write the assignment on its own line under [web]")
 	}
 	names := make([]string, 0, len(in.Presets))
 	for name := range in.Presets {

@@ -697,10 +697,10 @@ on('#cv-apply', 'click', async () => {
 	if (errs.length) return cvNotice('Not applied — fix these first:\n' + errs.join('\n'), 'err');
 	const body = stripChannels(cfgRaw) + edState.map(tomlChannel).join('\n');
 	try { const r = await api('/api/config?strict=1', { method: 'PUT', body, headers: { 'Content-Type': 'application/toml' } });
-		const warn = r.body && Array.isArray(r.body.warnings) && r.body.warnings.length ? 'Daemon replaced invalid values by defaults:\n' + r.body.warnings.join('\n') : '';
+		const warn = r.body && Array.isArray(r.body.warnings) && r.body.warnings.length ? 'Config warnings outside the channel tables:\n' + r.body.warnings.join('\n') : '';
 		cvNotice((r.status === 202 ? 'Written — restart required (channel set or profile changed): systemctl restart n5-fangov\n' : '') + warn, '');
 		toast(r.status === 202 ? 'Curves written — restart required' : warn ? 'Applied with warnings' : 'Curves applied', r.status === 202 || warn ? 'warn' : 'ok'); await loadConfig(); loadEditor();
-	} catch (e) { cvNotice(e.message, 'err'); toast('Curves rejected', 'err'); }
+	} catch (e) { cvNotice(e.message, 'err'); } // notice is role=alert: no toast on top
 });
 on('#cv-revert', 'click', () => { loadEditor(); toast('Reverted', ''); });
 

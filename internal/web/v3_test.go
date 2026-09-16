@@ -357,7 +357,8 @@ func TestLoginLogout(t *testing.T) {
 func TestLoginThrottled(t *testing.T) {
 	e, _, _, _ := v3Env(t, adminBasic)
 	e.srv.limiter.mu.Lock()
-	e.srv.limiter.byIP[remoteIPOf(e)] = &authFails{n: limitFree + 1, last: time.Now(), sleeping: limitConcurrent}
+	e.srv.limiter.byIP[remoteIPOf(e)] = &authFails{n: limitFree + 1, last: time.Now()}
+	e.srv.limiter.sleeping[addrKey(remoteIPOf(e))] = &sleepers{n: limitConcurrent}
 	e.srv.limiter.mu.Unlock()
 	wantError(t, e.do(t, "POST", "/api/login", `{"user":"admin","password":"pw"}`, csrf), 429, "too many")
 	wantError(t, e.do(t, "POST", "/api/account/password", `{"current_password":"pw","new_password":"longenough"}`, basicAuth("admin", "pw")), 429, "too many")
