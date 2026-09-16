@@ -126,6 +126,24 @@ func TestOpenAPIShape(t *testing.T) {
 			t.Errorf("schema %s missing", name)
 		}
 	}
+	// Version.limits lists exactly the keys GET /api/version carries
+	var limitKeys map[string]any
+	lb, _ := json.Marshal(apiLimits())
+	_ = json.Unmarshal(lb, &limitKeys)
+	version, _ := schemas["Version"].(map[string]any)
+	vprops, _ := version["properties"].(map[string]any)
+	limits, _ := vprops["limits"].(map[string]any)
+	lprops, _ := limits["properties"].(map[string]any)
+	for k := range limitKeys {
+		if _, ok := lprops[k]; !ok {
+			t.Errorf("Version.limits schema lacks %q (apiLimits carries it)", k)
+		}
+	}
+	for k := range lprops {
+		if _, ok := limitKeys[k]; !ok {
+			t.Errorf("Version.limits schema lists %q, apiLimits does not", k)
+		}
+	}
 	paths, _ := doc["paths"].(map[string]any)
 	scopes := map[string]bool{"read": true, "control": true, "admin": true, "session": true}
 	classes := map[string]bool{"public": true, "filtered": true, "protected": true}

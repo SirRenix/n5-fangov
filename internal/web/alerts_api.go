@@ -19,10 +19,17 @@ func (s *Server) alerts(w http.ResponseWriter) (AlertMgr, bool) {
 }
 
 // alertStatusJSON flattens an AlertStatus into a map so the panel document
-// can carry "last" and "recent" next to its members.
-func alertStatusJSON(st AlertStatus) map[string]any {
+// can carry "last" and "recent" next to its members. For a token caller
+// the webhook URL is redacted (alert.RedactURL): a token of any scope is
+// meant for scripts and agents, the URL carries the receiver's key in its
+// query or path — a leaked read token must not hand it out. Cookie, Basic
+// and socket callers (the operator) see the full URL.
+func alertStatusJSON(st AlertStatus, c Caller) map[string]any {
 	if st.Kinds == nil {
 		st.Kinds = []AlertKind{}
+	}
+	if c.Via == "bearer" {
+		st.WebhookURL = alert.RedactURL(st.WebhookURL)
 	}
 	b, _ := json.Marshal(st)
 	out := map[string]any{}
@@ -36,7 +43,7 @@ func (s *Server) getAlerts(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	out := alertStatusJSON(m.Status())
+	out := alertStatusJSON(m.Status(), CallerFrom(r.Context()))
 	// last-sent times: the controller's stamps, overlaid by the ring (which
 	// also sees serve's own alerts: config, kernel, tls, test).
 	last := map[string]int64{}
@@ -127,5 +134,5 @@ func (s *Server) putAlerts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.logf("web: alert transport set to %q (mail_to %q, webhook %s %s) by %s", st.Transport, st.MailTo, alert.RedactURL(st.WebhookURL), st.WebhookFormat, remoteIP(r))
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": alertStatusJSON(st)})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": alertStatusJSON(st, CallerFrom(r.Context()))})
 }
