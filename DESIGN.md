@@ -830,3 +830,28 @@ shows the description; the recommended one gets a second badge.
   removes `/var/lib/n5-fangov`.
 - README: Sign-in/visibility, sessions, account, alerts panel, presets, dashboard
   sensors, About/licence.
+
+### v0.3.0-beta integration notes (16.09.2026)
+
+- `SessionStore` gained `RevokeAllRename(keepToken, newUser)` and `SetEpoch(epoch)`;
+  `web.New` binds the store to `CredentialEpoch(user, hash)` of `Deps.Auth`, so a
+  password rotated outside the dashboard (`passwd`, config edit) drops every persisted
+  session at the next start (R-M1). The account handlers move the epoch before revoking.
+- `alertManager` caches the template probe for 10 minutes (R-M2): `GET /api/alerts`
+  no longer writes to pmxcfs per poll. `Test` is bounded (20 s) and single-flight
+  (`alert.ErrTestBusy` → 409).
+- `mail_to` may not start with `-`; the Mail sink passes `--` before the recipient (R-M3).
+- All config read-modify-write paths in cmd serialise on `configFileMu`, except
+  `tlsManager.writeMode` (lock order with `pinConfig`).
+- `config.SetKey` and `config.Parse` handle the dotted `web.user = …` layout; inline
+  tables are refused by the stores with a clear error.
+- Built-in presets of another profile are 404 on apply; `PUT` on a built-in name is 409.
+- `GET /api/alerts` `last` = controller stamps overlaid by the ring (`Last()`), so
+  serve-side kinds (config, kernel, tls, test) appear too.
+- `http.AllowQuerySemicolons` wraps both handlers (Go 1.25 no longer logs the warning;
+  kept as an explicit guard).
+- Live on the reference host 16.09. 13:20: reduced anonymous state/history, 401 on every
+  protected path, login/cookie attributes, remember-me 30 d, logout, dashboard sensors →
+  `watched`/`extra`, template install into pmxcfs from inside the sandbox, test alert
+  delivered via PVE::Notify, 403 on a wrong current password, sessions/alerts mirrors
+  0600 in `/var/lib/n5-fangov`, RSS ~8 MB.
