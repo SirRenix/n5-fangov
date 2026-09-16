@@ -116,6 +116,26 @@ try {
 	await nav('?mock=1', { wait: 1500 }); await shot('25a-mobile-overview-anonymous.png', { full: true, w: 375 });
 	await nav('?mock=1&user=1', { wait: 1500 }); await shot('25b-mobile-overview-signed-in.png');
 	await nav('?mock=1&user=1&tab=curves', { wait: 1500 }); await shot('26-mobile-curves.png');
+	// 27+ (0.3.1): range selector, schedules, webhook form, tokens, curve fields — desktop again
+	await viewport(1280, 800);
+	// 27 overview at 24 h (the averaged tier; the selection persists in localStorage, reset afterwards)
+	await nav('?mock=1&user=1', { wait: 1500 }); await click('#rg-seg button[data-range="24h"]'); await sleep(1200); await shot('27-overview-24h.png');
+	await setLS({ unit: 'C', interval: 5, theme: 'dark', range: '2h' });
+	// 28 schedules card with a failed last switch (&schedfail=1), scrolled to the card
+	await nav('?mock=1&user=1&tab=presets&schedfail=1', { wait: 1500 });
+	await evalJS(`document.getElementById('sc-card').scrollIntoView(); 1`); await shot('28-schedules.png', { settle: 400 });
+	// 29 alerts with the webhook transport selected (URL filled, not saved)
+	await nav('?mock=1&user=1&tab=alerts', { wait: 1500 });
+	await evalJS(`(()=>{const s=document.getElementById('al-transport'); s.value='webhook'; s.dispatchEvent(new Event('change')); document.getElementById('al-wh').value='https://ntfy.example/n5'; return 1;})()`);
+	await shot('29-alerts-webhook.png');
+	// 30 account dialog: API tokens with a freshly created secret (mock secret, shown once)
+	await nav('?mock=1&user=1', { wait: 1500 }); await click('#h-settings'); await click('#s-acc'); await sleep(500);
+	await click('#ac-tk'); await evalJS(`document.getElementById('ac-tk-name').value='home-assistant-2'; 1`);
+	await evalJS(`document.getElementById('ac-tk-f').requestSubmit(); 1`); await sleep(700); await hideToasts();
+	await evalJS(`document.getElementById('ac-tokens').scrollIntoView(); 1`); await shot('30-account-tokens.png', { settle: 400 });
+	// 31 curves editor with hysteresis / min on and a keyboard-focused point
+	await nav('?mock=1&user=1&tab=curves', { wait: 1500 });
+	await evalJS(`(()=>{const p=document.querySelector('#editors .ptl span'); p.focus(); return 1;})()`); await shot('31-curves-fields.png');
 	console.log('done');
 } catch (e) { console.error('FAILED', e); process.exitCode = 1; }
 finally { await send('Browser.close').catch(() => {}); ws.close(); }

@@ -6,7 +6,8 @@ a real host. Desktop views are 1280×800, dark theme; the three mobile views are
 wide. The version badge shows the mock's version string.
 
 Regenerate the set with `shots.mjs` (Node ≥ 22, Chrome/Chromium; talks to the browser
-over the DevTools protocol): serve `internal/web/static/` on a local port, start Chrome
+over the DevTools protocol; the mock is `mock.js` next to `app.js`, requested only behind
+`?mock=1`): serve `internal/web/static/` on a local port, start Chrome
 headless with `--remote-debugging-port=9223 --lang=en-US --hide-scrollbars`, then
 `node docs/screenshots/shots.mjs docs/screenshots http://127.0.0.1:8797/index.html 9223`.
 The "Mock mode" toast is removed before each capture; every interactive state is reached
@@ -18,7 +19,7 @@ by clicking the same controls a user would.
 | `02-login-dialog.png` | Sign-in dialog | `?mock=1` → *Sign in* | *Remember me* |
 | `03-overview-signed-in-top.png` | Overview, signed in | `?mock=1&user=1` | channel cards, charts |
 | `04-overview-signed-in-bottom.png` | Overview, lower half | `?mock=1&user=1`, scrolled | Extra sensors chart, Sensors card, System card, Recent alerts |
-| `05-header.png` | Header crop | `?mock=1&user=1` | status chip, uptime, version + BETA, lock, live, user, gear (1280×92) |
+| `05-header.png` | Header crop | `?mock=1&user=1` | status chip, uptime, version + pre-release badge, lock, live, user, gear (1280×92) |
 | `06-settings-popover.png` | Settings gear | `?mock=1&user=1` → ⚙ | unit, interval, theme, export/import, Certificate…, Account… |
 | `07-curves.png` | Curves | `?mock=1&user=1&tab=curves` | editor, table, `+ add point`, crit line, now marker, duty→RPM reference |
 | `08-curves-error.png` | Curves, validation error | critical cleared, stop `300` → *Apply* | red notice, nothing sent |
@@ -44,6 +45,11 @@ by clicking the same controls a user would.
 | `25a-mobile-overview-anonymous.png` | Mobile Overview, anonymous | 375×812 emulation, `?mock=1`, full page | 375×1375 |
 | `25b-mobile-overview-signed-in.png` | Mobile Overview, signed in | `?mock=1&user=1` | |
 | `26-mobile-curves.png` | Mobile Curves | `?mock=1&user=1&tab=curves` | touch drag on the points |
+| `27-overview-24h.png` | Overview, 24 h range | `?mock=1&user=1` → *24 h* | range selector 2 h · 24 h · 7 d, averaged tier, `Www HH:MM` axis, CSV button |
+| `28-schedules.png` | Presets, Schedules card | `?mock=1&user=1&tab=presets&schedfail=1`, scrolled to the card | entries with window/days, ACTIVE, next switch, failed last switch as warn notice |
+| `29-alerts-webhook.png` | Alerts, webhook transport | `?mock=1&user=1&tab=alerts` → transport *webhook*, URL filled | URL + format fields, the `mail_to` field hidden |
+| `30-account-tokens.png` | Account dialog, API tokens | ⚙ → *Account…* → *Create token…* → *Create* | tokens table, the secret shown once with *Copy* |
+| `31-curves-fields.png` | Curves with hysteresis / min on | `?mock=1&user=1&tab=curves`, first point focused | new fields, composite sensor option on `hdd`, keyboard focus ring on a point |
 
 Not reproducible from the mock and therefore not included: the browser's own
 certificate warning and the OS trust dialogs ([HTTPS](../08-https-security.md#the-certificate),
