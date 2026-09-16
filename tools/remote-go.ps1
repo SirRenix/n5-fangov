@@ -1,5 +1,5 @@
 # remote-go.ps1 -- build/test a Go tree via Docker on a Linux host with Docker reachable
-# via an ssh alias (default: builder). No Go toolchain is needed on the Windows side.
+# via an ssh alias (default: $env:N5FANGOV_BUILD_HOST, else "builder" - see .env.example). No Go toolchain is needed on the Windows side.
 # Usage:
 #   tools\remote-go.ps1 -Path <repo-or-worktree> -Id <unique-name> [-Host <ssh-alias>] [-Image <docker-image>] [-Cmd "go test ./..."] [-Fetch]
 # Default Cmd: go mod tidy, go vet, go test, go build -> n5-fangov (linux/amd64, static).
@@ -10,7 +10,7 @@ param(
     [Parameter(Mandatory=$true)][string]$Id,
     # -Host on the command line; the variable is $BuildHost because $Host is a
     # read-only automatic variable in PowerShell.
-    [Alias("Host")][string]$BuildHost = "builder",
+    [Alias("Host")][string]$BuildHost = $(if ($env:N5FANGOV_BUILD_HOST) { $env:N5FANGOV_BUILD_HOST } else { "builder" }),
     [string]$Cmd = "",
     # Builder image. The default is cgo-free (static builds); the race
     # detector needs cgo: -Image golang:1.25-bookworm -Cmd "go test -race -count=1 ./..."

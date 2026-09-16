@@ -1,0 +1,49 @@
+#!/bin/sh
+# pre-commit: refuse commits that carry secrets or infrastructure data.
+#
+# Enable once per clone:   git config core.hooksPath .githooks   (or: make hooks)
+# Needs gitleaks (https://github.com/gitleaks/gitleaks): winget install Gitleaks.Gitleaks,
+# brew install gitleaks, or the release binary on PATH. Fails closed when it is missing.
+#
+# Two checks: (1) gitleaks over the staged changes with the repository rules
+# (.gitleaks.toml: private keys, tokens, IP addresses, host names, serials,
+# password hashes); (2) a file-name guard for things that never belong in a
+# commit (.env, config.toml, key/cert files, session/alert stores, backups).
+set -u
+
+repo=$(git rev-parse --show-toplevel) || exit 1
+cd "$repo" || exit 1
+
+# --- 1. file-name guard --------------------------------------------------------
+bad=$(git diff --cached --name-only --diff-filter=ACMR | grep -E \
+  '(^|/)(\.env(\..*)?|config\.toml|sessions\.json|alerts\.json)$|\.(pem|key|crt|cer|p12|pfx|bak|bak-[0-9]+|log)$' \
+  | grep -vE '^(\.env\.example|deploy/config\.example\.toml)$' || true)
+if [ -n "$bad" ]; then
+  echo "pre-commit: refusing files that must not be committed:" >&2
+  echo "$bad" | sed 's/^/  /' >&2
+  echo "unstage them (git restore --staged <file>) or add them to .gitignore" >&2
+  exit 1
+fi
+
+# --- 2. gitleaks over the staged changes ---------------------------------------
+gl=$(command -v gitleaks 2>/dev/null || true)
+if [ -z "$gl" ]; then
+  for c in "$LOCALAPPDATA/Microsoft/WinGet/Packages"/Gitleaks.Gitleaks_*/gitleaks.exe \
+           "$HOME/go/bin/gitleaks" /usr/local/bin/gitleaks /opt/homebrew/bin/gitleaks; do
+    if [ -x "$c" ]; then gl=$c; break; fi
+  done
+fi
+if [ -z "$gl" ]; then
+  echo "pre-commit: gitleaks not found — install it (winget install Gitleaks.Gitleaks / brew install gitleaks)" >&2
+  echo "or, for one commit you have checked by hand: git commit --no-verify" >&2
+  exit 1
+fi
+
+if ! "$gl" protect --staged --config .gitleaks.toml --no-banner --redact --verbose; then
+  echo >&2
+  echo "pre-commit: gitleaks found secrets or infrastructure data in the staged changes." >&2
+  echo "Replace them with documentation values (192.0.2.x, n5host, example.test) or move them out of the repo." >&2
+  echo "False positive? Extend the allowlist in .gitleaks.toml — do not bypass the hook." >&2
+  exit 1
+fi
+exit 0

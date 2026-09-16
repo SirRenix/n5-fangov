@@ -1,0 +1,47 @@
+# Build and test on every push and pull request: gofmt, vet, staticcheck,
+# govulncheck, unit tests with the race detector, frontend syntax and
+# budget checks, shell syntax of the deploy scripts.
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: go.mod
+          check-latest: true
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - name: go vet
+        run: go vet ./...
+      - name: staticcheck
+        run: go run honnef.co/go/tools/cmd/staticcheck@latest ./...
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+      - name: go test (race)
+        run: go test -race -count=1 ./...
+      - name: static build (the release artefact shape)
+        run: CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /tmp/n5-fangov ./cmd/n5-fangov && /tmp/n5-fangov version
+      - name: frontend syntax
+        run: node --check internal/web/static/app.js
+      - name: deploy scripts
+        run: bash -n deploy/install.sh deploy/uninstall.sh deploy/n5-fangov-onfailure && sudo apt-get install -y -q shellcheck >/dev/null && shellcheck -S warning deploy/install.sh deploy/uninstall.sh deploy/n5-fangov-onfailure
+      - name: unit file
+        run: systemd-analyze verify deploy/n5-fangov.service deploy/n5-fangov-onfailure.service || true

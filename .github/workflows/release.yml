@@ -1,0 +1,80 @@
+# Release on every tag v*: build the static linux/amd64 binary from the tag,
+# run the tests, package the .deb, and publish a GitHub release with the
+# binary, its sha256 and the package. A hyphen in the tag (v0.3.0-beta.5,
+# v1.0.0-rc1) marks a pre-release. Release notes come from CHANGELOG.md
+# (the section for the version) when present, else from the tag message.
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build and publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write   # create the release and upload assets — nothing else
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: go.mod
+          check-latest: true
+      - name: version from tag
+        id: v
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          ver="${tag#v}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          case "$ver" in *-*) echo "prerelease=true" >> "$GITHUB_OUTPUT";; *) echo "prerelease=false" >> "$GITHUB_OUTPUT";; esac
+      - name: test
+        run: go vet ./... && go test -count=1 ./...
+      - name: build
+        env:
+          VER: ${{ steps.v.outputs.version }}
+        run: |
+          mkdir -p dist
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
+            -ldflags "-s -w -X github.com/SirRenix/n5-fangov/internal/version.Version=$VER" \
+            -o "dist/n5-fangov-$VER-linux-amd64" ./cmd/n5-fangov
+          cp "dist/n5-fangov-$VER-linux-amd64" dist/n5-fangov
+          "dist/n5-fangov" version
+          (cd dist && sha256sum "n5-fangov-$VER-linux-amd64" > "n5-fangov-$VER-linux-amd64.sha256")
+      - name: deb
+        env:
+          VERSION: ${{ steps.v.outputs.tag }}
+        run: make deb VERSION="$VERSION" && ls -la dist/*.deb
+      - name: release notes
+        env:
+          VER: ${{ steps.v.outputs.version }}
+        run: |
+          if [ -f CHANGELOG.md ] && grep -q "^## \[\?$VER" CHANGELOG.md; then
+            awk -v v="$VER" '
+              $0 ~ "^## \[?" v { on=1; next }
+              on && /^## / { exit }
+              on { print }' CHANGELOG.md > notes.md
+          else
+            git tag -l --format='%(contents)' "${GITHUB_REF_NAME}" > notes.md
+          fi
+          printf '\n---\nStatic linux/amd64 binary (`CGO_ENABLED=0`, `-trimpath`), built from tag `%s` by GitHub Actions; verify with `sha256sum -c`.\n' "${GITHUB_REF_NAME}" >> notes.md
+          cat notes.md
+      - name: publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.v.outputs.tag }}
+          VER: ${{ steps.v.outputs.version }}
+          PRE: ${{ steps.v.outputs.prerelease }}
+        run: |
+          flags=""
+          [ "$PRE" = "true" ] && flags="--prerelease"
+          gh release create "$TAG" $flags --title "$TAG" --notes-file notes.md \
+            "dist/n5-fangov-$VER-linux-amd64" "dist/n5-fangov-$VER-linux-amd64.sha256" dist/*.deb
