@@ -453,8 +453,8 @@ first and collects locally otherwise.
 No framework, no build step; `app.js` ≤ **96 KB** (test `web_test.go`), CSP
 `script-src 'self'`, no `innerHTML`, no inline handlers. Colours, spacing, radii and type
 scale are tokens in one `:root` block (dark; light overrides under
-`[data-theme="light"]` and `system`) and a JS constant block after `cssVar`; the mock
-version string is `internal/version` (served by `/api/version`), never a literal.
+`[data-theme="light"]` and `system`) and a JS constant block after `cssVar`; the mock's
+version string is one constant in that block, bumped with the release.
 
 - **Header:** brand, profile title, verified badge; status chip, uptime, version with
   `beta` badge when `prerelease != ""`, lock button (`🔒 TLS` / `🔓 HTTP`; warn colour
@@ -565,7 +565,7 @@ writing (`O_WRONLY` probe, nothing written). Everything else is a `warn` line wi
 
 Versioning: `internal/version.Version` is the only literal; `make` overrides it with `git
 describe` (`-X`). Debian version: leading `v` stripped, `-alpha|-beta|-rc` → `~` (sorts
-before the release), every other `-` → `+` (`0.3.0~beta.4+3+gabcdef`). `make release`
+before the release), every other `-` → `+` (`X.Y.Z~beta.1+3+gabcdef`). `make release`
 (clean tag, gh CLI) uploads the static binary and its sha256; `-` in the version marks a
 pre-release.
 

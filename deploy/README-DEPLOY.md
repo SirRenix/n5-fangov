@@ -12,7 +12,8 @@ Both install the same files:
 | `/etc/n5-fangov/presets/`, `/etc/n5-fangov/tls/` | presets; auto TLS certificate (created at the first HTTPS start) |
 | `/var/log/n5-fangov/` (0750) | rotating log file `n5-fangov.log`, `.1`..`.N`; the journal is unchanged |
 | `/etc/apt/apt.conf.d/90n5-fangov` | `DPkg::Post-Invoke` → `n5-fangov check --after-update` (kernel gate, see below) |
-| `/usr/share/doc/n5-fangov/config.example.toml` | reference with every key explained |
+| `/var/lib/n5-fangov/` (0700) | `sessions.json` (hashed dashboard sessions), `alerts.json` (recent alerts); removed on uninstall |
+| `/usr/share/doc/n5-fangov/config.example.toml` | reference with every key explained (table: README "Configuration reference") |
 | `/usr/share/n5-fangov/pve-notification/*.hbs` | copied to `/etc/pve/notification-templates/default/` when `/etc/pve` exists |
 
 ## First start
@@ -42,12 +43,16 @@ carries `Conflicts=n5-fand.service`.
 The EC driver `minisforum_n5_it5571` comes from DKMS. Two gates:
 
 1. `n5-fangov check --after-update` runs from the apt hook after every dpkg run
-   and requires `updates/dkms/minisforum_n5_it5571.ko` for **every** kernel under
-   `/lib/modules`. A missing one prints
+   and requires `updates/dkms/minisforum_n5_it5571.ko` for every kernel the box
+   can **boot into**: the running one plus the `proxmox-boot-tool kernel list`
+   selection (without that tool: running plus newest installed). Other kernels
+   that are merely still installed get an `info only` line. A missing one prints
    `kernel X: fan driver module missing — run: dkms install minisforum-n5-it5571/<ver> -k X`
    and sends a `kernel` alert (30 min cooldown). The apt run itself never fails.
-2. `n5-fangov check` (ExecStartPre) reports `dkms` for the running kernel; a
-   missing module makes the start fail loudly and the onfailure alert names it.
+   Details and the rollback path: README "Updates".
+2. `n5-fangov check` (ExecStartPre) reports `dkms` for the running kernel; without
+   the module there is no hwmon device, the start fails loudly and the onfailure
+   alert names it.
 
 ## Remove
 

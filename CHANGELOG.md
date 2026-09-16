@@ -39,7 +39,7 @@ Pre-release hardening after the acceptance audit of `v0.3.0-beta.4` (16 Septembe
   the editor checks duty monotonicity, `critical` above the last curve point and
   `stop ≥ 60` before it sends anything.
 - `CHANGELOG.md`, `CONTRIBUTING.md`, `SECURITY.md`, `docs/screenshots/` (dashboard views
-  from the mock), `docs/USER-GUIDE.md`.
+  from the mock, with the driver script to regenerate them).
 - README: Dashboard (one paragraph per tab), CLI reference (all 18 subcommands, exit codes,
   environment), configuration reference table, alerts table, troubleshooting.
 - `make test-race` and `tools/remote-go.ps1 -Image` for a race-detector run in a cgo-capable
