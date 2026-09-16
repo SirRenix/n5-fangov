@@ -194,6 +194,17 @@ func ValidWebhookURL(s string) error {
 	return nil
 }
 
+// webhookURLOrigin is the scheme and host ("https://h.example.test:8443")
+// of s for a warning about it — never the userinfo, path, query or
+// fragment; "" when s has no scheme and host to name.
+func webhookURLOrigin(s string) string {
+	u, err := url.Parse(s)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return ""
+	}
+	return u.Scheme + "://" + u.Host
+}
+
 // DefaultMailTo is the mail recipient when mail_to is absent or invalid.
 const DefaultMailTo = "root"
 
@@ -233,6 +244,11 @@ type Channel struct {
 	// off. Both are curve post-processing (DESIGN "Controller").
 	Hysteresis int           `toml:"hysteresis,omitzero"`
 	MinOn      time.Duration `toml:"min_on,omitzero"`
+	// PostSet is true when the table carried a hysteresis or min_on key
+	// (parser only; Marshal ignores it). The preset merge keeps the config
+	// channel's post-processing when the preset channel says nothing about
+	// it — a preset written before 0.3.1 must not reset it.
+	PostSet bool `toml:"-"`
 }
 
 // Sensors returns the parts of the canonical sensor id (one element for a
@@ -766,7 +782,14 @@ func (p *parser) alert(sec map[string]toml.Primitive, a *Alert) {
 	wu = strings.TrimSpace(wu)
 	if present && wu != "" {
 		if err := ValidWebhookURL(wu); err != nil {
-			p.warn(pre+".webhook_url", "%q %v, ignored", wu, err)
+			// The warning reaches the journal and the dashboard: never the
+			// value itself (it may carry a key in the userinfo or query),
+			// only its origin.
+			what := "value"
+			if o := webhookURLOrigin(wu); o != "" {
+				what = o + "/…"
+			}
+			p.warn(pre+".webhook_url", "%s %v, ignored", what, err)
 			wu = ""
 		}
 	}
@@ -977,6 +1000,9 @@ func (p *parser) channels(secs []map[string]toml.Primitive) []Channel {
 		ch.Stop = p.stop(pre, sec, ch.Sensor)
 		ch.Hysteresis = p.intField(pre, sec, "hysteresis", 0, 0, HysteresisMax)
 		ch.MinOn = p.durField(pre, sec, "min_on", 0, 0, MinOnMax)
+		_, hasHyst := sec["hysteresis"]
+		_, hasMinOn := sec["min_on"]
+		ch.PostSet = hasHyst || hasMinOn
 		names[name] = true
 		pwms[ch.PWM] = true
 		out = append(out, ch)
@@ -1082,9 +1108,15 @@ func (p *parser) schedules(secs []map[string]toml.Primitive) []Schedule {
 			continue
 		}
 		s := Schedule{Preset: preset}
-		from, _ := p.strField(pre, sec, "from", "")
-		to, _ := p.strField(pre, sec, "to", "")
-		from, to = strings.TrimSpace(from), strings.TrimSpace(to)
+		// from/to must be strings: a bare TOML time literal (from = 22:00)
+		// decodes as a time, not a string — that entry is dropped, it must
+		// never turn into the fallback by looking absent.
+		from, fromOK := p.clockField(sec, "from")
+		to, toOK := p.clockField(sec, "to")
+		if !fromOK || !toOK {
+			p.warn(pre, "from/to must be strings (\"22:00\"), entry dropped")
+			continue
+		}
 		switch {
 		case from == "" && to == "":
 			if haveFallback {
@@ -1092,6 +1124,12 @@ func (p *parser) schedules(secs []map[string]toml.Primitive) []Schedule {
 				continue
 			}
 			haveFallback = true
+			if _, ok := sec["days"]; ok {
+				// the fallback applies whenever no window matches, on any day
+				p.warn(pre+".days", "days ignored on the fallback")
+				out = append(out, s)
+				continue
+			}
 		case from == "" || to == "":
 			p.warn(pre, "from and to must both be set (or neither for the fallback), entry dropped")
 			continue
@@ -1139,6 +1177,21 @@ func (p *parser) schedules(secs []map[string]toml.Primitive) []Schedule {
 		out = append(out, s)
 	}
 	return out
+}
+
+// clockField reads the from/to key of a [[schedule]] table as a trimmed
+// string: "" when absent, ok = false when present but not a string (a
+// bare TOML time literal, an integer).
+func (p *parser) clockField(sec map[string]toml.Primitive, key string) (string, bool) {
+	prim, ok := sec[key]
+	if !ok {
+		return "", true
+	}
+	var v string
+	if err := p.md.PrimitiveDecode(prim, &v); err != nil {
+		return "", false
+	}
+	return strings.TrimSpace(v), true
 }
 
 // clockTime parses a wall-clock time "HH:MM" (24 h) and returns it in the

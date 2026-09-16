@@ -179,6 +179,104 @@ func SetKey(raw []byte, section, key, value string) []byte {
 	return insertAt(ins, newLine)
 }
 
+// ReplaceChannels returns raw with every [[channel]] table replaced by
+// MarshalChannels(chans), everything else byte-identical (comments,
+// [[schedule]], [alert], password_hash, key order). A channel block runs
+// from its header line to its last key line before the next top-level
+// header that is not a channel table (or EOF): the blank and comment
+// lines between that key and the next header stay, so a comment above a
+// [[channel]] header or above the section that follows keeps its place.
+// The new tables go where the first block was (a comment right above it
+// still reads as the channel heading), or at the end of the file when
+// there was none. An inline `channel = [{…}]` at the top level is not a
+// header and is not touched; callers verify the result with Parse.
+func ReplaceChannels(raw []byte, chans []Channel) []byte {
+	text := string(raw)
+	lines := strings.Split(strings.TrimSuffix(text, "\n"), "\n")
+	if text == "" {
+		lines = nil
+	}
+	// Pass 1: the line ranges of the channel blocks. A block opens at a
+	// [[channel]] header and closes at its last key line; a [channel.x]
+	// sub-table header extends the open block, any other header or a
+	// further [[channel]] header closes it.
+	removed := make([]bool, len(lines))
+	first := -1
+	start, last := -1, -1 // open block: header line, last key line
+	closeBlock := func() {
+		if start < 0 {
+			return
+		}
+		for i := start; i <= last; i++ {
+			removed[i] = true
+		}
+		if first < 0 {
+			first = start
+		}
+		start, last = -1, -1
+	}
+	for i, ln := range lines {
+		name, isHeader := tableHeader(ln)
+		switch {
+		case isHeader && name == "channel":
+			closeBlock()
+			start, last = i, i
+		case isHeader && strings.HasPrefix(name, "channel."):
+			if start < 0 {
+				start = i
+			}
+			last = i
+		case isHeader:
+			closeBlock()
+		case start >= 0:
+			if t := strings.TrimSpace(ln); t != "" && !strings.HasPrefix(t, "#") {
+				last = i
+			}
+		}
+	}
+	closeBlock()
+	// Pass 2: copy what stays, the new tables at the first block's place
+	// or at the end.
+	body := strings.TrimSuffix(string(MarshalChannels(chans)), "\n")
+	out := make([]string, 0, len(lines)+strings.Count(body, "\n")+2)
+	for i, ln := range lines {
+		if i == first {
+			out = append(out, body)
+		}
+		if !removed[i] {
+			out = append(out, ln)
+		}
+	}
+	if first < 0 {
+		if len(out) > 0 && strings.TrimSpace(out[len(out)-1]) != "" {
+			out = append(out, "")
+		}
+		out = append(out, body)
+	}
+	return []byte(strings.Join(out, "\n") + "\n")
+}
+
+// tableHeader parses a `[name]` or `[[name]]` line into its table name
+// (trailing comment allowed); ok is false for anything else.
+func tableHeader(line string) (name string, ok bool) {
+	t := strings.TrimSpace(line)
+	if !strings.HasPrefix(t, "[") {
+		return "", false
+	}
+	if strings.HasPrefix(t, "[[") {
+		end := strings.Index(t, "]]")
+		if end < 0 {
+			return "", false
+		}
+		return strings.TrimSpace(t[2:end]), true
+	}
+	end := strings.IndexByte(t, ']')
+	if end < 0 {
+		return "", false
+	}
+	return strings.TrimSpace(t[1:end]), true
+}
+
 // assignedKey returns the bare key of a `key = value` line ("" for
 // comments, blank lines and anything without "=").
 func assignedKey(line string) string {
