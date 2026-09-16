@@ -100,14 +100,14 @@ func TestDeployUnitFile(t *testing.T) {
 	}
 	// config + presets + tls; socket, state.json, override.*; [log].file;
 	// sessions.json, alerts.json; pwmN via the class symlink and via the
-	// resolved device path; PVE notification templates
+	// resolved platform device path; PVE notification templates
 	for _, want := range []string{
 		path.Dir(config.DefaultPath),
 		defaultRunDir,
 		path.Dir(config.DefaultLogFile),
 		defaultStateDir,
 		"/sys/class/hwmon",
-		"/sys/devices",
+		"/sys/devices/platform",
 		path.Dir(alert.TemplatePath),
 	} {
 		if !rw[want] {

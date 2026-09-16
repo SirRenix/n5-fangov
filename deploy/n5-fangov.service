@@ -42,7 +42,12 @@ UMask=0077
 
 # --- sandbox (DESIGN v0.2; verify on the real box after every change) ----
 # The daemon writes pwmN/pwmN_enable under /sys: ProtectKernelTunables MUST
-# stay "no" and /sys/class/hwmon + /sys/devices MUST be in ReadWritePaths.
+# stay "no" and /sys/class/hwmon + /sys/devices/platform MUST be in
+# ReadWritePaths — the pwm files of every supported chip live under
+# /sys/devices/platform/<driver>/hwmon/hwmonN (it5571, nct6775 and it87 are
+# platform drivers), /sys/class/hwmon holds the symlinks the daemon opens;
+# everything else under /sys stays read-only, which is all the sensors, the
+# DMI tables and the disk temperatures need.
 # `make verify-deploy` runs systemd-analyze verify over this file.
 NoNewPrivileges=yes
 ProtectSystem=strict
@@ -56,7 +61,7 @@ ProtectSystem=strict
 # host: a process under this sandbox creates and removes a file in that
 # directory). The directory itself must exist — a fresh box gets it from
 # install.sh or `n5-fangov alerts template` (both run outside the sandbox).
-ReadWritePaths=-/etc/n5-fangov -/run/n5-fangov -/var/log/n5-fangov -/var/lib/n5-fangov -/sys/class/hwmon -/sys/devices -/var/spool/postfix/maildrop -/etc/pve/notification-templates
+ReadWritePaths=-/etc/n5-fangov -/run/n5-fangov -/var/log/n5-fangov -/var/lib/n5-fangov -/sys/class/hwmon -/sys/devices/platform -/var/spool/postfix/maildrop -/etc/pve/notification-templates
 ProtectHome=yes
 PrivateTmp=yes
 # /dev holds only the pseudo devices; [log].file must be under /var/log
