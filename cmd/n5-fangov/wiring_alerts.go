@@ -43,18 +43,17 @@ var alertKinds = []web.AlertKind{
 	{Kind: "test", Description: "a test alert sent from the dashboard or `n5-fangov alerts test`"},
 }
 
-// alertManager implements web.AlertMgr. transport/mailTo mirror the
-// [alert] section in effect; sw is what the controller holds, ring wraps
-// it and records. cooldown reports the daemon's alert_cooldown for the
-// panel (nil offline).
+// alertManager implements web.AlertMgr. cur mirrors the [alert] section
+// in effect; sw is what the controller holds, ring wraps it and records.
+// cooldown reports the daemon's alert_cooldown for the panel (nil
+// offline).
 type alertManager struct {
 	mu        sync.Mutex
 	cfgPath   string
 	pin       func([]byte) []byte
 	sw        *alert.Swappable
 	ring      *alert.Ring
-	transport string
-	mailTo    string
+	cur       config.Alert
 	effective string
 	cooldown  func() time.Duration
 	logger    alert.Logger
@@ -83,11 +82,16 @@ const testDeliveryLimit = 20 * time.Second
 // alertsFile "" keeps the history in memory only.
 func newAlertManager(cfgPath, alertsFile string, a config.Alert, pin func([]byte) []byte) *alertManager {
 	m := &alertManager{cfgPath: cfgPath, pin: pin, logger: log.Default(), now: time.Now, probe: alert.TemplateStatus, testLimit: testDeliveryLimit}
-	sink, eff := alert.NewFor(a.Transport, a.MailTo, m.logger)
-	m.transport, m.mailTo, m.effective = a.Transport, a.MailTo, eff
+	sink, eff := alert.NewForConfig(alertConfig(a), m.logger)
+	m.cur, m.effective = a, eff
 	m.sw = alert.NewSwappable(sink)
 	m.ring = alert.NewRing(m.sw, alertsFile, m.logger)
 	return m
+}
+
+// alertConfig is the [alert] section as the sink factory takes it.
+func alertConfig(a config.Alert) alert.Config {
+	return alert.Config{Transport: a.Transport, MailTo: a.MailTo, WebhookURL: a.WebhookURL, WebhookFormat: a.WebhookFormat}
 }
 
 // templateStatus returns the cached probe, re-probing after
@@ -120,26 +124,31 @@ func (m *alertManager) sink() alert.Sink { return m.ring }
 func (m *alertManager) apply(a config.Alert) string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if a.Transport == m.transport && a.MailTo == m.mailTo {
+	if a == m.cur {
 		return m.effective
 	}
-	sink, eff := alert.NewFor(a.Transport, a.MailTo, m.logger)
+	sink, eff := alert.NewForConfig(alertConfig(a), m.logger)
 	m.sw.Set(sink)
-	m.transport, m.mailTo, m.effective = a.Transport, a.MailTo, eff
-	m.logger.Printf("alerts: transport %s (%s)%s", a.Transport, eff, mailToNote(a.Transport, a.MailTo))
+	m.cur, m.effective = a, eff
+	m.logger.Printf("alerts: transport %s (%s)%s", a.Transport, eff, transportNote(a))
 	return eff
 }
 
-func mailToNote(transport, mailTo string) string {
-	if transport == alert.TransportMail || transport == alert.TransportAuto {
-		return ", mail_to " + mailTo
+// transportNote names the target of the transport for the log line: the
+// recipient for mail, the redacted URL and format for the webhook.
+func transportNote(a config.Alert) string {
+	switch a.Transport {
+	case alert.TransportMail, alert.TransportAuto:
+		return ", mail_to " + a.MailTo
+	case alert.TransportWebhook:
+		return ", webhook " + alert.RedactURL(a.WebhookURL) + " (" + a.WebhookFormat + ")"
 	}
 	return ""
 }
 
 func (m *alertManager) Status() web.AlertStatus {
 	m.mu.Lock()
-	transport, mailTo, eff := m.transport, m.mailTo, m.effective
+	cur, eff := m.cur, m.effective
 	m.mu.Unlock()
 	pve, mail := alert.Available()
 	cool := ""
@@ -149,7 +158,8 @@ func (m *alertManager) Status() web.AlertStatus {
 		cool, coolS = d.String(), int64(d.Seconds())
 	}
 	return web.AlertStatus{
-		Transport: transport, Effective: eff, MailTo: mailTo,
+		Transport: cur.Transport, Effective: eff, MailTo: cur.MailTo,
+		WebhookURL: cur.WebhookURL, WebhookFormat: cur.WebhookFormat,
 		PVEAvailable: pve, MailAvailable: mail,
 		Template: m.templateStatus(),
 		Cooldown: cool, CooldownS: coolS,
@@ -199,37 +209,71 @@ func (m *alertManager) InstallTemplate() (string, error) {
 }
 
 // Configure validates, writes [alert] to the config file (comments kept,
-// tls pin applied) and hot-applies it.
-func (m *alertManager) Configure(transport, mailTo string) (web.AlertStatus, error) {
-	transport = strings.ToLower(strings.TrimSpace(transport))
-	mailTo = strings.TrimSpace(mailTo)
-	if mailTo == "" {
-		mailTo = config.DefaultMailTo
+// tls pin applied) and hot-applies it. A nil member of s keeps the value
+// in effect; the merged section is validated as a whole (a transport
+// "webhook" needs a URL, whichever request supplied it).
+func (m *alertManager) Configure(s web.AlertSettings) (web.AlertStatus, error) {
+	m.mu.Lock()
+	a := m.cur
+	m.mu.Unlock()
+	if s.Transport != nil {
+		a.Transport = strings.ToLower(strings.TrimSpace(*s.Transport))
 	}
-	found := false
-	for _, t := range config.AlertTransports {
-		if t == transport {
-			found = true
+	if s.MailTo != nil {
+		a.MailTo = strings.TrimSpace(*s.MailTo)
+	}
+	if s.WebhookURL != nil {
+		a.WebhookURL = strings.TrimSpace(*s.WebhookURL)
+	}
+	if s.WebhookFormat != nil {
+		a.WebhookFormat = strings.ToLower(strings.TrimSpace(*s.WebhookFormat))
+	}
+	if a.MailTo == "" {
+		a.MailTo = config.DefaultMailTo
+	}
+	if a.WebhookFormat == "" {
+		a.WebhookFormat = config.DefaultWebhookFormat
+	}
+	if !contains(config.AlertTransports, a.Transport) {
+		return web.AlertStatus{}, fmt.Errorf("transport %q unknown (%s)", a.Transport, strings.Join(config.AlertTransports, "|"))
+	}
+	if !config.ValidMailTo(a.MailTo) {
+		return web.AlertStatus{}, fmt.Errorf("mail_to %q is not a local user or address", a.MailTo)
+	}
+	if a.WebhookURL != "" {
+		if err := config.ValidWebhookURL(a.WebhookURL); err != nil {
+			return web.AlertStatus{}, fmt.Errorf("webhook_url %v", err)
 		}
 	}
-	if !found {
-		return web.AlertStatus{}, fmt.Errorf("transport %q unknown (%s)", transport, strings.Join(config.AlertTransports, "|"))
+	if !contains(config.WebhookFormats, a.WebhookFormat) {
+		return web.AlertStatus{}, fmt.Errorf("webhook_format %q unknown (%s)", a.WebhookFormat, strings.Join(config.WebhookFormats, "|"))
 	}
-	if !config.ValidMailTo(mailTo) {
-		return web.AlertStatus{}, fmt.Errorf("mail_to %q is not a local user or address", mailTo)
+	if a.Transport == alert.TransportWebhook && a.WebhookURL == "" {
+		return web.AlertStatus{}, fmt.Errorf("transport %q needs webhook_url", a.Transport)
 	}
 	err := editConfig(m.cfgPath, m.pin, "alert", func(raw []byte) []byte {
-		raw = setConfigKey(raw, "alert", "transport", tomlString(transport))
-		return setConfigKey(raw, "alert", "mail_to", tomlString(mailTo))
+		raw = setConfigKey(raw, "alert", "transport", tomlString(a.Transport))
+		raw = setConfigKey(raw, "alert", "mail_to", tomlString(a.MailTo))
+		raw = setConfigKey(raw, "alert", "webhook_url", tomlString(a.WebhookURL))
+		return setConfigKey(raw, "alert", "webhook_format", tomlString(a.WebhookFormat))
 	}, func(cfg config.Config) bool {
-		return cfg.Alert.Transport == transport && cfg.Alert.MailTo == mailTo
+		return cfg.Alert == a
 	})
 	if err != nil {
 		return web.AlertStatus{}, err
 	}
-	m.apply(config.Alert{Transport: transport, MailTo: mailTo})
+	m.apply(a)
 	m.invalidateTemplate()
 	return m.Status(), nil
+}
+
+func contains(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 // ---------------------------------------------------------------------------
@@ -237,12 +281,14 @@ func (m *alertManager) Configure(transport, mailTo string) (web.AlertStatus, err
 
 // alertSpec is the [alert] section.
 type alertSpec struct {
-	Transport string // auto | pve | mail | log | off
-	MailTo    string
+	Transport     string // auto | pve | mail | webhook | log | off
+	MailTo        string
+	WebhookURL    string
+	WebhookFormat string
 }
 
 func alertOf(cfg config.Config) alertSpec {
-	return alertSpec{Transport: cfg.Alert.Transport, MailTo: cfg.Alert.MailTo}
+	return alertSpec{Transport: cfg.Alert.Transport, MailTo: cfg.Alert.MailTo, WebhookURL: cfg.Alert.WebhookURL, WebhookFormat: cfg.Alert.WebhookFormat}
 }
 
 // alertToolsAvailable reports PVE::Notify+perl and mail(1) presence.
@@ -250,7 +296,7 @@ func alertToolsAvailable() (pve, mail bool) { return alert.Available() }
 
 // alertEffective names the sink a transport setting yields on this box.
 func alertEffective(a alertSpec) string {
-	_, eff := alert.NewFor(a.Transport, a.MailTo, nil)
+	_, eff := alert.NewForConfig(alert.Config{Transport: a.Transport, MailTo: a.MailTo, WebhookURL: a.WebhookURL, WebhookFormat: a.WebhookFormat}, nil)
 	return eff
 }
 

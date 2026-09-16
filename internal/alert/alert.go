@@ -1,6 +1,7 @@
 // Package alert delivers daemon alerts. Delivery order (port of
 // n5pro-ec/deploy/n5-fand-alert): PVE::Notify via perl when the Proxmox
-// notification stack is present, else mail(1) to root, else log only. Every
+// notification stack is present, else mail(1) to root, else log only; a
+// webhook (HTTP POST, webhook.go) is chosen only when configured. Every
 // sink also logs the alert to stdout (journald). Cooldown per kind is the
 // controller's job (internal/control), not this package's.
 package alert
@@ -115,8 +116,18 @@ func New(logger Logger) Sink {
 // tool is missing degrades along the same order (pve → mail → log) — the
 // alert still goes somewhere; `n5-fangov check` and the panel say why the
 // effective transport differs from the configured one. mailTo "" means
-// root. An unknown transport counts as "auto".
+// root. An unknown transport counts as "auto". NewFor is the mail-only
+// shorthand of NewForConfig: "webhook" without a URL degrades to the log.
 func NewFor(transport, mailTo string, logger Logger) (Sink, string) {
+	return NewForConfig(Config{Transport: transport, MailTo: mailTo}, logger)
+}
+
+// NewForConfig is NewFor for the whole [alert] section. "webhook" posts
+// to c.WebhookURL (EffectiveWebhook) and is never chosen by "auto"; with
+// an empty URL it degrades to the log (the config parser already turned
+// that case into "auto" with a warning, so this is the last line).
+func NewForConfig(c Config, logger Logger) (Sink, string) {
+	transport, mailTo := c.Transport, c.MailTo
 	if logger == nil {
 		logger = nopLogger{}
 	}
@@ -130,6 +141,15 @@ func NewFor(transport, mailTo string, logger Logger) (Sink, string) {
 		return &Off{Logger: logger}, EffectiveOff
 	case TransportLog:
 		return &Log{Logger: logger}, EffectiveLog
+	case TransportWebhook:
+		if c.WebhookURL == "" {
+			return &Log{Logger: logger}, EffectiveLog
+		}
+		format := c.WebhookFormat
+		if format != FormatText {
+			format = FormatJSON
+		}
+		return &Webhook{Logger: logger, Hostname: host, URL: c.WebhookURL, Format: format}, EffectiveWebhook
 	case TransportPVE:
 		if pve {
 			return &PVE{Logger: logger, Hostname: host}, EffectivePVE

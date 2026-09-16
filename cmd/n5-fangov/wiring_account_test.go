@@ -207,7 +207,7 @@ func TestStoresDottedLayout(t *testing.T) {
 		t.Fatalf("account on dotted: %+v %v", got, err)
 	}
 	m := newAlertManager(cfgPath, "", cfgAlert(cfg), nil)
-	if st, err := m.Configure("mail", "ops"); err != nil || st.Transport != "mail" || st.MailTo != "ops" {
+	if st, err := m.Configure(settings("mail", "ops")); err != nil || st.Transport != "mail" || st.MailTo != "ops" {
 		t.Fatalf("alert on dotted: %+v %v", st, err)
 	}
 	d := newDashboardStore(cfgPath, &fakeWatched{}, func(string) (sensor.Source, error) { return nil, nil }, nil)
@@ -242,7 +242,7 @@ func TestStoresInlineTableRefused(t *testing.T) {
 		t.Errorf("cur changed on refusal: %+v", acc.Current())
 	}
 	m := newAlertManager(cfgPath, "", cfgAlert(cfg), nil)
-	if _, err := m.Configure("off", ""); err == nil || !strings.Contains(err.Error(), "inline [alert] table") {
+	if _, err := m.Configure(settings("off", "")); err == nil || !strings.Contains(err.Error(), "inline [alert] table") {
 		t.Errorf("alert on inline: %v", err)
 	}
 	if m.sw.Get().Name() != "log" {
@@ -280,7 +280,7 @@ func TestConfigWritersSerialised(t *testing.T) {
 		}()
 		go func() {
 			defer wg.Done()
-			if _, err := m.Configure("log", fmt.Sprintf("ops%d", i)); err != nil {
+			if _, err := m.Configure(settings("log", fmt.Sprintf("ops%d", i))); err != nil {
 				errc <- err
 			}
 		}()

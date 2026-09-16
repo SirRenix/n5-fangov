@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SirRenix/n5-fangov/internal/alert"
 	"github.com/SirRenix/n5-fangov/internal/hwmon"
 )
 
@@ -222,6 +223,8 @@ func runChecks(cfgPath, dir string) []checkResult {
 		adv(false, "alerts", fmt.Sprintf("[alert].transport = \"mail\" but mail(1) is absent; alerts go to %s instead", alertEffective(aspec)))
 	case aspec.Transport == "off":
 		adv(false, "alerts", "[alert].transport = \"off\": alerts are only written to the journal")
+	case aspec.Transport == "webhook":
+		add(true, "alerts", fmt.Sprintf("transport webhook (%s, %s)", alert.RedactURL(aspec.WebhookURL), aspec.WebhookFormat))
 	default:
 		add(true, "alerts", fmt.Sprintf("transport %s (%s)", aspec.Transport, alertEffective(aspec)))
 	}

@@ -388,7 +388,7 @@ func knownSensors(fs *hwmon.FS, dev profile.Device) []sensorInfo {
 // also recorded in the state directory's history when that file exists.
 func newAlerter() alert.Sink {
 	cfg, _, _ := config.Load(defaultConfigPath)
-	sink, _ := alert.NewFor(cfg.Alert.Transport, cfg.Alert.MailTo, log.Default())
+	sink, _ := alert.NewForConfig(alertConfig(cfg.Alert), log.Default())
 	path := alertsPath(stateDir())
 	if _, err := os.Stat(path); err != nil {
 		path = ""
@@ -568,6 +568,7 @@ type webDeps struct {
 	// Stores behind the dashboard APIs (wiring_account.go, wiring_alerts.go,
 	// wiring_dashboard.go).
 	SessionFile string          // <state dir>/sessions.json; "" = memory only
+	TokenFile   string          // <state dir>/tokens.json; "" = memory only
 	Account     *accountStore   // /api/account (nil: 501)
 	Alerts      *alertManager   // /api/alerts (nil: 501)
 	Dashboard   *dashboardStore // /api/dashboard (nil: 501)
@@ -681,10 +682,12 @@ func newWebServer(d webDeps) webServer {
 	return webServer{TCP: s.Handler(), Socket: s.SocketHandler(), serve: s.Serve, serveTLS: serveTLSFunc(s)}
 }
 
-// applyStoreDeps sets SessionFile, Account, Alerts, Dashboard and About. A
-// typed nil must not become a non-nil interface, hence the checks.
+// applyStoreDeps sets SessionFile, TokenFile, Account, Alerts, Dashboard
+// and About. A typed nil must not become a non-nil interface, hence the
+// checks.
 func applyStoreDeps(deps *web.Deps, d webDeps) {
 	deps.SessionFile = d.SessionFile
+	deps.TokenFile = d.TokenFile
 	if d.Account != nil {
 		deps.Account = d.Account
 	}
@@ -844,6 +847,7 @@ func configJSON(cfg config.Config, warns []config.Warning) map[string]any {
 		},
 		"alert": map[string]any{
 			"transport": cfg.Alert.Transport, "mail_to": cfg.Alert.MailTo,
+			"webhook_url": cfg.Alert.WebhookURL, "webhook_format": cfg.Alert.WebhookFormat,
 		},
 		"dashboard": map[string]any{
 			"sensors": nonNilStrings(cfg.Dashboard.Sensors),

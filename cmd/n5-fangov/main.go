@@ -47,7 +47,7 @@ func register(name string, c command) { commands[name] = c }
 var order = []string{
 	"setup", "serve", "status", "set", "auto", "curve", "log",
 	"check", "detect", "system", "test", "failsafe",
-	"passwd", "cert", "alerts", "export", "import", "version",
+	"passwd", "cert", "alerts", "token", "export", "import", "version",
 }
 
 // helpText is the usage line per subcommand.
@@ -67,6 +67,7 @@ var helpText = map[string]string{
 	"passwd":   "[--user U] [--password-file F | --password -]  set the web user/password (auth = basic), restart to apply; the dashboard (signed in) changes both live",
 	"cert":     "info | export [--der] [FILE] | regen [--new-key] | upload CERT KEY | reset  dashboard certificate (live via the daemon)",
 	"alerts":   "status | test | template  alert transport, test alert, PVE notification template (live via the daemon)",
+	"token":    "create NAME [--scope read|control|admin] [--ttl DAYS] | list | revoke ID  API tokens for scripts and agents (via the daemon)",
 	"export":   "[FILE]                 settings bundle (config + presets, hash redacted) as JSON",
 	"import":   "FILE                   restore a settings bundle (validated first), reload the daemon",
 	"version":  "                       print version",

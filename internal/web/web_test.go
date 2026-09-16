@@ -1604,7 +1604,7 @@ func TestAnonymous401Silent(t *testing.T) {
 		last = e.logged[n-1]
 	}
 	e.logMu.Unlock()
-	if n != 2 || !strings.Contains(last, "auth failure") || !strings.Contains(last, "2 recent failures") {
+	if n != 2 || !strings.Contains(last, "bearer token rejected") || !strings.Contains(last, "2 recent failures") {
 		t.Fatalf("presented credential: %d log lines, last %q", n, last)
 	}
 	// and the login that follows the silent 401 works without any delay

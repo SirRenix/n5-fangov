@@ -40,7 +40,7 @@ func cmdServe(args []string) int {
 	dryRun := fs.Bool("dry-run", false, "read sensors and log decisions, never write pwm")
 	rdir := fs.String("run-dir", runDir(), "runtime directory (socket, state.json, alert stamps)")
 	listen := fs.String("listen", "", "override [web].listen (\"none\" disables the TCP listener)")
-	sdir := fs.String("state-dir", stateDir(), "state directory (sessions.json, alerts.json); unwritable = no persistence")
+	sdir := fs.String("state-dir", stateDir(), "state directory (sessions.json, tokens.json, alerts.json); unwritable = no persistence")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
@@ -133,7 +133,7 @@ func serveConfig(st *serveState) bool {
 	st.state = ensureStateDir(st.sdir)
 	st.alertMgr = newAlertManager(st.cfgPath, alertsPath(st.state), cfg.Alert, nil)
 	st.alerter = st.alertMgr.sink()
-	log.Printf("alerts: transport %s (%s), history %s", cfg.Alert.Transport, st.alertMgr.effective, orMemory(alertsPath(st.state)))
+	log.Printf("alerts: transport %s (%s)%s, history %s", cfg.Alert.Transport, st.alertMgr.effective, transportNote(cfg.Alert), orMemory(alertsPath(st.state)))
 	if len(warns) > 0 {
 		// Asynchronous like the controller's alerts: a PVE::Notify delivery
 		// may take 30 s and must not delay the first cycle and READY=1.
@@ -300,6 +300,7 @@ func serveWeb(st *serveState) {
 		TLSHosts:    hosts,
 		ConfigPin:   tlsMgr.pinConfig,
 		SessionFile: sessionsPath(st.state),
+		TokenFile:   tokensPath(st.state),
 		Account:     accounts,
 		Alerts:      st.alertMgr,
 		Dashboard:   dashboard,
@@ -308,6 +309,7 @@ func serveWeb(st *serveState) {
 		Channels:    ctrl.Channels,
 	})
 	st.sched = sched
+	log.Printf("web: sessions %s, tokens %s", orMemory(sessionsPath(st.state)), orMemory(tokensPath(st.state)))
 	st.wspec, st.addr, st.useTLS, st.tlsMgr, st.hosts = wspec, addr, useTLS, tlsMgr, hosts
 }
 

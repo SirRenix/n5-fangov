@@ -20,6 +20,7 @@ coverage.*
 *.p12
 *.pfx
 sessions.json
+tokens.json
 alerts.json
 history.json
 *.token

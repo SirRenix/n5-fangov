@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/SirRenix/n5-fangov/internal/alert"
 )
 
 func init() {
@@ -64,6 +66,8 @@ type alertsResp struct {
 	Transport     string `json:"transport"`
 	Effective     string `json:"effective"`
 	MailTo        string `json:"mail_to"`
+	WebhookURL    string `json:"webhook_url"`
+	WebhookFormat string `json:"webhook_format"`
 	PVEAvailable  bool   `json:"pve_available"`
 	MailAvailable bool   `json:"mail_available"`
 	Template      struct {
@@ -113,6 +117,7 @@ func (c alertsClient) status() int {
 	m := c.offline()
 	s := m.Status()
 	r.Transport, r.Effective, r.MailTo = s.Transport, s.Effective, s.MailTo
+	r.WebhookURL, r.WebhookFormat = s.WebhookURL, s.WebhookFormat
 	r.PVEAvailable, r.MailAvailable, r.Cooldown = s.PVEAvailable, s.MailAvailable, s.Cooldown
 	r.Template.Installed, r.Template.Current, r.Template.Writable = s.Template.Installed, s.Template.Current, s.Template.Writable
 	r.Template.Path, r.Template.Reason = s.Template.Path, s.Template.Reason
@@ -138,6 +143,10 @@ func printAlertStatus(r alertsResp, source string) {
 	fmt.Printf("transport:    %s -> %s (source: %s)\n", r.Transport, r.Effective, source)
 	if r.Transport == "mail" || r.Transport == "auto" {
 		fmt.Printf("mail_to:      %s\n", r.MailTo)
+	}
+	if r.Transport == "webhook" || r.WebhookURL != "" {
+		// query and userinfo stay out of the terminal (Gotify keys)
+		fmt.Printf("webhook:      %s (%s)\n", alert.RedactURL(r.WebhookURL), r.WebhookFormat)
 	}
 	fmt.Printf("available:    pve-notify=%s  mail=%s\n", yesNo(r.PVEAvailable), yesNo(r.MailAvailable))
 	tmpl := "not installed"

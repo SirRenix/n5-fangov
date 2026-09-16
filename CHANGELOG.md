@@ -29,8 +29,8 @@ Scope rule for 0.3.x: the regulator (`internal/control`) is verified and stays a
 everything below is API, dashboard, alerts and packaging. Attack surface stays small: no
 MQTT/discovery, no multi-host management, no new dependencies. The UI stays English.
 
-**1. Interface (foundation for automation and AI agents)**
-- **API tokens** instead of the admin password in scripts (Home Assistant, monitoring,
+**1. Interface (foundation for automation and AI agents)** — done except the HA recipe, see Added below
+- **API tokens** (done) instead of the admin password in scripts (Home Assistant, monitoring,
   scripts, local LLM agents): named, with a **scope** (`read` = state/history/system/
   sensors; `control` = overrides, presets, dashboard sensors; `admin` = everything the
   dashboard can do), optional **expiry** (e.g. 90 days; unlimited allowed with a warning),
@@ -39,11 +39,12 @@ MQTT/discovery, no multi-host management, no new dependencies. The UI stays Engl
   `Authorization: Bearer <token>`, rate limit per token, `read` as the default scope.
   Dashboard: *Tokens* section in the settings; CLI `n5-fangov token create|list|revoke`.
   Basic auth and the unix socket stay as they are.
-- **OpenAPI description** `GET /api/openapi.json` (public), generated from the route
+- **OpenAPI description** (done) `GET /api/openapi.json` (public), generated from the route
   table and kept in sync by a test, so an agent can use the API without the README.
-- **Home Assistant without tinkering**: README recipe with REST sensors (temperature, RPM,
-  mode per channel) and an automation that applies a preset through a `control` token.
-- **Webhook alert transport** (generic JSON POST; works for ntfy, Gotify, Home Assistant
+- **Home Assistant without tinkering** (open, docs): README recipe with REST sensors
+  (temperature, RPM, mode per channel) and an automation that applies a preset through a
+  `control` token.
+- **Webhook alert transport** (done; generic JSON POST; works for ntfy, Gotify, Home Assistant
   webhooks) next to PVE::Notify and `mail(1)` — non-PVE hosts have only mail today.
 
 **2. Regulation add-ons (curve post-processing only; failsafe, stall and critical untouched)**
@@ -118,6 +119,45 @@ curl path is re-run once at 0.4.0.
 
 ### Added
 
+- **API tokens** for scripts, Home Assistant and agents: `Authorization: Bearer n5t_…`
+  next to the session cookie and Basic auth. A token has a name (unique,
+  `^[A-Za-z0-9][A-Za-z0-9 ._-]{0,31}$`), a cumulative **scope** — `read` (state, history,
+  system, sensors, profiles, presets, alerts, dashboard, tls info), `control` (read +
+  overrides, preset apply, dashboard sensors), `admin` (everything the dashboard can do) —
+  and an optional expiry (default 90 days, `0` = never with a warning). Stored like the
+  sessions: `sha256(secret) → {id, name, scope, created, expires, last_used, last_ip}` in
+  `/var/lib/n5-fangov/tokens.json` (0600, atomic, cap 50); last use and address refreshed
+  at most once a minute; a password change or "sign out other sessions" leaves tokens
+  valid, revocation is explicit. Endpoints `GET/POST /api/tokens`, `DELETE
+  /api/tokens/{id}` and the CLI `n5-fangov token create NAME [--scope S] [--ttl DAYS] |
+  list | revoke ID` (over the socket; the secret alone on stdout). Rules: a token never
+  reaches `/api/tokens*`, `/api/account/*`, `/api/login`, `/api/logout` (403, so a leaked
+  admin token cannot mint tokens or change the password); out of scope → 403 with
+  `scope` and `required`; a bearer caller needs no CSRF header (cookie and Basic callers
+  still do); a rejected token is counted and logged like a wrong password
+  (`web: bearer token rejected from <ip>: unknown|expired`) without touching the PBKDF2
+  semaphore; 20 req/s sustained, burst 40 per token (429 `token rate limit`); with
+  `auth = "none"` a Bearer header is ignored. `GET /api/session` reports `via: "bearer"`,
+  `scope`, `token_id` and the token name as `user`.
+- **OpenAPI** `GET /api/openapi.json` (public, `Cache-Control: no-store`, ETag = sha256 of
+  the body, 304 on `If-None-Match`): an OpenAPI 3.1 document rendered once at start from
+  the route table in `internal/web/openapi.go` — the only place a route is declared;
+  `routes()` registers from it and the guard takes visibility and scope from it.
+  Security schemes `bearer`/`basic`/`cookie`, per operation summary, parameters,
+  request body schema, responses (error codes reference `Error`), `x-class`, `x-scope`;
+  component schemas `Error, State, Channel, HistoryPoint, Override, Version, Session,
+  Token, TokenCreate, TokenCreated, Alerts, AlertsUpdate, Schedules, Dashboard`.
+  `TestOpenAPICoversRoutes` pins the table to the document in both directions.
+- **Webhook alert transport** `[alert] transport = "webhook"` with `webhook_url` (absolute
+  http/https, host, no userinfo, ≤ 2048; without a valid URL the transport falls back to
+  `auto` with a warning) and `webhook_format = "json" | "text"`: one POST per alert,
+  `User-Agent: n5-fangov/<version>`, headers `X-N5-Fangov-Kind` and `Title`, JSON body
+  `{type, kind, severity, hostname, title, message, ts}` (Gotify, Home Assistant) or the
+  bare message as `text/plain` (ntfy); 30 s bound, redirects not followed, 2xx = delivered,
+  anything else the delivery error `webhook: …`. Never chosen by `auto`. `PUT /api/alerts`
+  takes `webhook_url` and `webhook_format` (omitted keys keep their value), `GET
+  /api/alerts` carries the full URL (protected); log lines, `check` and `n5-fangov alerts
+  status` show it without query and userinfo.
 - **Hysteresis and minimum on-time per channel** (`[[channel]] hysteresis = 0..10`,
   `min_on = "0s".."1h"`, both off by default): the curve is evaluated at a held temperature
   that follows the reading only on a move of `hysteresis` degrees or more, and a rise of

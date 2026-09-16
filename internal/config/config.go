@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"maps"
 	"net"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -142,14 +143,56 @@ const (
 
 // Alert holds the alert transport settings (v0.3: the alerts panel).
 type Alert struct {
-	Transport string `toml:"transport"` // auto | pve | mail | log | off (see AlertTransports)
-	MailTo    string `toml:"mail_to"`   // mail transport only: local user or address
+	Transport     string `toml:"transport"`      // auto | pve | mail | webhook | log | off (see AlertTransports)
+	MailTo        string `toml:"mail_to"`        // mail transport only: local user or address
+	WebhookURL    string `toml:"webhook_url"`    // webhook transport only: absolute http/https URL
+	WebhookFormat string `toml:"webhook_format"` // json | text (see WebhookFormats)
 }
 
 // AlertTransports accepted in alert.transport. "auto" picks PVE::Notify
 // when the Proxmox stack is present, else mail(1), else the log; "off"
-// drops every alert (the journal line stays).
-var AlertTransports = []string{"auto", "pve", "mail", "log", "off"}
+// drops every alert (the journal line stays); "webhook" posts to
+// webhook_url and is never chosen by "auto".
+var AlertTransports = []string{"auto", "pve", "mail", "webhook", "log", "off"}
+
+// WebhookFormats accepted in alert.webhook_format: "json" is the document
+// Gotify and Home Assistant read, "text" the bare message for ntfy and
+// plain receivers.
+var WebhookFormats = []string{"json", "text"}
+
+// DefaultWebhookFormat is the body format when webhook_format is absent
+// or invalid.
+const DefaultWebhookFormat = "json"
+
+// MaxWebhookURLLen bounds alert.webhook_url.
+const MaxWebhookURLLen = 2048
+
+// ValidWebhookURL checks an alert.webhook_url value: an absolute http or
+// https URL with a host, without userinfo (a key belongs into the query
+// or a path segment, never into the authority), at most MaxWebhookURLLen
+// bytes. The error text is meant to be appended to the value.
+func ValidWebhookURL(s string) error {
+	if s == "" {
+		return errors.New("is empty")
+	}
+	if len(s) > MaxWebhookURLLen {
+		return fmt.Errorf("is longer than %d bytes", MaxWebhookURLLen)
+	}
+	u, err := url.Parse(s)
+	if err != nil {
+		return errors.New("is not a URL")
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return errors.New("is not an http or https URL")
+	}
+	if u.Host == "" || u.Hostname() == "" {
+		return errors.New("has no host")
+	}
+	if u.User != nil {
+		return errors.New("must not carry user:password (userinfo)")
+	}
+	return nil
+}
 
 // DefaultMailTo is the mail recipient when mail_to is absent or invalid.
 const DefaultMailTo = "root"
@@ -267,8 +310,9 @@ func Default() Config {
 			MaxFiles:  5,
 		},
 		Alert: Alert{
-			Transport: "auto",
-			MailTo:    DefaultMailTo,
+			Transport:     "auto",
+			MailTo:        DefaultMailTo,
+			WebhookFormat: DefaultWebhookFormat,
 		},
 		Dashboard: Dashboard{Sensors: []string{}},
 	}
@@ -701,7 +745,7 @@ func (p *parser) log(sec map[string]toml.Primitive, l *Log) {
 
 func (p *parser) alert(sec map[string]toml.Primitive, a *Alert) {
 	const pre = "alert"
-	p.unknown(pre, sec, "transport", "mail_to")
+	p.unknown(pre, sec, "transport", "mail_to", "webhook_url", "webhook_format")
 	def := Default().Alert
 	tr, _ := p.strField(pre, sec, "transport", def.Transport)
 	tr = enumValue(tr)
@@ -709,7 +753,6 @@ func (p *parser) alert(sec map[string]toml.Primitive, a *Alert) {
 		p.warn(pre+".transport", "%q unknown (%s), default %q used", tr, strings.Join(AlertTransports, "|"), def.Transport)
 		tr = def.Transport
 	}
-	a.Transport = tr
 	to, present := p.strField(pre, sec, "mail_to", def.MailTo)
 	to = strings.TrimSpace(to)
 	if present && !ValidMailTo(to) {
@@ -717,6 +760,33 @@ func (p *parser) alert(sec map[string]toml.Primitive, a *Alert) {
 		to = def.MailTo
 	}
 	a.MailTo = to
+	// webhook_url: an invalid value is dropped (""), and a transport that
+	// needs it falls back to auto — rule 8, the alert still goes somewhere.
+	wu, present := p.strField(pre, sec, "webhook_url", "")
+	wu = strings.TrimSpace(wu)
+	if present && wu != "" {
+		if err := ValidWebhookURL(wu); err != nil {
+			p.warn(pre+".webhook_url", "%q %v, ignored", wu, err)
+			wu = ""
+		}
+	}
+	a.WebhookURL = wu
+	wf, present := p.strField(pre, sec, "webhook_format", def.WebhookFormat)
+	wf = enumValue(wf)
+	if wf == "" {
+		// Marshal writes every key; an empty format is "not set".
+		wf = def.WebhookFormat
+	}
+	if present && !contains(WebhookFormats, wf) {
+		p.warn(pre+".webhook_format", "%q unknown (%s), default %q used", wf, strings.Join(WebhookFormats, "|"), def.WebhookFormat)
+		wf = def.WebhookFormat
+	}
+	a.WebhookFormat = wf
+	if tr == "webhook" && a.WebhookURL == "" {
+		p.warn(pre+".transport", "\"webhook\" needs a valid webhook_url, %q used", def.Transport)
+		tr = def.Transport
+	}
+	a.Transport = tr
 }
 
 // dashboard validates [dashboard].sensors: an array of at most
