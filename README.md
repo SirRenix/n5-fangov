@@ -46,18 +46,54 @@ Alerts go to the Proxmox notification stack (`PVE::Notify`, template `n5-fangov`
 running on PVE, otherwise `mail(1)`; always to the journal. The transport is configurable
 and testable from the dashboard (see [Alerts](#alerts)).
 
+## Prerequisites
+
+| | |
+|---|---|
+| OS | Proxmox VE 9.x (Debian 13 "trixie") or Debian 13 with systemd; tested platform in [Compatibility](#compatibility). Everything runs as root. |
+| Packages | `dkms`, the kernel headers for the running kernel (`proxmox-headers-$(uname -r)` on PVE, `linux-headers-$(uname -r)` on Debian), `pciutils` (`lspci`, for device names in the System tab; optional), `lm-sensors` (optional, `sensors` for cross-checks). |
+| **N5 Pro: the EC driver** | The fan outputs of the Minisforum N5 Pro are exposed by the out-of-tree kernel module `minisforum_n5_it5571` (upstream [`ltdstudio/minisforum-n5-it5571`](https://github.com/ltdstudio/minisforum-n5-it5571)). The sibling repo [`SirRenix/minisforum-n5pro-fan-proxmox`](https://github.com/SirRenix/minisforum-n5pro-fan-proxmox) packages it as DKMS `minisforum-n5-it5571/0.2.0` (rebuilt automatically for every new kernel) and ships the two autoload files. Its `deploy/install.sh` installs the module **and** the older Bash regulator `n5-fand`; n5-fangov's installer disables `n5-fand` again, so running both installers in this order is fine. |
+| N5 Pro: driver options | `/etc/modprobe.d/minisforum-n5-it5571.conf` must contain `options minisforum_n5_it5571 experimental_write=1` — without it the `pwm*` nodes stay invisible and `setup` finds no profile. Loading the module writes nothing to the EC (`pwm*_enable` starts at 2 = EC automatic); only the regulator writes. `/etc/modules-load.d/minisforum-n5-it5571.conf` loads it at boot. |
+| Other boards | `nct6775` / `it87` from the distribution kernel; no extra package. |
+| Check | `n5-fangov detect` (after the install below) lists the hwmon devices and the profile it would use; `dkms status minisforum-n5-it5571` must show `installed` for the running kernel. |
+
 ## Install
 
+Two ways; both end with `n5-fangov setup`.
+
+**From a GitHub release** (no Go toolchain needed). The release carries the static
+`linux/amd64` binary and its sha256; the units, scripts and templates come from the
+repository at the same tag:
+
 ```
-# Proxmox VE 9 / Debian 13, as root
-./deploy/install.sh           # or: apt install ./dist/n5-fangov_<version>_amd64.deb
+# as root
+VER=0.3.0-beta.4
+git clone --branch v$VER --depth 1 https://github.com/SirRenix/n5-fangov.git
+cd n5-fangov && mkdir -p dist
+curl -fsSL -o dist/n5-fangov        https://github.com/SirRenix/n5-fangov/releases/download/v$VER/n5-fangov-$VER-linux-amd64
+curl -fsSL -o dist/n5-fangov.sha256 https://github.com/SirRenix/n5-fangov/releases/download/v$VER/n5-fangov-$VER-linux-amd64.sha256
+(cd dist && sed "s/n5-fangov-$VER-linux-amd64/n5-fangov/" n5-fangov.sha256 | sha256sum -c -)
+chmod 0755 dist/n5-fangov
+./deploy/install.sh
+n5-fangov setup
+```
+
+**From a checkout with a build** (`make build` needs Go 1.25+, or
+`tools/remote-go.ps1 -Fetch` builds in Docker on another machine):
+
+```
+make build && ./deploy/install.sh        # or: make deb && apt install ./dist/n5-fangov_<version>_amd64.deb
 n5-fangov setup
 ```
 
 The installer puts the binary, the units, the apt hook, the log directory and (on PVE)
-the notification template pair in place and enables the unit. It writes **no** config and starts nothing — that is
-`setup`. N5 Pro only: the kernel module must be installed first (DKMS package from
-the sibling repo, `experimental_write=1`); `setup` refuses without a detected profile.
+the notification template pair in place and enables the unit. It writes **no** config and
+starts nothing — that is `setup`. `install.sh` looks for the binary at `dist/n5-fangov`
+(or `./n5-fangov`) and refuses to run without one. N5 Pro: the kernel module from the
+prerequisites must be loaded first; `setup` refuses without a detected profile.
+
+Updating: same steps with the new tag; `install.sh` replaces binary and units and keeps
+the config. Rollback and removal: [Updates](#updates), [Uninstall](#uninstall).
 
 ## Setup
 
@@ -548,6 +584,26 @@ What a Proxmox upgrade **can** affect: the kernel (above), `dkms` itself, perl/
 logs live under `/etc/n5-fangov` and `/var/log/n5-fangov` and are never touched by
 package scripts (purge removes them). The state directory `/var/lib/n5-fangov`
 (sessions, alert history) is removed with the package; nothing in it is worth keeping.
+
+**Rollback** to the previous version: put the old binary back and restart —
+`install -m0755 /path/to/old/n5-fangov /usr/bin/n5-fangov && systemctl restart n5-fangov`
+(keep a copy before an update: `cp /usr/bin/n5-fangov /root/n5-fangov-$(n5-fangov version | cut -d' ' -f2).bak`).
+The config is forward-compatible: a newer daemon reads an older file; an older daemon
+warns about unknown keys and ignores them (rule: config errors never prevent a start).
+Sessions are dropped when the credential epoch changes, nothing else is versioned.
+If `setup` replaced the config, the previous one is `config.toml.bak-<timestamp>` next to it.
+
+## Uninstall
+
+```
+./deploy/uninstall.sh            # stops and removes the unit, binary, apt hook, PVE template, state
+./deploy/uninstall.sh --purge    # additionally /etc/n5-fangov (config, presets, certificate) and /var/log/n5-fangov
+```
+
+or `apt remove n5-fangov` / `apt purge n5-fangov` for the package. `ExecStopPost=failsafe`
+leaves the fans in the profile's safe state (N5 Pro: CPU/SSD back to EC automatic, HDD at
+the fixed stop duty until the next boot). The kernel module is not touched — it belongs to
+the DKMS package from the prerequisites.
 
 ## Hardening
 
