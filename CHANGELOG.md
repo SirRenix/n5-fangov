@@ -12,6 +12,8 @@ names; the audit that drove the *Unreleased* work is `docs/AUDIT.md` (code) and
 
 ## [Unreleased]
 
+## [0.3.0-rc1] — 2026-09-16
+
 Pre-release hardening after the acceptance audit of `v0.3.0-beta.4` (16 September 2026).
 
 ### Added
@@ -271,7 +273,8 @@ of `v0.2.0`.
   security review `H1`–`H3`, `M1`–`M4`, `L1`–`L6` (Host header, CSRF, socket mode 0750,
   body limits, …).
 
-[Unreleased]: https://github.com/SirRenix/n5-fangov/compare/v0.3.0-beta.4...HEAD
+[Unreleased]: https://github.com/SirRenix/n5-fangov/compare/v0.3.0-rc1...HEAD
+[0.3.0-rc1]: https://github.com/SirRenix/n5-fangov/releases/tag/v0.3.0-rc1
 [0.3.0-beta.4]: https://github.com/SirRenix/n5-fangov/releases/tag/v0.3.0-beta.4
 [0.3.0-beta.3]: https://github.com/SirRenix/n5-fangov/releases/tag/v0.3.0-beta.3
 [0.3.0-beta.2]: https://github.com/SirRenix/n5-fangov/releases/tag/v0.3.0-beta.2

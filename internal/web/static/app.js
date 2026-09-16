@@ -131,7 +131,7 @@ const download = async (path, fallback) => {
 
 // mock flags: see the About tab (?mock=1 &user=1 &auth=none &tls= &tab= &syserr=1 &reject=1)
 const mock = (() => {
-	const t0 = Date.now() / 1000, MV = '0.3.0-beta.4';
+	const t0 = Date.now() / 1000, MV = '0.3.0-rc1';
 	const M = { auth: Q.get('auth') === 'none' ? 'none' : 'basic', in: Q.get('user') === '1' || Q.get('auth') === 'none', user: 'admin', remember: false, exp: !!Q.get('expire') };
 	const cfg = { daemon: { interval: '10s', step_up: 40, step_down: 15, stall_min_duty: 60, stall_cycles: 2, profile: 'auto' },
 		web: { listen: '0.0.0.0:8010', auth: M.auth }, log: { file: '/var/log/n5-fangov/n5-fangov.log', max_size_mb: 10, max_files: 5 },
