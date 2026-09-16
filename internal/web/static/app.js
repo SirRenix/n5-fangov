@@ -4,7 +4,7 @@
 const $ = (s, r) => (r || document).querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
 const h = (tag, attrs, ...kids) => {
-	const e = document.createElement(tag);
+	const e = document.createElement(tag); if (tag === 'button') e.type = 'button';
 	if (attrs) for (const k in attrs) {
 		const v = attrs[k];
 		if (k === 'class') e.className = v;
@@ -32,15 +32,16 @@ try { Object.assign(S, JSON.parse(localStorage.getItem('n5-fangov') || '{}')); }
 const saveS = () => { try { localStorage.setItem('n5-fangov', JSON.stringify(S)); } catch (e) {} };
 const tC = v => S.unit === 'F' ? v * 9 / 5 + 32 : v;
 const unit = () => S.unit === 'F' ? '°F' : '°C';
-const fmtT = (v, d) => v == null || !(v > -900) ? '—' : tC(v).toFixed(d === undefined ? 1 : d);
+const fmtT = (v, d = 1) => !(v > -900) ? '—' : tC(v).toFixed(d);
 const pct = d => Math.round(d / 255 * 100);
 const rel = ts => { const s = Math.max(0, Date.now() / 1000 - ts | 0);
 	return s < 60 ? s + ' s ago' : s < 3600 ? (s / 60 | 0) + ' min ago' : s < 86400 ? `${s / 3600 | 0} h ${s % 3600 / 60 | 0} min ago` : `${s / 86400 | 0} d ${s % 86400 / 3600 | 0} h ago`; };
 const fmtUp = s => { const d = s / 86400 | 0, hh = s % 86400 / 3600 | 0, m = s % 3600 / 60 | 0; return d ? `${d}d ${hh}h` : hh ? `${hh}h ${m}m` : `${m}m`; };
-const hm = ts => { const d = new Date(ts * 1000); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); };
+const hm = ts => new Date(ts * 1000).toTimeString().slice(0, 5);
 const toTs = v => typeof v === 'number' ? v : Date.parse(v) / 1000; // unix seconds or RFC 3339
 const abs = ts => new Date(ts * 1000).toLocaleString();
 const tm = (v, future) => { const ts = toTs(v); return !(ts > 0) ? '—' : h('time', { datetime: new Date(ts * 1000).toISOString(), title: future ? null : abs(ts) }, future ? abs(ts) : rel(ts)); };
+const notice = id => (msg, kind) => { const n = $(id); n.hidden = !msg; if (kind !== undefined) n.className = 'notice ' + (kind || ''); n.textContent = msg || ''; };
 const kv = (el, rows) => { clear(el); for (const [k, v] of rows) el.append(h('dt', null, k), v && v.nodeType ? v : h('dd', null, v)); return el; };
 const interp = (curve, t) => {
 	if (!curve.length) return 0;
@@ -55,15 +56,16 @@ const interp = (curve, t) => {
 // toasts
 const toast = (msg, kind, ms) => {
 	const t = h('div', { class: 'toast ' + (kind || '') }, msg,
-		h('button', { type: 'button', 'aria-label': 'Dismiss', onclick: () => t.remove() }, '×'));
+		h('button', { 'aria-label': 'Dismiss', onclick: () => t.remove() }, '×'));
 	$('#toasts').append(t);
 	setTimeout(() => t.remove(), ms || (kind === 'err' ? 12000 : 5000));
 };
 
-// API: cookie session, no credential in the client; a 401 while signed in = session gone
-let failures = 0, sess = { authenticated: false, mode: 'basic', user: '' };
+// API: cookie session; a 401 while signed in = session gone
+const anon = mode => ({ authenticated: false, mode: mode || 'basic', user: '' });
+let failures = 0, sess = anon();
 const signedIn = () => !!sess.authenticated;
-const sessionLost = () => { if (!signedIn()) return; sess = { authenticated: false, mode: sess.mode, user: '' }; toast('Session expired — sign in again', 'warn'); applyAuth(); };
+const sessionLost = () => { if (!signedIn()) return; sess = anon(sess.mode); toast('Session expired — sign in again', 'warn'); applyAuth(); };
 const api = async (path, opt) => {
 	opt = opt || {};
 	if (MOCK) return mock(path, opt).catch(e => { if (e.status === 401) sessionLost(); throw e; });
@@ -110,16 +112,17 @@ const mock = (() => {
 			{ name: 'cpu', pwm: 1, sensor: 'k10temp', curve: [[45, 85], [80, 255]], critical: 88, stop: 'auto' },
 			{ name: 'ssd', pwm: 2, sensor: 'nvme:max', curve: [[40, 74], [70, 255]], critical: 75, stop: 'auto' },
 			{ name: 'hdd', pwm: 3, sensor: 'drivetemp:max', curve: [[36, 105], [46, 255]], critical: 56, stop: 87 }] };
+	const shift = n => cfg.channel.map(c => Object.assign({}, c, { curve: c.curve.map(p => [p[0] + n, p[1]]) }));
 	const presets = {
-		'n5pro-balanced': { builtin: true, description: 'HDDs held near 40 °C, audible under load only', ch: cfg.channel },
-		'n5pro-quiet': { builtin: true, description: 'lowest noise, HDDs around 45 °C', ch: cfg.channel.map(c => Object.assign({}, c, { curve: c.curve.map(p => [p[0] + 4, p[1]]) })) },
-		summer: { ch: cfg.channel.map(c => Object.assign({}, c, { curve: c.curve.map(p => [p[0] - 4, p[1]]) })) } };
+		'n5pro-balanced': { builtin: true, description: 'Recommended: HDDs held near 40 °C, audible under load only', ch: cfg.channel },
+		'n5pro-quiet': { builtin: true, description: 'Quiet: lowest noise, HDDs around 45 °C', ch: shift(4) }, summer: { ch: shift(-4) } };
 	const overrides = {};
 	const temp = (name, t) => ({ cpu: 38 + 9 * Math.sin(t / 900) + 3 * Math.sin(t / 130), ssd: 41 + 4 * Math.sin(t / 1400 + 1), hdd: 39 + 2.5 * Math.sin(t / 2600 + 2) })[name];
 	// sensor catalogue: id → [description, base curve, offset]
 	const SENS = { k10temp: ['CPU Tctl', 'cpu', 0], 'nvme:max': ['hottest NVMe', 'ssd', 0], 'drivetemp:max': ['hottest drive', 'hdd', 0], 'ec:ambient': ['EC ambient', 'sys', -6], 'ec:board': ['EC mainboard', 'sys', 2], 'ec:cpu': ['EC CPU probe', 'cpu', 1.5],
-		'ec:system': ['EC system', 'sys', 0], 'hwmon:acpitz:temp1': ['ACPI thermal zone', 'sys', 5], 'hwmon:nic1:temp1': ['NIC PHY', 'sys', 18], 'hwmon:nic1:temp2': ['NIC MAC', 'sys', 15], 'hwmon:nvme:temp1': ['NVMe composite', 'ssd', -.5],
-		'hwmon:drivetemp:temp1': ['sda', 'hdd', -1], 'hwmon:spd5118:temp1': ['DIMM 0 SPD', 'sys', 8], 'hwmon:amdgpu:temp1': ['iGPU edge', 'cpu', -3], 'hwmon:minisforum_n5_it5571:temp1': ['EC chip', 'sys', 4] };
+		'ec:system': ['EC system', 'sys', 0], 'hwmon:acpitz:temp1': ['ACPI thermal zone', 'sys', 5], 'hwmon:nic1:temp1': ['NIC PHY', 'sys', 18], 
+		'hwmon:spd5118:temp1': ['DIMM 0 SPD', 'sys', 8], 'hwmon:amdgpu:temp1': ['iGPU edge', 'cpu', -3], 'hwmon:minisforum_n5_it5571:temp1': ['EC chip', 'sys', 4] };
+	const PAT = [{ id: 'hwmon:<name>:tempN', description: 'any hwmon device by name and temperature index' }, { id: 'ec:<label>', description: 'extra temperature of the detected fan controller profile' }];
 	const sv = (id, t) => { const [, src, off] = SENS[id]; return +((src === 'sys' ? 32 + 1.5 * Math.sin(t / 700) : temp(src, t)) + off).toFixed(1); };
 	let dash = ['hwmon:amdgpu:temp1', 'hwmon:nic1:temp1'];
 	const rpmOf = (name, d) => Math.round(interp(REF[name], d) + 20 * Math.sin(d));
@@ -132,39 +135,39 @@ const mock = (() => {
 	const logs = [];
 	for (let i = 0; i < 200; i++) { const t = t0 - (200 - i) * 300; const p = point(t);
 		logs.push(`${new Date(t * 1000).toISOString().slice(0, 19)} ${i % 37 === 5 ? 'WARN stall: hdd rpm=0 at duty=105' : i % 53 === 7 ? 'ERROR sensor drivetemp:max: no devices' : 'INFO'} cpu ${p.temp.cpu}/${p.duty.cpu} hdd ${p.temp.hdd}/${p.duty.hdd}`); }
-	const wait = v => new Promise(r => setTimeout(() => r(v), 120)), ok = (body, filename) => wait({ status: 200, body, filename });
+	const wait = v => new Promise(r => setTimeout(r, 120, v)), ok = (body, filename) => wait({ status: 200, body, filename });
 	const q = Q.get('tls'), T = { mode: q === 'off' || q === 'file' || q === 'fallback' ? (q === 'fallback' ? 'file' : q) : 'auto', fb: q === 'fallback', n: 0 };
 	const tlsInfo = () => { const up = T.mode === 'file' && !T.fb, cn = up ? 'CN=fans.example,O=Homelab' : 'CN=n5.lan,O=n5-fangov', d = new Date(t0 * 1000); d.setFullYear(d.getFullYear() + (up ? 1 : 10));
 		return { subject: cn, issuer: up ? 'CN=Homelab CA' : cn, dns_names: up ? ['fans.example'] : ['n5.lan', 'n5host', 'localhost'], ips: up ? [] : ['192.0.2.20', '127.0.0.1', '::1'],
 			not_before: new Date(t0 * 1000 - 36e5).toISOString(), not_after: q === 'soon' ? new Date(t0 * 1000 + 12 * 864e5).toISOString() : d.toISOString(), is_ca: !up, key_algo: up ? 'RSA 2048' : 'ECDSA P-256',
 			serial_hex: '3F0' + T.n + 'A9C1', fingerprint_sha256: Array.from({ length: 32 }, (_, i) => ((i * 37 + T.n * 11) % 256 | 256).toString(16).slice(1).toUpperCase()).join(':') }; };
 	const fail = (msg, status, extra) => Promise.reject(Object.assign(new Error(msg), { status, body: Object.assign({ error: msg }, extra || {}) }));
+	const lacks = (...hs) => hs.map(x => 'SAN list lacks host ' + x);
 	const mockTLS = (p, opt) => {
 		if (p === '/api/tls') return ok({ mode: T.fb ? 'auto (fallback from file)' : T.mode, fallback: !!T.fb, info: T.mode === 'off' ? null : tlsInfo(), hosts: ['192.0.2.20', 'n5.lan', 'n5host', 'localhost'],
-			warnings: T.mode === 'file' && !T.fb ? ['SAN list lacks host 192.0.2.20', 'SAN list lacks host n5.lan', 'SAN list lacks host n5host'] : q === 'soon' ? ['certificate expires in 12 days'] : [] });
+			warnings: T.mode === 'file' && !T.fb ? lacks('192.0.2.20', 'n5.lan', 'n5host') : q === 'soon' ? ['certificate expires in 12 days'] : [] });
 		if (T.mode === 'off') return fail('tls is off', 409);
 		if (p === '/api/tls/cert.crt') return ok('-----BEGIN CERTIFICATE-----\nMIIBmock\n-----END CERTIFICATE-----\n', 'n5-fangov-n5host.crt');
 		if (p === '/api/tls/cert.cer') return ok('0\u0082\u0001mock', 'n5-fangov-n5host.cer');
 		if (p === '/api/tls/regenerate') { if (T.mode === 'file') return fail('custom certificate active; reset to auto first', 409);
 			T.n++; const keep = !opt.json || opt.json.keep_key !== false; return ok({ ok: true, keep_key: keep, info: tlsInfo(), warning: keep ? undefined : 'new private key: re-download and trust the certificate' }); }
 		if (p === '/api/tls/upload') { const j = opt.json || {}; if (!/BEGIN CERTIFICATE/.test(j.cert || '') || !/PRIVATE KEY/.test(j.key || '')) return fail('certificate: no PEM CERTIFICATE block', 400);
-			if (!j.force) return fail('certificate does not cover "' + location.hostname + '", the name this session uses', 400, { host: location.hostname, force_required: true });
-			T.mode = 'file'; T.fb = false; T.n++; return ok({ ok: true, mode: 'file', info: tlsInfo(), warnings: ['SAN list lacks host 192.0.2.20', 'SAN list lacks host n5host'] }); }
+			if (!j.force) return fail('certificate does not cover "' + location.hostname + '"', 400, { host: location.hostname, force_required: true });
+			T.mode = 'file'; T.fb = false; T.n++; return ok({ ok: true, mode: 'file', info: tlsInfo(), warnings: lacks('192.0.2.20', 'n5host') }); }
 		if (p === '/api/tls/reset') { T.mode = 'auto'; T.fb = false; return ok({ ok: true, mode: 'auto', info: tlsInfo() }); }
 		return fail('mock: not found ' + p, 404);
 	};
 	// alerts panel
 	const A = { transport: 'auto', mail_to: 'root', tpl: { installed: true, current: true, writable: true, path: '/etc/pve/notification-templates/default' } };
-	const KINDS = { sensor: 'sensor unreadable, safe duty', stall: 'fan at 0 rpm, duty raised', temp: 'critical temperature', write: 'pwm write failed', config: 'config replaced by defaults', 'config-channels': 'channel set changed',
-		restart: 'daemon restarted', failed: 'unit failed', kernel: 'kernel or DKMS changed', tls: 'custom certificate unreadable', test: 'test alert' };
-	const recent = [[720, 'stall', 'hdd: rpm=0 at duty 105, raised to 255'], [11220, 'sensor', 'drivetemp:max: no devices, hdd at safe duty'], [93600, 'restart', 'n5-fangov 0.3.0-beta.1 started'], [3 * 86400, 'tls', 'custom certificate unreadable']]
+	const KINDS = { sensor: 'sensor unreadable', stall: 'fan at 0 rpm', temp: 'critical temperature', write: 'pwm write failed', config: 'config replaced', 'config-channels': 'channel set changed', restart: 'daemon restarted', failed: 'unit failed', kernel: 'kernel/DKMS changed', tls: 'certificate unreadable', test: 'test alert' };
+	const recent = [[720, 'stall', 'hdd: rpm=0 at duty 105, raised to 255'], [11220, 'sensor', 'drivetemp:max: no devices'], [93600, 'restart', 'n5-fangov 0.3.0-beta.1 started'], [3 * 86400, 'tls', 'certificate unreadable']]
 		.map(([ago, kind, msg]) => ({ ts: Math.floor(t0 - ago), kind, msg }));
 	const effective = () => A.transport === 'auto' || A.transport === 'pve' ? 'pve-notify' : A.transport;
 	const alertStatus = () => ({ transport: A.transport, effective: effective(), mail_to: A.mail_to, pve_available: true, mail_available: false, template: Object.assign({}, A.tpl), cooldown: '10m0s', kinds: Object.entries(KINDS).map(([kind, description]) => ({ kind, description })) });
 	const iso = ago => new Date((t0 - ago) * 1000).toISOString();
 	const sessions = () => [{ id: 'a1b2c3d4', created: iso(5400), expires: iso(5400 - (M.remember ? 30 : .5) * 86400), last_seen: iso(30), remember: M.remember, ip: '192.0.2.30', current: true },
 		{ id: '9f8e7d6c', created: iso(6 * 86400), expires: iso(-24 * 86400), last_seen: iso(4 * 3600), remember: true, ip: '192.0.2.31', current: false }];
-	const PUB = /^\/api\/(version|about|session|login|logout|state|history)$/;
+	const GH = 'https://github.com/', PUB = /^\/api\/(version|about|session|login|logout|state|history)$/;
 	return (path, opt) => {
 		const m = opt.method || 'GET', u = new URL(path, location.origin), p = u.pathname, now = Date.now() / 1000;
 		if (p === '/api/session') return ok({ authenticated: M.in, mode: M.auth, user: M.in ? M.user : undefined, remember: M.remember, via: M.in && M.auth === 'basic' ? 'cookie' : 'none' });
@@ -173,8 +176,8 @@ const mock = (() => {
 		if (p === '/api/logout') { M.in = M.auth === 'none'; return wait({ status: 204, body: null }); }
 		if (p === '/api/version') return ok({ name: 'n5-fangov', version: '0.3.0-beta.1', prerelease: 'beta.1', auth: M.auth, tls: T.mode !== 'off' });
 		if (p === '/api/about') return ok({ name: 'n5-fangov', version: '0.3.0-beta.1', prerelease: 'beta.1', license: 'GPL-2.0-only', license_url: 'https://www.gnu.org/licenses/old-licenses/gpl-2.0.html',
-			repo: 'https://github.com/SirRenix/n5-fangov', author: 'SirRenix', author_url: 'https://github.com/SirRenix', go: 'go1.25.1',
-			credits: [{ name: 'ltdstudio/minisforum-n5-it5571', url: 'https://github.com/ltdstudio/minisforum-n5-it5571', note: 'the kernel driver' }, { name: 'Sl0thC0der/proxfansx', url: 'https://github.com/Sl0thC0der/proxfansx', note: 'dashboard idea' }] });
+			repo: GH + 'SirRenix/n5-fangov', author: 'SirRenix', author_url: GH + 'SirRenix', go: 'go1.25.1',
+			credits: [['ltdstudio/minisforum-n5-it5571', 'the kernel driver'], ['Sl0thC0der/proxfansx', 'dashboard idea']].map(([name, note]) => ({ name, url: GH + name, note })) });
 		if (p === '/api/state') { const pt = point(now), stall = (now | 0) % 40 < 3;
 			const body = { ts: pt.ts, status: 'ok', profile: 'n5pro', verified: true, dry_run: false, uptime_s: 435723,
 				channels: cfg.channel.map(c => { const n = c.name, st = n === 'hdd' && stall; return { name: n, pwm: c.pwm, sensor: c.sensor, temp: pt.temp[n], duty: pt.duty[n], target: n === 'cpu' ? pt.duty.cpu + 22 : pt.duty[n], rpm: st ? 0 : pt.rpm[n],
@@ -187,7 +190,7 @@ const mock = (() => {
 		if (p === '/api/config' && m === 'GET') return ok({ config: cfg, raw: raw() });
 		if (p === '/api/config' && m === 'PUT') { if (/critical = 9\d\d/.test(opt.body)) return fail('validation failed\nchannel cpu: critical out of range 30..110', 400);
 			const n = (opt.body.match(/\[\[channel\]\]/g) || []).length; return wait({ status: n === cfg.channel.length ? 200 : 202, body: { ok: true } }); }
-		if (p === '/api/sensors') return ok(Object.entries(SENS).map(([id, [d]]) => ({ id, description: `${d} (now ${sv(id, now)} °C)`, temp: sv(id, now) })));
+		if (p === '/api/sensors') return ok(Object.entries(SENS).map(([id, [d]]) => ({ id, description: `${d} (now ${sv(id, now)} °C)`, temp: sv(id, now) })).concat(PAT));
 		if (p === '/api/dashboard') { if (m === 'PUT') { const ids = (opt.json || {}).sensors || []; if (ids.length > 8) return fail('at most 8 sensors', 400);
 				dash = ids; return ok({ ok: true, sensors: dash, warnings: ids.filter(i => !SENS[i]).map(i => i + ': unresolved') }); }
 			return ok({ sensors: dash }); }
@@ -197,7 +200,7 @@ const mock = (() => {
 			overrides[n] = opt.json.duty; return ok({ ok: true }); }
 		if (p === '/api/presets') return ok(Object.entries(presets).map(([name, v]) => ({ name, channels: v.ch.map(c => c.name), builtin: !!v.builtin, description: v.description })));
 		if (p.startsWith('/api/presets/')) { const n = p.split('/')[3], b = presets[n] && presets[n].builtin;
-			if (m === 'PUT') { if (b) return fail('built-in preset', 409); presets[n] = { ch: cfg.channel }; return wait({ status: 201, body: { ok: true } }); }
+			if (m === 'PUT') { if (b) return fail('built-in preset', 409); presets[n] = { ch: cfg.channel }; return ok({ ok: true }); }
 			if (m === 'DELETE') { if (b) return fail('built-in preset', 409); if (!presets[n]) return fail('no such preset', 404); delete presets[n]; return ok({ ok: true }); }
 			return wait({ status: n === 'summer' ? 202 : 200, body: { ok: true } }); }
 		if (p === '/api/log' && m === 'DELETE') { logs.length = 0; return ok({ cleared: true, note: 'journal untouched' }); }
@@ -207,12 +210,11 @@ const mock = (() => {
 		if (p === '/api/config/import') { let j; try { j = JSON.parse(opt.body); } catch (e) { j = null; }
 			if (!j || j.format !== 1) return fail('import rejected: bundle format missing\nexpected "format": 1', 400);
 			return wait({ status: /restart/.test(opt.body) ? 202 : 200, body: { ok: true } }); }
-		if (p === '/api/profiles') return ok([{ name: 'n5pro', title: 'Minisforum N5 Pro (IT5571 EC)', verified: true, notes: 'EC does not resume HDD regulation after a write; stop = fixed duty.' },
-			{ name: 'nct67xx', title: 'Nuvoton NCT67xx (SmartFan IV)', verified: false, notes: 'Auto = pwmN_enable 5; original restored on stop.' }]);
+		if (p === '/api/profiles') return ok([{ name: 'n5pro', title: 'Minisforum N5 Pro (IT5571 EC)', verified: true, notes: 'EC does not resume HDD regulation after a write; stop = fixed duty.' }, { name: 'nct67xx', title: 'Nuvoton NCT67xx (SmartFan IV)', verified: false, notes: 'Auto = pwmN_enable 5.' }]);
 		if (p === '/api/alerts') { if (m === 'PUT') { const j = opt.json || {}; if (!/^(auto|pve|mail|log|off)$/.test(j.transport)) return fail('transport: unknown value', 400);
 				if (/[\s"']/.test(j.mail_to || '')) return fail('mail_to: no spaces or quotes', 400); A.transport = j.transport; A.mail_to = j.mail_to || 'root'; return ok({ ok: true, status: alertStatus() }); }
 			const last = {}; for (const r of recent) if (!(r.kind in last)) last[r.kind] = r.ts; return ok(Object.assign(alertStatus(), { last, recent: recent.slice(0, 50) })); }
-		if (p === '/api/alerts/test') { const e = effective(); if (e === 'mail') return fail('mail: exit status 127 (command not found)', 502, { transport: e });
+		if (p === '/api/alerts/test') { const e = effective(); if (e === 'mail') return fail('mail: exit status 127', 502, { transport: e });
 			recent.unshift({ ts: Math.floor(now), kind: 'test', msg: 'test alert from the dashboard' }); return ok({ ok: true, transport: e }); }
 		if (p === '/api/alerts/template') { A.tpl.installed = A.tpl.current = true; return ok({ ok: true, path: A.tpl.path }); }
 		if (p === '/api/account') return ok({ user: M.user, mode: M.auth, sessions: sessions() });
@@ -306,7 +308,7 @@ const dot = (ctx, x, y, col) => { ctx.beginPath(); ctx.arc(x, y, 4.5, 0, 7); ctx
 const nearest = (data, t) => { if (!data.length) return null; let lo = 0, hi = data.length - 1;
 	while (hi - lo > 1) { const m = (lo + hi) >> 1; data[m][0] < t ? lo = m : hi = m; }
 	return Math.abs(data[lo][0] - t) < Math.abs(data[hi][0] - t) ? data[lo] : data[hi]; };
-const redrawAll = () => { for (const w of charts) w._st && w._st.draw(); for (const e of Object.values(ED)) e.draw(); };
+const redrawAll = () => { for (const w of charts) w._st && w._st.draw(); drawEds(); };
 
 // state
 let snap = null, cfg = null, cfgRaw = '', profiles = [], sensors = [], version = '', tls = null, dash = [], alerts = null, builtinNames = [];
@@ -315,7 +317,7 @@ let cert = null;
 const dLeft = iso => Math.ceil((new Date(iso) - Date.now()) / 86400e3);
 const secState = () => { const e = $('#h-sec'), on = tls === null ? location.protocol === 'https:' : !!tls, i = cert && cert.info;
 	e.textContent = on ? '🔒 TLS' : '🔓 HTTP'; e.className = 'meta sec ' + (on ? 'ok' : LOOPBACK ? '' : 'warn');
-	e.title = (on ? 'TLS-encrypted connection' : LOOPBACK ? 'plain HTTP on loopback' : 'plain HTTP on a non-loopback address — credentials and settings travel unencrypted')
+	e.title = (on ? 'TLS connection' : LOOPBACK ? 'plain HTTP on loopback' : 'plain HTTP off loopback — credentials travel unencrypted')
 		+ (cert ? `\ncertificate: ${cert.mode}` + (i ? ` · expires ${i.not_after.slice(0, 10)}${dLeft(i.not_after) < 30 ? ' (soon!)' : ''}` : '') : '') + '\nclick for the certificate panel'; };
 let hist = [], lastTs = 0, fanMetric = 'rpm';
 const critOf = name => { const c = cfg && chList().find(x => x.name === name); return c && +c.critical > 0 ? +c.critical : null; };
@@ -328,6 +330,7 @@ const seriesColor = i => SERIES[i % SERIES.length];
 const modeBadge = (el, m) => { el.className = 'mode m-' + (m || 'unknown'); el.textContent = m || 'unknown'; };
 const chanHead = (c, ...pre) => h('span', null, ...pre, h('span', { class: 'name' }, c.name), h('span', { class: 'sub' }, `pwm${c.pwm} · ${c.sensor || '?'}`));
 const act = async (fn, ok) => { try { const r = await fn(); if (ok) toast(ok, 'ok'); return r; } catch (e) { toast(e.message, 'err'); } };
+const verTxt = v => v ? 'verified on hardware' : 'from documentation · untested';
 const preBadge = (el, pre) => { el.hidden = !pre; el.textContent = (pre || '').split('.')[0]; };
 
 // header
@@ -336,7 +339,7 @@ function renderHeader() {
 	const pr = profiles.find(p => p.name === snap.profile);
 	$('#h-profile').textContent = pr ? pr.title : snap.profile || '—';
 	const b = $('#h-verified'); b.hidden = false;
-	b.className = 'badge ' + (snap.verified ? 'ok' : 'warn'); b.textContent = snap.verified ? 'verified on hardware' : 'from documentation · untested';
+	b.className = 'badge ' + (snap.verified ? 'ok' : 'warn'); b.textContent = verTxt(snap.verified);
 	const st = snap.dry_run ? 'dry-run' : snap.status || 'unknown';
 	const c = $('#h-status'); c.className = 'chip ' + st; c.textContent = st;
 	$('#h-uptime').textContent = 'up ' + fmtUp(snap.uptime_s || 0);
@@ -352,21 +355,21 @@ async function applyAuth() {
 	if ($('#tab-' + curTab).hidden) selectTab('overview');
 	if (!on) { cert = null; cfg = null; edState = null; alerts = null; dash = []; profiles = []; SN.key = null; for (const id of ['#editors', '#presets', '#log']) clear($(id)); secState(); renderCharts(); return; }
 	hist = []; lastTs = 0; // history is re-read with the extra series
-	await loadConfig(); loadCert(); loadDash(); loadAlerts(); pollSensors(); resetHistory();
+	await loadConfig(); loadCert(); loadDash(); loadAlerts(); resetHistory();
 	api('/api/profiles').then(r => { profiles = r.body || []; renderHeader(); renderSystem(); renderProfiles(); }).catch(() => {});
-	if (curTab === 'curves') loadEditor(); renderSystem();
+	if (curTab === 'curves') loadEditor(); poll();
 }
-const ld = $('#login'), lf = $('#login-f'), lErr = m => { const e = $('#l-err'); e.hidden = !m; e.textContent = m || ''; };
+const ld = $('#login'), lf = $('#login-f'), lErr = notice('#l-err');
 on('#h-signin', 'click', () => { lErr(''); ld.showModal(); $('#l-user').focus(); });
 on('#l-close', 'click', () => ld.close()); backdrop(ld); ld.addEventListener('close', () => lf.reset());
 lf.addEventListener('submit', async ev => { ev.preventDefault(); const u = $('#l-user').value.trim(), p = $('#l-pass').value; if (!u || !p) return lErr('user and password needed');
 	const bt = $('#l-submit'); bt.disabled = true; lErr('');
 	try { const r = await api('/api/login', { method: 'POST', json: { user: u, password: p, remember: $('#l-remember').checked } });
-		sess = { authenticated: true, mode: 'basic', user: r.body.user || u, expires: r.body.expires, remember: r.body.remember, via: 'cookie' }; ld.close(); toast('Signed in', 'ok'); applyAuth(); }
+		sess = { authenticated: true, mode: 'basic', user: r.body.user || u }; ld.close(); toast('Signed in', 'ok'); applyAuth(); }
 	catch (e) { lErr(e.status === 401 ? 'invalid user or password' : e.status === 429 ? 'too many attempts' : e.message); $('#l-pass').value = ''; $('#l-pass').focus(); }
 	bt.disabled = false; });
 on('#h-signout', 'click', async () => { try { await api('/api/logout', { method: 'POST' }); } catch (e) {}
-	sess = { authenticated: false, mode: sess.mode, user: '' }; toast('Signed out', ''); applyAuth(); });
+	sess = anon(sess.mode); toast('Signed out', ''); applyAuth(); });
 
 // overview
 const cards = {};
@@ -390,7 +393,7 @@ function renderCards() {
 		modeBadge(k.mode, c.mode);
 		k.temp.className = 'temp ' + tempClass(c.temp, crit);
 		clear(k.temp).append(fmtT(c.temp), h('small', null, unit() + (crit ? ` · crit ${fmtT(crit, 0)}` : '')));
-		k.bar.style.width = pct(c.duty) + '%'; k.bar.className = c.mode === 'critical' || c.mode === 'failsafe' ? 'crit' : c.mode === 'stall' ? 'stall' : c.mode === 'auto' ? 'auto' : '';
+		k.bar.style.width = pct(c.duty) + '%'; k.bar.className = { critical: 'crit', failsafe: 'crit', stall: 'stall', auto: 'auto' }[c.mode] || '';
 		const slewing = c.target !== undefined && c.target !== c.duty && c.mode !== 'stall';
 		k.tgt.hidden = !slewing; k.tgt.style.left = `calc(${pct(c.target)}% - 1px)`;
 		clear(k.duty).append(`${pct(c.duty)} % `, h('span', { class: 'tg' }, `(${c.duty}${slewing ? ' → ' + c.target : ''})`));
@@ -404,20 +407,23 @@ function renderSystem() {
 		['notes', pr.notes || '—'], ['interval', d.interval || '—'], ['version', version ? 'v' + version.replace(/^v/, '') : '—'], ['log file', lg.file || 'journal only']]);
 }
 // alerts list (Overview card + Alerts tab)
-const alertList = (el, recent) => { clear(el); if (!recent.length) el.append(h('li', { class: 'empty' }, 'no alerts'));
+const alertList = (el, recent, empty) => { clear(el); if (!recent.length) el.append(h('li', { class: 'empty' }, empty || 'no alerts'));
 	for (const a of recent) el.append(h('li', null, h('span', { class: 'k ' + a.kind }, a.kind), h('span', { class: 'msg' }, a.msg || ''), tm(a.ts))); };
+const alNotice = notice('#al-notice');
 async function loadAlerts() { if (!signedIn()) return;
-	try { alerts = (await api('/api/alerts')).body; alertList($('#alerts'), alerts.recent || []); if (curTab === 'alerts') renderAlertsTab(); } catch (e) {} }
+	try { alerts = (await api('/api/alerts')).body; alertList($('#alerts'), alerts.recent || []); alNotice(''); if (curTab === 'alerts') renderAlertsTab(); }
+	catch (e) { if (e.status === 401) return; alerts = null; alertList($('#alerts'), [], 'alerts: unavailable'); alertList($('#al-recent'), []); alNotice('alerts: ' + e.message); } }
 // sensors card, grouped by id prefix / hwmon chip
 const GROUPS = [['CPU', /^(k10temp|coretemp)/], ['SSD · NVMe', /^nvme/], ['HDD', /^drivetemp/], ['GPU', /^(amdgpu|nouveau|i915|radeon)/], ['NIC', /^(nic|eth|mlx|igc|ixgbe|r8169|atlantic)/], ['EC · board', /^(ec$|minisforum|acpitz|spd5118)/]];
 const groupOf = id => { const k = id.startsWith('hwmon:') ? id.slice(6) : id.split(':')[0], g = GROUPS.find(x => x[1].test(k)); return g ? g[0] : 'other'; };
 const SN = { key: null, rows: {} };
+const concrete = () => sensors.filter(s => !s.id.includes('<')); // id patterns (with <) are not selectable
 function renderSensors() {
-	const host = $('#sensors'), key = sensors.map(s => s.id).join(',');
+	const host = $('#sensors'), sensors = concrete(), key = sensors.map(s => s.id).join(',');
 	if (key !== SN.key) { SN.key = key; SN.rows = {}; clear(host); const by = {};
 		for (const s of sensors) (by[groupOf(s.id)] = by[groupOf(s.id)] || []).push(s);
 		for (const g of [...GROUPS.map(x => x[0]), 'other']) { if (!by[g]) continue; const box = h('div', { class: 'sg' }, h('h3', null, g));
-			for (const s of by[g]) { const r = SN.rows[s.id] = { v: h('b', { class: 'v' }), b: h('button', { type: 'button', class: 'btn sm' }, 'chart') };
+			for (const s of by[g]) { const r = SN.rows[s.id] = { v: h('b', { class: 'v' }), b: h('button', { class: 'btn sm' }, 'chart') };
 				r.b.addEventListener('click', () => setDash(dash.includes(s.id) ? dash.filter(x => x !== s.id) : dash.concat(s.id)));
 				box.append(h('div', { class: 'sn' }, h('span', { class: 'id mono' }, s.id), h('span', { class: 'd' }, (s.description || '').replace(/\s*\(now [^)]*\)\s*$/, '')), r.v, r.b)); }
 			host.append(box); }
@@ -426,7 +432,7 @@ function renderSensors() {
 		r.v.textContent = v === undefined || v === null ? '—' : fmtT(v) + ' ' + unit(); r.b.classList.toggle('on', on); r.b.setAttribute('aria-pressed', String(on)); r.b.disabled = !on && dash.length >= 8;
 		}
 }
-async function pollSensors() { if (!signedIn() || curTab !== 'overview') return;
+async function pollSensors(force) { if (!signedIn() || !force && curTab !== 'overview') return;
 	try { sensors = (await api('/api/sensors')).body || []; renderSensors(); fillSensorSelects(); } catch (e) {} }
 async function loadDash() { try { dash = (await api('/api/dashboard')).body.sensors || []; renderSensors(); renderCharts(); } catch (e) {} }
 async function setDash(ids) { const r = await act(() => api('/api/dashboard', { method: 'PUT', json: { sensors: ids } })); if (!r) return;
@@ -436,7 +442,7 @@ function renderCharts() {
 	const names = snap.channels.map(c => c.name);
 	const mk = (key, f) => names.map((n, i) => ({ name: n, color: seriesColor(i), data: hist.filter(p => p[key] && p[key][n] > -900).map(p => [p.ts, f ? f(p[key][n]) : p[key][n]]) }));
 	const legend = (el, ss, rm) => { clear(el); for (const s of ss) { const i = h('i'); i.style.background = `var(${s.color})`;
-		el.append(h('span', null, i, s.name, rm ? h('button', { type: 'button', class: 'x', 'aria-label': 'remove ' + s.name, onclick: () => rm(s.name) }, '×') : null)); } };
+		el.append(h('span', null, i, s.name, rm ? h('button', { class: 'x', 'aria-label': 'remove ' + s.name, onclick: () => rm(s.name) }, '×') : null)); } };
 	const tf = { fmt: (v, ax) => v.toFixed(ax ? 0 : 1) + (ax ? '' : ' ' + unit()), minSpan: 15 };
 	const ts = mk('temp', tC); legend($('#lg-temp'), ts);
 	chart($('#ch-temp'), ts, tf);
@@ -445,13 +451,13 @@ function renderCharts() {
 	chart($('#ch-fan'), fs, fanMetric === 'rpm' ? { fmt: (v, ax) => ax ? String(Math.round(v)) : Math.round(v) + ' rpm', yMin: 0, minSpan: 1000 } : { fmt: (v, ax) => ax ? String(Math.round(v)) : `${Math.round(v)} (${pct(v)} %)`, yMin: 0, yMax: 255 });
 	// extra sensors chart, only while something is watched
 	const on = signedIn() && dash.length > 0; $('#extra-card').hidden = !on; if (!on) return;
-	const es = dash.map((id, i) => ({ name: id, color: seriesColor(i), data: hist.filter(p => p.extra && p.extra[id] > -900).map(p => [p.ts, tC(p.extra[id])]) }));
+	const es = dash.map((id, i) => ({ name: id, color: seriesColor(names.length + i), data: hist.filter(p => p.extra && p.extra[id] > -900).map(p => [p.ts, tC(p.extra[id])]) }));
 	legend($('#lg-extra'), es, id => setDash(dash.filter(x => x !== id))); chart($('#ch-extra'), es, tf);
 }
 $$('.seg button').forEach(b => b.addEventListener('click', () => { fanMetric = b.dataset.metric; $$('.seg button').forEach(x => { x.classList.toggle('on', x === b); x.setAttribute('aria-pressed', x === b); }); renderCharts(); }));
 
 // curves
-const ED = {}; let edState = null;
+const ED = {}, drawEds = () => { for (const k in ED) ED[k].draw(); }; let edState = null;
 const tomlChannel = c => `[[channel]]\nname = "${c.name}"\npwm = ${c.pwm}\nsensor = "${c.sensor}"\ncurve = [${c.curve.map(p => `[${p[0]}, ${p[1]}]`).join(', ')}]\ncritical = ${c.critical}\nstop = ${c.stop === 'auto' || c.stop === '' || c.stop === undefined ? '"auto"' : c.stop}\n`;
 const stripChannels = raw => { const out = []; let skip = false;
 	for (const ln of raw.split('\n')) { const t = ln.trim();
@@ -471,22 +477,25 @@ function loadEditor() {
 		const tbody = h('tbody');
 		const ref = REF[c.name] && snap && snap.profile === 'n5pro' ? h('p', { class: 'ref' }, 'Duty → RPM (measured): ', ...REF[c.name].flatMap(([d, r], j) => [j ? ' · ' : '', h('b', null, `${d}→${r}`)])) : null;
 		ed.sel = sel; ed.cv = cv; ed.tbody = tbody;
-			const fillTable = () => {
+		const fillTable = () => {
 			clear(tbody); c.curve.forEach((p, j) => tbody.append(h('tr', null,
-				h('td', null, h('input', { type: 'number', min: 0, max: 120, value: p[0], 'aria-label': `point ${j + 1} temp`, oninput: ev => { p[0] = +ev.target.value; ed.draw(); },
-					onchange: () => { const before = c.curve.slice(); c.curve.sort((a, b) => a[0] - b[0]); if (before.some((x, k) => x !== c.curve[k])) { fillTable(); const r = tbody.rows[c.curve.indexOf(p)]; if (r) r.cells[0].firstChild.focus(); ed.draw(); } } })),
+				h('td', null, h('input', { type: 'number', min: 0, max: 120, value: p[0], 'aria-label': `point ${j + 1} temp`, oninput: ev => { p[0] = +ev.target.value; ed.draw(); } })),
 				h('td', null, h('input', { type: 'number', min: 0, max: 255, value: p[1], 'aria-label': `point ${j + 1} duty`, oninput: ev => { p[1] = clamp(+ev.target.value, 0, 255); ed.draw(); } })),
-				h('td', null, h('button', { type: 'button', class: 'btn sm', disabled: c.curve.length <= 2, onclick: () => { c.curve.splice(j, 1); fillTable(); ed.draw(); } }, 'remove')))));
+				h('td', null, h('button', { class: 'btn sm', disabled: c.curve.length <= 2, onclick: () => { c.curve.splice(j, 1); fillTable(); ed.draw(); } }, 'remove')))));
 			addBtn.disabled = c.curve.length >= 8;
 		};
+		// re-sort once focus leaves the table (a rebuild mid-click swallows the click)
+		ed.sort = () => { const before = c.curve.slice(); c.curve.sort((a, b) => a[0] - b[0]); if (before.some((x, k) => x !== c.curve[k])) { fillTable(); ed.draw(); } };
+		tbody.addEventListener('focusout', ev => { if (!tbody.contains(ev.relatedTarget)) ed.sort(); });
 		// add point: middle of the widest gap, inserted sorted
 		const at = h('input', { type: 'number', min: 0, max: 120, 'aria-label': 'new point temp' }), ad = h('input', { type: 'number', min: 0, max: 255, 'aria-label': 'new point duty' });
 		const addRow = h('div', { class: 'addp' }, h('label', null, '°C', at), h('label', null, 'duty', ad),
-			h('button', { type: 'button', class: 'btn sm primary', onclick: () => { const t = +at.value, d = clamp(Math.round(+ad.value), 0, 255); if (at.value === '') return at.focus();
-				let k = c.curve.findIndex(p => p[0] >= t); if (k < 0) k = c.curve.length; c.curve.splice(k, 0, [t, d]); addRow.hidden = true; fillTable(); ed.draw(); } }, 'Add'),
-			h('button', { type: 'button', class: 'btn sm', onclick: () => { addRow.hidden = true; addBtn.focus(); } }, 'Cancel'));
+			h('button', { class: 'btn sm primary', onclick: () => { const t = +at.value, d = clamp(Math.round(+ad.value), 0, 255); if (at.value === '') return at.focus();
+				if (c.curve.some(p => p[0] === t)) return toast(`${c.name}: a point at ${t} °C exists`, 'warn');
+				const np = [t, d]; c.curve.push(np); c.curve.sort((a, b) => a[0] - b[0]); addRow.hidden = true; fillTable(); ed.draw(); tbody.rows[c.curve.indexOf(np)].cells[0].firstChild.focus(); } }, 'Add'),
+			h('button', { class: 'btn sm', onclick: () => { addRow.hidden = true; addBtn.focus(); } }, 'Cancel'));
 		addRow.hidden = true;
-		const addBtn = h('button', { type: 'button', class: 'btn sm', onclick: () => { const s = c.curve.slice().sort((a, b) => a[0] - b[0]); let bi = 1, bw = -1;
+		const addBtn = h('button', { class: 'btn sm', onclick: () => { const s = c.curve.slice().sort((a, b) => a[0] - b[0]); let bi = 1, bw = -1;
 			for (let k = 1; k < s.length; k++) if (s[k][0] - s[k - 1][0] > bw) { bw = s[k][0] - s[k - 1][0]; bi = k; }
 			const t = s.length > 1 ? Math.round((s[bi - 1][0] + s[bi][0]) / 2) : (s[0] ? s[0][0] : 40) + 5;
 			at.value = t; ad.value = Math.round(interp(s, t)); addRow.hidden = false; at.focus(); at.select(); } }, '+ add point');
@@ -504,7 +513,7 @@ function loadEditor() {
 	fillSensorSelects();
 }
 function fillSensorSelects() {
-	for (const k in ED) { const { c, sel } = ED[k]; const ids = new Set(sensors.map(s => s.id)); ids.add(c.sensor); clear(sel);
+	for (const k in ED) { const { c, sel } = ED[k]; const ids = new Set(concrete().map(s => s.id)); ids.add(c.sensor); clear(sel);
 		for (const id of ids) { const s = sensors.find(x => x.id === id); sel.append(h('option', { value: id, selected: id === c.sensor }, id + (s && s.temp !== undefined ? ` (${fmtT(s.temp)} ${unit()})` : ''))); } }
 }
 const curveGeom = ed => { const W = ed.cv.clientWidth, H = ed.cv.clientHeight, pad = { l: 34, r: 12, t: 10, b: 22 };
@@ -537,7 +546,8 @@ function drawCurve(ed) {
 function bindCurveDrag(ed) {
 	const { cv, c } = ed; let drag = -1;
 	const pos = ev => { const r = cv.getBoundingClientRect(); return [ev.clientX - r.left, ev.clientY - r.top]; };
-	cv.addEventListener('pointerdown', ev => { const g = curveGeom(ed), [x, y] = pos(ev); let best = 14, bi = -1;
+	cv.addEventListener('pointerdown', ev => { const a = document.activeElement; if (ed.tbody.contains(a)) a.blur(); ed.sort(); // sorted neighbours for the clamp
+		const g = curveGeom(ed), [x, y] = pos(ev); let best = 14, bi = -1;
 		c.curve.forEach((p, i) => { const d = Math.hypot(g.X(p[0]) - x, g.Y(p[1]) - y); if (d < best) { best = d; bi = i; } });
 		if (bi >= 0) { drag = bi; cv.setPointerCapture(ev.pointerId); ev.preventDefault(); } });
 	cv.addEventListener('pointermove', ev => { if (drag < 0) return; const g = curveGeom(ed), [x, y] = pos(ev);
@@ -554,7 +564,7 @@ const validateCurves = () => { const errs = [];
 		if (c.stop !== 'auto' && !(/^\d+$/.test(c.stop) && +c.stop <= 255)) errs.push(`${c.name}: stop must be "auto" or 0..255`); }
 	return errs; };
 on('#cv-apply', 'click', async () => {
-	const n = $('#cv-notice'), errs = validateCurves();
+	for (const k in ED) ED[k].sort(); const n = $('#cv-notice'), errs = validateCurves();
 	if (errs.length) { n.hidden = false; n.className = 'notice err'; n.textContent = errs.join('\n'); return; }
 	const body = stripChannels(cfgRaw) + edState.map(tomlChannel).join('\n');
 	try { const r = await api('/api/config', { method: 'PUT', body, headers: { 'Content-Type': 'application/toml' } });
@@ -599,7 +609,7 @@ async function loadPresets() {
 		builtinNames = list.filter(p => p.builtin).map(p => p.name);
 		if (!list.length) host.append(h('p', { class: 'empty' }, 'No presets yet.'));
 		for (const p of list) host.append(h('div', { class: 'card ps' },
-			h('span', { class: 'name' }, p.name, p.builtin ? h('span', { class: 'badge builtin' }, 'built-in') : null, p.name === 'n5pro-balanced' ? h('span', { class: 'badge rec' }, 'recommended') : null),
+			h('span', { class: 'name' }, p.name, p.builtin ? h('span', { class: 'badge builtin' }, 'built-in') : null, /^recommended/i.test(p.description || '') || p.name === 'n5pro-balanced' ? h('span', { class: 'badge rec' }, 'recommended') : null),
 			h('span', { class: 'sum' }, p.description ? h('span', { class: 'desc' }, p.description) : null, chanSummary(p.channels)),
 			h('button', { class: 'btn', onclick: async () => { if (!confirm(`Apply preset “${p.name}”? Curves change immediately.`)) return;
 				const r = await act(() => api(`/api/presets/${encodeURIComponent(p.name)}/apply`, { method: 'POST' }), `Preset ${p.name} applied`); if (!r) return;
@@ -612,10 +622,11 @@ on('#ps-save', 'submit', async ev => { ev.preventDefault(); const n = $('#ps-nam
 	if (builtinNames.includes(n)) return toast(`“${n}” is a built-in preset — pick another name`, 'err');
 	if (await act(() => api('/api/presets/' + encodeURIComponent(n), { method: 'PUT' }), `Saved current curves as “${n}”`)) { $('#ps-name').value = ''; loadPresets(); } });
 
-// alerts tab
+// alerts tab; unsaved form edits survive the refresh
+let alDirty = false; on('#al-form', 'input', () => { alDirty = true; });
 function renderAlertsTab() {
 	const a = alerts; if (!a) return; const t = a.template || {};
-	$('#al-transport').value = a.transport || 'auto'; $('#al-mailto').value = a.mail_to || '';
+	if (!alDirty) { $('#al-transport').value = a.transport || 'auto'; $('#al-mailto').value = a.mail_to || ''; }
 	const av = x => x ? 'available' : 'not available'; kv($('#al-status'), [['effective', a.effective || '—'], ['pve-notify', av(a.pve_available)], ['mail(1)', av(a.mail_available)], ['cooldown', a.cooldown || '—']]);
 	$('#al-tpl-card').hidden = !a.pve_available;
 	const yn = x => x ? 'yes' : 'no'; kv($('#al-tpl'), [['installed', yn(t.installed)], ['current', !t.installed ? '—' : t.current ? 'yes' : 'no — outdated'], ['writable', yn(t.writable)], ['path', h('dd', { class: 'mono' }, t.path || '—')]]);
@@ -627,16 +638,16 @@ function renderAlertsTab() {
 }
 on('#al-form', 'submit', async ev => { ev.preventDefault();
 	const r = await act(() => api('/api/alerts', { method: 'PUT', json: { transport: $('#al-transport').value, mail_to: $('#al-mailto').value.trim() } })); if (!r) return;
-	toast('Transport saved — effective: ' + (r.body.status && r.body.status.effective), 'ok'); loadAlerts(); });
+	alDirty = false; toast('Transport saved — effective: ' + (r.body.status && r.body.status.effective), 'ok'); loadAlerts(); });
 on('#al-test', 'click', async () => {
 	try { const r = await api('/api/alerts/test', { method: 'POST' }); toast('Test alert sent via ' + r.body.transport, 'ok'); }
-	catch (e) { toast('Test alert failed' + (e.body && e.body.transport ? ` (${e.body.transport})` : '') + ': ' + e.message, 'err'); }
+	catch (e) { if (e.status === 409) return toast('Test alert already running', 'warn'); toast('Test alert failed' + (e.body && e.body.transport ? ` (${e.body.transport})` : '') + ': ' + e.message, 'err'); }
 	loadAlerts(); });
 on('#al-tpl-btn', 'click', async () => { const r = await act(() => api('/api/alerts/template', { method: 'POST' })); if (r) { toast('Template written to ' + r.body.path, 'ok'); loadAlerts(); } });
 
 // about (public)
 function renderAbout(a) {
-	$('#ab-name').textContent = a.name || 'n5-fangov'; $('#ab-version').textContent = 'v' + (a.version || version || '?').replace(/^v/, ''); preBadge($('#ab-beta'), a.prerelease); preBadge($('#h-beta'), a.prerelease);
+	$('#ab-name').textContent = a.name || 'n5-fangov'; $('#ab-version').textContent = 'v' + (a.version || version || '?').replace(/^v/, ''); preBadge($('#ab-beta'), a.prerelease);
 	const link = (id, href, text) => { const e = $(id); e.href = href || '#'; e.textContent = text || href || '—'; };
 	link('#ab-license', a.license_url, a.license); link('#ab-repo', a.repo, (a.repo || '').replace(/^https?:\/\//, '')); link('#ab-author', a.author_url, a.author);
 	$('#ab-go').textContent = a.go || '—';
@@ -650,7 +661,7 @@ async function loadLog() {
 	try { const r = await api('/api/log?lines=200'); const b = r.body;
 		logLines = (b && b.lines || []).map(logLine); renderLog();
 		const src = b && b.source || ''; $('#lg-src').textContent = src ? 'source: ' + src : ''; $('#lg-clear').disabled = src === 'journal';
-		$('#lg-clear').title = src === 'journal' ? 'Log file disabled — the journal cannot be cleared from here' : 'Truncate the current log file (rotated files and journal untouched)';
+		$('#lg-clear').title = src === 'journal' ? 'Log file disabled — the journal cannot be cleared' : 'Truncate the log file (rotated files and journal untouched)';
 	} catch (e) { $('#log').textContent = 'log: ' + e.message; }
 }
 on('#lg-export', 'click', () => act(() => download('/api/log/export', 'n5-fangov.log')));
@@ -672,7 +683,7 @@ function renderProfiles() {
 	const tb = clear($('#profiles tbody'));
 	for (const p of profiles) { const act = snap && snap.profile === p.name;
 		tb.append(h('tr', { class: act ? 'active' : '' }, h('td', { class: 'mono' }, p.name, act ? h('span', { class: 'act' }, 'ACTIVE') : null), h('td', null, p.title || ''),
-			h('td', null, h('span', { class: 'badge ' + (p.verified ? 'ok' : 'warn') }, p.verified ? 'verified on hardware' : 'from documentation · untested')), h('td', null, p.notes || ''))); }
+			h('td', null, h('span', { class: 'badge ' + (p.verified ? 'ok' : 'warn') }, verTxt(p.verified))), h('td', null, p.notes || ''))); }
 }
 
 // loading & polling
@@ -693,14 +704,14 @@ async function loadHistory() {
 	} catch (e) {}
 }
 const resetHistory = () => { hist = []; lastTs = 0; histGen++; loadHistory(); };
-let timer = null, histTimer = null, alTimer = null, polling = false;
-async function poll() {
-	if (polling) return; polling = true;
+let timer = null, histTimer = null, alTimer = null, polling = false, repoll = false;
+async function poll() { // a call mid-poll queues one more round
+	if (polling) { repoll = true; return; } polling = true;
 	try { const r = await api('/api/state'); snap = r.body; renderHeader(); renderCards(); renderManual(); renderSystem();
-		if (curTab === 'curves') for (const k in ED) ED[k].draw(); }
+		if (curTab === 'curves') drawEds(); }
 	catch (e) {}
 	await pollSensors();
-	polling = false;
+	polling = false; if (repoll) { repoll = false; poll(); }
 }
 const liveState = () => { const l = $('#h-live'); const paused = document.hidden; l.classList.toggle('paused', paused); l.lastChild.textContent = paused ? 'paused' : 'live'; };
 function schedule() {
@@ -719,9 +730,9 @@ function selectTab(id, focus) {
 	if ($('#tab-' + id).hidden) return;
 	curTab = id;
 	TABS.forEach(t => { const on = t.id === 'tab-' + id; t.setAttribute('aria-selected', on); t.tabIndex = on ? 0 : -1; $('#' + t.getAttribute('aria-controls')).hidden = !on; if (on && focus) t.focus(); });
-	({ overview: () => { renderCharts(); pollSensors(); loadAlerts(); }, presets: loadPresets, log: loadLog, compat: renderProfiles, alerts: () => { renderAlertsTab(); loadAlerts(); }, about: () => {},
+	({ overview: () => { renderCharts(); pollSensors(); loadAlerts(); }, presets: loadPresets, log: loadLog, compat: renderProfiles, alerts: () => { alDirty = false; renderAlertsTab(); loadAlerts(); }, about: () => {},
 		curves: () => { if (!edState) loadEditor();
-			api('/api/sensors').then(r => { sensors = r.body || []; fillSensorSelects(); }).catch(() => {}); for (const k in ED) ED[k].draw(); } })[id]();
+			pollSensors(1); drawEds(); } })[id]();
 }
 TABS.forEach(t => { t.addEventListener('click', () => selectTab(t.id.slice(4)));
 	t.addEventListener('keydown', ev => { const vis = TABS.filter(x => !x.hidden), i = vis.indexOf(t), d = { ArrowRight: 1, ArrowLeft: -1, Home: -i, End: vis.length - 1 - i }[ev.key];
@@ -739,7 +750,7 @@ on('#s-theme', 'change', ev => { S.theme = ev.target.value; saveS(); document.do
 matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => { if (S.theme === 'system') redrawAll(); });
 document.documentElement.dataset.theme = S.theme;
 // settings bundle
-const gNotice = msg => { const n = $('#g-notice'); n.hidden = !msg; n.textContent = msg || ''; };
+const gNotice = notice('#g-notice');
 on('#s-export', 'click', () => { showS(false); act(() => download('/api/config/export', 'n5-fangov-settings.json')); });
 on('#s-import', 'click', () => $('#s-file').click());
 on('#s-file', 'change', async () => {
@@ -747,7 +758,7 @@ on('#s-file', 'change', async () => {
 	if (f.size > 1 << 20) return toast('Settings file exceeds 1 MiB', 'err');
 	const text = await f.text(); let j = null; try { j = JSON.parse(text); } catch (e) {}
 	if (!j || typeof j !== 'object' || Array.isArray(j)) return toast(`${f.name}: not a JSON settings bundle`, 'err');
-	if (!confirm(`Import settings from “${f.name}”?\nConfig and presets on the daemon are replaced (after validation).`)) return;
+	if (!confirm(`Import settings from “${f.name}”?\nDaemon config and presets are replaced (after validation).`)) return;
 	showS(false);
 	try { const r = await api('/api/config/import', { method: 'POST', body: text, headers: { 'Content-Type': 'application/json' } });
 		if (r.status === 202) { gNotice('Settings imported — restart required: systemctl restart n5-fangov'); toast('Imported, restart required', 'warn', 12000); }
@@ -757,7 +768,7 @@ on('#s-file', 'change', async () => {
 });
 
 // account dialog (Settings → Account…)
-const acd = $('#account'), acNotice = (msg, kind) => { const n = $('#ac-notice'); n.hidden = !msg; n.className = 'notice ' + (kind || ''); n.textContent = msg || ''; };
+const acd = $('#account'), acNotice = notice('#ac-notice');
 const acReset = () => { for (const f of ['#ac-pw-f', '#ac-us-f']) { $(f).reset(); $(f).hidden = true; } };
 async function loadAccount() {
 	try { const a = (await api('/api/account')).body; $('#ac-user').textContent = a.user || sess.user || ''; const tb = clear($('#ac-sessions tbody')), ss = a.sessions || [];
@@ -765,24 +776,24 @@ async function loadAccount() {
 			h('td', null, tm(s.created)), h('td', null, tm(s.last_seen)), h('td', null, tm(s.expires, true), s.remember ? ' · remembered' : null), h('td', { class: 'mono' }, s.ip || '')));
 			} catch (e) { acNotice('account: ' + e.message, 'err'); }
 }
-on('#s-acc', 'click', () => { showS(false); acNotice(''); acReset(); $('#ac-user').textContent = sess.user || ''; if (!acd.open) acd.showModal(); loadAccount(); });
+on('#s-acc', 'click', () => { showS(false); acNotice(''); acReset(); $('#ac-user').textContent = sess.user || ''; if (!acd.open) acd.showModal(); $('#ac-pw').focus(); loadAccount(); });
 on('#ac-close', 'click', () => acd.close()); backdrop(acd); acd.addEventListener('close', acReset);
 $$('#account [data-cancel]').forEach(b => b.addEventListener('click', acReset));
-on('#ac-pw', 'click', () => { acReset(); $('#ac-pw-f').hidden = false; $('#ac-cur').focus(); });
-on('#ac-us', 'click', () => { acReset(); $('#ac-us-f').hidden = false; $('#ac-ucur').focus(); });
+for (const [b, f, i] of [['#ac-pw', '#ac-pw-f', '#ac-cur'], ['#ac-us', '#ac-us-f', '#ac-ucur']]) on(b, 'click', () => { acReset(); $(f).hidden = false; $(i).focus(); });
+const acFail = (e, id) => { acNotice(e.message, 'err'); $(id).value = ''; $(id).focus(); };
 on('#ac-pw-f', 'submit', async ev => { ev.preventDefault(); const cur = $('#ac-cur').value, n = $('#ac-new').value;
 	if (n.length < 8 || n.length > 128) return acNotice('new password: 8–128 characters', 'err'); if (n !== $('#ac-new2').value) return acNotice('the two new passwords differ', 'err'); if (!cur) return acNotice('current password required', 'err');
 	try { await api('/api/account/password', { method: 'POST', json: { current_password: cur, new_password: n } }); acReset(); acNotice(''); toast('Password changed', 'ok'); loadAccount(); }
-	catch (e) { acNotice(e.message, 'err'); $('#ac-cur').value = ''; $('#ac-cur').focus(); } });
+	catch (e) { acFail(e, '#ac-cur'); } });
 on('#ac-us-f', 'submit', async ev => { ev.preventDefault(); const cur = $('#ac-ucur').value, u = $('#ac-uname').value.trim();
 	if (!/^[A-Za-z0-9_.-]{1,32}$/.test(u)) return acNotice('user name: letters, digits, _ . - (1–32)', 'err'); if (!cur) return acNotice('current password required', 'err');
 	try { const r = await api('/api/account/user', { method: 'POST', json: { current_password: cur, user: u } }); sess.user = r.body.user || u; $('#h-user').textContent = sess.user; acReset(); acNotice(''); toast('User name changed to ' + sess.user, 'ok'); loadAccount(); }
-	catch (e) { acNotice(e.message, 'err'); $('#ac-ucur').value = ''; $('#ac-ucur').focus(); } });
+	catch (e) { acFail(e, '#ac-ucur'); } });
 on('#ac-revoke', 'click', async () => { if (!confirm('Sign out every other session? This one stays signed in.')) return;
 	const r = await act(() => api('/api/account/sessions/revoke', { method: 'POST', json: { others: true } })); if (r) { toast(`${r.body.revoked || 0} other session(s) signed out`, 'ok'); loadAccount(); } });
 
 // certificate panel (protected; POSTs need CSRF)
-const dlg = $('#cert'), ctNotice = (msg, kind) => { const n = $('#ct-notice'); n.hidden = !msg; n.className = 'notice ' + (kind || ''); n.textContent = msg || ''; };
+const dlg = $('#cert'), ctNotice = notice('#ct-notice');
 const ctForm = id => { for (const f of ['#ct-regen-f', '#ct-upload-f']) $(f).hidden = f !== id || !$(f).hidden; };
 async function loadCert() { if (!signedIn()) return; try { cert = (await api('/api/tls')).body; } catch (e) { cert = null; if (e.status !== 501 && e.status !== 401) toast('certificate: ' + e.message, 'err'); } secState(); }
 function renderCert() {
@@ -796,7 +807,7 @@ function renderCert() {
 	if (!i.dns_names.length && !i.ips.length) san.append(h('span', { class: 'empty' }, 'no SANs'));
 	$('#ct-fp').textContent = i.fingerprint_sha256;
 	const w = (c.warnings || []).map(x => /^SAN list lacks host/.test(x) ? x + ' — under HSTS the browser will refuse that name' : x);
-	if (fb) w.unshift('The configured certificate files could not be loaded — the automatic certificate is served instead (see the daemon log). Upload the pair again or go back to auto.');
+	if (fb) w.unshift('The configured certificate files could not be loaded — the automatic certificate is served (see the daemon log). Upload the pair again or reset to auto.');
 	if (w.length) ctNotice(w.join('\n'), 'warn');
 }
 const ctClearUpload = () => { for (const id of ['#ct-cpem', '#ct-kpem', '#ct-cfile', '#ct-kfile']) $(id).value = ''; $('#ct-force').checked = false; $('#ct-force-l').hidden = true; };
@@ -805,18 +816,17 @@ on('#h-sec', 'click', openCert); on('#s-cert', 'click', openCert);
 on('#ct-close', 'click', () => dlg.close()); backdrop(dlg);
 dlg.addEventListener('close', ctClearUpload);
 $$('#cert [data-cancel]').forEach(b => b.addEventListener('click', () => { b.closest('form').hidden = true; ctClearUpload(); }));
-on('#ct-crt', 'click', () => act(() => download('/api/tls/cert.crt', 'n5-fangov.crt')));
-on('#ct-cer', 'click', () => act(() => download('/api/tls/cert.cer', 'n5-fangov.cer')));
+for (const x of ['crt', 'cer']) on('#ct-' + x, 'click', () => act(() => download('/api/tls/cert.' + x, 'n5-fangov.' + x)));
 on('#ct-copy', 'click', () => navigator.clipboard.writeText($('#ct-fp').textContent).then(() => toast('Fingerprint copied', 'ok'), () => toast('Clipboard blocked — select the text', 'warn')));
 on('#ct-regen', 'click', () => { $('#ct-newkey').checked = false; ctForm('#ct-regen-f'); });
 on('#ct-upload', 'click', () => ctForm('#ct-upload-f'));
-// re-read /api/tls and the config (the manager rewrote the [web] tls keys)
+// re-read /api/tls and the config (the [web] tls keys changed)
 const ctDone = async (r, msg) => { const w = r.body.warning ? [r.body.warning] : r.body.warnings || [];
 	toast(msg + (w.length ? ' (warnings)' : ''), w.length ? 'warn' : 'ok', 8000);
 	await loadCert(); renderCert(); const have = new Set((cert && cert.warnings) || []), extra = w.filter(x => !have.has(x));
 	if (extra.length) { const n = $('#ct-notice'); ctNotice((n.hidden ? '' : n.textContent + '\n') + extra.join('\n'), 'warn'); } loadConfig(); };
 on('#ct-regen-f', 'submit', async ev => { ev.preventDefault(); const nk = $('#ct-newkey').checked;
-	if (nk && !confirm('Generate a new private key?\nEvery browser and OS store that trusts the current certificate must import the new one.')) return;
+	if (nk && !confirm('Generate a new private key?\nEvery browser and OS store trusting the current certificate must import the new one.')) return;
 	const r = await act(() => api('/api/tls/regenerate', { method: 'POST', json: { keep_key: !nk } })); if (!r) return; $('#ct-regen-f').hidden = true; ctDone(r, 'Certificate regenerated'); });
 for (const [f, ta] of [['#ct-cfile', '#ct-cpem'], ['#ct-kfile', '#ct-kpem']]) $(f).addEventListener('change', async ev => { const x = ev.target.files[0]; if (!x) return;
 	if (x.size > 65536) return toast(x.name + ': larger than 64 KiB', 'err'); $(ta).value = await x.text(); });
@@ -834,7 +844,7 @@ on('#ct-reset', 'click', async () => { if (!confirm('Back to the automatic certi
 	if (MOCK) toast('Mock mode', 'warn', 8000);
 	api('/api/version').then(r => { version = r.body.version || ''; if (typeof r.body.tls === 'boolean') tls = r.body.tls; if (r.body.prerelease !== undefined) preBadge($('#h-beta'), r.body.prerelease); secState(); renderHeader(); }).catch(() => {});
 	api('/api/about').then(r => renderAbout(r.body || {})).catch(() => {});
-	try { sess = (await api('/api/session')).body || sess; } catch (e) { sess = { authenticated: false, mode: 'basic', user: '' }; }
+	try { sess = (await api('/api/session')).body || sess; } catch (e) { sess = anon(); }
 	await applyAuth(); if (MOCK && Q.get('tab')) selectTab(Q.get('tab'));
 	if (document.hidden) { poll(); loadHistory(); }
 	schedule();
