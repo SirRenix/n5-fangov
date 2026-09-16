@@ -177,14 +177,36 @@ type Channel struct {
 	Stop     string   `toml:"stop"` // "auto" or "0".."255"
 }
 
+// Schedule is one [[schedule]] table: a preset that applies in a daily
+// window (From..To, local time, HH:MM) on the listed days, or — without
+// From/To — the fallback that applies whenever no window matches. Days are
+// the canonical lower-case names (DayNames); empty = every day.
+type Schedule struct {
+	Preset string   `toml:"preset"`
+	From   string   `toml:"from"`
+	To     string   `toml:"to"`
+	Days   []string `toml:"days,omitempty"`
+}
+
+// Fallback reports whether the entry is the fallback (no window).
+func (s Schedule) Fallback() bool { return s.From == "" && s.To == "" }
+
+// DayNames are the values accepted in [[schedule]] days, Monday first.
+var DayNames = []string{"mon", "tue", "wed", "thu", "fri", "sat", "sun"}
+
+// MaxSchedules caps the [[schedule]] tables; further ones are dropped with
+// a warning.
+const MaxSchedules = 16
+
 // Config is the whole configuration file.
 type Config struct {
-	Daemon    Daemon    `toml:"daemon"`
-	Web       Web       `toml:"web"`
-	Log       Log       `toml:"log"`
-	Alert     Alert     `toml:"alert"`
-	Dashboard Dashboard `toml:"dashboard"`
-	Channels  []Channel `toml:"channel"`
+	Daemon    Daemon     `toml:"daemon"`
+	Web       Web        `toml:"web"`
+	Log       Log        `toml:"log"`
+	Alert     Alert      `toml:"alert"`
+	Dashboard Dashboard  `toml:"dashboard"`
+	Channels  []Channel  `toml:"channel"`
+	Schedules []Schedule `toml:"schedule,omitempty"`
 }
 
 // Warning describes one value that was replaced by its default (or dropped).
@@ -266,6 +288,20 @@ func (c Config) Clone() Config {
 	out.Channels = CloneChannels(c.Channels)
 	out.Web.AllowedHosts = append([]string(nil), c.Web.AllowedHosts...)
 	out.Dashboard.Sensors = append([]string{}, c.Dashboard.Sensors...)
+	out.Schedules = CloneSchedules(c.Schedules)
+	return out
+}
+
+// CloneSchedules deep-copies a schedule slice.
+func CloneSchedules(in []Schedule) []Schedule {
+	if in == nil {
+		return nil
+	}
+	out := make([]Schedule, len(in))
+	for i, s := range in {
+		out[i] = s
+		out[i].Days = append([]string(nil), s.Days...)
+	}
 	return out
 }
 
@@ -316,7 +352,7 @@ func Parse(raw []byte) (Config, []Warning, error) {
 
 	for _, k := range sortedKeys(top) {
 		switch k {
-		case "daemon", "web", "log", "alert", "dashboard", "channel":
+		case "daemon", "web", "log", "alert", "dashboard", "channel", "schedule":
 		default:
 			p.warn(k, "unknown section, ignored")
 		}
@@ -343,6 +379,14 @@ func Parse(raw []byte) (Config, []Warning, error) {
 			p.warn("channel", "not an array of tables ([[channel]]), no channels configured")
 		} else {
 			cfg.Channels = p.channels(secs)
+		}
+	}
+	if prim, ok := top["schedule"]; ok {
+		var secs []map[string]toml.Primitive
+		if md.Type("schedule") != "ArrayHash" || md.PrimitiveDecode(prim, &secs) != nil {
+			p.warn("schedule", "not an array of tables ([[schedule]]), no schedules configured")
+		} else {
+			cfg.Schedules = p.schedules(secs)
 		}
 	}
 	return cfg, p.warns, nil
@@ -864,6 +908,98 @@ func (p *parser) pwmField(pre string, sec map[string]toml.Primitive) int {
 		return 0
 	}
 	return int(v)
+}
+
+// schedules validates the [[schedule]] tables (DESIGN "Schedule rules"):
+// at most MaxSchedules entries, a preset name, either both from/to as
+// HH:MM (from == to is dropped) or neither (the fallback, at most one),
+// days a distinct subset of DayNames. An invalid entry is dropped with a
+// warning and the others stay (rule 8); the order is kept because the
+// first matching window wins.
+func (p *parser) schedules(secs []map[string]toml.Primitive) []Schedule {
+	var out []Schedule
+	haveFallback := false
+	for i, sec := range secs {
+		pre := fmt.Sprintf("schedule[%d]", i)
+		if len(out) >= MaxSchedules {
+			p.warn(pre, "more than %d schedule entries, this one and the rest dropped", MaxSchedules)
+			break
+		}
+		p.unknown(pre, sec, "preset", "from", "to", "days")
+		preset, _ := p.strField(pre, sec, "preset", "")
+		preset = strings.TrimSpace(preset)
+		if !presetRe.MatchString(preset) {
+			p.warn(pre+".preset", "missing or not %s, entry dropped", presetRe)
+			continue
+		}
+		s := Schedule{Preset: preset}
+		from, _ := p.strField(pre, sec, "from", "")
+		to, _ := p.strField(pre, sec, "to", "")
+		from, to = strings.TrimSpace(from), strings.TrimSpace(to)
+		switch {
+		case from == "" && to == "":
+			if haveFallback {
+				p.warn(pre, "a second entry without from/to (fallback), entry dropped")
+				continue
+			}
+			haveFallback = true
+		case from == "" || to == "":
+			p.warn(pre, "from and to must both be set (or neither for the fallback), entry dropped")
+			continue
+		default:
+			var ok bool
+			if s.From, ok = clockTime(from); !ok {
+				p.warn(pre+".from", "%q is not HH:MM, entry dropped", from)
+				continue
+			}
+			if s.To, ok = clockTime(to); !ok {
+				p.warn(pre+".to", "%q is not HH:MM, entry dropped", to)
+				continue
+			}
+			if s.From == s.To {
+				p.warn(pre, "from and to are equal (%s), entry dropped", s.From)
+				continue
+			}
+		}
+		if prim, ok := sec["days"]; ok {
+			var days []string
+			if err := p.md.PrimitiveDecode(prim, &days); err != nil {
+				p.warn(pre+".days", "not an array of strings, entry dropped")
+				continue
+			}
+			bad := false
+			seen := map[string]bool{}
+			for _, d := range days {
+				d = enumValue(d)
+				if !contains(DayNames, d) {
+					p.warn(pre+".days", "%q is not one of %s, entry dropped", d, strings.Join(DayNames, "|"))
+					bad = true
+					break
+				}
+				if seen[d] {
+					p.warn(pre+".days", "%q listed twice, duplicate ignored", d)
+					continue
+				}
+				seen[d] = true
+				s.Days = append(s.Days, d)
+			}
+			if bad {
+				continue
+			}
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+// clockTime parses a wall-clock time "HH:MM" (24 h) and returns it in the
+// canonical two-digit form.
+func clockTime(s string) (string, bool) {
+	t, err := time.Parse("15:04", s)
+	if err != nil {
+		return "", false
+	}
+	return t.Format("15:04"), true
 }
 
 func (p *parser) curve(pre string, sec map[string]toml.Primitive) [][2]int {
