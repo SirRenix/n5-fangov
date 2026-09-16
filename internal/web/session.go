@@ -28,8 +28,10 @@ const (
 )
 
 // sessionFile is the JSON mirror layout; key is the full hex sha256(token).
+// Epoch is the credential epoch the sessions were issued under (R-M1).
 type sessionFile struct {
 	Format   int            `json:"format"`
+	Epoch    string         `json:"epoch,omitempty"`
 	Sessions []sessionEntry `json:"sessions"`
 }
 
@@ -41,23 +43,56 @@ type sessionEntry struct {
 type sessionStore struct {
 	mu          sync.Mutex
 	path        string
+	epoch       string
 	logf        func(string, ...any)
 	now         func() time.Time
 	byKey       map[string]Session
 	writeFailed bool // the write error was logged; stay quiet until it succeeds again
 }
 
+// CredentialEpoch identifies a credential set: hex sha256 of user, newline,
+// stored hash (R-M1). Sessions are bound to the epoch they were issued
+// under; a mirror file written under another epoch — the password was
+// rotated with `n5-fangov passwd` or by editing the file while the daemon
+// was down — is not loaded.
+func CredentialEpoch(user, hash string) string {
+	sum := sha256.Sum256([]byte(user + "\n" + hash))
+	return hex.EncodeToString(sum[:])
+}
+
 // NewSessionStore returns the store behind the cookie sessions. path != ""
 // mirrors every change to that JSON file (0600, temp file + rename) and
 // loads it at start, so a daemon restart keeps "remember me" sessions. A
 // file that cannot be written is logged once; the store continues in memory.
+// The epoch is "" (every mirror file is accepted); see NewSessionStoreEpoch.
 func NewSessionStore(path string, logf func(string, ...any)) SessionStore {
+	return NewSessionStoreEpoch(path, "", logf)
+}
+
+// NewSessionStoreEpoch is NewSessionStore bound to a credential epoch
+// (CredentialEpoch): a mirror file whose epoch differs is dropped whole,
+// with one log line, so a password rotation outside the daemon revokes
+// every persisted session (R-M1). epoch "" accepts any file.
+func NewSessionStoreEpoch(path, epoch string, logf func(string, ...any)) SessionStore {
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
-	s := &sessionStore{path: path, logf: logf, now: time.Now, byKey: map[string]Session{}}
+	s := &sessionStore{path: path, epoch: epoch, logf: logf, now: time.Now, byKey: map[string]Session{}}
 	s.load()
 	return s
+}
+
+// SetEpoch records a new credential epoch (after a change through the
+// account endpoints) and rewrites the mirror, so the sessions kept across
+// the change survive the next restart (R-M1).
+func (s *sessionStore) SetEpoch(epoch string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.epoch == epoch {
+		return
+	}
+	s.epoch = epoch
+	s.saveLocked()
 }
 
 // sessionKey is the map key and file key of a token; the ID shown to the
@@ -129,7 +164,12 @@ func (s *sessionStore) Revoke(token string) {
 	}
 }
 
-func (s *sessionStore) RevokeAll(keepToken string) {
+func (s *sessionStore) RevokeAll(keepToken string) { s.RevokeAllRename(keepToken, "") }
+
+// RevokeAllRename is RevokeAll with the kept session's User rewritten to
+// newUser ("" keeps it): after a rename the surviving cookie must report
+// the new name, not the one it was issued for (R-L10).
+func (s *sessionStore) RevokeAllRename(keepToken, newUser string) {
 	keep := ""
 	if keepToken != "" {
 		keep = sessionKey(keepToken)
@@ -137,9 +177,14 @@ func (s *sessionStore) RevokeAll(keepToken string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	changed := false
-	for k := range s.byKey {
-		if k != keep {
+	for k, sess := range s.byKey {
+		switch {
+		case k != keep:
 			delete(s.byKey, k)
+			changed = true
+		case newUser != "" && sess.User != newUser:
+			sess.User = newUser
+			s.byKey[k] = sess
 			changed = true
 		}
 	}
@@ -211,6 +256,14 @@ func (s *sessionStore) load() {
 		s.logf("web: sessions: %s: %v (starting empty)", s.path, err)
 		return
 	}
+	if s.epoch != "" && f.Epoch != s.epoch {
+		// R-M1: the credentials changed while these sessions were on disk.
+		// The file is rewritten under the current epoch at the next change.
+		if len(f.Sessions) > 0 {
+			s.logf("web: sessions: credentials changed since %s was written, %d session(s) dropped", s.path, len(f.Sessions))
+		}
+		return
+	}
 	now := s.now()
 	for _, e := range f.Sessions {
 		if len(e.Key) != sha256.Size*2 || !e.Expires.After(now) {
@@ -230,7 +283,7 @@ func (s *sessionStore) saveLocked() {
 	if s.path == "" {
 		return
 	}
-	f := sessionFile{Format: 1, Sessions: make([]sessionEntry, 0, len(s.byKey))}
+	f := sessionFile{Format: 1, Epoch: s.epoch, Sessions: make([]sessionEntry, 0, len(s.byKey))}
 	for k, sess := range s.byKey {
 		f.Sessions = append(f.Sessions, sessionEntry{Key: k, Session: sess})
 	}

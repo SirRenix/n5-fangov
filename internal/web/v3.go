@@ -13,6 +13,8 @@ import (
 	"runtime"
 	"time"
 	"unicode/utf8"
+
+	"github.com/SirRenix/n5-fangov/internal/alert"
 )
 
 // maxJSONBody bounds the small JSON bodies of the v0.3 endpoints.
@@ -175,6 +177,9 @@ func (s *Server) verifyCurrent(w http.ResponseWriter, r *http.Request, current s
 
 // applyAccount stores the new credentials, swaps them in and signs every
 // other session out (the caller's cookie survives; a basic caller has none).
+// The store moves to the new credential epoch first, so the kept session
+// is still loaded after the next restart (R-M1); the kept session's User
+// follows a rename (R-L10).
 func (s *Server) applyAccount(w http.ResponseWriter, r *http.Request, what, user, hash string) bool {
 	cfg, err := s.deps.Account.Update(user, hash)
 	if err != nil {
@@ -182,7 +187,8 @@ func (s *Server) applyAccount(w http.ResponseWriter, r *http.Request, what, user
 		return false
 	}
 	s.auth.Store(&cfg)
-	s.sessions.RevokeAll(CallerFrom(r.Context()).token)
+	s.sessions.SetEpoch(CredentialEpoch(cfg.User, cfg.PasswordHash))
+	s.sessions.RevokeAllRename(CallerFrom(r.Context()).token, cfg.User)
 	s.logf("web: account %s changed by %s", what, remoteIP(r))
 	return true
 }
@@ -322,6 +328,11 @@ func (s *Server) alertsTest(w http.ResponseWriter, r *http.Request) {
 	}
 	transport, err := m.Test()
 	if err != nil {
+		if errors.Is(err, alert.ErrTestBusy) {
+			// R-L9: one test delivery at a time; the previous one still runs.
+			writeJSON(w, http.StatusConflict, map[string]any{"error": "test in progress", "transport": transport})
+			return
+		}
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error(), "transport": transport})
 		return
 	}

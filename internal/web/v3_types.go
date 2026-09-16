@@ -26,7 +26,14 @@ type SessionStore interface {
 	Lookup(token string) (Session, bool)
 	Revoke(token string)
 	RevokeAll(keepToken string)
+	// RevokeAllRename is RevokeAll with the kept session's User set to
+	// newUser ("" keeps it) — the rename handler's variant (R-L10).
+	RevokeAllRename(keepToken, newUser string)
 	List() []Session
+	// SetEpoch binds the store (and its mirror file) to a credential epoch
+	// (CredentialEpoch); a mirror written under another epoch is not
+	// loaded at start (R-M1).
+	SetEpoch(epoch string)
 }
 
 // AccountStore is the daemon's credential file access (implemented in cmd):
