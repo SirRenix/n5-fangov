@@ -156,8 +156,9 @@ curl path is re-run once at 0.4.0.
   bare message as `text/plain` (ntfy); 30 s bound, redirects not followed, 2xx = delivered,
   anything else the delivery error `webhook: …`. Never chosen by `auto`. `PUT /api/alerts`
   takes `webhook_url` and `webhook_format` (omitted keys keep their value), `GET
-  /api/alerts` carries the full URL (protected); log lines, `check` and `n5-fangov alerts
-  status` show it without query and userinfo.
+  /api/alerts` carries the full URL for the operator's cookie, Basic and socket callers
+  (redacted for a token caller); log lines, `check` and `n5-fangov alerts status` show it
+  as scheme, host and first path segment only.
 - **Hysteresis and minimum on-time per channel** (`[[channel]] hysteresis = 0..10`,
   `min_on = "0s".."1h"`, both off by default): the curve is evaluated at a held temperature
   that follows the reading only on a move of `hysteresis` degrees or more, and a rise of
@@ -289,6 +290,62 @@ curl path is re-run once at 0.4.0.
   `/sys/devices/platform/<driver>/hwmon/hwmonN`, `/sys/class/hwmon` holds the symlinks;
   the rest of `/sys` (sensors, DMI, disk temperatures) is read-only. To be verified on the
   reference host with the next install test (release gate).
+
+### Fixed
+
+- `GET`/`PUT /api/alerts` handed the full webhook URL — with the receiver's key in its
+  query or path — to any API token, even a `read` one; a token caller now gets it
+  redacted, the operator's cookie, Basic and socket callers still see it in full.
+- A valid API token reset the auth limiter's delay counter of its address, so a
+  password guesser with one working token could clear its delay between attempts; bearer
+  failures live in buckets of their own now, a token success resets only those (and a
+  password success only the password bucket); the concurrency cap stays shared.
+- The config warning about an invalid `webhook_url` quoted the value into the journal and
+  the dashboard, userinfo and key included; it names scheme and host only.
+- Preset apply (dashboard and scheduler) rewrote the whole config from the parsed struct,
+  losing every comment and reordering the file; the merged `[[channel]]` tables are now
+  spliced into the file text in place, everything else stays byte-identical (fallback to
+  the full rewrite only for an inline `channel = [{…}]` table the splice cannot replace).
+- The merge by pwm reset a channel's `hysteresis` and `min_on` to the defaults whenever the
+  preset did not carry them (every preset written before 0.3.1, every built-in); the config
+  channel's values are kept unless the preset table sets the keys explicitly.
+- The collision rename of an added preset channel (`pwm<N>`) could itself collide; it
+  counts on (`pwm<N>_2`, …) until the name is free.
+- `RedactURL` kept the whole path, so a Home Assistant webhook id (`/api/webhook/<id>`)
+  reached the log and the CLI; only the first path segment stays, and a URL that does not
+  parse is cut by the same rules — never with its userinfo.
+- `PUT /api/alerts` merged the request onto the section in effect, not the file: a URL or
+  recipient that `PUT /api/config` (answered 202) or a hand edit had put into the file was
+  overwritten or missed. The merge basis is now the file's `[alert]` section read under
+  the file lock, and only the keys the request sets are written.
+- A reload that returned `ErrRestartRequired` skipped the alert manager and the scheduler,
+  so the file's `[alert]` and `[[schedule]]` were not in effect until the restart; both are
+  taken from the written file on 202 as well.
+- `GET /api/schedules` `last.error` carried the full apply error (file paths, parser
+  text); it carries the class (`preset missing`, `preset invalid`, `write failed`,
+  `reload failed`, `restart required`), the full text goes to the log.
+- The scheduler's first evaluation with no entries, or outside every window without a
+  fallback, counted as a transition and logged "no window active"; it is no transition.
+  A scheduler wired without a preset applier logs the wiring error instead of panicking.
+- A `[[schedule]]` entry whose `from`/`to` were TOML time literals instead of strings
+  read as absent and became the fallback; the entry is dropped with a warning. A fallback
+  with `days` keeps the days silently; they are cleared with a warning.
+- `schedule.Equal` compared the day lists by position, so a reordered `days` counted as a
+  new entry and re-applied the preset on the next tick; the days compare as a set.
+- The 1-minute and 5-minute history means took the controller's `-1` ("duty unknown after
+  a failed write") as a value and pulled the mean below every real duty; the marker stays
+  in the raw point and is skipped by the means.
+- `Stop` saved the history file while holding the hardware mutex; the save runs after the
+  safe-state writes have released it.
+- `POST /api/tokens` minted tokens with `auth = "none"`, where anyone reaching the listener
+  could and the guard ignored them anyway; it answers 409 `auth is none` like the account
+  changes (list and revoke stay).
+- The OpenAPI `Version.limits` schema lacked `hysteresis_max` and `min_on_max_s`; the
+  shape test now pins the schema's properties to the JSON keys of `GET /api/version`.
+- The pre-commit hook used the deprecated `gitleaks protect --staged`; it probes for `git
+  --staged` (gitleaks 8.19+) and falls back to the old spelling.
+- The settings bundle keeps the webhook URL in full (a setting the bundle exists to carry;
+  only the password hash is redacted) — stated in DESIGN §12 rather than changed.
 
 ## [0.3.0-rc1] — 2026-09-16
 
