@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -174,5 +176,21 @@ func TestPresetHeader(t *testing.T) {
 	}
 	if d, p := presetHeader([]byte("[[channel]]\nname = \"x\"\n")); d != "" || p != "" {
 		t.Errorf("no header: %q %q", d, p)
+	}
+}
+
+// The shipped example config must parse without a single warning: it is
+// the reference for every key, and the daemon would alert on it.
+func TestExampleConfigParses(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "deploy", "config.example.toml"))
+	if err != nil {
+		t.Skip("deploy/config.example.toml not found:", err)
+	}
+	cfg, warns, err := Parse(raw)
+	if err != nil || len(warns) != 0 {
+		t.Fatalf("example config: %v %v", warns, err)
+	}
+	if cfg.Alert.Transport != "auto" || cfg.Alert.MailTo != "root" || len(cfg.Dashboard.Sensors) != 0 || len(cfg.Channels) != 3 {
+		t.Errorf("example values: %+v %+v %d channels", cfg.Alert, cfg.Dashboard, len(cfg.Channels))
 	}
 }

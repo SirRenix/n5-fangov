@@ -59,12 +59,19 @@ install -d -m 0755 /usr/share/n5-fangov/pve-notification
 install -m 0644 "$DEPLOY"/pve-notification/*.hbs /usr/share/n5-fangov/pve-notification/
 install -m 0644 "$DEPLOY/apt-90n5-fangov.conf" /usr/share/n5-fangov/apt-90n5-fangov.conf
 if [[ -d /etc/pve ]]; then
-    # pmxcfs does not allow chmod -> cp instead of install
+    # pmxcfs does not allow chmod -> cp instead of install. The same two files
+    # are embedded in the binary (internal/alert/templates, kept identical by
+    # `make verify-deploy`): the dashboard's "install template" button and
+    # `n5-fangov alerts template` write them too; this copy only spares the
+    # first click on a fresh box and creates the directory, which the daemon
+    # cannot from inside its sandbox.
     mkdir -p /etc/pve/notification-templates/default
     cp "$DEPLOY/pve-notification/n5-fangov-subject.txt.hbs"     /etc/pve/notification-templates/default/
     cp "$DEPLOY/pve-notification/n5-fangov-body.txt.hbs"        /etc/pve/notification-templates/default/
     echo "  PVE notification template installed (alerts -> Proxmox notifications, template 'n5-fangov')"
 fi
+# Built-in presets (n5pro-quiet/-balanced/-cool) are embedded in the binary;
+# /etc/n5-fangov/presets holds the operator's own ones only.
 
 echo "--- apt hook (kernel gate) ---"
 if [[ -d /etc/apt/apt.conf.d ]]; then
@@ -75,6 +82,7 @@ else
 fi
 
 echo "--- systemd ---"
+# daemon-reload after the unit copy: StateDirectory=/ReadWritePaths= changed in v0.3
 systemctl daemon-reload
 systemctl enable n5-fangov.service
 echo "  enabled (not started)"
@@ -82,6 +90,12 @@ echo "  enabled (not started)"
 cat <<EOF
 
 Installed $("$BIN" version). Log file: $LOG_DIR/n5-fangov.log (rotating; journal unchanged).
+State (sessions, alert history): /var/lib/n5-fangov (created by systemd at the first start).
 
 run: n5-fangov setup
+
+Dashboard (after setup + start): the Overview is visible without signing in; everything
+else — curves, presets, alerts, certificate, account — needs the login from setup.
+Alerts tab: transport, PVE template, test alert. Presets tab: built-in n5pro-quiet /
+n5pro-balanced (recommended) / n5pro-cool.
 EOF
