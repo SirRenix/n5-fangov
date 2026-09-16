@@ -233,9 +233,9 @@ and a Bearer header is ignored.
 cannot mint new tokens, change the password or rename the user. Those need a browser
 session or Basic auth. A request outside the scope answers 403
 `{"error":"token scope read does not allow PUT /api/override/cpu","scope":"read","required":"control"}`.
-`GET /api/alerts` is within `read` and carries the full `webhook_url`, query
-included — hand out `read` tokens with that in mind when the webhook URL holds a key
-([Webhook](07-alerts.md#webhook)).
+`GET /api/alerts` is within `read`; a token caller gets `webhook_url` with query and
+userinfo redacted (the full URL is for browser sessions and Basic auth only), so a
+`read` token never reveals a Gotify key ([Webhook](07-alerts.md#webhook)).
 
 - **Create** — settings gear → *Account…* → *API tokens* → *Create token…* (name,
   scope, expiry `30 d · 90 d · 1 y · never`), or from the shell
@@ -321,6 +321,12 @@ A reverse proxy (Caddy, nginx, the PVE proxy) terminating TLS in front of
 - Set `behind_tls_proxy = true` so the session cookie carries `Secure` although the
   listener speaks plain HTTP.
 - HSTS is the proxy's business; n5-fangov sends the header only on its own TLS listener.
+- n5-fangov does not evaluate `X-Forwarded-For` (or `Forwarded`): the client address it
+  sees is the proxy's. The [login throttling](#login-throttling) buckets, the cap of 4
+  in-flight delayed attempts per address, a token's `last_ip` and the addresses in the
+  log all carry that one address — so one attacker behind the proxy fills the shared
+  bucket and locks every proxy user into `429`. Put the proxy's own rate limiting in
+  front (per real client address) and read client addresses from the proxy's log.
 
 ## Hardening
 

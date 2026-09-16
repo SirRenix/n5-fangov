@@ -130,7 +130,7 @@ Basic auth only, never a token.
 | `GET` | `/api/profiles` | profiles with the active one |
 | `GET` | `/api/presets`, `/api/presets/{name}` | preset list, one preset's channel tables |
 | `GET` | `/api/schedules` | `[[schedule]]` entries, active, next and last switch, timezone (501 without a scheduler) |
-| `GET` | `/api/alerts` | transport status (full `webhook_url`), kinds with last delivery, recent alerts |
+| `GET` | `/api/alerts` | transport status (`webhook_url` full for a session or Basic auth, query and userinfo redacted for a token caller), kinds with last delivery, recent alerts |
 | `GET` | `/api/dashboard` | the watched sensor ids |
 | `GET` | `/api/tls` | certificate mode, info, warnings, fallback flag |
 
@@ -281,9 +281,9 @@ the webhook transport ([Alerts](07-alerts.md#webhook)).
 
 ## Other clients
 
-- **Monitoring** — poll `/api/state` with a `read` token; `status` is `ok`,
-  `sensor-error`, `write-error` or `dry-run`, a channel `mode` other than `auto`/`manual`
-  is worth an alarm. `/api/system` adds per-disk temperatures.
+- **Monitoring** — poll `/api/state` with a `read` token; `status` is `starting` (first
+  cycle not done yet), `ok`, `sensor-error`, `write-error` or `dry-run`, a channel
+  `mode` other than `auto`/`manual` is worth an alarm. `/api/system` adds per-disk temperatures.
 - **Agents** — hand them `/api/openapi.json` and a token with the smallest scope that
   does the job; `control` lets an agent apply presets and set overrides, never edit
   curves or credentials.
