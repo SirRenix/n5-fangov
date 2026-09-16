@@ -136,12 +136,14 @@ type PresetDeleter interface {
 
 // PresetChannel is one [[channel]] table of a preset as GET /api/presets/{name} shows it.
 type PresetChannel struct {
-	Name     string   `json:"name"`
-	PWM      int      `json:"pwm"`
-	Sensor   string   `json:"sensor"`
-	Curve    [][2]int `json:"curve"`
-	Critical int      `json:"critical"`
-	Stop     string   `json:"stop"`
+	Name       string   `json:"name"`
+	PWM        int      `json:"pwm"`
+	Sensor     string   `json:"sensor"`
+	Curve      [][2]int `json:"curve"`
+	Critical   int      `json:"critical"`
+	Stop       string   `json:"stop"`
+	Hysteresis int      `json:"hysteresis"`
+	MinOn      string   `json:"min_on"` // duration string ("0s" = off)
 }
 
 // PresetDetail is the full content of one preset.

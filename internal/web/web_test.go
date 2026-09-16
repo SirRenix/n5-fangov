@@ -1690,11 +1690,11 @@ func TestVersionLimits(t *testing.T) {
 		Limits Limits `json:"limits"`
 	}
 	decode(t, r.body, &v)
-	want := Limits{MinHDDOverride: control.MinHDDOverride, CriticalMin: 30, CriticalMax: config.MaxCritical, CurvePointsMax: config.MaxCurvePts, DashboardSensorsMax: config.MaxDashboardSensors, PasswordMin: config.MinPasswordLen, PasswordMax: config.MaxPasswordLen}
+	want := Limits{MinHDDOverride: control.MinHDDOverride, CriticalMin: 30, CriticalMax: config.MaxCritical, CurvePointsMax: config.MaxCurvePts, DashboardSensorsMax: config.MaxDashboardSensors, PasswordMin: config.MinPasswordLen, PasswordMax: config.MaxPasswordLen, HysteresisMax: config.HysteresisMax, MinOnMaxS: 3600}
 	if v.Limits != want {
 		t.Fatalf("limits = %+v, want %+v", v.Limits, want)
 	}
-	for _, k := range []string{`"min_hdd_override":60`, `"critical_min":30`, `"critical_max":150`, `"curve_points_max":8`, `"dashboard_sensors_max":8`, `"password_min":8`, `"password_max":128`} {
+	for _, k := range []string{`"min_hdd_override":60`, `"critical_min":30`, `"critical_max":150`, `"curve_points_max":8`, `"dashboard_sensors_max":8`, `"password_min":8`, `"password_max":128`, `"hysteresis_max":10`, `"min_on_max_s":3600`} {
 		if !strings.Contains(r.body, k) {
 			t.Errorf("missing %s in %s", k, r.body)
 		}

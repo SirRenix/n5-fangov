@@ -172,6 +172,8 @@ type SensorInfo struct {
 	ID          string   `json:"id"`
 	Description string   `json:"description"`
 	Temp        *float64 `json:"temp,omitempty"`
+	// Kind is "ssd" or "hdd" for disk:<dev> ids (from the block device), else empty.
+	Kind string `json:"kind,omitempty"`
 }
 
 // AuthConfig mirrors the [web] auth settings.
@@ -1462,6 +1464,8 @@ type Limits struct {
 	DashboardSensorsMax int `json:"dashboard_sensors_max"`
 	PasswordMin         int `json:"password_min"`
 	PasswordMax         int `json:"password_max"`
+	HysteresisMax       int `json:"hysteresis_max"`
+	MinOnMaxS           int `json:"min_on_max_s"`
 }
 
 // apiLimits are the current bounds (see Limits).
@@ -1474,6 +1478,8 @@ func apiLimits() Limits {
 		DashboardSensorsMax: config.MaxDashboardSensors,
 		PasswordMin:         minPasswordLen,
 		PasswordMax:         maxPasswordLen,
+		HysteresisMax:       config.HysteresisMax,
+		MinOnMaxS:           int(config.MinOnMax.Seconds()),
 	}
 }
 

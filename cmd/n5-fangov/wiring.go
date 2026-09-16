@@ -46,6 +46,10 @@ type chanSpec struct {
 	Curve    [][2]int // [temp_c, duty], ascending
 	Critical int
 	Stop     string // "auto" or fixed duty "0".."255"
+	// Hysteresis (degrees C) and MinOn are the curve post-processing keys;
+	// zero = off.
+	Hysteresis int
+	MinOn      time.Duration
 }
 
 // daemonSpec is the subset of [daemon] the commands need.
@@ -188,6 +192,7 @@ func renderConfig(profileName string, chans []chanSpec, w webSpec) []byte {
 		cfg.Channels = append(cfg.Channels, config.Channel{
 			Name: c.Name, PWM: c.PWM, Sensor: c.Sensor,
 			Curve: append([][2]int(nil), c.Curve...), Critical: c.Critical, Stop: c.Stop,
+			Hysteresis: c.Hysteresis, MinOn: c.MinOn,
 		})
 	}
 	cfg.Web = config.Web{
@@ -235,12 +240,14 @@ func channelSpecs(cfg config.Config) []chanSpec {
 	out := make([]chanSpec, 0, len(cfg.Channels))
 	for _, c := range cfg.Channels {
 		out = append(out, chanSpec{
-			Name:     c.Name,
-			PWM:      c.PWM,
-			Sensor:   c.Sensor,
-			Curve:    append([][2]int(nil), c.Curve...),
-			Critical: c.Critical,
-			Stop:     c.Stop,
+			Name:       c.Name,
+			PWM:        c.PWM,
+			Sensor:     c.Sensor,
+			Curve:      append([][2]int(nil), c.Curve...),
+			Critical:   c.Critical,
+			Stop:       c.Stop,
+			Hysteresis: c.Hysteresis,
+			MinOn:      c.MinOn,
 		})
 	}
 	return out
@@ -255,12 +262,14 @@ func sanitizeChannelSpecs(profileName string, chans []chanSpec) (out []chanSpec,
 	in := make([]config.Channel, 0, len(chans))
 	for _, c := range chans {
 		in = append(in, config.Channel{
-			Name:     c.Name,
-			PWM:      c.PWM,
-			Sensor:   c.Sensor,
-			Curve:    append([][2]int(nil), c.Curve...),
-			Critical: c.Critical,
-			Stop:     c.Stop,
+			Name:       c.Name,
+			PWM:        c.PWM,
+			Sensor:     c.Sensor,
+			Curve:      append([][2]int(nil), c.Curve...),
+			Critical:   c.Critical,
+			Stop:       c.Stop,
+			Hysteresis: c.Hysteresis,
+			MinOn:      c.MinOn,
 		})
 	}
 	fixed, notes := control.SanitizeChannels(profileName, in)
@@ -350,10 +359,12 @@ func readTempC(src sensor.Source) (float64, error) {
 	return float64(mc) / 1000, nil
 }
 
-// sensorInfo is one selectable sensor id with a description.
+// sensorInfo is one selectable sensor id with a description. Kind is
+// "ssd" or "hdd" for disk:<dev> ids, else empty.
 type sensorInfo struct {
 	ID          string
 	Description string
+	Kind        string
 }
 
 // knownSensors lists the sensor ids that resolve on this machine plus the
@@ -362,7 +373,7 @@ func knownSensors(fs *hwmon.FS, dev profile.Device) []sensorInfo {
 	infos := sensor.Known(fs, dev)
 	out := make([]sensorInfo, 0, len(infos))
 	for _, i := range infos {
-		out = append(out, sensorInfo{ID: i.ID, Description: i.Description})
+		out = append(out, sensorInfo{ID: i.ID, Description: i.Description, Kind: i.Kind})
 	}
 	return out
 }
@@ -615,7 +626,7 @@ func newWebServer(d webDeps) webServer {
 	sensors := func() []web.SensorInfo {
 		var out []web.SensorInfo
 		for _, i := range sensor.Known(d.Sysfs, d.Device) {
-			info := web.SensorInfo{ID: i.ID, Description: i.Description}
+			info := web.SensorInfo{ID: i.ID, Description: i.Description, Kind: i.Kind}
 			if !strings.Contains(i.ID, "<") {
 				if src, err := sensor.Parse(i.ID, d.Sysfs, d.Device); err == nil {
 					if t, err := readTempC(src); err == nil {
@@ -795,6 +806,7 @@ func configJSON(cfg config.Config, warns []config.Warning) map[string]any {
 		chans = append(chans, map[string]any{
 			"name": c.Name, "pwm": c.PWM, "sensor": c.Sensor, "curve": c.Curve,
 			"critical": c.Critical, "stop": c.Stop,
+			"hysteresis": c.Hysteresis, "min_on": c.MinOn.String(),
 		})
 	}
 	return map[string]any{
