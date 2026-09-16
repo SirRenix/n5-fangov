@@ -231,6 +231,7 @@ func (s *Store) Load() {
 	s.trimRawLocked()
 	s.min1.load(f.Min1, now, s.raw)
 	s.min5.load(f.Min5, now, s.raw)
+	s.logf("history: loaded %s (%d raw, %d 1-min, %d 5-min points kept)", s.path, len(s.raw), len(s.min1.pts), len(s.min5.pts))
 }
 
 // keepSince returns the points with ts >= cut in their order (the file is
