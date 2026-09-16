@@ -813,10 +813,11 @@ function selectTab(id, focus) {
 	if ($('#tab-' + id).hidden) return;
 	curTab = id;
 	TABS.forEach(t => { const on = t.id === 'tab-' + id; t.setAttribute('aria-selected', on); t.tabIndex = on ? 0 : -1; $('#' + t.getAttribute('aria-controls')).hidden = !on; if (on && focus) t.focus(); });
-	({ overview: () => { renderCharts(); pollSensors(); loadAlerts(); }, presets: loadPresets, log: loadLog, compat: renderProfiles, alerts: () => { alDirty = false; renderAlertsTab(); loadAlerts(); }, about: () => {},
+	// every tab needs an entry (TestTabsHaveHandlers); a missing one would throw here after the panel switch
+	(({ overview: () => { renderCharts(); pollSensors(); loadAlerts(); }, manual: () => { if (snap) renderManual(); }, presets: loadPresets, log: loadLog, compat: renderProfiles, alerts: () => { alDirty = false; renderAlertsTab(); loadAlerts(); }, about: () => {},
 		system: () => { renderSystemTab(); loadSystem(); },
 		curves: () => { if (!edState) loadEditor();
-			pollSensors(1); drawEds(); } })[id]();
+			pollSensors(1); drawEds(); } })[id] || (() => {}))();
 }
 TABS.forEach(t => { t.addEventListener('click', () => selectTab(t.id.slice(4)));
 	t.addEventListener('keydown', ev => { const vis = TABS.filter(x => !x.hidden), i = vis.indexOf(t), d = { ArrowRight: 1, ArrowLeft: -1, Home: -i, End: vis.length - 1 - i }[ev.key];

@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -1281,5 +1282,39 @@ func TestServeWarnsNonLoopbackWithoutAuth(t *testing.T) {
 	}
 	if logs := run(AuthConfig{}, nil); has(logs, "non-loopback") {
 		t.Errorf("warning on loopback: %v", logs)
+	}
+}
+
+// TestTabsHaveHandlers (AUDIT hoch #1): every role="tab" in index.html must
+// have an entry in selectTab's dispatch map in app.js — a missing entry threw
+// a TypeError on every switch to the Manual tab and, with ?tab=manual, kept
+// the boot sequence from reaching schedule().
+func TestTabsHaveHandlers(t *testing.T) {
+	html, err := staticFS.ReadFile("static/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js, err := staticFS.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tabs := regexp.MustCompile(`role="tab" id="tab-([a-z]+)"`).FindAllStringSubmatch(string(html), -1)
+	if len(tabs) < 5 {
+		t.Fatalf("found only %d tabs in index.html", len(tabs))
+	}
+	// the dispatch map is the object literal that ends with `})[id]`
+	i := strings.Index(string(js), "})[id]")
+	if i < 0 {
+		t.Fatal("dispatch map `})[id]` not found in app.js")
+	}
+	start := strings.LastIndex(string(js)[:i], "(({")
+	if start < 0 {
+		t.Fatal("dispatch map start `(({` not found in app.js")
+	}
+	m := string(js)[start:i]
+	for _, tb := range tabs {
+		if !regexp.MustCompile(`(?m)(^|[\s{,])` + tb[1] + `:`).MatchString(m) {
+			t.Errorf("tab %q has no handler in selectTab's dispatch map", tb[1])
+		}
 	}
 }
