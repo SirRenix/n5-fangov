@@ -46,15 +46,11 @@ MQTT/discovery, no multi-host management, no new dependencies. The UI stays Engl
 **3. Dashboard**
 - **Longer history**: persist the ring in the state directory, views 2 h / 24 h / 7 d
   (downsampled), CSV export.
-- **Structural redesign, scoped** (decision 2026-09-16: yes, on top of the 0.3 token block):
-  left sidebar navigation grouped Monitor / Control / Operate / Info (collapses to icons,
-  bottom bar on phones) instead of nine top tabs; a channel-centric **Fans** page that merges
-  Curves, Manual and Presets per channel (curve, override, preset apply side by side);
-  one **Settings** page that consolidates the gear popover, the account dialog, the
-  certificate panel, the alert transport and the new tokens; SVG icon set instead of
-  Unicode glyphs; empty states with a next step. Visual language (dark-first tokens,
-  cards, badges) stays; the anonymous overview stays as it is. Prototype first as a mock
-  build in a branch with screenshots for the operator's decision, then build.
+- **Per-device sensors**: today only `nvme:max`, `drivetemp:max` and the *first* device of a
+  name (`hwmon:nvme:temp1`) are addressable — a box with three NVMe SSDs and four HDDs
+  shows two temperatures. New ids per device (`disk:sda`, `disk:nvme1n1`, resolved through
+  `/sys/block/<dev>/device/hwmon`) for the Sensors card, the extra charts and the curve
+  sensor selection; the System tab lists every disk with its temperature.
 - Split the mock out of the production bundle (22 % of `app.js`) so the budget stops
   binding; remaining low design findings (toast limit, keyboard for curve points).
 
@@ -70,6 +66,26 @@ MQTT/discovery, no multi-host management, no new dependencies. The UI stays Engl
   uploads the `.deb`.
 - Reboot proof on the reference host (DKMS + daemon together) — the last open operations
   question, no code.
+
+### Planned (after 0.4.0, separate session) — dashboard redesign
+
+Structural redesign of the dashboard (sidebar navigation, channel-centric Fans page,
+consolidated Settings page, SVG icons, sparklines) — concept and hand-over in
+[`docs/design/REDESIGN-CONCEPT.md`](docs/design/REDESIGN-CONCEPT.md). Deliberately after
+0.4.0 so tokens, schedules and the longer history have their place in the new structure;
+prototype in the mock first, operator decides on screenshots.
+
+### Before the public release (documentation)
+
+- **Split the README**: a short landing page (what it is, one screenshot, three-step
+  install, links) and a `docs/` set with one page per topic (install, kernel driver on the
+  N5 Pro, setup, dashboard guide with screenshots, CLI, configuration, alerts, HTTPS and
+  security, updates and rollback, troubleshooting, development). The 880-line README is
+  complete but tiring; a reader needs a table of contents and separation.
+- **Kernel driver page**: what the EC driver is, what DKMS does for it, install from the
+  sibling repository (later its `.deb`), verification (`dkms status`, `sensors`,
+  `n5-fangov detect`), the kernel-update gate, removal — the topic first-time users
+  stumble over.
 
 **Not planned**: MQTT/discovery (REST + token is enough and smaller), a German UI
 (audience is GitHub), multi-host management, a frontend framework.
