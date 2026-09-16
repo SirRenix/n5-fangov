@@ -28,7 +28,7 @@ export CGO_ENABLED = 0
 export GOOS        = linux
 export GOARCH      = $(ARCH)
 
-.PHONY: build check verify-deploy deb clean version
+.PHONY: build check verify-deploy deb release clean version
 
 build:
 	mkdir -p $(DIST)
@@ -94,3 +94,14 @@ deb: build
 
 clean:
 	rm -rf $(DIST)
+
+# release: tag first (git tag -a vX.Y.Z), then `make release NOTES="..."`. Builds from
+# the tag, uploads the static binary + sha256 to the GitHub release; a hyphen in the
+# version (-beta.1, -rc1) marks it as a pre-release. Needs the gh CLI signed in.
+NOTES ?= see DESIGN.md and README.md
+release: build
+	@case '$(VERSION)' in *-g*|*dirty*) echo "not on a clean tag: $(VERSION)"; exit 1;; esac
+	cp $(DIST)/n5-fangov $(DIST)/n5-fangov-$(VERSION)-linux-amd64
+	cd $(DIST) && sha256sum n5-fangov-$(VERSION)-linux-amd64 > n5-fangov-$(VERSION)-linux-amd64.sha256
+	gh release create $(VERSION) $(if $(findstring -,$(VERSION)),--prerelease,) --title "$(VERSION)" --notes "$(NOTES)" \
+	    $(DIST)/n5-fangov-$(VERSION)-linux-amd64 $(DIST)/n5-fangov-$(VERSION)-linux-amd64.sha256

@@ -571,7 +571,9 @@ with a note). Run it on the target box after editing the unit.
 
 No Go toolchain needed locally: `tools/remote-go.ps1` builds in a `golang:1.25-alpine`
 container (static, `CGO_ENABLED=0`). Or plainly: `CGO_ENABLED=0 go build ./cmd/n5-fangov`.
-`make deb` builds the Debian package.
+`make deb` builds the Debian package. `make release NOTES="…"` (on a clean tag, gh CLI
+signed in) creates the GitHub release with the static binary and its sha256 — the
+releases page linked from the About tab is maintained this way, one entry per tag.
 
 ## About and license
 
