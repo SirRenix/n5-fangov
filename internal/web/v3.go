@@ -9,24 +9,25 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
-	"regexp"
 	"runtime"
 	"time"
 	"unicode/utf8"
 
 	"github.com/SirRenix/n5-fangov/internal/alert"
+	"github.com/SirRenix/n5-fangov/internal/config"
 )
 
 // maxJSONBody bounds the small JSON bodies of the v0.3 endpoints.
 const maxJSONBody = maxOverrideBody
 
-// Password and user rules for the account endpoints.
+// Password and user rules for the account endpoints (config: one rule for
+// the API, the parser and the CLI).
 const (
-	minPasswordLen = 8
-	maxPasswordLen = 128
+	minPasswordLen = config.MinPasswordLen
+	maxPasswordLen = config.MaxPasswordLen
 )
 
-var userName = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,32}$`)
+var userName = config.UserRe
 
 // decodeJSON reads a small JSON object body (413 over maxJSONBody, 400 on
 // malformed JSON or unknown members); false means the answer was written.
@@ -392,7 +393,7 @@ func (s *Server) putAlerts(w http.ResponseWriter, r *http.Request) {
 	}
 	st, err := m.Configure(b.Transport, b.MailTo)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeError(w, storeStatus(err), err.Error())
 		return
 	}
 	s.logf("web: alert transport set to %q (mail_to %q) by %s", b.Transport, b.MailTo, remoteIP(r))
@@ -443,7 +444,7 @@ func (s *Server) putDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 	warnings, err := d.SetSensors(b.Sensors)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeError(w, storeStatus(err), err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "sensors": nonNil(d.Sensors()), "warnings": nonNil(warnings)})

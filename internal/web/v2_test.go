@@ -57,15 +57,16 @@ type fakeBundle struct {
 	imported  [][]byte
 	restart   bool
 	importErr error
+	warnings  []string
 }
 
 func (b *fakeBundle) Export() ([]byte, error) { return []byte(b.doc), b.exportErr }
-func (b *fakeBundle) Import(raw []byte) (bool, error) {
+func (b *fakeBundle) Import(raw []byte) (bool, []string, error) {
 	if b.importErr != nil {
-		return false, b.importErr
+		return false, nil, b.importErr
 	}
 	b.imported = append(b.imported, raw)
-	return b.restart, nil
+	return b.restart, b.warnings, nil
 }
 
 // multiErr mimics the cmd bundle's validation error (Errors() []string).
@@ -206,10 +207,11 @@ func TestLogEndpointsAuth(t *testing.T) {
 	}
 }
 
-// TestLogFuncSourceAdapter: the deprecated func form still works for one
-// release — source "journal", export streams the newest lines, clear → 501.
-func TestLogFuncSourceAdapter(t *testing.T) {
-	e := newEnv(t, AuthConfig{}) // newEnv wires a func(int) ([]string, error)
+// TestLogJournalOnlyStore: a store without a file path (cmd's journal
+// store) reports source "journal", exports its lines and refuses Clear
+// with ErrUnsupported → 501.
+func TestLogJournalOnlyStore(t *testing.T) {
+	e := newEnv(t, AuthConfig{}) // newEnv wires a fakeLogStore with an empty path
 	r := e.do(t, "GET", "/api/log", "", nil)
 	wantCode(t, r, 200)
 	if !strings.Contains(r.body, `"source":"journal"`) {
@@ -221,23 +223,6 @@ func TestLogFuncSourceAdapter(t *testing.T) {
 		t.Fatalf("export = %q", r.body)
 	}
 	wantError(t, e.do(t, "DELETE", "/api/log", "", csrf), 501, "journal-only")
-	// the named type works as well
-	e.withDeps(t, AuthConfig{}, func(d *Deps) { d.Log = LogSource(func(int) ([]string, error) { return []string{"named"}, nil }) })
-	r = e.do(t, "GET", "/api/log", "", nil)
-	if !strings.Contains(r.body, `"named"`) || !strings.Contains(r.body, `"source":"journal"`) {
-		t.Fatalf("LogSource type: %s", r.body)
-	}
-	// unsupported type: 501 everywhere and one log line at New
-	e.withDeps(t, AuthConfig{}, func(d *Deps) { d.Log = 42 })
-	for _, c := range []struct{ m, p string }{{"GET", "/api/log"}, {"GET", "/api/log/export"}, {"DELETE", "/api/log"}} {
-		wantCode(t, e.do(t, c.m, c.p, "", csrf), 501)
-	}
-	e.logMu.Lock()
-	joined := strings.Join(e.logged, "\n")
-	e.logMu.Unlock()
-	if !strings.Contains(joined, "unsupported type int") {
-		t.Fatalf("no log line for the unsupported type: %q", joined)
-	}
 }
 
 // TestLogNotImplementedWithoutStore: no Deps.Log → 501 on all three.

@@ -6,13 +6,19 @@ package web
 // public /api/about without the toolchain, truncated user names in logs.
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
+
+	"github.com/SirRenix/n5-fangov/internal/config"
+	"github.com/SirRenix/n5-fangov/internal/control"
 )
 
 // TestLimitKey: IPv4 addresses are their own bucket, IPv6 addresses share
@@ -317,5 +323,142 @@ func TestAuthLogUserTruncated(t *testing.T) {
 		if len(l) > 400 || !strings.Contains(l, `user "`+strings.Repeat("u", 64)+`"`) {
 			t.Errorf("line not truncated: %d bytes: %.120s", len(l), l)
 		}
+	}
+}
+
+// TestPutConfigStrict: with ?strict=1 validation warnings refuse the PUT
+// (400 with the list, nothing saved); without the query the file is
+// written and the warnings are reported as before.
+func TestPutConfigStrict(t *testing.T) {
+	e := newEnv(t, AuthConfig{})
+	e.validate = func([]byte) ([]string, error) {
+		return []string{"channel.cpu.curve: point 1 duty 100 below previous 200, default curve used"}, nil
+	}
+	r := e.do(t, "PUT", "/api/config?strict=1", sampleTOML, csrf)
+	wantError(t, r, 400, "config rejected")
+	if !strings.Contains(r.body, `"errors":["channel.cpu.curve`) || len(e.cfg.saved) != 0 || len(e.svc.reloaded) != 0 {
+		t.Fatalf("strict: %s (saved %d, reloaded %d)", r.body, len(e.cfg.saved), len(e.svc.reloaded))
+	}
+	r = e.do(t, "PUT", "/api/config", sampleTOML, csrf)
+	wantCode(t, r, 200)
+	if !strings.Contains(r.body, `"warnings":["channel.cpu.curve`) || len(e.cfg.saved) != 1 {
+		t.Fatalf("lenient: %s (saved %d)", r.body, len(e.cfg.saved))
+	}
+	// strict without warnings writes
+	e.validate = nil
+	wantCode(t, e.do(t, "PUT", "/api/config?strict=true", sampleTOML, csrf), 200)
+	if len(e.cfg.saved) != 2 {
+		t.Fatalf("strict without warnings not saved")
+	}
+}
+
+// TestVersionLimits: GET /api/version carries the bounds the dashboard
+// validates against, taken from the server's constants.
+func TestVersionLimits(t *testing.T) {
+	e := newEnv(t, AuthConfig{})
+	r := e.do(t, "GET", "/api/version", "", nil)
+	wantCode(t, r, 200)
+	var v struct {
+		Limits Limits `json:"limits"`
+	}
+	decode(t, r.body, &v)
+	want := Limits{MinHDDOverride: control.MinHDDOverride, CriticalMin: 30, CriticalMax: config.MaxCritical, CurvePointsMax: config.MaxCurvePts, DashboardSensorsMax: config.MaxDashboardSensors, PasswordMin: config.MinPasswordLen, PasswordMax: config.MaxPasswordLen}
+	if v.Limits != want {
+		t.Fatalf("limits = %+v, want %+v", v.Limits, want)
+	}
+	for _, k := range []string{`"min_hdd_override":60`, `"critical_min":30`, `"critical_max":150`, `"curve_points_max":8`, `"dashboard_sensors_max":8`, `"password_min":8`, `"password_max":128`} {
+		if !strings.Contains(r.body, k) {
+			t.Errorf("missing %s in %s", k, r.body)
+		}
+	}
+}
+
+// TestMethodNotAllowedJSON: a wrong method on an API path answers the JSON
+// error document (with the mux's Allow header) on TCP and on the socket.
+func TestMethodNotAllowedJSON(t *testing.T) {
+	e := newEnv(t, AuthConfig{})
+	r := e.do(t, "POST", "/api/state", "", csrf)
+	wantError(t, r, 405, "method not allowed")
+	if ct := r.hdr.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Errorf("content-type %q", ct)
+	}
+	if r.hdr.Get("Allow") == "" {
+		t.Errorf("Allow header missing")
+	}
+	sock := httptest.NewServer(e.srv.SocketHandler())
+	defer sock.Close()
+	req, _ := http.NewRequest("DELETE", sock.URL+"/api/version", nil)
+	res, err := sock.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != 405 || !strings.HasPrefix(res.Header.Get("Content-Type"), "application/json") {
+		t.Errorf("socket 405: %d %s", res.StatusCode, res.Header.Get("Content-Type"))
+	}
+	// the static side is untouched
+	wantCode(t, e.do(t, "GET", "/", "", nil), 200)
+}
+
+// TestStoreErrorsAre500: a write failure of a store (read-only file
+// system, permission) answers 500; a validation refusal stays 400.
+func TestStoreErrorsAre500(t *testing.T) {
+	e, _, al, db := v3Env(t, AuthConfig{})
+	ro := &fs.PathError{Op: "rename", Path: "/etc/n5-fangov/config.toml", Err: syscall.EROFS}
+	e.cfg.saveErr = ro
+	wantError(t, e.do(t, "PUT", "/api/config", sampleTOML, csrf), 500, "config not written")
+	e.cfg.saveErr = errors.New("toml: line 3: expected key")
+	wantError(t, e.do(t, "PUT", "/api/config", sampleTOML, csrf), 400, "config rejected")
+	e.cfg.saveErr = nil
+
+	al.configErr = fmt.Errorf("write %s: %w", "/etc/n5-fangov/config.toml", fs.ErrPermission)
+	wantCode(t, e.do(t, "PUT", "/api/alerts", `{"transport":"log","mail_to":"root"}`, csrf), 500)
+	al.configErr = errors.New(`transport "nope" unknown`)
+	wantCode(t, e.do(t, "PUT", "/api/alerts", `{"transport":"nope","mail_to":"root"}`, csrf), 400)
+
+	db.err = fmt.Errorf("write: %w", syscall.ENOSPC)
+	wantCode(t, e.do(t, "PUT", "/api/dashboard", `{"sensors":["ec:x"]}`, csrf), 500)
+	db.err = errors.New("sensor id \"x\" is not valid")
+	wantCode(t, e.do(t, "PUT", "/api/dashboard", `{"sensors":["x"]}`, csrf), 400)
+
+	ps := &fakePresets{list: []Preset{}, saveErr: &fs.PathError{Op: "open", Path: "/etc/n5-fangov/presets/x.toml", Err: syscall.EACCES}}
+	e.withDeps(t, AuthConfig{}, func(d *Deps) { d.Presets = ps })
+	wantCode(t, e.do(t, "PUT", "/api/presets/x", "", csrf), 500)
+	ps.saveErr = errors.New("current config has no channels to save")
+	wantCode(t, e.do(t, "PUT", "/api/presets/x", "", csrf), 400)
+	ps.applyErr = fmt.Errorf("current config: %w", ErrStore)
+	wantCode(t, e.do(t, "POST", "/api/presets/x/apply", "", csrf), 500)
+	if !isStoreError(&fs.PathError{Err: syscall.EROFS}) || isStoreError(errors.New("no")) || !isStoreError(fmt.Errorf("x: %w", ErrStore)) {
+		t.Error("isStoreError classification")
+	}
+}
+
+// TestImportWarningsReported: the config warnings of an import reach the
+// 200/202 answer.
+func TestImportWarningsReported(t *testing.T) {
+	e := newEnv(t, AuthConfig{})
+	b := &fakeBundle{doc: "{}", warnings: []string{"daemon.interval: 1s below 2s, default 10s used"}}
+	e.withDeps(t, AuthConfig{}, func(d *Deps) { d.Bundle = b })
+	r := e.do(t, "POST", "/api/config/import", `{"format":1,"config":"[daemon]\n"}`, csrf)
+	wantCode(t, r, 200)
+	if !strings.Contains(r.body, `"warnings":["daemon.interval`) {
+		t.Fatalf("warnings missing: %s", r.body)
+	}
+	b.restart = true
+	r = e.do(t, "POST", "/api/config/import", `{"format":1,"config":"[daemon]\n"}`, csrf)
+	wantCode(t, r, 202)
+	if !strings.Contains(r.body, `"warnings":["daemon.interval`) {
+		t.Fatalf("202 warnings missing: %s", r.body)
+	}
+	b.importErr = &fs.PathError{Op: "rename", Path: "/etc/n5-fangov/config.toml", Err: syscall.EROFS}
+	wantError(t, e.do(t, "POST", "/api/config/import", `{"format":1,"config":"[daemon]\n"}`, csrf), 500, "import failed")
+}
+
+// TestRestoreHash: only password_hash assignments get the hash back.
+func TestRestoreHash(t *testing.T) {
+	raw := "# <unchanged>\n[web]\npassword_hash = '<unchanged>'\nuser = \"<unchanged>\"\n"
+	got := RestoreHash(raw, "HASH")
+	if got != "# <unchanged>\n[web]\npassword_hash = 'HASH'\nuser = \"<unchanged>\"\n" {
+		t.Errorf("RestoreHash:\n%s", got)
 	}
 }

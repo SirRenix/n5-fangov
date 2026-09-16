@@ -175,12 +175,7 @@ func (e *env) deps(auth AuthConfig) Deps {
 			return nil, nil
 		},
 		Presets: e.presets,
-		Log: func(n int) ([]string, error) {
-			if n < len(e.logs) {
-				return e.logs[len(e.logs)-n:], nil
-			}
-			return e.logs, nil
-		},
+		Log:     &fakeLogStore{lines: e.logs, clearErr: fmt.Errorf("journal-only log source: %w", errors.ErrUnsupported)},
 		Profiles: func() []ProfileInfo {
 			return []ProfileInfo{{Name: "n5pro", Title: "Minisforum N5 Pro (IT5571 EC)", Verified: true, Active: true}, {Name: "nct67xx", Title: "Nuvoton NCT67xx", Notes: "untested"}}
 		},
