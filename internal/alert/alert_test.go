@@ -110,7 +110,7 @@ func TestMultiAndNew(t *testing.T) {
 	}
 }
 
-// L5: every delivery command carries WaitDelay so a grandchild holding the
+// Every delivery command carries WaitDelay so a grandchild holding the
 // pipes cannot block the alert goroutine after the timeout.
 func TestCommandWaitDelay(t *testing.T) {
 	cmd := command(context.Background(), "perl", "-e", "1")
@@ -225,7 +225,7 @@ func TestNewFor(t *testing.T) {
 	}
 }
 
-// TestMailRecipientAfterDoubleDash (R-M3): the recipient follows "--", so
+// TestMailRecipientAfterDoubleDash: the recipient follows "--", so
 // a value starting with "-" reaches mail(1) as an address, not an option.
 func TestMailRecipientAfterDoubleDash(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "out")
@@ -261,7 +261,7 @@ func slowExe(t *testing.T) string {
 	return p
 }
 
-// TestSendCtxBounded (R-L9): a caller's context cuts a hanging delivery
+// TestSendCtxBounded: a caller's context cuts a hanging delivery
 // short on both concrete sinks, through the Ring and the Swappable. The
 // child is killed at the deadline; a grandchild holding the pipes could
 // add at most WaitDelay (5 s), which is why the daemon's test bound (20 s)

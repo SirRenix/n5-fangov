@@ -110,7 +110,7 @@ func (p *prompter) askYesNo(label string, def bool) (bool, error) {
 
 // askPassword reads a line with echo off. Returns the password and whether
 // the echo could be switched off. Ctrl-C during the read restores the echo
-// before the process ends (L4); otherwise the shell is left with a silent
+// before the process ends; otherwise the shell is left with a silent
 // terminal.
 func (p *prompter) askPassword(label string) (string, bool, error) {
 	fmt.Fprintf(p.out, "%s: ", label)

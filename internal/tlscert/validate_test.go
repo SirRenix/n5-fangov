@@ -109,7 +109,7 @@ func serveOnce(t *testing.T, cert tls.Certificate) []*x509.Certificate {
 	return c.ConnectionState().PeerCertificates
 }
 
-// TestValidatePairKeyTypes (M1): key types crypto/tls cannot sign with
+// TestValidatePairKeyTypes: key types crypto/tls cannot sign with
 // are refused with a clear message (ECDSA P-224, RSA 512), the usable
 // ones pass and survive a real handshake against ServerConfig; a chain
 // with an intermediate is kept whole.
@@ -170,7 +170,7 @@ func TestValidatePairKeyTypes(t *testing.T) {
 	}
 }
 
-// TestValidatePairPEMForms (L3): EC PARAMETERS before an EC PRIVATE KEY,
+// TestValidatePairPEMForms: EC PARAMETERS before an EC PRIVATE KEY,
 // a PKCS#1 RSA PRIVATE KEY and an Ed25519 PKCS#8 key all load; an
 // encrypted key (PKCS#8 or legacy Proc-Type) is refused with the openssl
 // hint; a key file without a key block and a certificate file with only
@@ -220,7 +220,7 @@ func TestValidatePairPEMForms(t *testing.T) {
 	}
 }
 
-// TestServerConfig (L1): the listener config disables session tickets so
+// TestServerConfig: the listener config disables session tickets so
 // a swapped certificate is what every new connection sees; the rest is
 // TLS 1.2+, HTTP/2 offered, the certificate from the callback.
 func TestServerConfig(t *testing.T) {
@@ -240,7 +240,7 @@ func TestServerConfig(t *testing.T) {
 	}
 }
 
-// TestDaysLeftAndWarnings (L4/L5): DaysLeft rounds up; Warnings from
+// TestDaysLeftAndWarnings: DaysLeft rounds up; Warnings from
 // InfoData reports expiry and the uncovered hosts, skipping loopback and
 // wildcards and honouring wildcard SANs and IP literals.
 func TestDaysLeftAndWarnings(t *testing.T) {

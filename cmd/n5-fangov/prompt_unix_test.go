@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// L4: a SIGINT while the echo is off runs the restore path and exits 130;
+// A SIGINT while the echo is off runs the restore path and exits 130;
 // once the read is done the handler is gone and a later signal is not
 // swallowed by it.
 func TestEchoOnInterrupt(t *testing.T) {

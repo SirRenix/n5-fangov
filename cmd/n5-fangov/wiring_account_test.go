@@ -123,7 +123,7 @@ func TestAccountStore(t *testing.T) {
 	}
 }
 
-// TestAccountStoreReadsFile (R-L5): a [web] change that bypassed the store
+// TestAccountStoreReadsFile: a [web] change that bypassed the store
 // (PUT /api/config, import) is the base of the next Update; s.cur follows
 // what was written.
 func TestAccountStoreReadsFile(t *testing.T) {
@@ -193,7 +193,7 @@ func writeConfigText(t *testing.T, text string) string {
 	return p
 }
 
-// TestStoresDottedLayout (R-L11): the three single-key stores edit a
+// TestStoresDottedLayout: the three single-key stores edit a
 // dotted top-level layout in place; the result parses.
 func TestStoresDottedLayout(t *testing.T) {
 	cfgPath := writeConfigText(t, dottedConfig)
@@ -225,7 +225,7 @@ func TestStoresDottedLayout(t *testing.T) {
 	}
 }
 
-// TestStoresInlineTableRefused (R-L11): an inline table cannot be edited
+// TestStoresInlineTableRefused: an inline table cannot be edited
 // in place; the stores say so and leave the file alone.
 func TestStoresInlineTableRefused(t *testing.T) {
 	cfgPath := writeConfigText(t, inlineConfig)
@@ -257,7 +257,7 @@ func TestStoresInlineTableRefused(t *testing.T) {
 	}
 }
 
-// TestConfigWritersSerialised (R-L4): the account store, the alert
+// TestConfigWritersSerialised: the account store, the alert
 // manager, the dashboard store and a preset apply rewrite the file
 // concurrently; every one of their changes is in the final file.
 func TestConfigWritersSerialised(t *testing.T) {

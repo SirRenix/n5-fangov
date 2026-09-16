@@ -1,7 +1,8 @@
 package control
 
-// Regression tests for the safety review findings (H1, H2, M1..M4, L1..L4,
-// integrator note 2 as far as they live in this package).
+// Regression tests for the safety review findings (docs/REVIEW-TAGS.md,
+// internal/control) and integrator note 2 as far as they live in this
+// package.
 
 import (
 	"context"
@@ -21,9 +22,9 @@ func cpuOnly() config.Config {
 	return cfg
 }
 
-// H1: on the N5 Pro the daemon manages pwm1..3 even when the config lacks
+// On the N5 Pro the daemon manages pwm1..3 even when the config lacks
 // them, and `n5-fangov failsafe` (control.Failsafe) always puts pwm3 to 140.
-func TestH1N5ProMissingChannelsAdded(t *testing.T) {
+func TestN5ProMissingChannelsAdded(t *testing.T) {
 	h := newHarnessDev(t, cpuOnly(), newN5FakeDev(), nil)
 	if got := h.c.Channels(); strings.Join(got, ",") != "cpu,ssd,hdd" {
 		t.Fatalf("channels: %v", got)
@@ -83,8 +84,8 @@ func TestH1N5ProMissingChannelsAdded(t *testing.T) {
 	}
 }
 
-// M1: stop="auto" on n5pro pwm3 is forced to 140 (start and reload).
-func TestM1N5ProPwm3AutoForced(t *testing.T) {
+// stop="auto" on n5pro pwm3 is forced to 140 (start and reload).
+func TestN5ProPwm3AutoForced(t *testing.T) {
 	cfg := n5cfg()
 	cfg.Channels[2].Stop = "auto"
 	h := newHarnessDev(t, cfg, newN5FakeDev(), nil)
@@ -114,10 +115,10 @@ func TestM1N5ProPwm3AutoForced(t *testing.T) {
 	}
 }
 
-// H2: a write that keeps failing with a stable target still reaches the
+// A write that keeps failing with a stable target still reaches the
 // failsafe: the failed channel's duty is unknown (-1), so it is written
 // every cycle until it succeeds.
-func TestH2PersistentWriteFailureStableTarget(t *testing.T) {
+func TestPersistentWriteFailureStableTarget(t *testing.T) {
 	h := newHarness(t, n5cfg(), nil)
 	h.cycles(1) // n=0: initial write
 	h.dev.setFailWrite(1, true)
@@ -155,9 +156,9 @@ func TestH2PersistentWriteFailureStableTarget(t *testing.T) {
 	}
 }
 
-// M2: when the failsafe itself cannot write any channel for 6 cycles the
+// When the failsafe itself cannot write any channel for 6 cycles the
 // loop returns ErrDeviceLost (systemd restarts, ExecStopPost + re-detect).
-func TestM2DeviceLostEndsRun(t *testing.T) {
+func TestDeviceLostEndsRun(t *testing.T) {
 	h := newHarness(t, n5cfg(), nil)
 	h.cycles(1)
 	h.dev.setFailAll(true)
@@ -219,8 +220,8 @@ func TestM2DeviceLostEndsRun(t *testing.T) {
 	}
 }
 
-// M3: the stale check only runs when the first channel's sensor is k10temp.
-func TestM3StaleOnlyForK10temp(t *testing.T) {
+// The stale check only runs when the first channel's sensor is k10temp.
+func TestStaleOnlyForK10temp(t *testing.T) {
 	cfg := n5cfg()
 	cfg.Daemon.StaleCycles = 6
 	cfg.Channels = []config.Channel{cfg.Channels[1], cfg.Channels[0], cfg.Channels[2]} // ssd (nvme:max) first
@@ -251,8 +252,8 @@ func TestM3StaleOnlyForK10temp(t *testing.T) {
 	h2.expectMode("cpu", ModeAuto)
 }
 
-// M4: a panic in the loop still ends in SafeStop and Run returns an error.
-func TestM4PanicInLoopStillSafeStops(t *testing.T) {
+// A panic in the loop still ends in SafeStop and Run returns an error.
+func TestPanicInLoopStillSafeStops(t *testing.T) {
 	h := newHarness(t, n5cfg(), nil)
 	h.sensors.get("k10temp").panicOnce = true
 	ctx, cancel := context.WithCancel(context.Background())
@@ -282,8 +283,8 @@ func TestM4PanicInLoopStillSafeStops(t *testing.T) {
 	h2.c.mu.Unlock()
 }
 
-// L1: Stop concurrent with a cycle -- after Stop the loop writes nothing.
-func TestL1StopBlocksFurtherWrites(t *testing.T) {
+// Stop concurrent with a cycle -- after Stop the loop writes nothing.
+func TestStopBlocksFurtherWrites(t *testing.T) {
 	h := newHarness(t, n5cfg(), nil)
 	h.cycles(1)
 	h.c.Stop()
@@ -301,9 +302,9 @@ func TestL1StopBlocksFurtherWrites(t *testing.T) {
 	}
 }
 
-// L2: the initial duty comes from the device; stalls count only after our
+// The initial duty comes from the device; stalls count only after our
 // first successful write.
-func TestL2InitialDutyAndStallGate(t *testing.T) {
+func TestInitialDutyAndStallGate(t *testing.T) {
 	dev := newFakeDev()
 	dev.setDuty(1, 200)
 	dev.failRead[2] = true
@@ -332,8 +333,8 @@ func TestL2InitialDutyAndStallGate(t *testing.T) {
 	h2.expectMode("cpu", ModeAuto)
 }
 
-// L3: a tach read error is logged once, not every cycle.
-func TestL3TachErrorLoggedOnce(t *testing.T) {
+// A tach read error is logged once, not every cycle.
+func TestTachErrorLoggedOnce(t *testing.T) {
 	dev := newFakeDev()
 	dev.failRPM[1] = true
 	h := newHarnessDev(t, n5cfg(), dev, nil)
@@ -353,9 +354,9 @@ func TestL3TachErrorLoggedOnce(t *testing.T) {
 	}
 }
 
-// L4: the manual minimum applies to channels with a fixed stop duty or to
+// The manual minimum applies to channels with a fixed stop duty or to
 // n5pro pwm3, not to the sensor id.
-func TestL4OverrideMinimumKey(t *testing.T) {
+func TestOverrideMinimumKey(t *testing.T) {
 	cfg := n5cfg()
 	cfg.Channels[0].Stop = "100"       // cpu: fixed stop -> minimum applies
 	cfg.Channels[2].Stop = "auto"      // hdd on a generic profile with auto -> no minimum

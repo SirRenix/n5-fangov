@@ -54,7 +54,7 @@ func StripPrefix(p []byte) []byte {
 // Writer is a rotating log file. Safe for concurrent use. Writes, rotation
 // and Clear hold the lock; the read side (Lines, Export) holds it only to
 // open the current file and take its size, then reads from that descriptor
-// without the lock (H1): a slow HTTP client draining an export must never
+// without the lock: a slow HTTP client draining an export must never
 // block the controller's log calls, which run inside the regulation cycle
 // and would otherwise stall it into the systemd watchdog. A rotation that
 // happens meanwhile renames the file; the open descriptor stays valid and
@@ -75,7 +75,7 @@ type Writer struct {
 // threshold, maxFiles how many rotated files to keep (.1 .. .N); values
 // below 1 are raised to 1. The directory is created with DirMode.
 //
-// An existing path must be a regular file (H2): the daemon runs as root
+// An existing path must be a regular file: the daemon runs as root
 // and the path comes from the config, so a symlink, a device node or a
 // directory there is refused instead of being appended to. The path form
 // itself (under /var/log, no "..") is the config parser's job.

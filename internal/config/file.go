@@ -70,7 +70,7 @@ func HasSecret(raw []byte) bool {
 
 // Save writes raw atomically (temp file + rename in the same directory).
 // It does not validate; callers run Parse first. A new file is 0600, an
-// existing one keeps its mode — unless raw carries a password hash (M3):
+// existing one keeps its mode — unless raw carries a password hash:
 // then the file is 0600 regardless, and a file that was wider before is
 // logged once as tightened. The daemon and the CLI run as root; nothing
 // else needs to read the file.
@@ -99,7 +99,7 @@ func writeAtomic(path string, data []byte, perm os.FileMode) error {
 // untouched. An existing assignment of key inside that section is replaced
 // in place (a trailing comment on that line is dropped); otherwise the line
 // is appended at the end of the section, before its trailing blank lines.
-// Without a [section] header the dotted layout is handled (R-L11): a
+// Without a [section] header the dotted layout is handled: a
 // top-level `section.key = …` line is replaced in place, and when other
 // `section.*` lines exist there the new one is inserted after the last of
 // them (a [section] header appended after dotted keys would redefine the

@@ -20,4 +20,5 @@ repository [README](../README.md).
 Also here: [RELEASE-GATE.md](RELEASE-GATE.md) (the manual test before a release),
 [screenshots/](screenshots/README.md) (the image set and how to regenerate it),
 `AUDIT.md` and `DESIGN-AUDIT.md` (the audits behind the current state),
+[REVIEW-TAGS.md](REVIEW-TAGS.md) (legend of the review findings the earlier rounds fixed),
 [design/REDESIGN-CONCEPT.md](design/REDESIGN-CONCEPT.md) (planned dashboard redesign).

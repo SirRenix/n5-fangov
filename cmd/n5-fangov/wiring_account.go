@@ -90,13 +90,13 @@ func readConfigRaw(path string) ([]byte, error) {
 }
 
 // editConfig is the read-modify-write behind the single-key stores: read
-// the file under configFileMu (R-L4), let edit rewrite the text with
+// the file under configFileMu, let edit rewrite the text with
 // SetKey, verify that the result parses and that the parsed values are
 // the ones asked for — a layout SetKey cannot edit, above all an inline
 // table `section = { … }`, is refused with a clear message instead of
-// leaving the file inconsistent (R-L11) — then pin and save. edit sees
+// leaving the file inconsistent — then pin and save. edit sees
 // the file text as read, so a store that keeps the untouched value takes
-// it from there (R-L5).
+// it from there.
 func editConfig(path string, pin func([]byte) []byte, section string, edit func([]byte) []byte, verify func(config.Config) bool) error {
 	configFileMu.Lock()
 	defer configFileMu.Unlock()
@@ -148,7 +148,7 @@ func (s *accountStore) Current() web.AuthConfig {
 // Update rewrites [web] user and/or password_hash ("" keeps the current
 // value) with config.SetKey, so comments and the other keys stay, and
 // returns the credentials now in effect. The kept value is the one in the
-// file at that moment, not s.cur (R-L5): a PUT /api/config or an import
+// file at that moment, not s.cur: a PUT /api/config or an import
 // may have changed [web] since the last Update; s.cur becomes what was
 // written. The mode is not touched: the web layer refuses account changes
 // while auth is "none".

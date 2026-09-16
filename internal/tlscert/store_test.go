@@ -220,7 +220,7 @@ func TestReissueKeepsKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	if kept {
-		t.Error("Reissue without a key file reported kept=true (L2)")
+		t.Error("Reissue without a key file reported kept=true")
 	}
 	if pub(fresh) == pub(first) {
 		t.Error("Reissue without a key file reused one")

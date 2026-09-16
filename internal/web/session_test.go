@@ -647,7 +647,7 @@ func TestLoginConcurrentCap(t *testing.T) {
 	}
 }
 
-// TestSessionStoreEpoch (R-M1): a mirror file written under another
+// TestSessionStoreEpoch: a mirror file written under another
 // credential epoch is dropped with one log line; the same epoch keeps it;
 // SetEpoch moves the file to the new epoch; an epoch-less store and a
 // legacy file without epoch behave as documented.
@@ -706,7 +706,7 @@ func TestSessionStoreEpoch(t *testing.T) {
 	}
 }
 
-// TestSessionStoreRevokeAllRename (R-L10): the kept session carries the
+// TestSessionStoreRevokeAllRename: the kept session carries the
 // new user, the others go; "" keeps the user.
 func TestSessionStoreRevokeAllRename(t *testing.T) {
 	st := NewSessionStore("", nil)

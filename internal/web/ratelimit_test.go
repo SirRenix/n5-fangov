@@ -142,7 +142,7 @@ func TestAuthHashSlotsGlobal(t *testing.T) {
 	}
 }
 
-// TestAuthBusyPerAddress (M2): one host of a /64 with limitConcurrent
+// TestAuthBusyPerAddress: one host of a /64 with limitConcurrent
 // failed attempts parked in the delay does not make busy() refuse its
 // neighbours — a correct password from another address of the same /64
 // is served, while the host itself gets 429. The delay counter stays
@@ -221,7 +221,7 @@ func TestAuthBusyPerAddress(t *testing.T) {
 	}
 }
 
-// TestLimitKeyZone (L3): a link-local address with a zone falls into its
+// TestLimitKeyZone: a link-local address with a zone falls into its
 // /64 like any other; the address key drops the zone too.
 func TestLimitKeyZone(t *testing.T) {
 	if k := limitKey("fe80::1%vmbr0"); k != "fe80::/64" || k != limitKey("fe80::2%eth0") {

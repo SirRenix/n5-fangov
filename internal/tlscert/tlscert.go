@@ -71,7 +71,7 @@ func Paths(dir string) (certPath, keyPath string) {
 // missing. An existing pair is reused when it loads, is within its validity
 // period and its SANs cover every requested host; otherwise it is
 // regenerated and one log line says why. When only the SANs changed, the
-// existing private key is kept (M5): the certificate is a trust anchor in
+// existing private key is kept: the certificate is a trust anchor in
 // browsers and OS stores, and a key that stays the same is what lets an
 // imported trust survive a renamed host or a new address. The second
 // result is the certificate path (for the "trust this file" hint).
@@ -184,7 +184,7 @@ func generate(o Options, key *ecdsa.PrivateKey) (tls.Certificate, error) {
 		IsCA:                  true,
 		DNSNames:              want.dns,
 		IPAddresses:           want.ips,
-		// M1: a trust anchor in a browser store can sign for any name.
+		// A trust anchor in a browser store can sign for any name.
 		// Name constraints pin this one to exactly its own SANs, and
 		// MaxPathLen 0 forbids intermediates: even with the key in hand
 		// nobody can mint a certificate for another host that the
@@ -241,7 +241,7 @@ func hostRanges(ips []net.IP) []*net.IPNet {
 }
 
 // CheckKeyMode reports an error when the private key file at path is
-// readable by group or others (L8). A missing file is not reported here;
+// readable by group or others. A missing file is not reported here;
 // LoadFiles does that.
 func CheckKeyMode(path string) error {
 	st, err := os.Stat(path)
@@ -255,7 +255,7 @@ func CheckKeyMode(path string) error {
 }
 
 // writePrivate writes data to path with mode 0600 via an unpredictable
-// temp file in the same directory and a rename (L3).
+// temp file in the same directory and a rename.
 func writePrivate(path string, data []byte) error {
 	if err := fsutil.WriteAtomic(path, data, 0o600); err != nil {
 		return fmt.Errorf("tlscert: write %s: %w", path, err)

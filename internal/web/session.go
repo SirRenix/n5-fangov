@@ -29,7 +29,7 @@ const (
 )
 
 // sessionFile is the JSON mirror layout; key is the full hex sha256(token).
-// Epoch is the credential epoch the sessions were issued under (R-M1).
+// Epoch is the credential epoch the sessions were issued under.
 type sessionFile struct {
 	Format   int            `json:"format"`
 	Epoch    string         `json:"epoch,omitempty"`
@@ -52,7 +52,7 @@ type sessionStore struct {
 }
 
 // CredentialEpoch identifies a credential set: hex sha256 of user, newline,
-// stored hash (R-M1). Sessions are bound to the epoch they were issued
+// stored hash. Sessions are bound to the epoch they were issued
 // under; a mirror file written under another epoch — the password was
 // rotated with `n5-fangov passwd` or by editing the file while the daemon
 // was down — is not loaded.
@@ -73,7 +73,7 @@ func NewSessionStore(path string, logf func(string, ...any)) SessionStore {
 // NewSessionStoreEpoch is NewSessionStore bound to a credential epoch
 // (CredentialEpoch): a mirror file whose epoch differs is dropped whole,
 // with one log line, so a password rotation outside the daemon revokes
-// every persisted session (R-M1). epoch "" accepts any file.
+// every persisted session. epoch "" accepts any file.
 func NewSessionStoreEpoch(path, epoch string, logf func(string, ...any)) SessionStore {
 	if logf == nil {
 		logf = func(string, ...any) {}
@@ -85,7 +85,7 @@ func NewSessionStoreEpoch(path, epoch string, logf func(string, ...any)) Session
 
 // SetEpoch records a new credential epoch (after a change through the
 // account endpoints) and rewrites the mirror, so the sessions kept across
-// the change survive the next restart (R-M1).
+// the change survive the next restart.
 func (s *sessionStore) SetEpoch(epoch string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -169,7 +169,7 @@ func (s *sessionStore) RevokeAll(keepToken string) { s.RevokeAllRename(keepToken
 
 // RevokeAllRename is RevokeAll with the kept session's User rewritten to
 // newUser ("" keeps it): after a rename the surviving cookie must report
-// the new name, not the one it was issued for (R-L10).
+// the new name, not the one it was issued for.
 func (s *sessionStore) RevokeAllRename(keepToken, newUser string) {
 	keep := ""
 	if keepToken != "" {
@@ -258,7 +258,7 @@ func (s *sessionStore) load() {
 		return
 	}
 	if s.epoch != "" && f.Epoch != s.epoch {
-		// R-M1: the credentials changed while these sessions were on disk.
+		// The credentials changed while these sessions were on disk.
 		// The file is rewritten under the current epoch at the next change.
 		if len(f.Sessions) > 0 {
 			s.logf("web: sessions: credentials changed since %s was written, %d session(s) dropped", s.path, len(f.Sessions))

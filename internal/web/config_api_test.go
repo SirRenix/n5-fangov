@@ -44,7 +44,7 @@ func realValidate(raw []byte) ([]string, error) {
 	return out, err
 }
 
-// TestPutConfigStrictChannelOnly (M1): under ?strict=1 only warnings on
+// TestPutConfigStrictChannelOnly: under ?strict=1 only warnings on
 // the [[channel]] tables refuse the PUT. A pre-existing unknown key in
 // [web] is not the editor's doing: written, 200, reported as a warning.
 // A falling-duty curve is refused with 400 and the channel warning under
@@ -87,7 +87,7 @@ func TestPutConfigStrictChannelOnly(t *testing.T) {
 	}
 }
 
-// TestPutConfigInlinePlaceholderRefused (L6, API side): a config text that
+// TestPutConfigInlinePlaceholderRefused (API side): a config text that
 // carries the <unchanged> placeholder in an inline table — where
 // RestoreHash does not reach — is refused instead of written with the
 // placeholder as the stored hash.

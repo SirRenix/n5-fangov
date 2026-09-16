@@ -41,7 +41,7 @@ func Listen(socketPath string) (net.Listener, error) {
 		}
 	}
 	// The socket node is created by bind(2) with mode 0777 &^ umask; a
-	// process-wide umask of 0117 closes the window before Chmod (M3).
+	// process-wide umask of 0117 closes the window before Chmod.
 	old := setUmask(0o117)
 	ln, err := net.Listen("unix", socketPath)
 	setUmask(old)

@@ -125,7 +125,7 @@ const (
 	MaxLogSizeMB   = 100
 	MinLogFiles    = 1
 	MaxLogFiles    = 20
-	// LogRoot is the directory [log].file must live under (H2): the daemon
+	// LogRoot is the directory [log].file must live under: the daemon
 	// runs as root and appends to that path, so the config must not be able
 	// to point it at a device, another service's file or its own config.
 	LogRoot = "/var/log/"
@@ -150,7 +150,7 @@ const DefaultMailTo = "root"
 // mailToRe: a local user name or an address; no spaces, quotes or shell
 // metacharacters (the value becomes an argv element of mail(1), never a
 // shell string, but a recipient with spaces is a typo, not an address).
-// The first character is never "-" (R-M3): a value like "-Sopt" would be
+// The first character is never "-": a value like "-Sopt" would be
 // parsed by mail(1) as an option (the sink also passes "--" before it).
 var mailToRe = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._%+-]*(@[A-Za-z0-9.-]+)?$`)
 
@@ -287,8 +287,7 @@ func CloneChannels(in []Channel) []Channel {
 // silently yields an empty map for non-table values, so the TOML type is
 // checked explicitly: "Hash" for a [name] header or an inline table, ""
 // for a table that exists only implicitly through dotted keys
-// (`web.user = …`) — that layout is valid TOML and was ignored before
-// (R-L11).
+// (`web.user = …`) — that layout is valid TOML and was ignored before.
 func (p *parser) table(top map[string]toml.Primitive, name string) (map[string]toml.Primitive, bool) {
 	prim, ok := top[name]
 	if !ok {
@@ -526,7 +525,7 @@ func (p *parser) web(sec map[string]toml.Primitive, w *Web) {
 	auth = enumValue(auth)
 	// authBroken: the operator asked for something other than plain "none"
 	// and did not get it. Such a config must not end up reachable from the
-	// network without auth (H2: no fail-open).
+	// network without auth (no fail-open).
 	authBroken := false
 	if auth != "none" && auth != "basic" {
 		p.warn(pre+".auth", "%q unknown (none|basic), default %q used", auth, def.Auth)

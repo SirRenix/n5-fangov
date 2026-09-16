@@ -37,7 +37,7 @@ type dirPresetStore struct {
 	dir     string
 	cfgPath string
 	svc     control.Service
-	pin     func([]byte) []byte // M2, see fileConfigStore
+	pin     func([]byte) []byte // see fileConfigStore
 	profile string              // active profile name (built-in filter); "" = none
 }
 
@@ -80,7 +80,7 @@ func channelNames(chans []config.Channel) []string {
 
 // load returns the channel tables of a preset: the embedded text for a
 // built-in name of the active profile, else the file. A built-in of
-// another profile is not applied (R-L8): it is not listed either, and its
+// another profile is not applied: it is not listed either, and its
 // channels name pwm outputs this device may not have — fs.ErrNotExist,
 // which the web layer answers with 404. A user file of that name is
 // shadowed by the built-in in List and therefore not applied here either.
@@ -99,7 +99,7 @@ func (s dirPresetStore) load(name string) ([]config.Channel, []config.Warning, e
 // parsed config, so comments in it are lost. control.ErrRestartRequired
 // passes through unchanged (the web layer answers 202 for it); any other
 // reload failure comes back as web.ReloadError — "preset written, reload
-// failed" — so it is told apart from a write error (L7).
+// failed" — so it is told apart from a write error.
 func (s dirPresetStore) Apply(name string) error {
 	chans, warns, err := s.load(name)
 	if err != nil {
@@ -126,7 +126,7 @@ func (s dirPresetStore) Apply(name string) error {
 }
 
 // write is Apply's read-modify-write of the config file, under the file
-// lock (R-L4).
+// lock.
 func (s dirPresetStore) write(name string, chans []config.Channel) ([]byte, error) {
 	configFileMu.Lock()
 	defer configFileMu.Unlock()

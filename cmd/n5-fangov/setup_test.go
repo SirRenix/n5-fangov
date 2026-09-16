@@ -48,7 +48,7 @@ func TestSetupConfigN5Pro(t *testing.T) {
 	if w.Listen != "192.0.2.10:8010" || w.Auth != "basic" || w.User != "admin" || w.TLS != "auto" || w.PasswordHash != lan.PasswordHash {
 		t.Errorf("lan: %+v", w)
 	}
-	// M3: setup writes the salted PBKDF2 form, which verifies the password
+	// Setup writes the salted PBKDF2 form, which verifies the password
 	if !strings.HasPrefix(w.PasswordHash, "pbkdf2$") || !verifyPassword("admin", "secret", w.PasswordHash) || verifyPassword("admin", "wrong", w.PasswordHash) {
 		t.Errorf("hash form %q", w.PasswordHash)
 	}

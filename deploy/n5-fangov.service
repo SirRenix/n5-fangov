@@ -27,7 +27,7 @@ TimeoutStopSec=20
 Nice=-5
 
 # --- directories ---------------------------------------------------------
-# /run/n5-fangov holds the unauthenticated CLI socket: root only (M3)
+# /run/n5-fangov holds the unauthenticated CLI socket: root only
 RuntimeDirectory=n5-fangov
 RuntimeDirectoryMode=0750
 RuntimeDirectoryPreserve=yes
@@ -46,8 +46,8 @@ UMask=0077
 # `make verify-deploy` runs systemd-analyze verify over this file.
 NoNewPrivileges=yes
 ProtectSystem=strict
-# "-" = do not fail the start when the path is absent (L7). The postfix
-# maildrop is for the mail(1)/sendmail alert path on non-PVE hosts (H4);
+# "-" = do not fail the start when the path is absent. The postfix
+# maildrop is for the mail(1)/sendmail alert path on non-PVE hosts;
 # PVE::Notify with an SMTP target needs no extra path. NOTE: that mail path
 # also needs CAP_DAC_OVERRIDE (maildrop is 0730 postfix:postdrop and
 # NoNewPrivileges suppresses postdrop's setgid) — see docs/08-https-security.md "Hardening".
@@ -60,12 +60,12 @@ ReadWritePaths=-/etc/n5-fangov -/run/n5-fangov -/var/log/n5-fangov -/var/lib/n5-
 ProtectHome=yes
 PrivateTmp=yes
 # /dev holds only the pseudo devices; [log].file must be under /var/log
-# anyway, and nothing here needs a block or character device (H2)
+# anyway, and nothing here needs a block or character device
 PrivateDevices=yes
 ProtectKernelTunables=no
 ProtectControlGroups=yes
 # AF_NETLINK: net.Interfaces() (the fallback for the TLS certificate's
-# address list) reads the interface table over netlink (H3)
+# address list) reads the interface table over netlink
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 RestrictNamespaces=yes
 LockPersonality=yes
@@ -86,7 +86,7 @@ ProtectClock=yes
 ProtectHostname=yes
 RestrictSUIDSGID=yes
 ProtectProc=invisible
-# The daemon runs as root but needs no capability (M2): sysfs attributes
+# The daemon runs as root but needs no capability: sysfs attributes
 # are writable for uid 0 without CAP_DAC_OVERRIDE, the files it writes are
 # its own, and the kernel module is loaded by modules-load.d, never from
 # here (check --after-update only looks at files under /lib/modules).

@@ -207,7 +207,7 @@ func TestBundleImportValidation(t *testing.T) {
 	unchanged("placeholder")
 }
 
-// M7: a short password hash must not be replaced as a bare substring —
+// A short password hash must not be replaced as a bare substring —
 // with the old ReplaceAll a hash of "a" mangled every "a" in the config.
 func TestBundleExportShortHash(t *testing.T) {
 	root := t.TempDir()
@@ -240,7 +240,7 @@ func TestBundleExportShortHash(t *testing.T) {
 	}
 }
 
-// L1: presets are staged under temp names and renamed only after the
+// Presets are staged under temp names and renamed only after the
 // config is written; a config write failure leaves the preset directory
 // untouched and no temp files behind.
 func TestBundleImportStagesPresets(t *testing.T) {
@@ -293,7 +293,7 @@ func TestBundleImportStagesPresets(t *testing.T) {
 	}
 }
 
-// TestBundleImportInlinePlaceholder (L6): a bundle whose config carries
+// TestBundleImportInlinePlaceholder: a bundle whose config carries
 // the <unchanged> placeholder in an inline table — where restoreHash does
 // not reach — is refused (400 over the API) instead of written with the
 // placeholder as the stored hash.

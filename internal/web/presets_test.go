@@ -101,8 +101,8 @@ func TestPresetDetailRename(t *testing.T) {
 	wantCode(t, e.do(t, "GET", "/api/presets/silent", "", basicAuth("admin", "pw")), 200)
 }
 
-// TestPresetStatusCodes: save over a built-in → 409 (R-U8), apply a
-// preset the store reports as missing → 404 (R-L8).
+// TestPresetStatusCodes: save over a built-in → 409, apply a
+// preset the store reports as missing → 404.
 func TestPresetStatusCodes(t *testing.T) {
 	e := newEnv(t, AuthConfig{})
 	e.presets.saveErr = fmt.Errorf("preset %q: %w", "n5pro-quiet", ErrPresetBuiltin)
@@ -115,7 +115,7 @@ func TestPresetStatusCodes(t *testing.T) {
 	wantError(t, e.do(t, "POST", "/api/presets/mine/apply", "", csrf), 400, "no usable channel")
 }
 
-// TestApplyPresetReloadFailed500 (L7): a preset that was written but not
+// TestApplyPresetReloadFailed500: a preset that was written but not
 // taken by the daemon answers 500 with the store's text; a refusal stays
 // 400 and a write failure 500 as before.
 func TestApplyPresetReloadFailed500(t *testing.T) {

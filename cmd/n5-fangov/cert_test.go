@@ -36,7 +36,7 @@ func TestTLSHosts(t *testing.T) {
 	}
 }
 
-// M5/H3: an unspecified listen takes the primary addresses (route-based),
+// An unspecified listen takes the primary addresses (route-based),
 // not every interface; when none can be found a warning is logged and the
 // certificate still covers host name + loopback.
 func TestTLSHostsUnspecified(t *testing.T) {

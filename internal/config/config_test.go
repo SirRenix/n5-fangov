@@ -186,7 +186,7 @@ func TestWebBasicAuth(t *testing.T) {
 	if len(warns) != 0 || cfg.Web.Auth != "basic" || cfg.Web.User != "admin" {
 		t.Errorf("valid basic: %+v %v", cfg.Web, warns)
 	}
-	// M3: the PBKDF2 form is accepted as well
+	// The PBKDF2 form is accepted as well
 	p := "pbkdf2$210000$" + strings.Repeat("0f", 16) + "$" + strings.Repeat("ab", 32)
 	cfg, warns, _ = Parse([]byte("[web]\nauth = \"basic\"\nuser = \"admin\"\npassword_hash = \"" + p + "\"\n"))
 	if len(warns) != 0 || cfg.Web.Auth != "basic" || cfg.Web.PasswordHash != p {
@@ -194,7 +194,7 @@ func TestWebBasicAuth(t *testing.T) {
 	}
 }
 
-// M3: both stored hash forms parse; malformed ones are rejected with a
+// Both stored hash forms parse; malformed ones are rejected with a
 // reason.
 func TestParsePasswordHash(t *testing.T) {
 	legacy, err := ParsePasswordHash(strings.Repeat("ab", 32))
@@ -226,7 +226,7 @@ func TestParsePasswordHash(t *testing.T) {
 	}
 }
 
-// TestWebAuthFailOpen (H2): a broken auth setting must never leave the API
+// TestWebAuthFailOpen: a broken auth setting must never leave the API
 // reachable from the network without auth — listen falls back to loopback.
 func TestWebAuthFailOpen(t *testing.T) {
 	cases := map[string]string{
@@ -503,7 +503,7 @@ func TestLoadSave(t *testing.T) {
 	}
 }
 
-// M3: a config that carries a password hash is written 0600 even when the
+// A config that carries a password hash is written 0600 even when the
 // existing file was wider, with one log line; a file without a hash keeps
 // its mode.
 func TestSaveTightensModeWithHash(t *testing.T) {
@@ -645,7 +645,7 @@ func TestClone(t *testing.T) {
 	}
 }
 
-// M1: stop parsing — sensor-aware default, invalid values warn, fixed
+// Stop parsing — sensor-aware default, invalid values warn, fixed
 // stop duties below MinFixedStop are raised.
 func TestStopParsing(t *testing.T) {
 	src := `
@@ -715,7 +715,7 @@ sensor = "k10temp"
 	}
 }
 
-// M3 / L6: stale_cycles below 6 and alert_cooldown below 60 s fall back
+// stale_cycles below 6 and alert_cooldown below 60 s fall back
 // to the defaults.
 func TestLowerBounds(t *testing.T) {
 	cfg, warns, err := Parse([]byte("[daemon]\nstale_cycles = 5\nalert_cooldown = \"10s\"\n"))
@@ -866,7 +866,7 @@ func TestLogSection(t *testing.T) {
 	}
 }
 
-// H2: [log].file is appended to as root, so it must be a file under
+// [log].file is appended to as root, so it must be a file under
 // /var/log in clean form. Anything else falls back to the default with a
 // warning; N5FANGOV_LOG_ROOT moves the root for tests only.
 func TestLogFileUnderVarLog(t *testing.T) {
@@ -1074,7 +1074,7 @@ func TestExampleConfigParses(t *testing.T) {
 	}
 }
 
-// TestValidMailToNoLeadingDash (R-M3): a recipient that mail(1) would take
+// TestValidMailToNoLeadingDash: a recipient that mail(1) would take
 // as an option is refused; the leading character is a letter, digit or _.
 func TestValidMailToNoLeadingDash(t *testing.T) {
 	for _, bad := range []string{"-root", "-Sexpandaddr", "-a@example.test", "--", ".hidden", "%x", "+tag"} {
@@ -1095,7 +1095,7 @@ func TestValidMailToNoLeadingDash(t *testing.T) {
 	}
 }
 
-// TestParseDottedTables (R-L11): sections written as top-level dotted keys
+// TestParseDottedTables: sections written as top-level dotted keys
 // are tables to the parser (toml records no type for an implicit table);
 // a scalar under a section name is still refused.
 func TestParseDottedTables(t *testing.T) {
@@ -1131,7 +1131,7 @@ func TestParseDottedTables(t *testing.T) {
 	}
 }
 
-// TestSetKeyDotted (R-L11): a file that writes [web] as top-level dotted
+// TestSetKeyDotted: a file that writes [web] as top-level dotted
 // keys is edited in place — replace the key, insert a new key after the
 // last section.* line — instead of appending a second [web] table, which
 // the parser rejects. Other sections are untouched; the result parses.

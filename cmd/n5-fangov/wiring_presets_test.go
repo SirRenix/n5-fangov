@@ -112,7 +112,7 @@ func TestPresetDetailAndRename(t *testing.T) {
 	}
 }
 
-// TestPresetBuiltinOtherProfile (R-L8): a built-in of another profile is
+// TestPresetBuiltinOtherProfile: a built-in of another profile is
 // not applied (fs.ErrNotExist → 404), on the active profile it is.
 func TestPresetBuiltinOtherProfile(t *testing.T) {
 	cfgPath := writeStoreConfig(t)
@@ -141,7 +141,7 @@ func TestPresetBuiltinOtherProfile(t *testing.T) {
 	}
 }
 
-// TestPresetApplyReloadError (L7): a preset that is written but not taken
+// TestPresetApplyReloadError: a preset that is written but not taken
 // by the daemon comes back as web.ReloadError with the "written, reload
 // failed" text — the file carries the preset; the restart sentinel passes
 // through unchanged.

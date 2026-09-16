@@ -87,7 +87,7 @@ var errNoCertYet = errors.New("no certificate yet (it is created at the first st
 // offline builds the manager from the config file for the no-daemon path.
 // The manager comes back even when the current pair does not load (the
 // error says why): info and export need a loaded pair, reset, upload and
-// regen do not — they are the repair (M3). offlineRepair is their variant.
+// regen do not — they are the repair. offlineRepair is their variant.
 func (c certClient) offline() (*tlsManager, error) {
 	cfg, warns, _ := loadConfig(c.cfgPath)
 	for _, w := range warns {

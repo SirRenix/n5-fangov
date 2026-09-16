@@ -8,7 +8,7 @@ import (
 // cyclesChecked is harness.cycles with the cycle() error checked: any
 // non-nil return ends the test (AUDIT 7: the harness discards it, so an
 // unexpected ErrDeviceLost stayed invisible in every controller test but
-// TestM2DeviceLostEndsRun).
+// TestDeviceLostEndsRun).
 func cyclesChecked(h *harness, n int) {
 	h.t.Helper()
 	for i := 0; i < n; i++ {

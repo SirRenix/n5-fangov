@@ -63,7 +63,7 @@ type Sender interface {
 }
 
 // ContextSender is a Sender whose delivery the caller can bound with a
-// context (R-L9): the panel's synchronous test must not outlive the HTTP
+// context: the panel's synchronous test must not outlive the HTTP
 // write timeout, while the fire-and-forget path keeps Timeout. PVE and
 // Mail (the sinks that run a child) are ones, so are Ring and Swappable
 // as wrappers; Send is SendCtx with context.Background().
@@ -73,7 +73,7 @@ type ContextSender interface {
 }
 
 // ErrTestBusy is returned by a test delivery while another one is still
-// running (R-L9); the web layer answers 409.
+// running; the web layer answers 409.
 var ErrTestBusy = errors.New("test alert already in progress")
 
 // sendCtx delivers through s honouring ctx when s can, else however s can.
@@ -344,7 +344,7 @@ func (m *Mail) SendCtx(ctx context.Context, kind, msg string) error {
 	}
 	ctx, cancel := context.WithTimeout(ctx, Timeout)
 	defer cancel()
-	// R-M3: "--" ends option parsing, so a recipient that starts with "-"
+	// "--" ends option parsing, so a recipient that starts with "-"
 	// can never become a mail(1) option (config.ValidMailTo refuses such
 	// values too; this is the second line).
 	cmd := command(ctx, bin, "-s", fmt.Sprintf("[%s] n5-fangov: %s", m.Hostname, kind), "--", to)

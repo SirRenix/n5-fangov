@@ -262,7 +262,7 @@ func TestScanKernelModules(t *testing.T) {
 	}
 }
 
-// M4: only kernels the box can boot into count. With proxmox-boot-tool
+// Only kernels the box can boot into count. With proxmox-boot-tool
 // present its manual/automatic/pinned selection plus the running kernel
 // are relevant; without it the running one plus the newest installed.
 // Installed-but-unselected kernels are info only.

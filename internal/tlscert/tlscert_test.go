@@ -258,7 +258,7 @@ func TestExportPEM(t *testing.T) {
 	}
 }
 
-// M1: the automatic certificate is a CA in the browser's store, so it
+// The automatic certificate is a CA in the browser's store, so it
 // carries name constraints that pin it to exactly its own SANs (critical)
 // and MaxPathLen 0. A leaf for any other name signed with its key fails
 // verification against it.
@@ -318,14 +318,14 @@ func TestNameConstraints(t *testing.T) {
 	if _, err := leaf.Verify(x509.VerifyOptions{Roots: pool, DNSName: "192.0.2.20"}); err != nil {
 		t.Errorf("self verify: %v", err)
 	}
-	// L3: no temp files left next to the pair
+	// No temp files left next to the pair
 	entries, _ := os.ReadDir(dir)
 	if len(entries) != 2 {
 		t.Errorf("dir holds %d entries, want cert.pem and key.pem only", len(entries))
 	}
 }
 
-// M5: a regeneration caused by a SAN change keeps the private key (the
+// A regeneration caused by a SAN change keeps the private key (the
 // trust imported into a browser stays valid); an expired certificate gets
 // a fresh key; Regenerate always does.
 func TestRegenerateKeepsKeyOnSANChange(t *testing.T) {
@@ -385,7 +385,7 @@ func TestRegenerateKeepsKeyOnSANChange(t *testing.T) {
 	}
 }
 
-// L8: a key file readable by group or others is reported.
+// A key file readable by group or others is reported.
 func TestCheckKeyMode(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("file modes")

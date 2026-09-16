@@ -293,7 +293,7 @@ const (
 // control and the onfailure alert fires — this check says it earlier,
 // while the old kernel still runs.
 //
-// "Can boot into" (M4) is the running kernel plus what
+// "Can boot into" is the running kernel plus what
 // `proxmox-boot-tool kernel list` selects (manually, automatically,
 // pinned); without the tool: the running kernel and the newest installed
 // one. Older kernels that are merely still installed (apt keeps two) get

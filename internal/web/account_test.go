@@ -214,7 +214,7 @@ func restartEnv(t *testing.T, e *env, sessionFile string, auth AuthConfig, acc *
 	})
 }
 
-// TestAccountChangeSurvivesRestart (R-M1, R-L10) end to end: after a
+// TestAccountChangeSurvivesRestart end to end: after a
 // password change through the API the caller's cookie is valid on a
 // restarted daemon (new epoch written), other cookies are not; after a
 // rename the cookie reports the new user; a rotation outside the daemon
@@ -330,7 +330,7 @@ func (g *gatedAccount) Update(user, hash string) (AuthConfig, error) {
 	return g.fakeAccount.Update(user, hash)
 }
 
-// TestLegacyHashUpgradeSerialised (L4): two successful verifications
+// TestLegacyHashUpgradeSerialised: two successful verifications
 // against a legacy hash at the same time rewrite the file once — the
 // second one waits and finds the PBKDF2 hash in effect.
 func TestLegacyHashUpgradeSerialised(t *testing.T) {

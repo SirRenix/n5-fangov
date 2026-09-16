@@ -128,7 +128,7 @@ const ExpiresSoon = 30 * 24 * time.Hour
 // ErrEncryptedKey is returned by ValidatePair when the key PEM is
 // password-protected (PKCS#8 ENCRYPTED PRIVATE KEY or a legacy
 // "Proc-Type: 4,ENCRYPTED" block). The daemon has no way to ask for the
-// passphrase (L3).
+// passphrase.
 var ErrEncryptedKey = errors.New("encrypted private keys are not supported — decrypt with openssl first (openssl pkey -in key.pem -out key-plain.pem)")
 
 // ValidatePair checks an uploaded certificate/key pair before it is
@@ -138,7 +138,7 @@ var ErrEncryptedKey = errors.New("encrypted private keys are not supported — d
 // "RSA PRIVATE KEY" or SEC 1 "EC PRIVATE KEY"; "EC PARAMETERS" and the
 // like are skipped, an encrypted key is ErrEncryptedKey). The key must
 // belong to the leaf, the leaf must be within its validity period, and
-// the pair must survive a handshake against ServerConfig (M1): ECDSA on a
+// the pair must survive a handshake against ServerConfig: ECDSA on a
 // curve other than P-256/P-384/P-521 and RSA below 1024 bits are refused
 // before that with a clear message, since crypto/tls cannot sign with
 // them. Anything a browser would still accept but the operator should
@@ -228,8 +228,8 @@ func pemBlocks(raw []byte, want func(string) bool) []*pem.Block {
 	return out
 }
 
-// usableKey refuses public keys crypto/tls has no signature scheme for
-// (M1): ECDSA outside P-256/P-384/P-521, RSA below 1024 bits (Go 1.24
+// usableKey refuses public keys crypto/tls has no signature scheme
+// for: ECDSA outside P-256/P-384/P-521, RSA below 1024 bits (Go 1.24
 // refuses to sign with those). Everything else (including unknown types)
 // is left to CheckUsable.
 func usableKey(pub any) error {
@@ -248,7 +248,7 @@ func usableKey(pub any) error {
 	return nil
 }
 
-// DaysLeft is the number of days until notAfter, rounded up (L5): a
+// DaysLeft is the number of days until notAfter, rounded up: a
 // certificate that expires tomorrow afternoon has "1 day" left, one that
 // expired an hour ago "0 days" (negative beyond a full day).
 func DaysLeft(notAfter, now time.Time) int {
@@ -268,7 +268,7 @@ func expiryWarnings(notAfter, now time.Time) []string {
 }
 
 // Warnings computes the operator warnings for a served certificate the
-// way ValidatePair does, from its InfoData (GET /api/tls, L4): expiry
+// way ValidatePair does, from its InfoData (GET /api/tls): expiry
 // within ExpiresSoon or past, no SANs, and every host of hosts the SAN
 // list does not cover. localhost, 127.0.0.1 and ::1 are not checked — the
 // operator's own certificate is for the LAN name, and the loopback names
@@ -359,7 +359,7 @@ func PEM(cert tls.Certificate) ([]byte, error) {
 // Reissue creates a new self-signed certificate for o with the private key
 // of the existing pair in o.Dir (the trust an operator imported stays
 // valid). Without a loadable key it behaves like Regenerate and reports
-// kept=false (L2), so the caller can tell the operator that the imported
+// kept=false, so the caller can tell the operator that the imported
 // trust is gone.
 func Reissue(o Options) (cert tls.Certificate, kept bool, err error) {
 	_, keyPath := Paths(o.Dir)

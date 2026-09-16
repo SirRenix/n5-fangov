@@ -80,11 +80,12 @@ them.
 ## Design contract
 
 [DESIGN.md](../DESIGN.md) is the package contract: non-negotiable safety rules, the
-layout, every package's responsibilities, the API, the deploy files and the review tags
-used in code comments. A change that touches a rule is written into DESIGN before it is
-implemented. The audits that shaped the current state are `AUDIT.md` and
-`DESIGN-AUDIT.md` in this directory; the planned dashboard redesign is in
-[design/REDESIGN-CONCEPT.md](design/REDESIGN-CONCEPT.md).
+layout, every package's responsibilities, the API and the deploy files. A change that
+touches a rule is written into DESIGN before it is implemented. The audits that shaped
+the current state are `AUDIT.md` and `DESIGN-AUDIT.md` in this directory; what the
+earlier review rounds found and where each finding is fixed is the legend
+[REVIEW-TAGS.md](REVIEW-TAGS.md) (the code carries no review tags); the planned
+dashboard redesign is in [design/REDESIGN-CONCEPT.md](design/REDESIGN-CONCEPT.md).
 
 ## Versioning
 

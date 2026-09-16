@@ -20,11 +20,11 @@ The manual test an `-rc` has to pass before it becomes a release:
   real systems in code, tests, fixtures, mock or docs — use `n5host`, `192.0.2.x`,
   `example.test`. No n5-fangov version literals in the docs — `<version>` / `vX.Y.Z`;
   the only literal is in `internal/version/version.go`.
-- Review tags in comments and test names (`M1`…`M7`, `H1`…`H4`, `L1`…`L9`, `R-M*`, `R-L*`)
-  refer to the review rounds listed in [DESIGN.md](DESIGN.md) "Review tags in the code";
-  new findings from `docs/AUDIT.md` are referenced by their table row, not by a new tag
-  scheme. Write the fact the comment protects in the same sentence, so the tag is
-  optional to read.
+- No review tags in comments or test names: a comment states the fact it protects
+  (the reason), a test is named after what it pins. What the earlier review rounds found
+  (`M1`…`M7`, `H1`…`H4`, `L1`…`L9`, `R-M*`, `R-L*`) and where it was fixed is the legend
+  [docs/REVIEW-TAGS.md](docs/REVIEW-TAGS.md); new findings from `docs/AUDIT.md` are
+  referenced by their table row.
 - Go: `gofmt`, `go vet`, `staticcheck -checks all` clean; errors wrapped with `%w`; every
   exported symbol has a doc comment that starts with its name.
 - Log lines are one line, English, without secrets (hashes, tokens, passwords are

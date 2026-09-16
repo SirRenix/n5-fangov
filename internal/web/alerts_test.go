@@ -93,7 +93,7 @@ func TestAlertsEndpoints(t *testing.T) {
 	wantError(t, e.do(t, "PUT", "/api/alerts", `{"transport":"log"}`, csrf), 401, "authentication")
 }
 
-// TestAlertsTestBusy (R-L9): a test delivery still running answers 409.
+// TestAlertsTestBusy: a test delivery still running answers 409.
 func TestAlertsTestBusy(t *testing.T) {
 	e, _, al, _ := storesEnv(t, adminBasic)
 	al.testErr = alert.ErrTestBusy

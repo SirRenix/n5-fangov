@@ -106,7 +106,7 @@ func TestPeriodicRewrite(t *testing.T) {
 	if h.dev.enable[1] != 1 {
 		t.Errorf("manual mode not re-asserted after interference")
 	}
-	// L7: the re-assert is logged once
+	// The re-assert is logged once
 	if n := h.log.count("pwm1_enable was \"2\""); n != 1 {
 		t.Errorf("interference log lines: %d\n%s", n, strings.Join(h.log.lines, "\n"))
 	}
@@ -504,7 +504,7 @@ func TestWriteErrorFailsafe(t *testing.T) {
 	if s := h.c.Snapshot(); s.Status != "write-error" {
 		t.Errorf("status %q", s.Status)
 	}
-	h.expectDuty("cpu", -1) // H2: duty unknown after a failed write
+	h.expectDuty("cpu", -1) // duty unknown after a failed write
 	h.expectDuty("ssd", 74)
 	if h.alerts.count("write") != 0 {
 		t.Errorf("write alert too early")

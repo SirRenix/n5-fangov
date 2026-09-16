@@ -136,7 +136,7 @@ func TestDeployUnitFile(t *testing.T) {
 	// sandbox: no capabilities, syscall filter, sysfs writable, no
 	// privilege escalation
 	if v := one("CapabilityBoundingSet"); v != "" {
-		t.Errorf("CapabilityBoundingSet=%q, want empty (M2)", v)
+		t.Errorf("CapabilityBoundingSet=%q, want empty (no capability)", v)
 	}
 	if v := one("SystemCallFilter"); v == "" {
 		t.Error("SystemCallFilter not set")

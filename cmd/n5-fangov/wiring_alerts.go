@@ -58,7 +58,7 @@ type alertManager struct {
 	cooldown  func() time.Duration
 	logger    alert.Logger
 
-	// Template probe cache (R-M2): TemplateStatus creates and unlinks a
+	// Template probe cache: TemplateStatus creates and unlinks a
 	// file on pmxcfs; the panel polls Status every minute. The result is
 	// kept for templateProbeEvery and dropped after InstallTemplate and
 	// Configure. now/probe are swapped in tests.
@@ -67,15 +67,15 @@ type alertManager struct {
 	tmpl      web.TemplateStatus
 	now       func() time.Time
 	probe     func() (installed, current, writable bool, reason string)
-	testMu    sync.Mutex    // R-L9: one synchronous test delivery at a time
-	testLimit time.Duration // R-L9: bound of one test delivery
+	testMu    sync.Mutex    // one synchronous test delivery at a time
+	testLimit time.Duration // bound of one test delivery
 }
 
 // templateProbeEvery is how long a template probe result is reused.
 const templateProbeEvery = 10 * time.Minute
 
 // testDeliveryLimit bounds the panel's synchronous test delivery below the
-// HTTP write timeout (30 s) (R-L9).
+// HTTP write timeout (30 s).
 const testDeliveryLimit = 20 * time.Second
 
 // newAlertManager builds the sink chain for the [alert] section of cfg.
@@ -90,7 +90,7 @@ func newAlertManager(cfgPath, alertsFile string, a config.Alert, pin func([]byte
 }
 
 // templateStatus returns the cached probe, re-probing after
-// templateProbeEvery or after invalidateTemplate (R-M2).
+// templateProbeEvery or after invalidateTemplate.
 func (m *alertManager) templateStatus() web.TemplateStatus {
 	m.tmplMu.Lock()
 	defer m.tmplMu.Unlock()
@@ -173,7 +173,7 @@ func (m *alertManager) Last() map[string]int64 { return m.ring.Last() }
 // it shows in the history) and returns the transport that was tried. One
 // test at a time (alert.ErrTestBusy while another runs) and bounded by
 // testLimit, so it neither outlives the HTTP write timeout nor piles up
-// perl/mail children (R-L9).
+// perl/mail children.
 func (m *alertManager) Test() (string, error) {
 	m.mu.Lock()
 	eff := m.effective
@@ -193,7 +193,7 @@ func (m *alertManager) Test() (string, error) {
 // InstallTemplate writes the embedded PVE template pair. The probe cache
 // is dropped either way: the operator asked, the panel shows fresh state.
 func (m *alertManager) InstallTemplate() (string, error) {
-	defer m.invalidateTemplate() // R-M2
+	defer m.invalidateTemplate()
 	return alert.InstallTemplate()
 }
 
@@ -227,7 +227,7 @@ func (m *alertManager) Configure(transport, mailTo string) (web.AlertStatus, err
 		return web.AlertStatus{}, err
 	}
 	m.apply(config.Alert{Transport: transport, MailTo: mailTo})
-	m.invalidateTemplate() // R-M2
+	m.invalidateTemplate()
 	return m.Status(), nil
 }
 

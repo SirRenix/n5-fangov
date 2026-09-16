@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// Failed basic-auth attempts are throttled per source bucket (M4): the
+// Failed basic-auth attempts are throttled per source bucket: the
 // first limitFree failures answer immediately, then the answer is delayed
 // limitBase, doubling up to limitMax. A success or limitReset of quiet
 // resets the counter.

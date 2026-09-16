@@ -82,7 +82,7 @@ func TestLogStoreEndpoints(t *testing.T) {
 	if c["cleared"] != true || c["note"] != "journal untouched" || ls.cleared != 1 {
 		t.Fatalf("clear = %v (cleared %d)", c, ls.cleared)
 	}
-	// L2: the clear leaves a trace naming the client
+	// The clear leaves a trace naming the client
 	e.logMu.Lock()
 	cleared := strings.Join(e.logged, "\n")
 	e.logMu.Unlock()

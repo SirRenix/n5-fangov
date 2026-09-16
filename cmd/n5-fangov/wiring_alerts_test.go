@@ -87,7 +87,7 @@ func TestAlertManagerConfigure(t *testing.T) {
 	}
 }
 
-// TestAlertTemplateProbeCache (R-M2): Status reuses the probe for ten
+// TestAlertTemplateProbeCache: Status reuses the probe for ten
 // minutes; InstallTemplate and Configure drop the cache.
 func TestAlertTemplateProbeCache(t *testing.T) {
 	cfgPath := writeStoreConfig(t)
@@ -160,7 +160,7 @@ func (g *gate) SendCtx(ctx context.Context, kind, msg string) error {
 	}
 }
 
-// TestAlertTestBusyAndBounded (R-L9): a second test while one runs answers
+// TestAlertTestBusyAndBounded: a second test while one runs answers
 // ErrTestBusy; a delivery that hangs is cut at testLimit.
 func TestAlertTestBusyAndBounded(t *testing.T) {
 	cfgPath := writeStoreConfig(t)

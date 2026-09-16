@@ -556,7 +556,7 @@ func TestOverridePutDelete(t *testing.T) {
 	}
 }
 
-// TestOverrideModeFromSnapshot (L4): the response reports what the channel
+// TestOverrideModeFromSnapshot: the response reports what the channel
 // is doing, not a constant "manual" — a critical channel stays critical.
 func TestOverrideModeFromSnapshot(t *testing.T) {
 	e := newEnv(t, AuthConfig{})
@@ -603,7 +603,7 @@ func TestOverrideValidation(t *testing.T) {
 	}
 }
 
-// TestBodyTooLarge (L3): oversized bodies answer 413 on every body endpoint.
+// TestBodyTooLarge: oversized bodies answer 413 on every body endpoint.
 func TestBodyTooLarge(t *testing.T) {
 	e := newEnv(t, AuthConfig{})
 	big := sampleTOML + "# " + strings.Repeat("x", maxBody) + "\n"
@@ -704,7 +704,7 @@ func TestAuthRequiredOnAllWrites(t *testing.T) {
 	wantCode(t, e.do(t, "PUT", "/api/presets/quiet", "", ok), 200)
 }
 
-// TestProtectedReadsNeedAuth (H1, v0.3 visibility model): with auth = basic
+// TestProtectedReadsNeedAuth (v0.3 visibility model): with auth = basic
 // every read that is not public needs credentials; state/history stay open
 // (reduced) for dashboards, the UI files and version/about/session too.
 func TestProtectedReadsNeedAuth(t *testing.T) {
@@ -731,7 +731,7 @@ func TestProtectedReadsNeedAuth(t *testing.T) {
 	wantCode(t, e2.do(t, "GET", "/api/log", "", nil), 200)
 }
 
-// TestConfigHashRedaction (H1): the hash never leaves the daemon; a PUT that
+// TestConfigHashRedaction: the hash never leaves the daemon; a PUT that
 // carries the placeholder keeps the stored hash, a real value replaces it.
 func TestConfigHashRedaction(t *testing.T) {
 	hash := fastHash("admin", "pw")
@@ -802,7 +802,7 @@ func TestConfigHashRedaction(t *testing.T) {
 	}
 }
 
-// TestRedactRawForms (polish L4): single-quoted literals, tabs/odd spacing,
+// TestRedactRawForms: single-quoted literals, tabs/odd spacing,
 // the dotted key web.password_hash and an inline table are all redacted;
 // the PUT placeholder substitution keeps the quote style.
 func TestRedactRawForms(t *testing.T) {
@@ -860,7 +860,7 @@ func TestRedactRawForms(t *testing.T) {
 	}
 }
 
-// TestConfigValidateBeforeSave (M2): a syntax error answers 400 with the
+// TestConfigValidateBeforeSave: a syntax error answers 400 with the
 // warnings under "errors" and nothing is written or reloaded; field
 // warnings do not block but are reported.
 func TestConfigValidateBeforeSave(t *testing.T) {
@@ -900,7 +900,7 @@ func TestConfigValidateBeforeSave(t *testing.T) {
 	}
 }
 
-// TestHostHeader (M1): DNS rebinding sends a foreign Host; only IP literals,
+// TestHostHeader: DNS rebinding sends a foreign Host; only IP literals,
 // localhost and configured names are served.
 func TestHostHeader(t *testing.T) {
 	e := newEnv(t, AuthConfig{})
@@ -953,7 +953,7 @@ func TestHostHeader(t *testing.T) {
 	}
 }
 
-// TestAuthRateLimit (M4): repeated failures from one IP are delayed with a
+// TestAuthRateLimit: repeated failures from one IP are delayed with a
 // growing back-off, logged, and reset by a success.
 func TestAuthRateLimit(t *testing.T) {
 	// legacy hash: cheap to verify, the limiter is what is under test
@@ -1259,7 +1259,7 @@ func TestPresets(t *testing.T) {
 	if len(e.presets.saved) != 1 || e.presets.saved[0] != "night-1_0" {
 		t.Fatalf("saved = %v", e.presets.saved)
 	}
-	// Name rule equals config's ^[a-z0-9_-]{1,64}$ (L1).
+	// Name rule equals config's ^[a-z0-9_-]{1,64}$.
 	for _, bad := range []string{".hidden", "a%2Fb", "Night", "night.1", "a b", strings.Repeat("a", 65)} {
 		wantError(t, e.do(t, "PUT", "/api/presets/"+bad, "", csrf), 400, "invalid preset name")
 		wantError(t, e.do(t, "POST", "/api/presets/"+bad+"/apply", "", csrf), 400, "invalid preset name")
@@ -1397,7 +1397,7 @@ type addrListener struct {
 
 func (l addrListener) Addr() net.Addr { return l.addr }
 
-// TestServeWarnsNonLoopbackWithoutAuth (H3): binding a LAN address with
+// TestServeWarnsNonLoopbackWithoutAuth: binding a LAN address with
 // auth = none is allowed but logged loudly; basic auth or loopback are quiet.
 func TestServeWarnsNonLoopbackWithoutAuth(t *testing.T) {
 	run := func(auth AuthConfig, addr net.Addr) []string {
@@ -1603,7 +1603,7 @@ func TestStoresNotImplementedWithoutDeps(t *testing.T) {
 	}
 }
 
-// TestQuerySemicolonNotLogged (R-L7): a request with ';' in the query
+// TestQuerySemicolonNotLogged: a request with ';' in the query
 // produces no ErrorLog line on the daemon's server (through the
 // handshake filter into Logf) nor on a stock server around the socket
 // handler, and ';' acts as a separator. (Go 1.25 no longer logs the

@@ -330,7 +330,7 @@ func (b *blockingWriter) String() string {
 // tight for the Alpine container on the build host).
 const stallLimit = 2 * time.Second
 
-// H1: an Export whose destination stalls (slow HTTP client) must not hold
+// An Export whose destination stalls (slow HTTP client) must not hold
 // the writer lock — the controller logs from inside the regulation cycle
 // and a blocked log call would run it into the systemd watchdog. Write and
 // Lines complete while the export is stuck; the export delivers the file
@@ -385,7 +385,7 @@ func TestExportDoesNotBlockWrites(t *testing.T) {
 	}
 }
 
-// H1: a rotation during a stalled export renames the file under the open
+// A rotation during a stalled export renames the file under the open
 // descriptor; the export still delivers the old content, new lines land in
 // the fresh file.
 func TestExportSurvivesRotation(t *testing.T) {
@@ -417,7 +417,7 @@ func TestExportSurvivesRotation(t *testing.T) {
 	}
 }
 
-// H2: an existing target that is not a regular file is refused — a symlink
+// An existing target that is not a regular file is refused — a symlink
 // (even to a regular file), a directory, a FIFO. A missing file is created.
 func TestNewRefusesNonRegularTarget(t *testing.T) {
 	dir := t.TempDir()

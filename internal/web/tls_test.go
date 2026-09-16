@@ -36,8 +36,8 @@ type fakeTLSMgr struct {
 	uploadErr error
 	warns     []string
 	resets    int
-	notKept   bool // Regenerate(true) could not reuse the key (L2)
-	fallback  bool // M3: file pair unreadable, auto served
+	notKept   bool // Regenerate(true) could not reuse the key
+	fallback  bool // file pair unreadable, auto served
 }
 
 func newFakeTLSMgr(mode string) *fakeTLSMgr {
@@ -116,8 +116,8 @@ func TestTLSInfoAndDownloads(t *testing.T) {
 	if !strings.Contains(r.body, `"warnings":[]`) || !strings.Contains(r.body, `"fallback":false`) {
 		t.Errorf("warnings/fallback defaults: %s", r.body)
 	}
-	// L4: warnings are computed server-side against TLSHosts (loopback
-	// excluded); M3: fallback is exposed
+	// Warnings are computed server-side against TLSHosts (loopback
+	// excluded); the fallback is exposed
 	m.fallback = true
 	e.withDeps(t, AuthConfig{Mode: "basic", User: "admin", PasswordHash: PasswordHash("admin", "pw")}, func(d *Deps) {
 		d.TLSMgr = m
@@ -287,7 +287,7 @@ func TestTLSRegenerateKeepKey(t *testing.T) {
 		t.Errorf("keep flags = %v", m.regen)
 	}
 	wantError(t, e.do(t, "POST", "/api/tls/regenerate", `{"keepkey":1}`, hdr), 400, "invalid JSON")
-	// L2: keep requested but the stored key was unusable → kept=false + warning
+	// Keep requested but the stored key was unusable → kept=false + warning
 	m.notKept = true
 	r = e.do(t, "POST", "/api/tls/regenerate", `{"keep_key":true}`, hdr)
 	wantCode(t, r, 200)
@@ -365,7 +365,7 @@ func TestServeTLSStoreHotSwap(t *testing.T) {
 	if err := json.Unmarshal(body, &v); err != nil || v["tls"] != true {
 		t.Errorf("version over swapped TLS = %s", body)
 	}
-	// L1: a client with a session cache that connected before a swap must
+	// A client with a session cache that connected before a swap must
 	// not resume the old session afterwards (no tickets are issued), so it
 	// too sees the new certificate.
 	third, err := tlscert.Regenerate(tlscert.Options{Dir: dir, Hosts: []string{"127.0.0.1", "third.example"}, Logf: quiet})
@@ -431,7 +431,7 @@ func testLeafPEM(t *testing.T, hosts ...string) string {
 	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
 }
 
-// TestTLSUploadHostGuard (M4): over TLS, an upload whose leaf does not
+// TestTLSUploadHostGuard: over TLS, an upload whose leaf does not
 // cover the name the request came in by (SNI, else Host) is refused with
 // 400 + force_required; force=true (JSON or multipart) or a covering leaf
 // passes; over plain HTTP (unix socket, reverse proxy) there is no guard.
@@ -519,7 +519,7 @@ func TestTLSUploadHostGuard(t *testing.T) {
 	joined := strings.Join(e.logged, "\n")
 	e.logMu.Unlock()
 	if !strings.Contains(joined, `web: tls upload by 127.0.0.1 ("CN=uploaded"`) {
-		t.Errorf("L7 subject not quoted in audit line: %q", joined)
+		t.Errorf("subject not quoted in audit line: %q", joined)
 	}
 }
 
@@ -620,8 +620,8 @@ func TestServeTLSRoundTrip(t *testing.T) {
 	}
 }
 
-// TestServeTLSWarnsNonLoopbackWithoutAuth: TLS does not silence the H3
-// warning — encryption is not authentication.
+// TestServeTLSWarnsNonLoopbackWithoutAuth: TLS does not silence the
+// non-loopback-without-auth warning — encryption is not authentication.
 func TestServeTLSWarnsNonLoopbackWithoutAuth(t *testing.T) {
 	cert, _, err := tlscert.EnsureAuto(tlscert.Options{Dir: t.TempDir(), Logf: func(string, ...any) {}})
 	if err != nil {

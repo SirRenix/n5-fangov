@@ -74,7 +74,7 @@ func (r *Ring) Alert(kind, msg string) {
 // delivery error (nil for a plain Sink).
 func (r *Ring) Send(kind, msg string) error { return r.SendCtx(context.Background(), kind, msg) }
 
-// SendCtx is Send bounded by ctx where the wrapped sink supports it (R-L9).
+// SendCtx is Send bounded by ctx where the wrapped sink supports it.
 // The record carries the time the delivery started and, on failure, the
 // error text.
 func (r *Ring) SendCtx(ctx context.Context, kind, msg string) error {

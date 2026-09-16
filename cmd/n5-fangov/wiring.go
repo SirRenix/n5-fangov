@@ -113,7 +113,7 @@ const redactedHash = web.RedactedHash
 
 // redactConfigText replaces the password hash in config text the same way
 // GET /api/config does (line forms by regex, the parsed value as a bare
-// substring only when it is long enough not to hit other text) (M7).
+// substring only when it is long enough not to hit other text).
 func redactConfigText(raw string) string { return web.RedactRaw(raw) }
 
 // restoreHash puts hash back where a password_hash assignment carries the
@@ -168,7 +168,7 @@ func tomlString(s string) string {
 func saveConfig(path string, raw []byte) error { return config.Save(path, raw) }
 
 // configFileMu serialises every read-modify-write of the config file
-// inside the daemon (R-L4): the account, alert and dashboard stores, the
+// inside the daemon: the account, alert and dashboard stores, the
 // editor's Save, a preset apply and a bundle import each rewrite the whole
 // file from what they read, so two of them interleaving would drop one
 // change. Lock order: configFileMu before any store/controller/tls mutex;
@@ -433,8 +433,8 @@ func stampAlert(runDir, kind, msg string) bool {
 // startAlert delivers a start-up alert on its own goroutine for the alerts
 // serve raises before the loop runs. The cooldown stamp is checked and
 // written here, synchronously, before the goroutine starts: a restart loop
-// (or an early exit of serve right after this call) must still see it
-// (L5). The delivery — up to Timeout plus WaitDelay of perl or mail — does
+// (or an early exit of serve right after this call) must still see
+// it. The delivery — up to Timeout plus WaitDelay of perl or mail — does
 // not hold up the first cycle and READY=1. A sink panic costs the alert,
 // not the daemon.
 func startAlert(runDir string, a alert.Sink, kind, msg string) {
@@ -549,7 +549,7 @@ type webDeps struct {
 	TLSHosts   []string    // SAN hosts reported by GET /api/tls
 	// ConfigPin is applied to every config text written through the API
 	// (PUT /api/config, preset apply; the bundle carries its own): the
-	// certificate manager re-applies its [web] tls keys (M2). nil: none.
+	// certificate manager re-applies its [web] tls keys. nil: none.
 	ConfigPin func(raw []byte) []byte
 
 	// Stores behind the dashboard APIs (wiring_account.go, wiring_alerts.go,
@@ -699,7 +699,7 @@ func (journalLogStore) Export(w io.Writer) error {
 }
 
 // Clear is refused with errors.ErrUnsupported so the API answers 501, not
-// 500 (L5): there is nothing to clear, the journal is never touched.
+// 500: there is nothing to clear, the journal is never touched.
 func (journalLogStore) Clear() error {
 	return fmt.Errorf("no log file configured ([log].file is empty); the journal is not cleared: %w", errors.ErrUnsupported)
 }
@@ -736,7 +736,7 @@ func errRestartRequired() error        { return control.ErrRestartRequired }
 // Config text helpers for bundles and setup.
 func defaultConfigRaw() []byte { return config.Marshal(config.Default()) }
 
-// fileConfigStore backs GET/PUT /api/config with the TOML file. pin (M2)
+// fileConfigStore backs GET/PUT /api/config with the TOML file. pin
 // is applied to the text before it is written: the certificate manager
 // owns [web] tls/cert_file/key_file, a stale editor copy cannot revert them.
 type fileConfigStore struct {
@@ -762,7 +762,7 @@ func (s fileConfigStore) Save(raw []byte) error {
 	if err != nil {
 		return err
 	}
-	configFileMu.Lock() // R-L4
+	configFileMu.Lock()
 	defer configFileMu.Unlock()
 	if s.pin != nil {
 		raw = s.pin(raw)

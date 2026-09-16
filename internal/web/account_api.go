@@ -85,8 +85,8 @@ func (s *Server) verifyCurrent(w http.ResponseWriter, r *http.Request, current s
 // applyAccount stores the new credentials, swaps them in and signs every
 // other session out (the caller's cookie survives; a basic caller has none).
 // The store moves to the new credential epoch first, so the kept session
-// is still loaded after the next restart (R-M1); the kept session's User
-// follows a rename (R-L10).
+// is still loaded after the next restart; the kept session's User
+// follows a rename.
 func (s *Server) applyAccount(w http.ResponseWriter, r *http.Request, what, user, hash string) bool {
 	cfg, err := s.deps.Account.Update(user, hash)
 	if err != nil {

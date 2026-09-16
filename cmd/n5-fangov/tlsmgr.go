@@ -22,7 +22,7 @@ const (
 )
 
 // modeFallback is what Info reports while the configured file pair could
-// not be loaded and the automatic certificate is served instead (M3).
+// not be loaded and the automatic certificate is served instead.
 const modeFallback = "auto (fallback from file)"
 
 // tlsManager implements web.TLSMgr: it owns the certificate the listener
@@ -38,7 +38,7 @@ const modeFallback = "auto (fallback from file)"
 // served in its place; mode and the paths then still say "file" so the
 // config keeps the operator's intent and the CLI/UI can show both.
 //
-// ownsConfig (M2): the manager re-applies tls/cert_file/key_file to every
+// ownsConfig: the manager re-applies tls/cert_file/key_file to every
 // config write that goes past it (PUT /api/config with a stale editor
 // copy, settings import, preset apply — see pinConfig). serve clears it
 // when the effective mode came from a --listen override rather than from
@@ -60,7 +60,7 @@ type tlsManager struct {
 }
 
 // newTLSManager captures the wiring; load fills the store. cfgPath is made
-// absolute (L8): the daemon's working directory is / under systemd but
+// absolute: the daemon's working directory is / under systemd but
 // the CLI's is wherever the operator stands, and the tls directory is
 // derived from it.
 func newTLSManager(cfgPath string, w webSpec, hosts []string) *tlsManager {
@@ -77,7 +77,7 @@ func newTLSManager(cfgPath string, w webSpec, hosts []string) *tlsManager {
 // load reads (create=false) or ensures (create=true) the certificate for
 // the current mode into the store. Mode "off" loads nothing. The second
 // result is the path of the served certificate for the start-up log line.
-// A pair the listener could not serve (M1) is an error, not a swap.
+// A pair the listener could not serve is an error, not a swap.
 func (m *tlsManager) load(create bool) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -113,7 +113,7 @@ func (m *tlsManager) loadLocked(create bool) (string, error) {
 	return certPath, m.serve(cert)
 }
 
-// loadForServe is load(true) with the M3 recovery: when tls = "file" and
+// loadForServe is load(true) with the fallback recovery: when tls = "file" and
 // the pair cannot be loaded or served, the automatic certificate is
 // ensured and served instead, the manager reports the fallback and the
 // listener stays up. The second result is that load error (nil when
@@ -137,7 +137,7 @@ func (m *tlsManager) loadForServe() (certPath string, fellBack error, err error)
 	return autoPath, fellBack, nil
 }
 
-// shouldFallbackToAuto is the M3 decision: only a configured file pair
+// shouldFallbackToAuto is the fallback decision: only a configured file pair
 // that failed to load falls back; "auto" failing has nothing to fall back
 // to and "off" never loads.
 func shouldFallbackToAuto(mode string, loadErr error) bool {
@@ -145,7 +145,7 @@ func shouldFallbackToAuto(mode string, loadErr error) bool {
 }
 
 // serve is the one place a certificate reaches the store: it runs the
-// in-process handshake first (M1), so a pair crypto/tls cannot sign with
+// in-process handshake first, so a pair crypto/tls cannot sign with
 // never replaces a working one.
 func (m *tlsManager) serve(cert tls.Certificate) error {
 	if err := tlscert.CheckUsable(cert); err != nil {
@@ -229,7 +229,7 @@ func (m *tlsManager) ExportDER() ([]byte, error) {
 
 // Regenerate reissues the automatic certificate for the current hosts.
 // keepKey reuses the stored private key (imported trust survives), else a
-// new pair is made; kept says whether the key really was reused (L2).
+// new pair is made; kept says whether the key really was reused.
 // Refused in "file" mode: the served certificate is the operator's, use
 // ResetAuto first. During a fallback the automatic certificate is the one
 // being served, so regenerating it is allowed.
@@ -260,12 +260,12 @@ func (m *tlsManager) Regenerate(keepKey bool) (tlscert.InfoData, bool, error) {
 }
 
 // Upload validates the pair against the listen hosts (including the
-// handshake check, M1), stores it as custom-cert.pem / custom-key.pem
+// handshake check), stores it as custom-cert.pem / custom-key.pem
 // (0600, atomic), points the config at it (tls = "file", comments
 // preserved) and serves it from the next handshake on. The config is
 // written before the swap: a daemon restart then comes up with the same
 // certificate. A config write that fails puts the custom files back the
-// way they were — previous content or absent (L9) — so the file system
+// way they were — previous content or absent — so the file system
 // never disagrees with the config.
 func (m *tlsManager) Upload(certPEM, keyPEM []byte) (tlscert.InfoData, []string, error) {
 	m.mu.Lock()
@@ -386,7 +386,7 @@ func setTLSKeys(raw []byte, mode, certFile, keyFile string) []byte {
 	return raw
 }
 
-// pinConfig (M2) is applied to every config text written past the
+// pinConfig is applied to every config text written past the
 // manager (PUT /api/config, settings import, preset apply): the tls keys
 // are the manager's, so a stale copy of the file in the curve editor or
 // an imported bundle cannot silently revert an upload or a reset. Not

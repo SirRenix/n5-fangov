@@ -66,7 +66,7 @@ if [[ -d /etc/pve ]]; then
     # first click on a fresh box and creates the directory, which the daemon
     # cannot from inside its sandbox.
     # pmxcfs is read-only without quorum: under `set -e` a failing cp would
-    # abort before daemon-reload/enable, so the template is best effort (R-L6).
+    # abort before daemon-reload/enable, so the template is best effort.
     if mkdir -p /etc/pve/notification-templates/default 2>/dev/null \
        && cp "$DEPLOY/pve-notification/n5-fangov-subject.txt.hbs" /etc/pve/notification-templates/default/ 2>/dev/null \
        && cp "$DEPLOY/pve-notification/n5-fangov-body.txt.hbs"    /etc/pve/notification-templates/default/ 2>/dev/null; then

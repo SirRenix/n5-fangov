@@ -25,7 +25,7 @@ type TLSMgr interface {
 	ExportDER() ([]byte, error)
 	// Regenerate reissues the automatic certificate; keepKey keeps the
 	// private key so trust imported into browsers survives. kept reports
-	// whether the key really was kept (L2): a stored key that cannot be
+	// whether the key really was kept: a stored key that cannot be
 	// loaded yields a new pair even with keepKey, and the response says so.
 	Regenerate(keepKey bool) (info tlscert.InfoData, kept bool, err error)
 	// Upload validates and installs an operator-supplied PEM pair (mode
@@ -38,7 +38,7 @@ type TLSMgr interface {
 
 // TLSFallback is optionally implemented by a TLSMgr: true while the
 // configured file pair could not be loaded and the automatic certificate
-// is served in its place (M3). GET /api/tls exposes it as "fallback".
+// is served in its place. GET /api/tls exposes it as "fallback".
 type TLSFallback interface {
 	Fallback() bool
 }
@@ -87,7 +87,7 @@ func tlsFail(w http.ResponseWriter, err error, clientErr bool) {
 // getTLS: {mode, info, hosts, warnings, fallback}. Public — the
 // certificate is what every client sees in the handshake anyway; the
 // panel needs it before login. warnings are computed here the way
-// ValidatePair does it (L4): expiry, no SANs, listen hosts the SAN list
+// ValidatePair does it: expiry, no SANs, listen hosts the SAN list
 // does not cover (loopback excluded) — the UI does no matching of its own.
 func (s *Server) getTLS(w http.ResponseWriter, r *http.Request) {
 	m, ok := s.tlsMgr(w, false)
@@ -201,7 +201,7 @@ func (s *Server) tlsRegenerate(w http.ResponseWriter, r *http.Request) {
 // field, optional "force") or JSON {"cert": pem, "key": pem, "force":
 // bool}, at most maxTLSUpload bytes.
 //
-// M4: a request that arrived over this listener's TLS names the host the
+// A request that arrived over this listener's TLS names the host the
 // operator is connected through (SNI, else the Host header). A leaf that
 // does not cover that name is refused with 400 and "force_required":
 // after the swap the browser would see a name mismatch and, under the

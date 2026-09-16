@@ -63,7 +63,7 @@ type blockSink struct {
 func (b *blockSink) Alert(kind, _ string) { b.entered <- struct{}{}; <-b.release }
 func (b *blockSink) Name() string         { return "block" }
 
-// TestStartAlertStampBeforeDelivery (L5): startAlert writes the cooldown
+// TestStartAlertStampBeforeDelivery: startAlert writes the cooldown
 // stamp before it returns, while the delivery is still in flight — an
 // early exit of serve right after the call cannot lose it, and a second
 // alert of the kind is suppressed at once.

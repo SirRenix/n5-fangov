@@ -69,7 +69,7 @@ func (s *Server) alertsTest(w http.ResponseWriter, r *http.Request) {
 	transport, err := m.Test()
 	if err != nil {
 		if errors.Is(err, alert.ErrTestBusy) {
-			// R-L9: one test delivery at a time; the previous one still runs.
+			// One test delivery at a time; the previous one still runs.
 			writeJSON(w, http.StatusConflict, map[string]any{"error": "test in progress", "transport": transport})
 			return
 		}

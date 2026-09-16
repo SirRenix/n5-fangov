@@ -11,12 +11,12 @@ import (
 // ServerConfig is the tls.Config of the dashboard listener: TLS 1.2
 // minimum, X25519/P-256/P-384, AEAD suites only, HTTP/2 offered, the
 // certificate looked up per handshake through getCert (a Store.Get for the
-// hot swap). Session tickets are off (L1): a LAN dashboard gains nothing
+// hot swap). Session tickets are off: a LAN dashboard gains nothing
 // from resumption, and without tickets a swapped certificate is what every
 // new connection sees at once instead of an old session being resumed.
 //
-// ValidatePair and CheckUsable run a handshake against exactly this config
-// (M1), so a pair that passes validation is one this listener can serve —
+// ValidatePair and CheckUsable run a handshake against exactly this
+// config, so a pair that passes validation is one this listener can serve —
 // crypto/tls has no signature scheme for ECDSA P-224 and refuses RSA keys
 // below 1024 bits, and a listener that accepts such a pair fails every
 // handshake after the swap.

@@ -41,7 +41,7 @@ type fileBundle struct {
 	cfgPath   string
 	presetDir string
 	reload    func(raw []byte) error
-	// pin (M2): applied to the imported config text before it is written
+	// pin: applied to the imported config text before it is written
 	// and reloaded; the certificate manager keeps its [web] tls keys.
 	pin func(raw []byte) []byte
 	// logf receives the config warnings of an import (the daemon: the
@@ -97,7 +97,7 @@ func (b fileBundle) Import(data []byte) (restartRequired bool, warnings []string
 	if strings.TrimSpace(in.Config) == "" {
 		return false, nil, errors.New("bundle: config is empty")
 	}
-	// R-L4: the current hash is read from the file and the file rewritten
+	// The current hash is read from the file and the file rewritten
 	// below; no other store may write in between. Released before the
 	// reload (the controller and the alert manager take their own locks).
 	configFileMu.Lock()
@@ -126,7 +126,7 @@ func (b fileBundle) Import(data []byte) (restartRequired bool, warnings []string
 	if err != nil {
 		errs = append(errs, "config: "+err.Error())
 	} else if webOf(cfg).PasswordHash == redactedHash {
-		// L6: the placeholder sits where restoreHash does not reach (an
+		// The placeholder sits where restoreHash does not reach (an
 		// inline table `web = { … }`); written as is it would become the
 		// stored hash and lock the account out
 		errs = append(errs, "config: password_hash "+redactedHash+" not restored; write the assignment on its own line under [web]")
@@ -158,7 +158,7 @@ func (b fileBundle) Import(data []byte) (restartRequired bool, warnings []string
 		}
 	}
 	warnings = warns
-	// L1: every preset is written to a temp name first; only when all of
+	// Every preset is written to a temp name first; only when all of
 	// them and the config are on disk are the presets renamed into place.
 	// A write error leaves the preset directory as it was.
 	staged := make([]string, 0, len(names))

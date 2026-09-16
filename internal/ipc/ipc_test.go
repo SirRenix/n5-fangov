@@ -118,7 +118,7 @@ func TestServeClientRoundTrip(t *testing.T) {
 	}
 }
 
-// TestListenRestoresUmask (M3): Listen narrows the umask only around bind
+// TestListenRestoresUmask: Listen narrows the umask only around bind
 // and puts the caller's value back, also on the error path.
 func TestListenRestoresUmask(t *testing.T) {
 	if runtime.GOOS == "windows" {

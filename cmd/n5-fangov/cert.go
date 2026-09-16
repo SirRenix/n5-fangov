@@ -23,10 +23,10 @@ func tlsDir(cfgPath string) string { return filepath.Join(filepath.Dir(cfgPath),
 // [web].allowed_hosts without the "*" wildcard. Sorted, deduplicated, so
 // the same input yields the same list (tlscert regenerates when SANs
 // change — which is why a wildcard listen does not pull in every address
-// of every interface (M5): a VM bridge or a container network coming and
+// of every interface: a VM bridge or a container network coming and
 // going would churn the certificate).
 //
-// A wildcard listen that yields no address at all is logged (H3): the
+// A wildcard listen that yields no address at all is logged: the
 // certificate then covers only the host name and loopback, and a browser
 // reaching the box by IP sees a name mismatch.
 func tlsHosts(w webSpec) []string {
@@ -77,8 +77,8 @@ var primaryIPsFn = primaryIPs
 // public IPv4 and IPv6 destination: a UDP "connect" (no packet is sent)
 // and the local address of the resulting socket. That is the address the
 // default route leaves through — the one a LAN client reaches the box by.
-// Interface enumeration is the fallback (and its failure the H3 case: it
-// needs AF_NETLINK, which the unit now allows).
+// Interface enumeration is the fallback (its failure is the "no address
+// found" case: it needs AF_NETLINK, which the unit allows).
 func primaryIPs() []string {
 	var out []string
 	for _, dst := range []string{"1.1.1.1:53", "[2606:4700::1111]:53"} {

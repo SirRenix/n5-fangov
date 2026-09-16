@@ -35,5 +35,5 @@ func serveTLSFunc(s *web.Server) func(context.Context, net.Listener, *tlsManager
 	}
 }
 
-// tlsCheckKeyMode reports a private key file readable by group/others (L8).
+// tlsCheckKeyMode reports a private key file readable by group/others.
 func tlsCheckKeyMode(keyFile string) error { return tlscert.CheckKeyMode(keyFile) }

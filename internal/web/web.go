@@ -109,7 +109,7 @@ func storeStatus(err error) int {
 // ReloadError marks a failure after the file was written: the daemon did
 // not take the new content. A store returns it (wrapped as it likes) so
 // the API can answer 500 with the text — the file is changed, the running
-// configuration is not — instead of the 400 a refusal gets (L7); the same
+// configuration is not — instead of the 400 a refusal gets; the same
 // distinction PUT /api/config makes with "config saved, reload failed".
 type ReloadError struct{ Err error }
 
@@ -252,7 +252,7 @@ type Server struct {
 	auth     atomic.Pointer[AuthConfig]
 	sessions SessionStore
 	// upgradeMu serialises upgradeLegacyHash: two successful logins in
-	// the same instant must not both rewrite the file (L4).
+	// the same instant must not both rewrite the file.
 	upgradeMu sync.Mutex
 	// tlsNoise summarises rejected TLS handshakes (browsers without the CA).
 	tlsNoise *handshakeFilter
@@ -268,7 +268,7 @@ func New(deps Deps) *Server {
 	s.limiter.logf = s.logf
 	auth := deps.Auth
 	s.auth.Store(&auth)
-	// R-M1: the mirror file is only loaded when it was written under the
+	// The mirror file is only loaded when it was written under the
 	// credentials in effect now; a rotation outside the daemon drops it.
 	s.sessions = NewSessionStoreEpoch(deps.SessionFile, CredentialEpoch(auth.User, auth.PasswordHash), s.logf)
 	s.tlsNoise = newHandshakeFilter(s.logf, time.Now)
@@ -284,7 +284,7 @@ func New(deps Deps) *Server {
 		}
 	}
 	s.routes()
-	// R-L7: net/http 1.17–1.24 logged one ErrorLog line per request whose
+	// Net/http 1.17–1.24 logged one ErrorLog line per request whose
 	// query carried a ';' unless the handler opted in — an unauthenticated
 	// log-flood vector. Go 1.25 dropped that line; the wrapper stays so the
 	// behaviour is explicit whatever toolchain builds this (';' → '&').
@@ -354,7 +354,7 @@ func (s *Server) ListenAndServe(ctx context.Context, tcpAddr string) error {
 }
 
 // Serve serves the TCP handler on ln until ctx is done. A listener that is
-// reachable from the network without basic auth is logged loudly (H3): the
+// reachable from the network without basic auth is logged loudly: the
 // API can then change fan duties for anyone on the LAN.
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	if !s.basicMode() && !listenerIsLoopback(ln) {
@@ -374,7 +374,7 @@ func (s *Server) ServeTLS(ctx context.Context, ln net.Listener, cert tls.Certifi
 // certificate currently in store, with tlscert.ServerConfig (TLS 1.2
 // minimum, AEAD suites, HTTP/2, no session tickets) — the same config
 // tlscert.ValidatePair handshakes against, so an accepted pair is one this
-// listener can serve (M1). Every response carries
+// listener can serve. Every response carries
 // Strict-Transport-Security. Sets Deps.TLS for /api/version. The store is
 // consulted per handshake (tls.Config.GetCertificate), so a Store.Set from
 // the certificate manager takes effect for the next connection without
@@ -436,7 +436,7 @@ func (s *Server) ServeSocket(ctx context.Context, socketPath string) error {
 	return ipc.Serve(ctx, socketPath, s.socket)
 }
 
-// PasswordHash computes the stored form of a password (M3): salted
+// PasswordHash computes the stored form of a password: salted
 // PBKDF2-HMAC-SHA256, config.PBKDF2Iter iterations, rendered as
 // pbkdf2$<iter>$<salt hex>$<key hex>. setup and passwd write this form.
 func PasswordHash(user, password string) string {
@@ -451,7 +451,7 @@ func PasswordHash(user, password string) string {
 	return fmt.Sprintf("%s$%d$%s$%s", config.PBKDF2Prefix, config.PBKDF2Iter, hex.EncodeToString(salt), hex.EncodeToString(key))
 }
 
-// LegacyPasswordHash is the pre-M3 stored form: sha256 hex of
+// LegacyPasswordHash is the pre-PBKDF2 stored form: sha256 hex of
 // "user:password". Still accepted by VerifyPassword; no longer written.
 func LegacyPasswordHash(user, password string) string {
 	sum := sha256.Sum256([]byte(user + ":" + password))
@@ -571,7 +571,7 @@ func publicPath(path string) bool {
 	return false
 }
 
-// guard enforces, in this order: Host header (DNS rebinding, M1), CSRF
+// guard enforces, in this order: Host header (DNS rebinding), CSRF
 // header on state-changing methods, then resolves the caller once (cookie
 // session, else basic auth) and refuses anonymous access to protected
 // paths. Over TLS every answer carries HSTS.
@@ -681,7 +681,7 @@ func (s *Server) upgradeLegacyHash(user, password string) {
 	s.logf("web: legacy password hash upgraded to pbkdf2 for user %.64q", user)
 }
 
-// hostAllowed accepts IP literals, localhost and the configured hosts (M1).
+// hostAllowed accepts IP literals, localhost and the configured hosts.
 func (s *Server) hostAllowed(host string) bool {
 	if s.anyHost {
 		return true
@@ -872,7 +872,7 @@ func RestoreHash(raw, hash string) string {
 	})
 }
 
-// RedactRaw replaces a non-empty password_hash value in TOML text (H1).
+// RedactRaw replaces a non-empty password_hash value in TOML text.
 // The line forms are rewritten by regex; in addition the hash the parser
 // actually sees is replaced wherever it appears (inline table, unusual
 // layout), so the value never leaves the daemon however the file is laid
@@ -948,7 +948,7 @@ func (s *Server) getConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 // putConfig: read (413 on overflow) → restore a redacted hash → validate
-// (400, nothing written) → save → reload. Order matters (M2): a syntax
+// (400, nothing written) → save → reload. Order matters: a syntax
 // error never reaches the file. With ?strict=1 (the dashboard editor)
 // validation warnings on the [[channel]] tables refuse the PUT as well —
 // 400 with the warning list — instead of writing a file whose invalid
@@ -1054,7 +1054,7 @@ func nonNil(s []string) []string {
 	return s
 }
 
-// isTooLarge reports whether err comes from http.MaxBytesReader (L3).
+// isTooLarge reports whether err comes from http.MaxBytesReader.
 func isTooLarge(err error) bool {
 	var mbe *http.MaxBytesError
 	return errors.As(err, &mbe)
@@ -1129,7 +1129,7 @@ func (s *Server) putOverride(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The override is applied by the loop on its next cycle; mode reports
-	// what the channel is doing now (L4: critical/stall are not "manual").
+	// what the channel is doing now (critical/stall are not "manual").
 	mode := control.ModeManual
 	if c := s.channel(name); c != nil {
 		mode = c.Mode
@@ -1162,7 +1162,7 @@ func (s *Server) deleteOverride(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "channel": name, "mode": mode})
 }
 
-// presetName mirrors config's preset rule ([a-z0-9_-], at most 64) (L1).
+// presetName mirrors config's preset rule ([a-z0-9_-], at most 64).
 var presetName = regexp.MustCompile(`^[a-z0-9_-]{1,64}$`)
 
 func (s *Server) getPresets(w http.ResponseWriter, r *http.Request) {
@@ -1201,11 +1201,11 @@ func (s *Server) applyPreset(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, control.ErrRestartRequired):
 			writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "restart_required": true, "message": err.Error()})
 		case errors.Is(err, fs.ErrNotExist):
-			// R-L8: no such preset for this profile (a built-in of another
+			// No such preset for this profile (a built-in of another
 			// profile counts as missing).
 			writeError(w, http.StatusNotFound, "unknown preset "+name)
 		case isReloadError(err):
-			// written, not reloaded (L7): not the caller's fault, and the
+			// written, not reloaded: not the caller's fault, and the
 			// file already carries the preset
 			writeError(w, http.StatusInternalServerError, "apply preset: "+err.Error())
 		default:
@@ -1228,7 +1228,7 @@ func (s *Server) savePreset(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.deps.Presets.Save(name); err != nil {
 		if errors.Is(err, ErrPresetBuiltin) {
-			// R-U8: the contract says 409 for a built-in name, like delete.
+			// The contract says 409 for a built-in name, like delete.
 			writeError(w, http.StatusConflict, "save preset: "+err.Error())
 			return
 		}
@@ -1303,7 +1303,7 @@ func (s *Server) clearLog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The truncation itself erased the trail; this line is the first entry
-	// of the new file and lands in the journal as well (L2).
+	// of the new file and lands in the journal as well.
 	s.logf("web: log cleared by %s", remoteIP(r))
 	writeJSON(w, http.StatusOK, map[string]any{"cleared": true, "note": "journal untouched"})
 }

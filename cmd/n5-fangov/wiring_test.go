@@ -8,7 +8,7 @@ import (
 	"github.com/SirRenix/n5-fangov/internal/config"
 )
 
-// L5: without a log file, Clear is "unsupported" (the web layer answers
+// Without a log file, Clear is "unsupported" (the web layer answers
 // 501), not a generic error (500).
 func TestJournalLogStoreClearUnsupported(t *testing.T) {
 	err := journalLogStore{}.Clear()

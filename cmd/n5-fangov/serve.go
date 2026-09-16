@@ -211,7 +211,7 @@ func serveWeb(st *serveState) {
 	// rule "non-loopback is never plain HTTP" is re-applied to the override.
 	wspec := webOf(st.cfg)
 	addr := wspec.Listen
-	modeOverridden := false // the effective tls mode differs from the file's (M2: the manager must not pin it)
+	modeOverridden := false // the effective tls mode differs from the file's (the manager must not pin it)
 	if st.listen != "" {
 		addr = st.listen
 		wspec.Listen = addr
@@ -243,7 +243,7 @@ func serveWeb(st *serveState) {
 			startAlert(rdir, alerter, "web", fmt.Sprintf("web UI disabled: TLS (%s) could not be set up on %s: %v", wspec.TLS, addr, err))
 			addr = ""
 		case fellBack != nil:
-			// M3: the configured pair is unreadable or unusable; the listener
+			// The configured pair is unreadable or unusable; the listener
 			// stays up on the automatic certificate so the panel (or `cert
 			// reset`/`cert upload`) can repair it. The config keeps tls = "file".
 			log.Printf("web: TLS file pair %s / %s unusable: %v — FALLBACK to the automatic certificate %s (mode %q); fix with the certificate panel, `n5-fangov cert upload` or `cert reset`",

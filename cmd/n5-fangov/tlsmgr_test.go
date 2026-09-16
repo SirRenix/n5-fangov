@@ -31,7 +31,7 @@ func testPair(t *testing.T, cn string, hosts ...string) (certPEM, keyPEM []byte)
 	return testPairCurve(t, elliptic.P256(), cn, hosts...)
 }
 
-// testPairCurve is testPair on an explicit curve (P-224 for the M1 tests).
+// testPairCurve is testPair on an explicit curve (P-224 for the unusable-key tests).
 func testPairCurve(t *testing.T, curve elliptic.Curve, cn string, hosts ...string) (certPEM, keyPEM []byte) {
 	t.Helper()
 	k, err := ecdsa.GenerateKey(curve, rand.Reader)
@@ -320,7 +320,7 @@ func webOfFile(t *testing.T, cfgPath string) config.Web {
 	return cfg.Web
 }
 
-// TestTLSManagerPinsConfigKeys (M2): after an upload, a config text
+// TestTLSManagerPinsConfigKeys: after an upload, a config text
 // written through the API paths with the pre-upload values (stale editor
 // copy, imported bundle, preset apply) keeps tls = "file" and the custom
 // paths; a text that already matches is not touched; with ownsConfig off
@@ -403,7 +403,7 @@ type fakeReloadService struct{ control.Service }
 
 func (fakeReloadService) Reload([]byte) error { return nil }
 
-// TestTLSManagerFallback (M3): a file pair that cannot be loaded makes
+// TestTLSManagerFallback: a file pair that cannot be loaded makes
 // loadForServe serve the automatic certificate, report the fallback and
 // keep the config on "file"; a usable pair does not fall back; the
 // decision helper is a pure function; Regenerate is allowed during the
@@ -443,7 +443,7 @@ func TestTLSManagerFallback(t *testing.T) {
 	if _, mode, _ := m.Info(); mode != modeFallback {
 		t.Errorf("mode after regenerate = %q", mode)
 	}
-	// M1 in the manager: a P-224 pair on disk is "unusable", also a fallback
+	// In the manager a P-224 pair on disk is "unusable", also a fallback
 	c224, k224 := testPairCurve(t, elliptic.P224(), "p224", "n5.lan")
 	os.WriteFile(filepath.Join(root, "c224.pem"), c224, 0o600)
 	os.WriteFile(filepath.Join(root, "k224.pem"), k224, 0o600)
@@ -541,7 +541,7 @@ func TestCertCLIOfflineResetBrokenPair(t *testing.T) {
 	}
 }
 
-// TestTLSManagerUploadRollback (L9): when the config cannot be written
+// TestTLSManagerUploadRollback: when the config cannot be written
 // after the custom files were, the files go back to their previous state
 // — absent on a first upload, the previous pair on a re-upload — and
 // mode, config and store are unchanged.
@@ -605,7 +605,7 @@ func TestTLSManagerUploadRollback(t *testing.T) {
 
 // TestTLSManagerResetLeavesForeignPair: tls = "file" pointing at a pair
 // outside the tls directory (configured by hand); ResetAuto switches the
-// config to auto and does not delete those files. Also L8: a relative
+// config to auto and does not delete those files. Also: a relative
 // config path is made absolute.
 func TestTLSManagerResetLeavesForeignPair(t *testing.T) {
 	root := t.TempDir()
@@ -633,7 +633,7 @@ func TestTLSManagerResetLeavesForeignPair(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(m.dir, tlscert.CertFile)); err != nil {
 		t.Error("auto pair missing after reset")
 	}
-	// L8
+	// a relative config path is made absolute
 	rel := newTLSManager("config.toml", webSpec{TLS: "auto"}, nil)
 	if !filepath.IsAbs(rel.cfgPath) || !filepath.IsAbs(rel.dir) {
 		t.Errorf("relative config path kept: %s / %s", rel.cfgPath, rel.dir)
