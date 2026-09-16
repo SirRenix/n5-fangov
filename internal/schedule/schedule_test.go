@@ -175,6 +175,22 @@ func TestFromConfigAndEqual(t *testing.T) {
 	if Equal(got[0], b) {
 		t.Errorf("Equal ignores the days")
 	}
+	// the days are a set: order and repetition do not make another entry
+	b.Days = []time.Weekday{time.Saturday, time.Friday}
+	if !Equal(got[0], b) {
+		t.Errorf("Equal depends on the day order: %v vs %v", got[0].Days, b.Days)
+	}
+	b.Days = []time.Weekday{time.Saturday, time.Friday, time.Saturday}
+	if !Equal(got[0], b) {
+		t.Errorf("Equal counts a repeated day: %v vs %v", got[0].Days, b.Days)
+	}
+	b.Days = []time.Weekday{time.Friday}
+	if Equal(got[0], b) {
+		t.Errorf("Equal ignores a missing day")
+	}
+	if !Equal(Entry{Preset: "x"}, Entry{Preset: "x", Days: nil}) || !Equal(Entry{Preset: "x", Days: []time.Weekday{}}, Entry{Preset: "x"}) {
+		t.Errorf("Equal: empty day lists")
+	}
 	if DayName(time.Wednesday) != "wed" || DayName(time.Sunday) != "sun" {
 		t.Errorf("DayName")
 	}
