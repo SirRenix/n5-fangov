@@ -12,10 +12,17 @@ static binary. Hardware-verified on the Minisforum N5 Pro.
   three NVMe for the SSD fan; `fancontrol` cannot do that.
 - Guards every failure it can see: critical temperature, fan stall, sensor loss, write
   errors, its own crash, a kernel update without the driver.
-- Alerts through the Proxmox notification stack (`PVE::Notify`), `mail(1)` or the
-  journal — testable from the dashboard.
-- Web dashboard with curve editor, manual override, presets, alert and system tabs;
-  HTTPS and login on the LAN, plain and open on loopback.
+- Curve post-processing per channel — hysteresis and a minimum on-time — so a drive
+  fan stops oscillating around a curve point; several sensors per channel (maximum);
+  per-disk sensors (`disk:sda`, `disk:nvme1n1`).
+- Alerts through the Proxmox notification stack (`PVE::Notify`), `mail(1)`, a
+  webhook (ntfy, Gotify, Home Assistant) or the journal — testable from the dashboard.
+- Preset schedules by time of day (`[[schedule]]`), with an alert when a switch fails.
+- Web dashboard with curve editor, manual override, presets, alert and system tabs,
+  history over 2 h / 24 h / 7 d with CSV export; HTTPS and login on the LAN, plain and
+  open on loopback.
+- API tokens with scopes (`read` / `control` / `admin`), expiry and revocation for
+  scripts and Home Assistant; OpenAPI document at `/api/openapi.json`.
 - Runs sandboxed under systemd with watchdog and failsafe on exit; one binary, one
   dependency, no frontend framework.
 
@@ -51,6 +58,7 @@ each: [Alerts and guards](docs/07-alerts.md#what-the-daemon-guards-against).
 | [Install](docs/01-install.md) · [Kernel driver](docs/02-kernel-driver.md) · [Setup](docs/03-setup.md) | getting it on the box |
 | [Dashboard](docs/04-dashboard.md) · [CLI reference](docs/05-cli.md) · [Configuration](docs/06-configuration.md) | using it |
 | [Alerts and guards](docs/07-alerts.md) · [HTTPS and security](docs/08-https-security.md) | failure handling, access |
+| [API and integrations](docs/12-api.md) | tokens, OpenAPI, the Home Assistant recipe |
 | [Updates](docs/09-updates.md) · [Troubleshooting](docs/10-troubleshooting.md) | keeping it running |
 | [Development](docs/11-development.md) · [DESIGN.md](DESIGN.md) | building, testing, the contract |
 

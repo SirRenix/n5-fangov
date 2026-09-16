@@ -1,0 +1,41 @@
+# n5-fangov — Home Assistant automations that switch presets.
+#
+# Needs rest_command.n5_fangov_apply_preset from home-assistant-rest.yaml.
+# A plain time-of-day schedule does not need Home Assistant at all: [[schedule]]
+# in config.toml does that on the box (docs/06-configuration.md, "Schedules").
+# These automations are for triggers only Home Assistant knows about.
+
+automation:
+  # Quiet while the room is in use; back to the recommended set afterwards.
+  - alias: "N5 fans: quiet while the media room is in use"
+    id: n5_fangov_quiet_media_room
+    mode: single
+    triggers:
+      - trigger: state
+        entity_id: input_boolean.media_room_in_use
+    actions:
+      - action: rest_command.n5_fangov_apply_preset
+        data:
+          preset: "{{ 'n5pro-quiet' if trigger.to_state.state == 'on' else 'n5pro-balanced' }}"
+
+  # Push a notification when a channel leaves auto/manual (critical, stall,
+  # sensor-error, failsafe) — the same the daemon alerts about, but from the
+  # sensor side, so it works without the webhook transport.
+  - alias: "N5 fans: channel mode changed"
+    id: n5_fangov_mode_changed
+    mode: queued
+    triggers:
+      - trigger: state
+        entity_id:
+          - sensor.n5_fan_cpu_mode
+          - sensor.n5_fan_hdd_mode
+        to:
+          - critical
+          - stall
+          - sensor-error
+          - failsafe
+    actions:
+      - action: notify.notify
+        data:
+          title: "n5-fangov on n5host"
+          message: "{{ trigger.entity_id }} is {{ trigger.to_state.state }}"
