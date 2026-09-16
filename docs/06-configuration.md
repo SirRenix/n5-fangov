@@ -163,8 +163,8 @@ should follow the hottest of a mixed group is a composite (`["nvme:max", "disk:s
 ## Presets
 
 `/etc/n5-fangov/presets/<name>.toml` holds only `[[channel]]` tables — every channel
-key including `hysteresis` and `min_on` (a preset written before 0.3.1 lacks them: the
-defaults apply). *Save current curves as…* writes one, *Apply* merges it into the
+key including `hysteresis` and `min_on` (a preset written by an earlier release lacks them:
+the defaults apply). *Save current curves as…* writes one, *Apply* merges it into the
 config file and reloads, *Delete* removes a user preset
 ([Presets tab](04-dashboard.md#presets)). Three N5 Pro sets are **built in** (embedded
 in the binary, listed and applicable for the `n5pro` profile only — on another profile

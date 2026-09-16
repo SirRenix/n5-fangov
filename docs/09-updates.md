@@ -55,7 +55,7 @@ install -m0755 /root/n5-fangov-<version>.bak /usr/bin/n5-fangov && systemctl res
 
 The config is forward-compatible: a newer daemon reads an older file; an older daemon
 warns about unknown keys and ignores them (rule: config errors never prevent a start).
-Going back below 0.3.1: `hysteresis`, `min_on`, `[[schedule]]` and the `[alert]`
+Going back to a release that predates them: `hysteresis`, `min_on`, `[[schedule]]` and the `[alert]`
 webhook keys become warnings; a `sensor` **array** is not a string for the old parser —
 run `n5-fangov check` after the rollback and keep the single-id form on channels you
 may roll back with; `tokens.json` and `history.json` are left alone but unused (no
