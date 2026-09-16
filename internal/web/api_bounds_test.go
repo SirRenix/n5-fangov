@@ -185,7 +185,7 @@ func TestAccountPasswordBounds(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			// a fresh env per case: a successful change stores a production
 			// (210k) hash, and the current password must stay cheap
-			e, acc, _, _ := v3Env(t, adminBasic)
+			e, acc, _, _ := storesEnv(t, adminBasic)
 			e.srv.limiter.sleep = func(time.Duration) {}
 			body := fmt.Sprintf(`{"current_password":"pw","new_password":%q}`, c.pw)
 			r := e.do(t, "POST", "/api/account/password", body, basicAuth("admin", "pw"))
@@ -225,7 +225,7 @@ func TestAccountUserBounds(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			e, acc, _, _ := v3Env(t, adminBasic)
+			e, acc, _, _ := storesEnv(t, adminBasic)
 			e.srv.limiter.sleep = func(time.Duration) {}
 			body := fmt.Sprintf(`{"current_password":"pw","user":%q}`, c.user)
 			r := e.do(t, "POST", "/api/account/user", body, basicAuth("admin", "pw"))
@@ -249,7 +249,7 @@ func TestDashboardBoundsAPI(t *testing.T) {
 	if maxDashboardSensors != 8 {
 		t.Fatalf("maxDashboardSensors = %d", maxDashboardSensors)
 	}
-	e, _, _, db := v3Env(t, adminBasic)
+	e, _, _, db := storesEnv(t, adminBasic)
 	ok := basicAuth("admin", "pw")
 	ids := func(n int) string {
 		var s []string
@@ -292,7 +292,7 @@ func TestTLSUploadBoundsAPI(t *testing.T) {
 // TestPresetNameBoundsAPI: presetName is [a-z0-9_-]{1,64} on every preset
 // route; a traversal segment never reaches the store.
 func TestPresetNameBoundsAPI(t *testing.T) {
-	e, _, _, _ := v3Env(t, adminBasic)
+	e, _, _, _ := storesEnv(t, adminBasic)
 	store := e.srv.deps.Presets.(*fakePresetDeleter)
 	auth := basicAuth("admin", "pw")
 	n64, n65 := strings.Repeat("p", 64), strings.Repeat("p", 65)

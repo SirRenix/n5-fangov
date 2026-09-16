@@ -1,6 +1,8 @@
 package main
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -192,5 +194,197 @@ func TestWatchdogAlive(t *testing.T) {
 	}
 	if watchdogPing >= 30*s || watchdogPing < 5*s {
 		t.Errorf("watchdogPing %s must sit well inside WatchdogSec=60", watchdogPing)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// check --after-update: kernel module scan on a temp tree
+
+func mkKernel(t *testing.T, root, name string, withBuild bool, module string) {
+	t.Helper()
+	dir := filepath.Join(root, name)
+	if withBuild {
+		if err := os.MkdirAll(filepath.Join(dir, "build"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "modules.dep"), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if module != "" {
+		mdir := filepath.Join(dir, "updates", "dkms")
+		if err := os.MkdirAll(mdir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(mdir, module), []byte("elf"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestScanKernelModules(t *testing.T) {
+	root := t.TempDir()
+	mkKernel(t, root, "6.14.8-2-pve", true, dkmsKernelObject)
+	mkKernel(t, root, "6.17.2-1-pve", false, dkmsKernelObject+".zst") // compressed counts
+	mkKernel(t, root, "6.17.4-1-pve", true, "")                       // fresh kernel, no module
+	mkKernel(t, root, "6.17.4-2-pve", false, "")                      // headers gone, modules.dep present
+	// leftovers that are not kernels: an empty dir, a file
+	if err := os.MkdirAll(filepath.Join(root, "6.11.0-old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "README"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	kernels, missing, err := scanKernelModules(root, dkmsKernelObject)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(kernels, " ") != "6.14.8-2-pve 6.17.2-1-pve 6.17.4-1-pve 6.17.4-2-pve" {
+		t.Errorf("kernels: %v", kernels)
+	}
+	if strings.Join(missing, " ") != "6.17.4-1-pve 6.17.4-2-pve" {
+		t.Errorf("missing: %v", missing)
+	}
+	line := kernelMissingLine("6.17.4-1-pve", "0.2.0")
+	if line != "kernel 6.17.4-1-pve: fan driver module missing — run: dkms install minisforum-n5-it5571/0.2.0 -k 6.17.4-1-pve" {
+		t.Errorf("line: %s", line)
+	}
+	if _, _, err := scanKernelModules(filepath.Join(root, "nope"), dkmsKernelObject); err == nil {
+		t.Errorf("missing root must error")
+	}
+	empty := t.TempDir()
+	if k, m, err := scanKernelModules(empty, dkmsKernelObject); err != nil || len(k) != 0 || len(m) != 0 {
+		t.Errorf("empty root: %v %v %v", k, m, err)
+	}
+}
+
+// M4: only kernels the box can boot into count. With proxmox-boot-tool
+// present its manual/automatic/pinned selection plus the running kernel
+// are relevant; without it the running one plus the newest installed.
+// Installed-but-unselected kernels are info only.
+func TestRelevantKernels(t *testing.T) {
+	installed := []string{"6.14.8-2-pve", "6.17.2-1-pve", "6.17.4-1-pve", "6.17.4-2-pve", "6.8.12-9-pve"}
+	toolOut := `Manually selected kernels:
+None.
+
+Automatically selected kernels:
+6.17.4-2-pve
+6.17.4-1-pve
+
+Pinned kernel:
+6.14.8-2-pve
+`
+	rel, source := relevantKernels("6.17.2-1-pve", installed, toolOut, nil)
+	want := map[string]bool{"6.17.2-1-pve": true, "6.17.4-2-pve": true, "6.17.4-1-pve": true, "6.14.8-2-pve": true}
+	if fmt.Sprint(rel) != fmt.Sprint(want) || !strings.Contains(source, "proxmox-boot-tool") {
+		t.Errorf("with tool: %v (%s)", rel, source)
+	}
+	if rel["6.8.12-9-pve"] {
+		t.Error("old installed kernel counted as relevant")
+	}
+	// a listed kernel that is not installed under /lib/modules is ignored
+	rel, _ = relevantKernels("6.17.2-1-pve", installed, "Automatically selected kernels:\n7.0.0-1-pve\n6.17.4-2-pve\n", nil)
+	if rel["7.0.0-1-pve"] || !rel["6.17.4-2-pve"] {
+		t.Errorf("uninstalled listed kernel: %v", rel)
+	}
+	// tool absent: running + newest installed (numeric order, not lexical:
+	// 6.17 > 6.8)
+	rel, source = relevantKernels("6.14.8-2-pve", installed, "", errors.New("exec: not found"))
+	if fmt.Sprint(rel) != fmt.Sprint(map[string]bool{"6.14.8-2-pve": true, "6.17.4-2-pve": true}) || !strings.Contains(source, "newest") {
+		t.Errorf("without tool: %v (%s)", rel, source)
+	}
+	// tool present but lists nothing usable: same fallback
+	rel, source = relevantKernels("6.14.8-2-pve", installed, "Manually selected kernels:\nNone.\n\nAutomatically selected kernels:\nNone.\n", nil)
+	if !rel["6.17.4-2-pve"] || len(rel) != 2 || !strings.Contains(source, "newest") {
+		t.Errorf("empty tool output: %v (%s)", rel, source)
+	}
+	// running kernel unknown: newest only
+	rel, _ = relevantKernels("", installed, "", errors.New("x"))
+	if len(rel) != 1 || !rel["6.17.4-2-pve"] {
+		t.Errorf("no running kernel: %v", rel)
+	}
+	if got := parseBootToolKernels(toolOut); strings.Join(got, " ") != "6.17.4-2-pve 6.17.4-1-pve 6.14.8-2-pve" {
+		t.Errorf("parse: %v", got)
+	}
+	// unknown sections are not harvested
+	if got := parseBootToolKernels("Kernels in /boot:\n6.1.0-x\n\nAutomatically selected kernels:\n6.2.0-y\n"); strings.Join(got, " ") != "6.2.0-y" {
+		t.Errorf("foreign section harvested: %v", got)
+	}
+	for _, c := range [][2]string{{"6.8.12-9-pve", "6.17.4-1-pve"}, {"6.17.4-1-pve", "6.17.4-2-pve"}, {"6.17.4-2-pve", "6.17.10-1-pve"}, {"6.17-pve", "6.17.0-1-pve"}} {
+		if !kernelLess(c[0], c[1]) || kernelLess(c[1], c[0]) {
+			t.Errorf("kernelLess(%s, %s)", c[0], c[1])
+		}
+	}
+	if kernelLess("6.17.4-2-pve", "6.17.4-2-pve") {
+		t.Error("kernelLess equal")
+	}
+	if l := kernelMissingInfo("6.8.12-9-pve", "0.2.0"); !strings.Contains(l, "info only") || !strings.Contains(l, "dkms install minisforum-n5-it5571/0.2.0 -k 6.8.12-9-pve") {
+		t.Errorf("info line: %s", l)
+	}
+	// the func vars run real commands by default; on the test host uname
+	// works and the tool is absent or works — both paths must not panic
+	_ = runningKernel()
+	_, _ = bootToolKernelList()
+}
+
+func TestWantsN5ProAndDKMSVersion(t *testing.T) {
+	cases := []struct {
+		profile, detected string
+		src, want         bool
+	}{
+		{"n5pro", "", false, true},
+		{"n5pro", "nct67xx", false, true},
+		{"auto", "n5pro", false, true},
+		{"auto", "", true, true},
+		{"auto", "", false, false},
+		{"auto", "monitor", false, false},
+		{"", "n5pro", false, true},
+		{"nct67xx", "n5pro", true, false},
+		{"monitor", "", true, false},
+	}
+	for _, c := range cases {
+		if got := wantsN5Pro(c.profile, c.detected, c.src); got != c.want {
+			t.Errorf("wantsN5Pro(%q,%q,%v) = %v", c.profile, c.detected, c.src, got)
+		}
+	}
+	src := t.TempDir()
+	if v := dkmsSourceVersion(src); v != "" {
+		t.Errorf("no source: %q", v)
+	}
+	for _, d := range []string{dkmsPackage + "-0.2.0", dkmsPackage + "-0.10.1", dkmsPackage + "-0.9.0", "other-1.0"} {
+		if err := os.Mkdir(filepath.Join(src, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if v := dkmsSourceVersion(src); v != "0.10.1" {
+		t.Errorf("newest source version: %q", v)
+	}
+	if dkmsSourceVersion(filepath.Join(src, "nope")) != "" {
+		t.Errorf("missing root")
+	}
+}
+
+// TestCheckLegacyHashAdvisory: a legacy sha256 hash under auth = basic is
+// an advisory line pointing at passwd; a PBKDF2 hash is not.
+func TestCheckLegacyHashAdvisory(t *testing.T) {
+	fakeN5(t, false)
+	dir := t.TempDir()
+	legacy := strings.Repeat("ab", 32)
+	cfg := writeCfg(t, dir, "[web]\nlisten = \"127.0.0.1:8010\"\nauth = \"basic\"\nuser = \"admin\"\npassword_hash = \""+legacy+"\"\n")
+	res := runChecks(cfg, dir)
+	r, ok := find(res, "web auth")
+	if !ok || r.ok || !r.advisory || !strings.Contains(r.detail, "n5-fangov passwd") {
+		t.Fatalf("legacy advisory = %+v (found %v)", r, ok)
+	}
+	if f := fatals(res); len(f) != 0 {
+		t.Fatalf("legacy hash must not be fatal: %v", f)
+	}
+	cfg = writeCfg(t, dir, "[web]\nlisten = \"127.0.0.1:8010\"\nauth = \"basic\"\nuser = \"admin\"\npassword_hash = \""+passwordHash("admin", "longenough")+"\"\n")
+	if _, ok := find(runChecks(cfg, dir), "web auth"); ok {
+		t.Fatal("pbkdf2 hash reported as legacy")
 	}
 }

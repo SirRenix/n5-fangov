@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -326,5 +327,122 @@ func TestNewCollectorDefaults(t *testing.T) {
 	}
 	if !errors.Is(errNoMemoryDevice, errNoMemoryDevice) {
 		t.Error("sentinel")
+	}
+}
+
+// TestNICsNeverNull: a box without physical interfaces serialises
+// "nics": [] (the dashboard iterates it).
+func TestNICsNeverNull(t *testing.T) {
+	o := testOptions(t)
+	o.LSPCI = "-"
+	if err := os.RemoveAll(filepath.Join(o.Sysfs, "class", "net")); err != nil {
+		t.Fatal(err)
+	}
+	in := Collect(o)
+	b, err := json.Marshal(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if in.NICs == nil || !strings.Contains(string(b), `"nics":[]`) {
+		t.Errorf("nics = %#v / %s", in.NICs, string(b))
+	}
+}
+
+// TestLspciFailureRetried: a failed lspci run does not pin nameless PCI
+// devices for CacheTTL; after LspciRetry the names are read again.
+func TestLspciFailureRetried(t *testing.T) {
+	o := testOptions(t)
+	now := time.Unix(1789500000, 0)
+	o.Now = func() time.Time { return now }
+	good := o.LSPCI
+	o.LSPCI = filepath.Join(t.TempDir(), "nope")
+	c := NewCollector(o)
+	first := c.Collect()
+	if !hasPrefix(first.Errors, "lspci:") || first.GPUs[0].Name != "PCI device 1002:150e" {
+		t.Fatalf("first = %v / %+v", first.Errors, first.GPUs)
+	}
+	c.o.LSPCI = good
+	now = now.Add(LspciRetry - time.Second)
+	if in := c.Collect(); !hasPrefix(in.Errors, "lspci:") {
+		t.Errorf("retried before LspciRetry: %v", in.Errors)
+	}
+	now = now.Add(2 * time.Second)
+	in := c.Collect()
+	if hasPrefix(in.Errors, "lspci:") || in.GPUs[0].Name == "PCI device 1002:150e" || in.StaticAt != now.Unix() {
+		t.Errorf("not retried after LspciRetry: %v / %+v", in.Errors, in.GPUs)
+	}
+	// a good result is then cached for CacheTTL again
+	c.o.LSPCI = filepath.Join(t.TempDir(), "nope")
+	now = now.Add(LspciRetry + time.Second)
+	if in := c.Collect(); hasPrefix(in.Errors, "lspci:") {
+		t.Errorf("good static part re-read before CacheTTL: %v", in.Errors)
+	}
+}
+
+func hasPrefix(list []string, p string) bool {
+	for _, s := range list {
+		if strings.HasPrefix(s, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestCollectNotBlockedByRefresh: while one Collect gathers the static
+// part, a second one is served from the previous static part instead of
+// waiting; the very first collection is waited for.
+func TestCollectNotBlockedByRefresh(t *testing.T) {
+	o := testOptions(t)
+	now := time.Unix(1789500000, 0)
+	var mu sync.Mutex
+	o.Now = func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
+	// an lspci that blocks until the gate file appears
+	lspci := filepath.Join(t.TempDir(), "lspci")
+	fifo := filepath.Join(t.TempDir(), "gate")
+	if err := os.WriteFile(lspci, []byte("#!/bin/sh\necho started >> \""+fifo+".started\"\nwhile [ ! -e \""+fifo+"\" ]; do sleep 0.05; done\necho '00:00.0 \"Host bridge\" \"Example\" \"Bridge\"'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	c := NewCollector(o)
+	if in := c.Collect(); in.StaticAt == 0 { // first collection with the default lspci fixture
+		t.Fatal("first collection missing")
+	}
+	// second static collection blocks in lspci; a concurrent Collect must
+	// return the cached part meanwhile
+	c.o.LSPCI = lspci
+	mu.Lock()
+	now = now.Add(DefaultCacheTTL + time.Second)
+	mu.Unlock()
+	done := make(chan Info, 1)
+	go func() { done <- c.Collect() }()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(fifo + ".started"); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("blocking lspci never started")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	fast := make(chan Info, 1)
+	go func() { fast <- c.Collect() }()
+	select {
+	case in := <-fast:
+		if in.StaticAt != 1789500000 {
+			t.Errorf("concurrent Collect got a static part from %d, want the cached one", in.StaticAt)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("concurrent Collect blocked behind the refresh")
+	}
+	if err := os.WriteFile(fifo, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case in := <-done:
+		if in.StaticAt != now.Unix() {
+			t.Errorf("refresh result StaticAt = %d, want %d", in.StaticAt, now.Unix())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("refresh never finished")
 	}
 }

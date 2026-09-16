@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"io"
 	"net"
 	"net/url"
 	"os"
@@ -80,4 +81,24 @@ func TestLoadSnapshotErrorPaths(t *testing.T) {
 	if err != nil || snap.Profile != "n5pro" || !strings.HasPrefix(source, "state.json") {
 		t.Fatalf("fallback: snap=%+v source=%q err=%v", snap, source, err)
 	}
+}
+
+// captureStderr runs f with os.Stderr redirected and returns what was written.
+func captureStderr(t *testing.T, f func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stderr
+	os.Stderr = w
+	done := make(chan string)
+	go func() {
+		b, _ := io.ReadAll(r)
+		done <- string(b)
+	}()
+	f()
+	os.Stderr = old
+	w.Close()
+	return <-done
 }

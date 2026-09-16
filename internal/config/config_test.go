@@ -952,3 +952,347 @@ func TestSetKey(t *testing.T) {
 		t.Errorf("parse after SetKey: %v %v %+v", err, warns, cfg.Web)
 	}
 }
+
+// [alert] and [dashboard] sections.
+
+func TestAlertSection(t *testing.T) {
+	cfg, warns, err := Parse([]byte("[alert]\ntransport = \"mail\"\nmail_to = \"ops@example.test\"\n"))
+	if err != nil || len(warns) != 0 {
+		t.Fatalf("valid: %v %v", warns, err)
+	}
+	if cfg.Alert.Transport != "mail" || cfg.Alert.MailTo != "ops@example.test" {
+		t.Errorf("alert: %+v", cfg.Alert)
+	}
+	// case and spacing are tolerated for the transport
+	cfg, warns, _ = Parse([]byte("[alert]\ntransport = \" PVE \"\n"))
+	if cfg.Alert.Transport != "pve" || len(warns) != 0 {
+		t.Errorf("normalised transport: %+v %v", cfg.Alert, warns)
+	}
+	// invalid values → warning + default
+	cfg, warns, _ = Parse([]byte("[alert]\ntransport = \"pigeon\"\nmail_to = \"two words\"\nbogus = 1\n"))
+	for _, f := range []string{"alert.transport", "alert.mail_to", "alert.bogus"} {
+		hasWarn(t, warns, f)
+	}
+	if !reflect.DeepEqual(cfg.Alert, Default().Alert) {
+		t.Errorf("all-invalid alert must equal defaults: %+v", cfg.Alert)
+	}
+	cfg, warns, _ = Parse([]byte("[alert]\nmail_to = \"a\\\"b\"\n"))
+	hasWarn(t, warns, "alert.mail_to")
+	if cfg.Alert.MailTo != DefaultMailTo {
+		t.Errorf("quoted mail_to must fall back: %q", cfg.Alert.MailTo)
+	}
+	cfg, warns, _ = Parse([]byte("alert = 5\n"))
+	hasWarn(t, warns, "alert")
+	if cfg.Alert.Transport != "auto" {
+		t.Errorf("non-table alert: %+v", cfg.Alert)
+	}
+	// round trip
+	cfg = Default()
+	cfg.Alert = Alert{Transport: "log", MailTo: "admin"}
+	back, warns, err := Parse(Marshal(cfg))
+	if err != nil || len(warns) != 0 || !reflect.DeepEqual(cfg, back) {
+		t.Errorf("alert round trip: %v %v\n%+v", err, warns, back)
+	}
+}
+
+func TestValidMailTo(t *testing.T) {
+	for _, ok := range []string{"root", "admin", "ops@example.test", "first.last+tag@mail.example", "user_1"} {
+		if !ValidMailTo(ok) {
+			t.Errorf("%q must be valid", ok)
+		}
+	}
+	for _, bad := range []string{"", "two words", "a\"b", "a;b", "root@", "@host", "x@y z", strings.Repeat("a", 260)} {
+		if ValidMailTo(bad) {
+			t.Errorf("%q must be invalid", bad)
+		}
+	}
+}
+
+func TestDashboardSection(t *testing.T) {
+	cfg, warns, err := Parse([]byte("[dashboard]\nsensors = [\"hwmon:amdgpu:temp1\", \" nvme:max \", \"\", \"hwmon:amdgpu:temp1\"]\n"))
+	if err != nil || len(warns) != 0 {
+		t.Fatalf("valid: %v %v", warns, err)
+	}
+	if !reflect.DeepEqual(cfg.Dashboard.Sensors, []string{"hwmon:amdgpu:temp1", "nvme:max"}) {
+		t.Errorf("sensors (trimmed, deduplicated, empties dropped): %v", cfg.Dashboard.Sensors)
+	}
+	// absent / empty → non-nil empty slice (round trip with Default)
+	cfg, _, _ = Parse(nil)
+	if cfg.Dashboard.Sensors == nil || len(cfg.Dashboard.Sensors) != 0 {
+		t.Errorf("absent sensors must be an empty non-nil slice: %#v", cfg.Dashboard.Sensors)
+	}
+	cfg, warns, _ = Parse([]byte("[dashboard]\nsensors = []\n"))
+	if cfg.Dashboard.Sensors == nil || len(warns) != 0 {
+		t.Errorf("empty sensors: %#v %v", cfg.Dashboard.Sensors, warns)
+	}
+	// too many → warning, truncated to MaxDashboardSensors
+	var ids []string
+	for i := 0; i < MaxDashboardSensors+2; i++ {
+		ids = append(ids, "\"hwmon:x:temp"+string(rune('1'+i))+"\"")
+	}
+	cfg, warns, _ = Parse([]byte("[dashboard]\nsensors = [" + strings.Join(ids, ",") + "]\n"))
+	hasWarn(t, warns, "dashboard.sensors")
+	if len(cfg.Dashboard.Sensors) != MaxDashboardSensors {
+		t.Errorf("truncated to %d, got %d", MaxDashboardSensors, len(cfg.Dashboard.Sensors))
+	}
+	// wrong type → warning, empty
+	cfg, warns, _ = Parse([]byte("[dashboard]\nsensors = \"k10temp\"\nextra = 1\n"))
+	hasWarn(t, warns, "dashboard.sensors")
+	hasWarn(t, warns, "dashboard.extra")
+	if len(cfg.Dashboard.Sensors) != 0 {
+		t.Errorf("non-array sensors must be ignored: %v", cfg.Dashboard.Sensors)
+	}
+	// round trip and Clone independence
+	cfg = Default()
+	cfg.Dashboard.Sensors = []string{"k10temp", "ec:system"}
+	back, warns, err := Parse(Marshal(cfg))
+	if err != nil || len(warns) != 0 || !reflect.DeepEqual(cfg, back) {
+		t.Errorf("dashboard round trip: %v %v\n%+v", err, warns, back)
+	}
+	cl := cfg.Clone()
+	cl.Dashboard.Sensors[0] = "changed"
+	if cfg.Dashboard.Sensors[0] != "k10temp" {
+		t.Errorf("Clone must copy the sensor list")
+	}
+}
+
+// The shipped example config must parse without a single warning: it is
+// the reference for every key, and the daemon would alert on it.
+func TestExampleConfigParses(t *testing.T) {
+	// The file is part of the repository and shipped by the deb: a missing
+	// copy is a broken checkout, not a reason to skip (AUDIT 7).
+	raw, err := os.ReadFile(filepath.Join("..", "..", "deploy", "config.example.toml"))
+	if err != nil {
+		t.Fatal("deploy/config.example.toml not found:", err)
+	}
+	cfg, warns, err := Parse(raw)
+	if err != nil || len(warns) != 0 {
+		t.Fatalf("example config: %v %v", warns, err)
+	}
+	if cfg.Alert.Transport != "auto" || cfg.Alert.MailTo != "root" || len(cfg.Dashboard.Sensors) != 0 || len(cfg.Channels) != 3 {
+		t.Errorf("example values: %+v %+v %d channels", cfg.Alert, cfg.Dashboard, len(cfg.Channels))
+	}
+}
+
+// TestValidMailToNoLeadingDash (R-M3): a recipient that mail(1) would take
+// as an option is refused; the leading character is a letter, digit or _.
+func TestValidMailToNoLeadingDash(t *testing.T) {
+	for _, bad := range []string{"-root", "-Sexpandaddr", "-a@example.test", "--", ".hidden", "%x", "+tag"} {
+		if ValidMailTo(bad) {
+			t.Errorf("%q must be invalid", bad)
+		}
+	}
+	for _, ok := range []string{"root", "_svc", "a-b", "x.y-z+tag@mail.example", "9lives"} {
+		if !ValidMailTo(ok) {
+			t.Errorf("%q must be valid", ok)
+		}
+	}
+	// the parser falls back to the default and warns
+	cfg, warns, _ := Parse([]byte("[alert]\nmail_to = \"-Sfoo\"\n"))
+	hasWarn(t, warns, "alert.mail_to")
+	if cfg.Alert.MailTo != DefaultMailTo {
+		t.Errorf("fallback: %q", cfg.Alert.MailTo)
+	}
+}
+
+// TestParseDottedTables (R-L11): sections written as top-level dotted keys
+// are tables to the parser (toml records no type for an implicit table);
+// a scalar under a section name is still refused.
+func TestParseDottedTables(t *testing.T) {
+	src := "daemon.interval = \"7s\"\nweb.auth = \"basic\"\nweb.user = \"admin\"\nweb.password_hash = \"" + strings.Repeat("0", 64) + "\"\nalert.transport = \"log\"\ndashboard.sensors = [\"k10temp\"]\nlog.max_files = 2\n"
+	cfg, warns, err := Parse([]byte(src))
+	if err != nil || len(warns) != 0 {
+		t.Fatalf("dotted layout: %v %v", err, warns)
+	}
+	if cfg.Daemon.Interval.String() != "7s" || cfg.Web.Auth != "basic" || cfg.Web.User != "admin" || cfg.Web.PasswordHash != strings.Repeat("0", 64) || cfg.Alert.Transport != "log" || len(cfg.Dashboard.Sensors) != 1 || cfg.Log.MaxFiles != 2 {
+		t.Errorf("values: %+v %+v %+v", cfg.Daemon, cfg.Web, cfg.Alert)
+	}
+	if !HasSecret([]byte(src)) {
+		t.Error("HasSecret must see the dotted hash")
+	}
+	// unknown dotted key → warning like inside a header table
+	_, warns, _ = Parse([]byte("web.bogus = 1\n"))
+	hasWarn(t, warns, "web.bogus")
+	// scalar / array under the section name → not a table
+	for _, bad := range []string{"web = 5\n", "web = \"x\"\n", "web = [1]\n"} {
+		cfg, warns, err := Parse([]byte(bad))
+		if err != nil {
+			t.Fatalf("%q: %v", bad, err)
+		}
+		hasWarn(t, warns, "web")
+		if cfg.Web.Auth != Default().Web.Auth || cfg.Web.User != "" {
+			t.Errorf("%q: %+v", bad, cfg.Web)
+		}
+	}
+	// inline table parses like a header table
+	cfg, warns, err = Parse([]byte("web = { auth = \"basic\", user = \"u\", password_hash = \"" + strings.Repeat("1", 64) + "\" }\n"))
+	if err != nil || len(warns) != 0 || cfg.Web.User != "u" {
+		t.Errorf("inline: %v %v %+v", err, warns, cfg.Web)
+	}
+}
+
+// TestSetKeyDotted (R-L11): a file that writes [web] as top-level dotted
+// keys is edited in place — replace the key, insert a new key after the
+// last section.* line — instead of appending a second [web] table, which
+// the parser rejects. Other sections are untouched; the result parses.
+func TestSetKeyDotted(t *testing.T) {
+	src := "# dotted layout\ndaemon.interval = \"10s\"\nweb.listen = \"127.0.0.1:8010\"\nweb.auth = \"basic\"   # keep\nweb.user = \"admin\"\n\n[[channel]]\nname = \"cpu\"\npwm = 1\nsensor = \"k10temp\"\ncurve = [[45,85],[80,255]]\ncritical = 88\n"
+	out := string(SetKey([]byte(src), "web", "user", `"ops"`))
+	want := strings.Replace(src, `web.user = "admin"`, `web.user = "ops"`, 1)
+	if out != want {
+		t.Errorf("replace dotted:\n%s", out)
+	}
+	out = string(SetKey([]byte(out), "web", "password_hash", `"`+strings.Repeat("0", 64)+`"`))
+	want = strings.Replace(want, "web.user = \"ops\"\n", "web.user = \"ops\"\nweb.password_hash = \""+strings.Repeat("0", 64)+"\"\n", 1)
+	if out != want {
+		t.Errorf("insert after the last dotted key:\n%s", out)
+	}
+	if strings.Count(out, "[web]") != 0 {
+		t.Errorf("a [web] header must not be appended:\n%s", out)
+	}
+	cfg, warns, err := Parse([]byte(out))
+	if err != nil || len(warns) != 0 || cfg.Web.User != "ops" || cfg.Web.Auth != "basic" || cfg.Web.Listen != "127.0.0.1:8010" || cfg.Daemon.Interval.String() != "10s" || len(cfg.Channels) != 1 {
+		t.Errorf("parse after dotted SetKey: %v %v %+v", err, warns, cfg.Web)
+	}
+	// a section absent in both forms is still appended as a header table
+	out = string(SetKey([]byte(out), "alert", "transport", `"log"`))
+	if !strings.HasSuffix(out, "\n[alert]\ntransport = \"log\"\n") {
+		t.Errorf("missing section appended:\n%s", out)
+	}
+	if cfg, _, err := Parse([]byte(out)); err != nil || cfg.Alert.Transport != "log" || cfg.Web.User != "ops" {
+		t.Errorf("parse after append: %v %+v", err, cfg.Alert)
+	}
+	// dotted keys of another section do not attract the insert; the
+	// dotted form only counts before the first table header
+	out = string(SetKey([]byte("daemon.interval = \"5s\"\n\n[daemon]\nlog_every = 3\n"), "web", "tls", `"auto"`))
+	if out != "daemon.interval = \"5s\"\n\n[daemon]\nlog_every = 3\n\n[web]\ntls = \"auto\"\n" {
+		t.Errorf("unrelated dotted keys:\n%s", out)
+	}
+	out = string(SetKey([]byte("[daemon]\nweb.user = \"x\"\n"), "web", "user", `"y"`))
+	if out != "[daemon]\nweb.user = \"x\"\n\n[web]\nuser = \"y\"\n" {
+		t.Errorf("dotted key inside a table is not top level:\n%s", out)
+	}
+	// header layout unchanged by the refactor: key with spaces around "=" and a comment
+	out = string(SetKey([]byte("[web]\n  user   =\"a\" # c\nuser_x = 1\n"), "web", "user", `"b"`))
+	if out != "[web]\nuser = \"b\"\nuser_x = 1\n" {
+		t.Errorf("header replace:\n%s", out)
+	}
+	if assignedKey("# user = 1") != "" || assignedKey("user") != "" || assignedKey(" web.user = \"a=b\" ") != "web.user" {
+		t.Error("assignedKey")
+	}
+}
+
+func warnFields(warns []Warning) string {
+	var out []string
+	for _, w := range warns {
+		out = append(out, w.Field)
+	}
+	return strings.Join(out, ",")
+}
+
+// TestEnumKeysNormalised: blanks and letter case around profile, auth,
+// tls, transport and stop do not turn a valid value into "unknown".
+func TestEnumKeysNormalised(t *testing.T) {
+	src := "[daemon]\nprofile = \" N5Pro \"\n[web]\nlisten = \"192.0.2.20:8010\"\nauth = \"Basic\"\nuser = \"admin\"\npassword_hash = \"" + strings.Repeat("ab", 32) + "\"\ntls = \" AUTO\"\n[alert]\ntransport = \"LOG \"\n[[channel]]\nname = \"cpu\"\npwm = 1\nsensor = \"k10temp\"\ncurve = [[45, 85], [80, 255]]\ncritical = 88\nstop = \"Auto \"\n"
+	cfg, warns, err := Parse([]byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(warns) != 0 {
+		t.Fatalf("warnings: %v", warns)
+	}
+	if cfg.Daemon.Profile != "n5pro" || cfg.Web.Auth != "basic" || cfg.Web.TLS != "auto" || cfg.Alert.Transport != "log" || cfg.Channels[0].Stop != "auto" {
+		t.Errorf("normalised: %+v %+v %+v %+v", cfg.Daemon.Profile, cfg.Web, cfg.Alert, cfg.Channels[0].Stop)
+	}
+}
+
+// TestListenPortChecked: a listen value whose port is not a number in
+// 1..65535 falls back to the default with one warning.
+func TestListenPortChecked(t *testing.T) {
+	for _, listen := range []string{"127.0.0.1:abc", "127.0.0.1:0", "127.0.0.1:65536", "127.0.0.1:"} {
+		cfg, warns, err := Parse([]byte("[web]\nlisten = \"" + listen + "\"\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.Web.Listen != Default().Web.Listen || len(warns) != 1 || warns[0].Field != "web.listen" {
+			t.Errorf("%q: listen=%q warns=%v", listen, cfg.Web.Listen, warns)
+		}
+	}
+	cfg, warns, _ := Parse([]byte("[web]\nlisten = \"[::1]:65535\"\n"))
+	if cfg.Web.Listen != "[::1]:65535" || len(warns) != 0 {
+		t.Errorf("valid port: %q %v", cfg.Web.Listen, warns)
+	}
+}
+
+// TestChannelNameLength: 32 characters pass, 33 drop the channel — the
+// same bound the override API applies.
+func TestChannelNameLength(t *testing.T) {
+	mk := func(name string) string {
+		return "[[channel]]\nname = \"" + name + "\"\npwm = 1\nsensor = \"k10temp\"\ncurve = [[45, 85], [80, 255]]\ncritical = 88\n"
+	}
+	if cfg, _, _ := Parse([]byte(mk(strings.Repeat("a", 32)))); len(cfg.Channels) != 1 {
+		t.Errorf("32-character name dropped")
+	}
+	cfg, warns, _ := Parse([]byte(mk(strings.Repeat("a", 33))))
+	if len(cfg.Channels) != 0 || len(warns) != 1 || !strings.Contains(warns[0].Msg, "{1,32}") {
+		t.Errorf("33-character name: %d channels, %v", len(cfg.Channels), warns)
+	}
+}
+
+// TestPwmOneWarning: a missing, non-integer or out-of-range pwm yields
+// exactly one warning that says the channel is dropped.
+func TestPwmOneWarning(t *testing.T) {
+	for _, pwm := range []string{"", "pwm = 0\n", "pwm = 9\n", "pwm = \"one\"\n"} {
+		src := "[[channel]]\nname = \"cpu\"\n" + pwm + "sensor = \"k10temp\"\ncurve = [[45, 85], [80, 255]]\ncritical = 88\n"
+		cfg, warns, err := Parse([]byte(src))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(cfg.Channels) != 0 || len(warns) != 1 || warns[0].Field != "channel.cpu.pwm" || !strings.Contains(warns[0].Msg, "channel dropped") {
+			t.Errorf("%q: %d channels, warnings %s / %v", pwm, len(cfg.Channels), warnFields(warns), warns)
+		}
+	}
+}
+
+// TestUserNameRule: a user outside the API rule with auth = basic drops
+// to auth = none (fail closed: loopback) with a warning naming the rule.
+func TestUserNameRule(t *testing.T) {
+	hash := strings.Repeat("ab", 32)
+	for _, user := range []string{" admin", "ad min", "über", strings.Repeat("a", 33)} {
+		cfg, warns, _ := Parse([]byte("[web]\nlisten = \"192.0.2.20:8010\"\nauth = \"basic\"\nuser = \"" + user + "\"\npassword_hash = \"" + hash + "\"\n"))
+		if cfg.Web.Auth != "none" || cfg.Web.Listen != Default().Web.Listen || !strings.Contains(warnFields(warns), "web.user") {
+			t.Errorf("%q: auth=%s listen=%s warns=%v", user, cfg.Web.Auth, cfg.Web.Listen, warns)
+		}
+	}
+	cfg, warns, _ := Parse([]byte("[web]\nlisten = \"192.0.2.20:8010\"\nauth = \"basic\"\nuser = \"root.ops-1\"\npassword_hash = \"" + hash + "\"\n"))
+	if cfg.Web.Auth != "basic" || len(warns) != 0 {
+		t.Errorf("valid user: auth=%s warns=%v", cfg.Web.Auth, warns)
+	}
+	if !UserRe.MatchString("Admin_1.x-y") || UserRe.MatchString("") || MinPasswordLen != 8 || MaxPasswordLen != 128 {
+		t.Error("shared rules")
+	}
+}
+
+// TestBehindTLSProxy: the key parses, defaults to false, and a non-boolean
+// value is one warning.
+func TestBehindTLSProxy(t *testing.T) {
+	cfg, warns, _ := Parse([]byte("[web]\nbehind_tls_proxy = true\n"))
+	if !cfg.Web.BehindTLSProxy || len(warns) != 0 {
+		t.Errorf("true: %v %v", cfg.Web.BehindTLSProxy, warns)
+	}
+	cfg, warns, _ = Parse([]byte("[web]\nlisten = \"127.0.0.1:8010\"\n"))
+	if cfg.Web.BehindTLSProxy || len(warns) != 0 {
+		t.Errorf("default: %v %v", cfg.Web.BehindTLSProxy, warns)
+	}
+	cfg, warns, _ = Parse([]byte("[web]\nbehind_tls_proxy = \"yes\"\n"))
+	if cfg.Web.BehindTLSProxy || len(warns) != 1 || warns[0].Field != "web.behind_tls_proxy" {
+		t.Errorf("string: %v %v", cfg.Web.BehindTLSProxy, warns)
+	}
+	// round trip through Marshal
+	c := Default()
+	c.Web.BehindTLSProxy = true
+	back, warns, err := Parse(Marshal(c))
+	if err != nil || len(warns) != 0 || !back.Web.BehindTLSProxy {
+		t.Errorf("round trip: %v %v %v", err, warns, back.Web.BehindTLSProxy)
+	}
+}

@@ -123,3 +123,44 @@ func TestSMBIOSVersion(t *testing.T) {
 		t.Errorf("junk: %q", v)
 	}
 }
+
+// TestMemoryECCOnlyCorrecting: error correction 0x07 (CRC) is detection,
+// not correction; 0x05/0x06 are ECC.
+func TestMemoryECCOnlyCorrecting(t *testing.T) {
+	for code, want := range map[byte]bool{0x03: false, 0x04: false, 0x05: true, 0x06: true, 0x07: false} {
+		var sb smbiosBuilder
+		sb.add(16, 0x17, 0x1000, map[int][]byte{0x04: {0x03}, 0x05: {0x03}, 0x06: {code}, 0x0D: u16(1)})
+		sb.add(17, 0x1C, 0x1100, map[int][]byte{0x04: u16(0x1000), 0x08: u16(64), 0x0A: u16(64), 0x0C: u16(8192), 0x12: {0x1A}, 0x15: u16(3200)})
+		sb.add(127, 4, 0x7F00, nil)
+		mods, err := ParseMemoryModules(sb.b)
+		if err != nil || len(mods) != 1 {
+			t.Fatalf("code %#x: %v %+v", code, err, mods)
+		}
+		if mods[0].ECC != want {
+			t.Errorf("error correction %#x: ECC=%v, want %v", code, mods[0].ECC, want)
+		}
+	}
+}
+
+// TestMemorySpeedExtendedConfigured: a configured speed of 0xFFFF points
+// at the extended configured speed (0x58), which wins over a plain
+// nominal speed (0x15).
+func TestMemorySpeedExtendedConfigured(t *testing.T) {
+	var sb smbiosBuilder
+	sb.add(17, 0x5C, 0x1100, map[int][]byte{0x0C: u16(8192), 0x12: {0x22}, 0x15: u16(6400), 0x20: u16(0xFFFF), 0x54: u32(0), 0x58: u32(70000)})
+	sb.add(127, 4, 0x7F00, nil)
+	mods, err := ParseMemoryModules(sb.b)
+	if err != nil || len(mods) != 1 {
+		t.Fatalf("%v %+v", err, mods)
+	}
+	if mods[0].SpeedMTs != 70000 {
+		t.Errorf("speed = %d, want 70000 (extended configured speed)", mods[0].SpeedMTs)
+	}
+	// both 0xFFFF and no extended values: unknown
+	sb = smbiosBuilder{}
+	sb.add(17, 0x5C, 0x1100, map[int][]byte{0x0C: u16(8192), 0x12: {0x22}, 0x15: u16(0xFFFF), 0x20: u16(0xFFFF)})
+	sb.add(127, 4, 0x7F00, nil)
+	if mods, _ := ParseMemoryModules(sb.b); len(mods) != 1 || mods[0].SpeedMTs != 0 {
+		t.Errorf("unknown speed = %+v", mods)
+	}
+}

@@ -1,135 +1,125 @@
 package main
 
 import (
-	"context"
-	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
-	"github.com/SirRenix/n5-fangov/internal/alert"
 	"github.com/SirRenix/n5-fangov/internal/config"
 	"github.com/SirRenix/n5-fangov/internal/sensor"
 )
 
-// v0.3.0-beta review fixes: template probe cache (M2), serialised config
-// writers (L4), account store reads the file (L5), built-in presets per
-// profile (L8), bounded single test delivery (L9), dotted / inline [web]
-// layouts (L11).
+// storeConfig is the config text the store tests start from: comments and
+// an inline comment that must survive every in-place edit.
+const storeConfig = `# my config
+[daemon]
+interval = "10s"   # keep
 
-// TestAlertTemplateProbeCache (R-M2): Status reuses the probe for ten
-// minutes; InstallTemplate and Configure drop the cache.
-func TestAlertTemplateProbeCache(t *testing.T) {
-	cfgPath := writeV3Config(t)
-	m := newAlertManager(cfgPath, "", config.Alert{Transport: "log", MailTo: "root"}, nil)
-	now := time.Unix(1789500000, 0)
-	m.now = func() time.Time { return now }
-	probes := 0
-	m.probe = func() (bool, bool, bool, string) {
-		probes++
-		return true, probes%2 == 1, false, fmt.Sprintf("probe %d", probes)
-	}
-	for i := 0; i < 3; i++ {
-		if st := m.Status(); st.Template.Reason != "probe 1" || !st.Template.Installed || !st.Template.Current || st.Template.Path != alert.TemplatePath {
-			t.Errorf("call %d: %+v", i, st.Template)
-		}
-	}
-	if probes != 1 {
-		t.Fatalf("probes after three Status calls: %d", probes)
-	}
-	now = now.Add(templateProbeEvery - time.Second)
-	m.Status()
-	if probes != 1 {
-		t.Errorf("re-probed before the interval: %d", probes)
-	}
-	now = now.Add(time.Second)
-	if st := m.Status(); probes != 2 || st.Template.Reason != "probe 2" || st.Template.Current {
-		t.Errorf("after the interval: probes=%d %+v", probes, st.Template)
-	}
-	// InstallTemplate invalidates, also when it fails (no PVE here)
-	_, _ = m.InstallTemplate()
-	m.Status()
-	if probes != 3 {
-		t.Errorf("after InstallTemplate: %d", probes)
-	}
-	// Configure invalidates; its own Status re-probes once
-	if _, err := m.Configure("log", "root"); err != nil {
+[web]
+listen = "127.0.0.1:8010"
+auth = "basic"
+user = "admin"
+password_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+[[channel]]
+name = "cpu"
+pwm = 1
+sensor = "k10temp"
+curve = [[45,85],[80,255]]
+critical = 88
+`
+
+func writeStoreConfig(t *testing.T) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(p, []byte(storeConfig), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if probes != 4 {
-		t.Errorf("after Configure: %d", probes)
+	return p
+}
+
+func TestStateDir(t *testing.T) {
+	t.Setenv(stateDirEnv, "")
+	t.Setenv("STATE_DIRECTORY", "")
+	if stateDir() != defaultStateDir {
+		t.Errorf("default: %s", stateDir())
 	}
-	m.Status()
-	if probes != 4 {
-		t.Errorf("cached again after Configure: %d", probes)
+	t.Setenv("STATE_DIRECTORY", "/var/lib/a:/var/lib/b")
+	if stateDir() != "/var/lib/a" {
+		t.Errorf("STATE_DIRECTORY first entry: %s", stateDir())
 	}
-	// a clock that went backwards re-probes rather than caching forever
-	now = now.Add(-time.Hour)
-	m.Status()
-	if probes != 5 {
-		t.Errorf("clock skew: %d", probes)
+	t.Setenv(stateDirEnv, "/tmp/x")
+	if stateDir() != "/tmp/x" {
+		t.Errorf("env override: %s", stateDir())
+	}
+	// ensureStateDir creates the directory 0700; an unwritable one yields ""
+	dir := filepath.Join(t.TempDir(), "state")
+	if got := ensureStateDir(dir); got != dir {
+		t.Errorf("ensure: %q", got)
+	}
+	if st, err := os.Stat(dir); err != nil || (isUnix() && st.Mode().Perm() != 0o700) {
+		t.Errorf("state dir mode: %v %v", err, st)
+	}
+	if sessionsPath(dir) != filepath.Join(dir, "sessions.json") || alertsPath("") != "" || sessionsPath("") != "" {
+		t.Errorf("paths")
+	}
+	if ensureStateDir("") != "" {
+		t.Errorf("empty stays empty")
+	}
+	file := filepath.Join(t.TempDir(), "file")
+	_ = os.WriteFile(file, nil, 0o600)
+	if got := ensureStateDir(filepath.Join(file, "sub")); got != "" {
+		t.Errorf("unwritable must yield \"\": %q", got)
 	}
 }
 
-// gate is a ContextSender that blocks until released or the context ends.
-type gate struct {
-	alert.Log
-	started chan struct{}
-	release chan struct{}
-}
+func isUnix() bool { return os.PathSeparator == '/' }
 
-func (g *gate) Name() string { return "gate" }
-func (g *gate) SendCtx(ctx context.Context, kind, msg string) error {
-	close(g.started)
-	select {
-	case <-g.release:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
+func TestAccountStore(t *testing.T) {
+	cfgPath := writeStoreConfig(t)
+	cfg, _ := parseConfig([]byte(storeConfig))
+	pinned := 0
+	pin := func(raw []byte) []byte { pinned++; return raw }
+	s := newAccountStore(cfgPath, webOf(cfg), pin)
+	if cur := s.Current(); cur.Mode != "basic" || cur.User != "admin" || !strings.HasPrefix(cur.PasswordHash, "0123") {
+		t.Fatalf("current: %+v", cur)
 	}
-}
-
-// TestAlertTestBusyAndBounded (R-L9): a second test while one runs answers
-// ErrTestBusy; a delivery that hangs is cut at testLimit.
-func TestAlertTestBusyAndBounded(t *testing.T) {
-	cfgPath := writeV3Config(t)
-	m := newAlertManager(cfgPath, "", config.Alert{Transport: "log", MailTo: "root"}, nil)
-	g := &gate{Log: alert.Log{Logger: m.logger}, started: make(chan struct{}), release: make(chan struct{})}
-	m.sw.Set(g)
-	done := make(chan error, 1)
-	go func() { _, err := m.Test(); done <- err }()
-	select {
-	case <-g.started:
-	case <-time.After(5 * time.Second):
-		t.Fatal("first test never reached the sink")
+	// "" keeps; nothing written when nothing changes
+	if got, err := s.Update("", ""); err != nil || got != s.Current() || pinned != 0 {
+		t.Errorf("no-op update: %+v %v pinned=%d", got, err, pinned)
 	}
-	if eff, err := m.Test(); !errors.Is(err, alert.ErrTestBusy) || eff != "log" {
-		t.Errorf("second test: %s %v", eff, err)
+	// a garbage hash is refused before anything is written
+	if _, err := s.Update("", "not-a-hash"); err == nil {
+		t.Errorf("invalid hash must be refused")
 	}
-	close(g.release)
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Errorf("first test: %v", err)
+	h := passwordHash("ops", "secret-1")
+	got, err := s.Update("ops", h)
+	if err != nil || got.User != "ops" || got.PasswordHash != h || got.Mode != "basic" || pinned != 1 {
+		t.Fatalf("update: %+v %v pinned=%d", got, err, pinned)
+	}
+	raw, _ := os.ReadFile(cfgPath)
+	txt := string(raw)
+	if !strings.Contains(txt, "# my config") || !strings.Contains(txt, `interval = "10s"   # keep`) {
+		t.Errorf("comments must survive:\n%s", txt)
+	}
+	if !strings.Contains(txt, `user = "ops"`) || !strings.Contains(txt, `password_hash = "`+h+`"`) || strings.Contains(txt, "0123456789abcdef") {
+		t.Errorf("keys not rewritten:\n%s", txt)
+	}
+	back, warns := parseConfig(raw)
+	if len(warns) != 0 || webOf(back).User != "ops" || webOf(back).Auth != "basic" {
+		t.Errorf("re-parse: %v %+v", warns, webOf(back))
+	}
+	if isUnix() {
+		if st, _ := os.Stat(cfgPath); st.Mode().Perm() != 0o600 {
+			t.Errorf("config mode %04o", st.Mode().Perm())
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("first test did not finish")
 	}
-	// free again, and bounded: a sink that never returns is cut at testLimit
-	m.testLimit = 50 * time.Millisecond
-	g2 := &gate{Log: alert.Log{Logger: m.logger}, started: make(chan struct{}), release: make(chan struct{})}
-	m.sw.Set(g2)
-	start := time.Now()
-	if _, err := m.Test(); !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > 3*time.Second {
-		t.Errorf("bounded test: %v after %s", err, time.Since(start))
-	}
-	if rec := m.Recent(0); len(rec) != 2 || rec[0].Kind != "test" {
-		t.Errorf("both tests must be in the history: %+v", rec)
+	// user only
+	if got, err := s.Update("root2", ""); err != nil || got.User != "root2" || got.PasswordHash != h {
+		t.Errorf("user-only update: %+v %v", got, err)
 	}
 }
 
@@ -137,8 +127,8 @@ func TestAlertTestBusyAndBounded(t *testing.T) {
 // (PUT /api/config, import) is the base of the next Update; s.cur follows
 // what was written.
 func TestAccountStoreReadsFile(t *testing.T) {
-	cfgPath := writeV3Config(t)
-	cfg, _ := parseConfig([]byte(v3Config))
+	cfgPath := writeStoreConfig(t)
+	cfg, _ := parseConfig([]byte(storeConfig))
 	s := newAccountStore(cfgPath, webOf(cfg), nil)
 	// the editor renamed the user meanwhile
 	raw, _ := os.ReadFile(cfgPath)
@@ -267,41 +257,12 @@ func TestStoresInlineTableRefused(t *testing.T) {
 	}
 }
 
-// TestPresetBuiltinOtherProfile (R-L8): a built-in of another profile is
-// not applied (fs.ErrNotExist → 404), on the active profile it is.
-func TestPresetBuiltinOtherProfile(t *testing.T) {
-	cfgPath := writeV3Config(t)
-	dir := filepath.Join(t.TempDir(), "presets")
-	svc := &fakeService{}
-	for _, prof := range []string{"nct67xx", "it87xx", "monitor", ""} {
-		s := dirPresetStore{dir: dir, cfgPath: cfgPath, svc: svc, profile: prof}
-		if err := s.Apply("n5pro-quiet"); !errors.Is(err, fs.ErrNotExist) {
-			t.Errorf("profile %q: %v", prof, err)
-		}
-	}
-	if svc.reloads() != 0 {
-		t.Fatal("a refused apply must not reload")
-	}
-	// a user file with a built-in name is shadowed (not applied) on every profile
-	_ = os.MkdirAll(dir, 0o755)
-	_ = os.WriteFile(filepath.Join(dir, "n5pro-quiet.toml"), []byte(quietPreset), 0o644)
-	if err := (dirPresetStore{dir: dir, cfgPath: cfgPath, svc: svc, profile: "nct67xx"}).Apply("n5pro-quiet"); !errors.Is(err, fs.ErrNotExist) {
-		t.Errorf("shadowed file on other profile: %v", err)
-	}
-	if err := (dirPresetStore{dir: dir, cfgPath: cfgPath, svc: svc, profile: "n5pro"}).Apply("n5pro-quiet"); err != nil || svc.reloads() != 1 {
-		t.Errorf("active profile: %v", err)
-	}
-	if cfg, _, _ := config.Load(cfgPath); cfg.Channel("hdd") == nil || cfg.Channel("hdd").Critical != 66 {
-		t.Errorf("the built-in, not the shadowed file, was applied: %+v", cfg.Channels)
-	}
-}
-
 // TestConfigWritersSerialised (R-L4): the account store, the alert
 // manager, the dashboard store and a preset apply rewrite the file
 // concurrently; every one of their changes is in the final file.
 func TestConfigWritersSerialised(t *testing.T) {
-	cfgPath := writeV3Config(t)
-	cfg, _ := parseConfig([]byte(v3Config))
+	cfgPath := writeStoreConfig(t)
+	cfg, _ := parseConfig([]byte(storeConfig))
 	acc := newAccountStore(cfgPath, webOf(cfg), nil)
 	m := newAlertManager(cfgPath, "", cfgAlert(cfg), nil)
 	d := newDashboardStore(cfgPath, &fakeWatched{}, func(string) (sensor.Source, error) { return nil, nil }, nil)

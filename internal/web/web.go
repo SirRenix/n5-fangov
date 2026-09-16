@@ -219,7 +219,7 @@ type Deps struct {
 	// Logf receives auth failures and startup warnings; nil → log.Printf.
 	Logf func(format string, args ...any)
 
-	// v0.3.0-beta members (DESIGN.md "v0.3.0-beta contract").
+	// Store-backed endpoints (types.go; DESIGN.md "Web and API").
 	// SessionFile mirrors the cookie sessions; "" = memory only.
 	SessionFile string
 	// Account backs /api/account (nil → 501; credentials then stay Deps.Auth).
@@ -1557,4 +1557,24 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+// maxJSONBody bounds the small JSON bodies of the session, account, alerts
+// and dashboard endpoints.
+const maxJSONBody = maxOverrideBody
+
+// decodeJSON reads a small JSON object body (413 over maxJSONBody, 400 on
+// malformed JSON or unknown members); false means the answer was written.
+func decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxJSONBody))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil {
+		if isTooLarge(err) {
+			writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("body exceeds %d bytes", maxJSONBody))
+			return false
+		}
+		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+		return false
+	}
+	return true
 }

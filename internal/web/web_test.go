@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"crypto/pbkdf2"
 	"crypto/rand"
@@ -10,14 +11,18 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"log"
 	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -319,6 +324,108 @@ func wantError(t *testing.T, r resp, code int, contains string) {
 	if !strings.Contains(msg, contains) {
 		t.Fatalf("error %q does not contain %q", msg, contains)
 	}
+}
+
+// withDeps rebuilds the env's server with f applied to the deps.
+func (e *env) withDeps(t *testing.T, auth AuthConfig, f func(*Deps)) {
+	t.Helper()
+	d := e.deps(auth)
+	f(&d)
+	e.srv = New(d)
+	e.ts.Close()
+	e.ts = httptest.NewServer(e.srv.Handler())
+	t.Cleanup(e.ts.Close)
+}
+
+var attachmentName = regexp.MustCompile(`^attachment; filename="([^"]+)"$`)
+
+func wantAttachment(t *testing.T, r resp, ctype, namePattern string) string {
+	t.Helper()
+	wantCode(t, r, 200)
+	if ct := r.hdr.Get("Content-Type"); !strings.HasPrefix(ct, ctype) {
+		t.Errorf("content-type %q, want %q", ct, ctype)
+	}
+	m := attachmentName.FindStringSubmatch(r.hdr.Get("Content-Disposition"))
+	if m == nil {
+		t.Fatalf("content-disposition %q", r.hdr.Get("Content-Disposition"))
+	}
+	if ok, _ := regexp.MatchString(namePattern, m[1]); !ok {
+		t.Errorf("filename %q does not match %s", m[1], namePattern)
+	}
+	if r.hdr.Get("Cache-Control") != "no-store" || r.hdr.Get("X-Content-Type-Options") != "nosniff" {
+		t.Errorf("export headers: %v", r.hdr)
+	}
+	return m[1]
+}
+
+var adminBasic = AuthConfig{Mode: "basic", User: "admin", PasswordHash: fastHash("admin", "pw")}
+
+// storesEnv is newEnv plus the store fakes (account, alerts, dashboard,
+// deletable presets, session file in a temp dir).
+func storesEnv(t *testing.T, auth AuthConfig) (*env, *fakeAccount, *fakeAlerts, *fakeDashboard) {
+	t.Helper()
+	e := newEnv(t, auth)
+	acc := &fakeAccount{cfg: auth}
+	al := &fakeAlerts{status: AlertStatus{Transport: "auto", Effective: "mail", MailTo: "root", MailAvailable: true, Cooldown: "10m", Kinds: []AlertKind{{Kind: "stall", Description: "fan stopped"}}}, recent: []AlertRecord{{TS: 1789490000, Kind: "stall", Msg: "hdd stalled"}}}
+	db := &fakeDashboard{sensors: []string{"hwmon:amdgpu:temp1"}}
+	e.withDeps(t, auth, func(d *Deps) {
+		d.SessionFile = filepath.Join(t.TempDir(), "sessions.json")
+		d.Account = acc
+		d.Alerts = al
+		d.Dashboard = db
+		d.Presets = &fakePresetDeleter{fakePresets: fakePresets{list: []Preset{{Name: "quiet", Channels: []string{"cpu"}}, {Name: "n5pro-balanced", Builtin: true, Channels: []string{"cpu"}}}}}
+		d.About = About{Name: "n5-fangov", Version: "0.3.0-beta.1", Prerelease: "beta.1", License: "GPL-2.0-only", Credits: []Credit{{Name: "x", URL: "https://example.invalid", Note: "n"}}}
+	})
+	return e, acc, al, db
+}
+
+// login signs in and returns the request headers for later calls (cookie +
+// CSRF) and the raw cookie.
+func (e *env) login(t *testing.T, user, pass string, remember bool) (map[string]string, *http.Cookie, resp) {
+	t.Helper()
+	r := e.do(t, "POST", "/api/login", fmt.Sprintf(`{"user":%q,"password":%q,"remember":%v}`, user, pass, remember), csrf)
+	if r.code != 200 {
+		return nil, nil, r
+	}
+	ck := sessionCookieOf(t, r)
+	return map[string]string{CSRFHeader: "1", "Cookie": ck.Name + "=" + ck.Value}, ck, r
+}
+
+func sessionCookieOf(t *testing.T, r resp) *http.Cookie {
+	t.Helper()
+	for _, ck := range (&http.Response{Header: r.hdr}).Cookies() {
+		if ck.Name == sessionCookie {
+			return ck
+		}
+	}
+	t.Fatalf("no %s cookie in %v", sessionCookie, r.hdr.Values("Set-Cookie"))
+	return nil
+}
+
+func (e *env) logLines() string {
+	e.logMu.Lock()
+	defer e.logMu.Unlock()
+	return strings.Join(e.logged, "\n")
+}
+
+func keys(t *testing.T, body string) map[string]json.RawMessage {
+	t.Helper()
+	var m map[string]json.RawMessage
+	decode(t, body, &m)
+	return m
+}
+
+// serveAs runs one request through the TCP handler with a chosen remote
+// address (the httptest server always connects from 127.0.0.1).
+func serveAs(e *env, remote, method, path, body string, hdr map[string]string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, "http://127.0.0.1:8010"+path, strings.NewReader(body))
+	req.RemoteAddr = remote
+	for k, v := range hdr {
+		req.Header.Set(k, v)
+	}
+	rec := httptest.NewRecorder()
+	e.srv.Handler().ServeHTTP(rec, req)
+	return rec
 }
 
 // ---- tests ---------------------------------------------------------------
@@ -1424,4 +1531,232 @@ func contrast(a, b string) float64 {
 		la, lb = lb, la
 	}
 	return (la + 0.05) / (lb + 0.05)
+}
+
+// ---- auth logging ------------------------------------------------------------
+
+// TestAnonymous401Silent: a request without Authorization gets a 401 that is
+// neither logged nor counted; a presented wrong credential is both.
+func TestAnonymous401Silent(t *testing.T) {
+	e := newEnv(t, AuthConfig{Mode: "basic", User: "admin", PasswordHash: PasswordHash("admin", "pw")})
+	var slept []time.Duration
+	var mu sync.Mutex
+	e.srv.limiter.sleep = func(d time.Duration) { mu.Lock(); slept = append(slept, d); mu.Unlock() }
+	nslept := func() int { mu.Lock(); defer mu.Unlock(); return len(slept) }
+	for i := 0; i < limitFree+3; i++ {
+		wantError(t, e.do(t, "GET", "/api/config", "", nil), 401, "authentication")
+		wantError(t, e.do(t, "PUT", "/api/override/cpu", `{"duty":10}`, csrf), 401, "authentication")
+	}
+	e.logMu.Lock()
+	n := len(e.logged)
+	e.logMu.Unlock()
+	if n != 0 || nslept() != 0 {
+		t.Fatalf("anonymous 401 logged %d times, delays %d", n, nslept())
+	}
+	e.srv.limiter.mu.Lock()
+	entries := len(e.srv.limiter.byIP)
+	e.srv.limiter.mu.Unlock()
+	if entries != 0 {
+		t.Fatalf("anonymous 401 counted: %d limiter entries", entries)
+	}
+	// a presented credential still counts and is logged
+	wantCode(t, e.do(t, "GET", "/api/config", "", basicAuth("admin", "nope")), 401)
+	wantCode(t, e.do(t, "PUT", "/api/override/cpu", `{"duty":10}`, map[string]string{CSRFHeader: "1", "Authorization": "Bearer abc"}), 401)
+	e.logMu.Lock()
+	n = len(e.logged)
+	last := ""
+	if n > 0 {
+		last = e.logged[n-1]
+	}
+	e.logMu.Unlock()
+	if n != 2 || !strings.Contains(last, "auth failure") || !strings.Contains(last, "2 recent failures") {
+		t.Fatalf("presented credential: %d log lines, last %q", n, last)
+	}
+	// and the login that follows the silent 401 works without any delay
+	wantCode(t, e.do(t, "GET", "/api/config", "", basicAuth("admin", "pw")), 200)
+	if nslept() != 0 {
+		t.Fatalf("delays after two failures: %d", nslept())
+	}
+}
+
+// TestStoresNotImplementedWithoutDeps: nil stores → 501 on every new endpoint;
+// a preset store without Delete → 501.
+func TestStoresNotImplementedWithoutDeps(t *testing.T) {
+	e := newEnv(t, AuthConfig{})
+	for _, c := range []struct{ method, path, body string }{
+		{"GET", "/api/account", ""},
+		{"POST", "/api/account/password", `{"current_password":"pw","new_password":"longenough"}`},
+		{"POST", "/api/account/user", `{"current_password":"pw","user":"x"}`},
+		{"POST", "/api/account/sessions/revoke", `{"others":true}`},
+		{"GET", "/api/alerts", ""},
+		{"PUT", "/api/alerts", `{"transport":"log","mail_to":"root"}`},
+		{"POST", "/api/alerts/test", ""},
+		{"POST", "/api/alerts/template", ""},
+		{"GET", "/api/dashboard", ""},
+		{"PUT", "/api/dashboard", `{"sensors":[]}`},
+		{"DELETE", "/api/presets/quiet", ""},
+		{"GET", "/api/system", ""},
+	} {
+		if r := e.do(t, c.method, c.path, c.body, csrf); r.code != 501 {
+			t.Errorf("%s %s = %d %s, want 501", c.method, c.path, r.code, r.body)
+		}
+	}
+}
+
+// TestQuerySemicolonNotLogged (R-L7): a request with ';' in the query
+// produces no ErrorLog line on the daemon's server (through the
+// handshake filter into Logf) nor on a stock server around the socket
+// handler, and ';' acts as a separator. (Go 1.25 no longer logs the
+// pre-1.25 warning itself; the wrapper keeps that explicit.)
+func TestQuerySemicolonNotLogged(t *testing.T) {
+	e := newEnv(t, AuthConfig{})
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	errc := make(chan error, 1)
+	go func() { errc <- e.srv.Serve(ctx, ln) }()
+	for _, p := range []string{"/?a;b", "/api/version?x;y=1", "/api/history?minutes=5;since=0"} {
+		res, err := http.Get("http://" + ln.Addr().String() + p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		if res.StatusCode != 200 {
+			t.Errorf("%s: %d", p, res.StatusCode)
+		}
+	}
+	// a ';'-separated pair is parsed: minutes=9999 is out of range → 400
+	res, err := http.Get("http://" + ln.Addr().String() + "/api/history?since=0;minutes=9999")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != 400 {
+		t.Errorf("';' not treated as a separator: %d", res.StatusCode)
+	}
+	cancel()
+	select {
+	case <-errc:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve did not stop")
+	}
+	if l := e.logLines(); strings.Contains(l, "semicolon") || strings.Contains(l, "http:") {
+		t.Errorf("server error line reached the log: %q", l)
+	}
+	var buf bytes.Buffer
+	ts := httptest.NewUnstartedServer(e.srv.SocketHandler())
+	ts.Config.ErrorLog = log.New(&buf, "", 0)
+	ts.Start()
+	defer ts.Close()
+	res, err = http.Get(ts.URL + "/?a;b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if buf.Len() != 0 {
+		t.Errorf("socket handler logged: %q", buf.String())
+	}
+}
+
+// TestAuthLogUserTruncated: a kilobyte user name in a failed login or
+// basic credential reaches the log as 64 characters, not as a flood.
+func TestAuthLogUserTruncated(t *testing.T) {
+	e, _, _, _ := storesEnv(t, adminBasic)
+	e.srv.limiter.sleep = func(time.Duration) {}
+	long := strings.Repeat("u", 3000)
+	wantCode(t, e.do(t, "POST", "/api/login", fmt.Sprintf(`{"user":%q,"password":"x"}`, long), csrf), 401)
+	wantCode(t, e.do(t, "PUT", "/api/override/cpu", `{"duty":10}`, basicAuth(long, "x")), 401)
+	e.logMu.Lock()
+	defer e.logMu.Unlock()
+	if len(e.logged) != 2 {
+		t.Fatalf("log lines = %d", len(e.logged))
+	}
+	for _, l := range e.logged {
+		if len(l) > 400 || !strings.Contains(l, `user "`+strings.Repeat("u", 64)+`"`) {
+			t.Errorf("line not truncated: %d bytes: %.120s", len(l), l)
+		}
+	}
+}
+
+// TestVersionLimits: GET /api/version carries the bounds the dashboard
+// validates against, taken from the server's constants.
+func TestVersionLimits(t *testing.T) {
+	e := newEnv(t, AuthConfig{})
+	r := e.do(t, "GET", "/api/version", "", nil)
+	wantCode(t, r, 200)
+	var v struct {
+		Limits Limits `json:"limits"`
+	}
+	decode(t, r.body, &v)
+	want := Limits{MinHDDOverride: control.MinHDDOverride, CriticalMin: 30, CriticalMax: config.MaxCritical, CurvePointsMax: config.MaxCurvePts, DashboardSensorsMax: config.MaxDashboardSensors, PasswordMin: config.MinPasswordLen, PasswordMax: config.MaxPasswordLen}
+	if v.Limits != want {
+		t.Fatalf("limits = %+v, want %+v", v.Limits, want)
+	}
+	for _, k := range []string{`"min_hdd_override":60`, `"critical_min":30`, `"critical_max":150`, `"curve_points_max":8`, `"dashboard_sensors_max":8`, `"password_min":8`, `"password_max":128`} {
+		if !strings.Contains(r.body, k) {
+			t.Errorf("missing %s in %s", k, r.body)
+		}
+	}
+}
+
+// TestMethodNotAllowedJSON: a wrong method on an API path answers the JSON
+// error document (with the mux's Allow header) on TCP and on the socket.
+func TestMethodNotAllowedJSON(t *testing.T) {
+	e := newEnv(t, AuthConfig{})
+	r := e.do(t, "POST", "/api/state", "", csrf)
+	wantError(t, r, 405, "method not allowed")
+	if ct := r.hdr.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Errorf("content-type %q", ct)
+	}
+	if r.hdr.Get("Allow") == "" {
+		t.Errorf("Allow header missing")
+	}
+	sock := httptest.NewServer(e.srv.SocketHandler())
+	defer sock.Close()
+	req, _ := http.NewRequest("DELETE", sock.URL+"/api/version", nil)
+	res, err := sock.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != 405 || !strings.HasPrefix(res.Header.Get("Content-Type"), "application/json") {
+		t.Errorf("socket 405: %d %s", res.StatusCode, res.Header.Get("Content-Type"))
+	}
+	// the static side is untouched
+	wantCode(t, e.do(t, "GET", "/", "", nil), 200)
+}
+
+// TestStoreErrorsAre500: a write failure of a store (read-only file
+// system, permission) answers 500; a validation refusal stays 400.
+func TestStoreErrorsAre500(t *testing.T) {
+	e, _, al, db := storesEnv(t, AuthConfig{})
+	ro := &fs.PathError{Op: "rename", Path: "/etc/n5-fangov/config.toml", Err: syscall.EROFS}
+	e.cfg.saveErr = ro
+	wantError(t, e.do(t, "PUT", "/api/config", sampleTOML, csrf), 500, "config not written")
+	e.cfg.saveErr = errors.New("toml: line 3: expected key")
+	wantError(t, e.do(t, "PUT", "/api/config", sampleTOML, csrf), 400, "config rejected")
+	e.cfg.saveErr = nil
+
+	al.configErr = fmt.Errorf("write %s: %w", "/etc/n5-fangov/config.toml", fs.ErrPermission)
+	wantCode(t, e.do(t, "PUT", "/api/alerts", `{"transport":"log","mail_to":"root"}`, csrf), 500)
+	al.configErr = errors.New(`transport "nope" unknown`)
+	wantCode(t, e.do(t, "PUT", "/api/alerts", `{"transport":"nope","mail_to":"root"}`, csrf), 400)
+
+	db.err = fmt.Errorf("write: %w", syscall.ENOSPC)
+	wantCode(t, e.do(t, "PUT", "/api/dashboard", `{"sensors":["ec:x"]}`, csrf), 500)
+	db.err = errors.New("sensor id \"x\" is not valid")
+	wantCode(t, e.do(t, "PUT", "/api/dashboard", `{"sensors":["x"]}`, csrf), 400)
+
+	ps := &fakePresets{list: []Preset{}, saveErr: &fs.PathError{Op: "open", Path: "/etc/n5-fangov/presets/x.toml", Err: syscall.EACCES}}
+	e.withDeps(t, AuthConfig{}, func(d *Deps) { d.Presets = ps })
+	wantCode(t, e.do(t, "PUT", "/api/presets/x", "", csrf), 500)
+	ps.saveErr = errors.New("current config has no channels to save")
+	wantCode(t, e.do(t, "PUT", "/api/presets/x", "", csrf), 400)
+	ps.applyErr = fmt.Errorf("current config: %w", ErrStore)
+	wantCode(t, e.do(t, "POST", "/api/presets/x/apply", "", csrf), 500)
+	if !isStoreError(&fs.PathError{Err: syscall.EROFS}) || isStoreError(errors.New("no")) || !isStoreError(fmt.Errorf("x: %w", ErrStore)) {
+		t.Error("isStoreError classification")
+	}
 }

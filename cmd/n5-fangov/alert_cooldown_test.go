@@ -53,3 +53,51 @@ func TestSendAlertCooled(t *testing.T) {
 		t.Errorf("no-dir delivery: %v", s.kinds)
 	}
 }
+
+// blockSink parks every delivery until released and counts them.
+type blockSink struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (b *blockSink) Alert(kind, _ string) { b.entered <- struct{}{}; <-b.release }
+func (b *blockSink) Name() string         { return "block" }
+
+// TestStartAlertStampBeforeDelivery (L5): startAlert writes the cooldown
+// stamp before it returns, while the delivery is still in flight — an
+// early exit of serve right after the call cannot lose it, and a second
+// alert of the kind is suppressed at once.
+func TestStartAlertStampBeforeDelivery(t *testing.T) {
+	dir := t.TempDir()
+	s := &blockSink{entered: make(chan struct{}, 2), release: make(chan struct{})}
+	defer close(s.release)
+	startAlert(dir, s, "config", "first")
+	b, err := os.ReadFile(filepath.Join(dir, "alert.config"))
+	if err != nil {
+		t.Fatalf("stamp not written before startAlert returned: %v", err)
+	}
+	if strings.TrimSpace(string(b)) == "" {
+		t.Fatalf("empty stamp")
+	}
+	select {
+	case <-s.entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("delivery never started")
+	}
+	// the sink is still parked: the second alert of the kind is suppressed
+	// by the stamp, not by anything the delivery did
+	startAlert(dir, s, "config", "second")
+	sendAlertCooled(dir, s, "config", "third")
+	select {
+	case <-s.entered:
+		t.Fatal("suppressed alert delivered")
+	case <-time.After(50 * time.Millisecond):
+	}
+	// another kind goes out
+	startAlert(dir, s, "profile", "other")
+	select {
+	case <-s.entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("other kind not delivered")
+	}
+}

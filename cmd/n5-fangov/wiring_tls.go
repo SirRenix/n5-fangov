@@ -1,9 +1,7 @@
-// wiring_v2.go holds the calls into the v0.2 WEB-builder code
-// (internal/tlscert, web.Server.ServeTLSStore, web.Deps.Log/Bundle/TLS/
-// TLSMgr). It was build-tagged `ignore` while the two trees were separate;
-// since the merge it is a regular part of the package and the stub is gone.
-// tlsmgr.go (the certificate manager) is the other cmd file that imports
-// internal/tlscert.
+// wiring_tls.go holds the TLS side of the web wiring: the web.Deps members
+// for the log store, the settings bundle and the certificate manager, the
+// ServeTLSStore adapter and the key-mode check (internal/tlscert;
+// tlsmgr.go, the certificate manager, is the other cmd file that imports it).
 package main
 
 import (
@@ -14,10 +12,11 @@ import (
 	"github.com/SirRenix/n5-fangov/internal/web"
 )
 
-// applyV2Deps sets the v0.2 members of web.Deps. Log, Bundle and TLS map
-// 1:1 (logStore has web.LogStore's method set); TLSMgr only when set (a
-// typed nil would look non-nil behind the interface).
-func applyV2Deps(deps *web.Deps, d webDeps) {
+// applyTLSDeps sets the Log, Bundle, TLS, TLSMgr and TLSHosts members of
+// web.Deps. Log, Bundle and TLS map 1:1 (logStore has web.LogStore's method
+// set); TLSMgr only when set (a typed nil would look non-nil behind the
+// interface).
+func applyTLSDeps(deps *web.Deps, d webDeps) {
 	deps.Log = d.Log
 	deps.Bundle = d.Bundle
 	deps.TLS = d.TLS

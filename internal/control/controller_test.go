@@ -848,3 +848,97 @@ func TestNewValidation(t *testing.T) {
 	}
 	var _ Service = (*Controller)(nil)
 }
+
+// TestSensorErrorLogOnce: a sensor that stays unresolved (the N5 Pro
+// without HDDs) while the other temperatures move every cycle produces one
+// summary line, not one per cycle; a change of the affected set produces
+// a new line.
+func TestSensorErrorLogOnce(t *testing.T) {
+	h := newHarness(t, n5cfg(), nil)
+	h.sensors.get("drivetemp:max").fail(errors.New("no drives"))
+	for i := 0; i < 30; i++ {
+		h.sensors.get("k10temp").set(36000 + i*125) // k10temp moves every cycle
+		h.cycles(1)
+	}
+	if n := h.log.count("sensor error -> "); n != 1 {
+		t.Fatalf("summary lines = %d in 30 cycles, want 1:\n%s", n, strings.Join(h.log.lines, "\n"))
+	}
+	if n := h.log.count("sensor drivetemp:max (hdd): read: no drives"); n != 1 {
+		t.Errorf("per-channel lines = %d, want 1", n)
+	}
+	// the summary names the failed channel and its class, no temperatures
+	for _, l := range h.log.lines {
+		if strings.Contains(l, "sensor error -> ") && (strings.Contains(l, "cpu=") || strings.Contains(l, "C ") || !strings.Contains(l, "hdd=read error")) {
+			t.Errorf("summary carries live values or lacks the class: %q", l)
+		}
+	}
+	// a second channel failing changes the set: one more line
+	h.sensors.get("nvme:max").fail(errors.New("gone"))
+	h.cycles(5)
+	if n := h.log.count("sensor error -> "); n != 2 {
+		t.Errorf("summary lines after a second failure = %d, want 2", n)
+	}
+}
+
+// TestStaleLogOnce: a frozen k10temp logs one stale line per episode, not
+// one per cycle with a growing duration.
+func TestStaleLogOnce(t *testing.T) {
+	cfg := n5cfg()
+	cfg.Daemon.StaleCycles = 6
+	h := newHarness(t, cfg, nil)
+	h.cycles(30)
+	if n := h.log.count("sensor k10temp (cpu): unchanged"); n != 1 {
+		t.Fatalf("stale lines = %d in 30 cycles, want 1:\n%s", n, strings.Join(h.log.lines, "\n"))
+	}
+	if n := h.log.count("sensor error -> "); n != 1 {
+		t.Errorf("summary lines = %d, want 1", n)
+	}
+	h.expectMode("cpu", ModeSensor)
+}
+
+// TestApplyNotesOnlyWhenApplied: a reload that needs a restart reports no
+// "config corrected on reload" line or alert; an applied one does.
+func TestApplyNotesOnlyWhenApplied(t *testing.T) {
+	h := newHarnessDev(t, n5cfg(), newN5FakeDev(), nil)
+	h.cycles(1)
+	before := h.alerts.count(AlertConfigChannels)
+	// a config without the hdd channel and with a new channel name: the
+	// sanitizer adds hdd back (a note), the extra channel needs a restart
+	cfg := n5cfg()
+	cfg.Channels = append(cfg.Channels[:2], config.Channel{Name: "extra", PWM: 4, Sensor: "k10temp", Curve: config.DefaultCurve(), Critical: 90, Stop: "auto"})
+	if err := h.c.Apply(cfg); !errors.Is(err, ErrRestartRequired) {
+		t.Fatalf("Apply = %v, want ErrRestartRequired", err)
+	}
+	if h.log.contains("config corrected on reload") || h.alerts.count(AlertConfigChannels) != before {
+		t.Fatalf("notes reported although nothing was applied:\n%s", strings.Join(h.log.lines, "\n"))
+	}
+	// same channel set, hdd with stop "auto": applied, note reported
+	cfg = n5cfg()
+	cfg.Channels[2].Stop = "auto"
+	h.clock.advance(31 * time.Minute)
+	if err := h.c.Apply(cfg); err != nil {
+		t.Fatalf("Apply = %v", err)
+	}
+	if !h.log.contains("config corrected on reload") {
+		t.Errorf("applied correction not logged")
+	}
+}
+
+// TestSnapshotStatusConstants: the typed status values are the strings
+// the dashboard keys on.
+func TestSnapshotStatusConstants(t *testing.T) {
+	want := map[Status]string{StatusStarting: "starting", StatusOK: "ok", StatusWriteError: "write-error", StatusSensorError: "sensor-error", StatusDryRun: "dry-run"}
+	for s, str := range want {
+		if string(s) != str {
+			t.Errorf("%q != %q", s, str)
+		}
+	}
+	h := newHarness(t, n5cfg(), func(o *Options) { o.DryRun = true })
+	if s := h.c.Snapshot().Status; s != StatusStarting {
+		t.Errorf("before the first cycle: %q", s)
+	}
+	h.cycles(1)
+	if s := h.c.Snapshot().Status; s != StatusDryRun {
+		t.Errorf("dry run: %q", s)
+	}
+}

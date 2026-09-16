@@ -522,3 +522,128 @@ func TestTLSUploadHostGuard(t *testing.T) {
 		t.Errorf("L7 subject not quoted in audit line: %q", joined)
 	}
 }
+
+// ---- TLS listener ------------------------------------------------------------
+
+// TestServeTLSRoundTrip: a generated certificate serves HTTPS, the response
+// carries HSTS and "tls":true, the negotiated version is ≥ 1.2, TLS 1.1 is
+// refused, and plain Serve has neither HSTS nor the flag.
+func TestServeTLSRoundTrip(t *testing.T) {
+	cert, _, err := tlscert.EnsureAuto(tlscert.Options{Dir: t.TempDir(), Hosts: []string{"127.0.0.1"}, Logf: func(string, ...any) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := newEnv(t, AuthConfig{})
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	errc := make(chan error, 1)
+	go func() { errc <- e.srv.ServeTLS(ctx, ln, cert) }()
+	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}}
+	url := "https://" + ln.Addr().String()
+	res, err := client.Get(url + "/api/version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	if res.StatusCode != 200 {
+		t.Fatalf("status %d: %s", res.StatusCode, body)
+	}
+	if got := res.Header.Get("Strict-Transport-Security"); got != hstsValue {
+		t.Errorf("HSTS = %q, want %q", got, hstsValue)
+	}
+	var v map[string]any
+	if err := json.Unmarshal(body, &v); err != nil || v["tls"] != true {
+		t.Errorf("version over TLS = %s", body)
+	}
+	if res.TLS == nil || res.TLS.Version < tls.VersionTLS12 {
+		t.Errorf("negotiated TLS %#x", res.TLS.Version)
+	}
+	if !bytes.Equal(res.TLS.PeerCertificates[0].Raw, cert.Leaf.Raw) {
+		t.Error("served a different certificate")
+	}
+	// HSTS also on guarded errors (Host check, CSRF) and on the UI
+	req, _ := http.NewRequest("PUT", url+"/api/override/cpu", strings.NewReader(`{"duty":1}`))
+	res, err = client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != 403 || res.Header.Get("Strict-Transport-Security") == "" {
+		t.Errorf("CSRF answer over TLS: %d HSTS %q", res.StatusCode, res.Header.Get("Strict-Transport-Security"))
+	}
+	res, err = client.Get(url + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.Header.Get("Strict-Transport-Security") == "" {
+		t.Error("index without HSTS")
+	}
+	// TLS 1.1 refused
+	old := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS10, MaxVersion: tls.VersionTLS11}}}
+	if res, err := old.Get(url + "/api/version"); err == nil {
+		res.Body.Close()
+		t.Error("TLS 1.1 handshake succeeded")
+	}
+	// plain HTTP on the TLS port fails (no downgrade)
+	if res, err := http.Get("http://" + ln.Addr().String() + "/api/version"); err == nil {
+		res.Body.Close()
+		if res.StatusCode == 200 {
+			t.Error("plain HTTP served on the TLS listener")
+		}
+	}
+	cancel()
+	select {
+	case err := <-errc:
+		if err != nil {
+			t.Fatalf("ServeTLS: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ServeTLS did not stop")
+	}
+
+	// plain Serve: no HSTS, tls false
+	e2 := newEnv(t, AuthConfig{})
+	r := e2.do(t, "GET", "/api/version", "", nil)
+	wantCode(t, r, 200)
+	if r.hdr.Get("Strict-Transport-Security") != "" || !strings.Contains(r.body, `"tls":false`) {
+		t.Errorf("plain HTTP: HSTS %q body %s", r.hdr.Get("Strict-Transport-Security"), r.body)
+	}
+	// Deps.TLS is informational for a TLS reverse proxy in front of plain Serve
+	e2.withDeps(t, AuthConfig{}, func(d *Deps) { d.TLS = true })
+	if r := e2.do(t, "GET", "/api/version", "", nil); !strings.Contains(r.body, `"tls":true`) || r.hdr.Get("Strict-Transport-Security") != "" {
+		t.Errorf("Deps.TLS: %s HSTS %q", r.body, r.hdr.Get("Strict-Transport-Security"))
+	}
+}
+
+// TestServeTLSWarnsNonLoopbackWithoutAuth: TLS does not silence the H3
+// warning — encryption is not authentication.
+func TestServeTLSWarnsNonLoopbackWithoutAuth(t *testing.T) {
+	cert, _, err := tlscert.EnsureAuto(tlscert.Options{Dir: t.TempDir(), Logf: func(string, ...any) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := newEnv(t, AuthConfig{})
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	errc := make(chan error, 1)
+	go func() {
+		errc <- e.srv.ServeTLS(ctx, addrListener{ln, &net.TCPAddr{IP: net.IPv4zero, Port: 8010}}, cert)
+	}()
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	<-errc
+	e.logMu.Lock()
+	defer e.logMu.Unlock()
+	joined := strings.Join(e.logged, "\n")
+	if !strings.Contains(joined, "non-loopback") || !strings.Contains(joined, "without auth") {
+		t.Fatalf("no warning: %q", joined)
+	}
+}

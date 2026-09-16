@@ -1,6 +1,5 @@
 // wiring_sysinfo.go adapts internal/sysinfo (DESIGN "System inventory"):
 // the collector behind GET /api/system and the CLI's offline collection.
-// Like wiring_v3.go it imports internal/* directly.
 package main
 
 import (

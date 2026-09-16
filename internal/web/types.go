@@ -1,9 +1,9 @@
 package web
 
-// v0.3.0-beta contract types (DESIGN.md "v0.3.0-beta contract"). This file
-// is the shared vocabulary between internal/web (which serves them) and cmd
-// (which implements the stores); it is committed before the builders start
-// so both sides compile against the same definitions.
+// Contract types of the store-backed endpoints (DESIGN.md "Web and API"):
+// the shared vocabulary between internal/web (which serves them) and cmd
+// (which implements the stores) — sessions, account, alerts, dashboard,
+// about, preset detail/delete/rename.
 
 import "time"
 
