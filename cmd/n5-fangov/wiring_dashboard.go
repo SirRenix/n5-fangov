@@ -99,8 +99,13 @@ func tomlStringArray(ids []string) string {
 // ---------------------------------------------------------------------------
 // Reload hook: every config text that reaches Service.Reload (PUT
 // /api/config, settings import, preset apply) re-applies [alert] and
-// hands the [[schedule]] list to the scheduler on success. [dashboard] is
-// applied by the controller's own Reload.
+// hands the [[schedule]] list to the scheduler — on success and on
+// control.ErrRestartRequired alike: the controller then applied nothing,
+// but the file is written and is the truth for the two sections that
+// need no restart (otherwise the alert manager would merge the next
+// PUT /api/alerts on a stale section and the scheduler would run the old
+// windows until the restart). [dashboard] is applied by the controller's
+// own Reload.
 
 type hookedService struct {
 	control.Service
@@ -110,8 +115,7 @@ type hookedService struct {
 
 func (h hookedService) Reload(raw []byte) error {
 	err := h.Service.Reload(raw)
-	if err != nil {
-		// ErrRestartRequired: nothing was applied; the restart reads the file.
+	if err != nil && !isRestartRequired(err) {
 		return err
 	}
 	if cfg, _, perr := config.Parse(raw); perr == nil {
@@ -122,5 +126,5 @@ func (h hookedService) Reload(raw []byte) error {
 			h.sched.Set(schedule.FromConfig(cfg.Schedules))
 		}
 	}
-	return nil
+	return err
 }

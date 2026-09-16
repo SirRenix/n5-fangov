@@ -6,11 +6,17 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/SirRenix/n5-fangov/internal/config"
 	"github.com/SirRenix/n5-fangov/internal/web"
 )
+
+// keepHash is a syntactically valid (legacy sha256) password hash for the
+// file-text tests.
+const keepHash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 func TestPresetStoreBuiltins(t *testing.T) {
 	cfgPath := writeStoreConfig(t)
@@ -183,9 +189,10 @@ critical = 90
 	if !reflect.DeepEqual(names, []string{"cpu", "disks", "pcie", "ssd"}) {
 		t.Fatalf("channels after merge: %v", names)
 	}
-	// pwm3: preset values, config name; the preset lacks hysteresis/min_on → defaults
-	if d := cfg.Channel("disks"); d.PWM != 3 || d.Critical != 60 || d.Sensor != "drivetemp:max" || d.Stop != "140" || d.Hysteresis != 0 || d.MinOn != 0 {
-		t.Errorf("pwm3 not replaced by the preset: %+v", d)
+	// pwm3: preset values, config name; the preset lacks hysteresis/min_on
+	// → the config channel's post-processing stays
+	if d := cfg.Channel("disks"); d.PWM != 3 || d.Critical != 60 || d.Sensor != "drivetemp:max" || d.Stop != "140" || d.Hysteresis != 2 || d.MinOn != 60*time.Second {
+		t.Errorf("pwm3 not replaced by the preset (post-processing kept): %+v", d)
 	}
 	// pwm1: replaced (balanced cpu curve starts at 35)
 	if c := cfg.Channel("cpu"); c.PWM != 1 || c.Curve[0][0] != 35 {
@@ -213,7 +220,7 @@ func TestMergeChannelsByPWM(t *testing.T) {
 		{Name: "ssd", PWM: 4, Sensor: "nvme:max", Curve: [][2]int{{45, 85}, {80, 255}}, Critical: 72, Stop: "auto"},
 	}
 	preset := []config.Channel{
-		{Name: "processor", PWM: 1, Sensor: "k10temp", Curve: [][2]int{{30, 60}, {80, 255}}, Critical: 85, Stop: "auto", Hysteresis: 3},
+		{Name: "processor", PWM: 1, Sensor: "k10temp", Curve: [][2]int{{30, 60}, {80, 255}}, Critical: 85, Stop: "auto", Hysteresis: 3, PostSet: true},
 		{Name: "ssd", PWM: 2, Sensor: "nvme:max", Curve: [][2]int{{35, 74}, {68, 255}}, Critical: 72, Stop: "auto"},
 	}
 	out := mergeChannelsByPWM(cfgChans, preset)
@@ -236,6 +243,153 @@ func TestMergeChannelsByPWM(t *testing.T) {
 	}
 	if got := mergeChannelsByPWM(nil, preset); len(got) != 2 || got[0].Name != "processor" {
 		t.Errorf("empty config: %+v", got)
+	}
+}
+
+// TestMergeKeepsPostProcessing: a preset channel that says nothing about
+// hysteresis/min_on (PostSet false — a preset written before 0.3.1, or one
+// saved with the defaults) keeps the config channel's values; a preset
+// channel that sets them (PostSet true) replaces them, also with 0.
+func TestMergeKeepsPostProcessing(t *testing.T) {
+	cfgChans := []config.Channel{
+		{Name: "hdd", PWM: 3, Sensor: "drivetemp:max", Curve: [][2]int{{30, 90}, {50, 255}}, Critical: 60, Stop: "140", Hysteresis: 2, MinOn: 90 * time.Second, PostSet: true},
+	}
+	silent := []config.Channel{{Name: "hdd", PWM: 3, Sensor: "drivetemp:max", Curve: [][2]int{{28, 105}, {50, 255}}, Critical: 58, Stop: "140"}}
+	out := mergeChannelsByPWM(cfgChans, silent)
+	if len(out) != 1 || out[0].Critical != 58 || out[0].Hysteresis != 2 || out[0].MinOn != 90*time.Second || !out[0].PostSet {
+		t.Errorf("silent preset must keep the config post-processing: %+v", out)
+	}
+	set := []config.Channel{{Name: "hdd", PWM: 3, Sensor: "drivetemp:max", Curve: [][2]int{{28, 105}, {50, 255}}, Critical: 58, Stop: "140", Hysteresis: 0, MinOn: 30 * time.Second, PostSet: true}}
+	out = mergeChannelsByPWM(cfgChans, set)
+	if len(out) != 1 || out[0].Hysteresis != 0 || out[0].MinOn != 30*time.Second {
+		t.Errorf("explicit preset values must win: %+v", out)
+	}
+	// parsed text: the flag comes from the table's keys
+	chans, _, err := config.ParseChannels([]byte("[[channel]]\nname = \"hdd\"\npwm = 3\nsensor = \"drivetemp:max\"\ncurve = [[30,90],[50,255]]\ncritical = 60\nhysteresis = 0\n"))
+	if err != nil || len(chans) != 1 || !chans[0].PostSet {
+		t.Fatalf("hysteresis = 0 must count as set: %+v %v", chans, err)
+	}
+	if out = mergeChannelsByPWM(cfgChans, chans); out[0].Hysteresis != 0 || out[0].MinOn != 0 {
+		t.Errorf("explicit 0 must reset: %+v", out)
+	}
+	chans, _, _ = config.ParseChannels([]byte("[[channel]]\nname = \"hdd\"\npwm = 3\nsensor = \"drivetemp:max\"\ncurve = [[30,90],[50,255]]\ncritical = 60\n"))
+	if len(chans) != 1 || chans[0].PostSet {
+		t.Fatalf("no keys must read as not set: %+v", chans)
+	}
+	if out = mergeChannelsByPWM(cfgChans, chans); out[0].Hysteresis != 2 || out[0].MinOn != 90*time.Second {
+		t.Errorf("parsed silent preset must keep: %+v", out)
+	}
+}
+
+// TestMergeRenameUntilUnused: an added preset channel whose name collides
+// with a kept config channel gets "pwm<N>", and when that is taken too,
+// "pwm<N>_2", "pwm<N>_3", … — never a duplicate name.
+func TestMergeRenameUntilUnused(t *testing.T) {
+	ch := func(name string, pwm int) config.Channel {
+		return config.Channel{Name: name, PWM: pwm, Sensor: "k10temp", Curve: [][2]int{{45, 85}, {80, 255}}, Critical: 88, Stop: "auto"}
+	}
+	cfgChans := []config.Channel{ch("ssd", 1), ch("pwm2", 3), ch("pwm2_2", 4)}
+	preset := []config.Channel{ch("ssd", 2)}
+	out := mergeChannelsByPWM(cfgChans, preset)
+	if len(out) != 4 || out[3].PWM != 2 || out[3].Name != "pwm2_3" {
+		t.Fatalf("merged: %+v", out)
+	}
+	seen := map[string]bool{}
+	for _, c := range out {
+		if seen[c.Name] {
+			t.Errorf("duplicate name %q: %+v", c.Name, out)
+		}
+		seen[c.Name] = true
+	}
+	if back, warns, err := config.ParseChannels(config.MarshalChannels(out)); err != nil || len(warns) != 0 || len(back) != 4 {
+		t.Errorf("merged set does not parse cleanly: %v %v", err, warns)
+	}
+}
+
+// TestPresetApplyKeepsFileText: the apply splices the [[channel]] tables
+// into the file text — comments, [[schedule]], [alert] with its webhook
+// URL and the password_hash are byte-identical outside the channel
+// blocks; a comment above the first [[channel]] stays above the new ones.
+func TestPresetApplyKeepsFileText(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+	src := `# n5-fangov config — hand-edited, keep my comments
+[daemon]
+interval = "10s"   # cycle
+
+[web]
+auth = "basic"
+user = "admin"
+password_hash = "` + keepHash + `"
+
+[alert]
+transport = "webhook"
+webhook_url = "https://gotify.example.test/message?token=abc123"
+
+# Fan channels (curves from the dashboard)
+[[channel]]
+name = "cpu"
+pwm = 1
+sensor = "k10temp"
+curve = [[45,85],[80,255]]
+critical = 88
+stop = "auto"
+
+[[channel]]
+name = "disks"
+pwm = 3
+sensor = "drivetemp:max"
+curve = [[36,105],[46,255]]
+critical = 56
+hysteresis = 2
+
+# Night mode on the weekend
+[[schedule]]
+preset = "n5pro-quiet"
+from = "22:00"
+to = "07:00"
+days = ["fri", "sat"]
+
+[[schedule]]
+preset = "n5pro-balanced"
+`
+	if err := os.WriteFile(cfgPath, []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	svc := &fakeService{}
+	s := dirPresetStore{dir: filepath.Join(t.TempDir(), "presets"), cfgPath: cfgPath, svc: svc, profile: "n5pro"}
+	if err := s.Apply("n5pro-quiet"); err != nil || svc.reloads() != 1 {
+		t.Fatalf("apply: %v", err)
+	}
+	got, _ := os.ReadFile(cfgPath)
+	text := string(got)
+	head := src[:strings.Index(src, "[[channel]]")]
+	tail := src[strings.Index(src, "\n# Night mode"):]
+	if !strings.HasPrefix(text, head) {
+		t.Errorf("text before the channels changed:\n%s", text)
+	}
+	if !strings.HasSuffix(text, tail) {
+		t.Errorf("text after the channels changed:\n%s", text)
+	}
+	if strings.Count(text, "[[channel]]") != 3 || strings.Count(text, "[[schedule]]") != 2 || strings.Count(text, "[alert]") != 1 {
+		t.Errorf("tables:\n%s", text)
+	}
+	cfg, warns, err := config.Load(cfgPath)
+	if err != nil || len(warns) != 0 {
+		t.Fatalf("load: %v %v", err, warns)
+	}
+	if cfg.Alert.WebhookURL != "https://gotify.example.test/message?token=abc123" || cfg.Web.PasswordHash != keepHash || len(cfg.Schedules) != 2 || cfg.Schedules[0].Days[1] != "sat" {
+		t.Errorf("other sections: %+v %+v %+v", cfg.Alert, cfg.Web, cfg.Schedules)
+	}
+	// the preset's pwm3 channel keeps the config name and hysteresis
+	if d := cfg.Channel("disks"); d == nil || d.Critical != 66 || d.Hysteresis != 2 {
+		t.Errorf("disks: %+v", d)
+	}
+	if len(cfg.Channels) != 3 || cfg.Channels[0].Name != "cpu" || cfg.Channels[1].Name != "disks" || cfg.Channels[2].Name != "ssd" {
+		t.Errorf("channel order: %+v", cfg.Channels)
+	}
+	// the daemon saw the same text
+	if string(svc.raws[0]) != text {
+		t.Errorf("reload text differs from the file")
 	}
 }
 

@@ -3,8 +3,10 @@ package web
 import (
 	"errors"
 	"fmt"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SirRenix/n5-fangov/internal/alert"
 )
@@ -45,6 +47,55 @@ func (a *fakeAlerts) Configure(s AlertSettings) (AlertStatus, error) {
 }
 
 // ---- alerts -----------------------------------------------------------------
+
+// TestAlertsWebhookURLRedactedForTokens: a token caller of any scope gets
+// the webhook URL without its key (query and deeper path) from GET and
+// PUT /api/alerts; the operator's cookie, Basic and socket callers get the
+// full URL.
+func TestAlertsWebhookURLRedactedForTokens(t *testing.T) {
+	e, _ := tokenEnv(t)
+	al := e.srv.deps.Alerts.(*fakeAlerts)
+	const full = "https://gotify.example.test/message?token=secret-key"
+	al.status.WebhookURL, al.status.Transport = full, "webhook"
+	for _, scope := range []string{"read", "control", "admin"} {
+		secret, _ := mint(t, e, "tok-"+scope, scope, time.Hour)
+		r := e.do(t, "GET", "/api/alerts", "", bearer(secret))
+		wantCode(t, r, 200)
+		if strings.Contains(r.body, "secret-key") || !strings.Contains(r.body, `"webhook_url":"https://gotify.example.test/message"`) {
+			t.Errorf("scope %s: token caller sees the key: %s", scope, r.body)
+		}
+	}
+	secret, _ := mint(t, e, "admin-put", "admin", time.Hour)
+	r := e.do(t, "PUT", "/api/alerts", `{"webhook_url":"https://ha.example.test/api/webhook/abcdef0123"}`, bearer(secret))
+	wantCode(t, r, 200)
+	if strings.Contains(r.body, "abcdef0123") || !strings.Contains(r.body, `"webhook_url":"https://ha.example.test/api/…"`) {
+		t.Errorf("PUT by a token caller carries the id: %s", r.body)
+	}
+	if al.status.WebhookURL != "https://ha.example.test/api/webhook/abcdef0123" {
+		t.Errorf("the manager must still hold the full URL: %+v", al.status)
+	}
+	// the operator sees the full URL: Basic and a cookie session
+	r = e.do(t, "GET", "/api/alerts", "", basicAuth("admin", "pw"))
+	if !strings.Contains(r.body, `"webhook_url":"https://ha.example.test/api/webhook/abcdef0123"`) {
+		t.Errorf("basic caller: %s", r.body)
+	}
+	hdr, _, _ := e.login(t, "admin", "pw", false)
+	r = e.do(t, "GET", "/api/alerts", "", hdr)
+	if !strings.Contains(r.body, `"webhook_url":"https://ha.example.test/api/webhook/abcdef0123"`) {
+		t.Errorf("cookie caller: %s", r.body)
+	}
+	r = e.do(t, "PUT", "/api/alerts", `{"webhook_format":"text"}`, hdr)
+	wantCode(t, r, 200)
+	if !strings.Contains(r.body, `"webhook_url":"https://ha.example.test/api/webhook/abcdef0123"`) {
+		t.Errorf("PUT by the operator: %s", r.body)
+	}
+	// the socket caller (CLI) too
+	rec := httptest.NewRecorder()
+	e.srv.SocketHandler().ServeHTTP(rec, httptest.NewRequest("GET", "/api/alerts", nil))
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"webhook_url":"https://ha.example.test/api/webhook/abcdef0123"`) {
+		t.Errorf("socket caller: %d %s", rec.Code, rec.Body.String())
+	}
+}
 
 func TestAlertsEndpoints(t *testing.T) {
 	e, _, al, _ := storesEnv(t, adminBasic)

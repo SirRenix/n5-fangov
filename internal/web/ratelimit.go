@@ -55,8 +55,13 @@ type sleepers struct {
 
 type authLimiter struct {
 	mu   sync.Mutex
-	byIP map[string]*authFails // keyed by limitKey
-	// sleeping is keyed by addrKey; see sleepers.
+	byIP map[string]*authFails // password failures (Basic, login, account), keyed by limitKey
+	// bearer holds the failures of rejected API tokens in their own
+	// buckets: a valid token resets only these (failBearer, resetBearer),
+	// so a caller with a working token cannot clear the delay its
+	// password guesses earned — and the other way round.
+	bearer map[string]*authFails
+	// sleeping is keyed by addrKey and shared by both kinds; see sleepers.
 	sleeping map[string]*sleepers
 	now      func() time.Time
 	sleep    func(time.Duration)
@@ -71,6 +76,7 @@ type authLimiter struct {
 func newAuthLimiter() *authLimiter {
 	return &authLimiter{
 		byIP:     map[string]*authFails{},
+		bearer:   map[string]*authFails{},
 		sleeping: map[string]*sleepers{},
 		now:      time.Now,
 		sleep:    time.Sleep,
@@ -137,20 +143,27 @@ func delayFor(n int) time.Duration {
 	return d
 }
 
-// fail records a failure for the bucket of ip, sleeps for the resulting
-// delay (counted against the address of ip) and returns the failure count
-// and delay.
-func (l *authLimiter) fail(ip string) (int, time.Duration) {
+// fail records a password failure for the bucket of ip, sleeps for the
+// resulting delay (counted against the address of ip) and returns the
+// failure count and delay.
+func (l *authLimiter) fail(ip string) (int, time.Duration) { return l.failIn(l.byIP, ip) }
+
+// failBearer is fail for a rejected API token (own buckets, shared
+// concurrency cap).
+func (l *authLimiter) failBearer(ip string) (int, time.Duration) { return l.failIn(l.bearer, ip) }
+
+// failIn is fail on one of the two bucket maps.
+func (l *authLimiter) failIn(buckets map[string]*authFails, ip string) (int, time.Duration) {
 	key, addr := limitKey(ip), addrKey(ip)
 	l.mu.Lock()
 	now := l.now()
-	f := l.byIP[key]
+	f := buckets[key]
 	if f == nil || now.Sub(f.last) > limitReset {
-		if f == nil && len(l.byIP) >= limitEntries {
-			l.pruneLocked(now)
+		if f == nil && len(buckets) >= limitEntries {
+			l.pruneLocked(buckets, now)
 		}
 		f = &authFails{}
-		l.byIP[key] = f
+		buckets[key] = f
 	}
 	f.n++
 	f.last = now
@@ -208,8 +221,8 @@ func (l *authLimiter) acquire() bool {
 // release returns the slot taken by acquire.
 func (l *authLimiter) release() { <-l.hashSem }
 
-// reset forgets the bucket of ip and the concurrency count of its address
-// after a successful authentication.
+// reset forgets the password bucket of ip and the concurrency count of its
+// address after a successful password authentication.
 func (l *authLimiter) reset(ip string) {
 	l.mu.Lock()
 	delete(l.byIP, limitKey(ip))
@@ -217,22 +230,33 @@ func (l *authLimiter) reset(ip string) {
 	l.mu.Unlock()
 }
 
-// pruneLocked drops expired entries; if the table is still full, the
-// oldest live entry is evicted and the event logged (rate-limited).
-func (l *authLimiter) pruneLocked(now time.Time) {
+// resetBearer forgets the bearer bucket of ip after a valid token — and
+// nothing else: the password bucket and the sleepers of the address stay,
+// a working token must not shorten the delay of a password guesser on the
+// same address.
+func (l *authLimiter) resetBearer(ip string) {
+	l.mu.Lock()
+	delete(l.bearer, limitKey(ip))
+	l.mu.Unlock()
+}
+
+// pruneLocked drops expired entries of buckets; if the table is still
+// full, the oldest live entry is evicted and the event logged
+// (rate-limited).
+func (l *authLimiter) pruneLocked(buckets map[string]*authFails, now time.Time) {
 	var oldestIP string
 	var oldest time.Time
-	for ip, f := range l.byIP {
+	for ip, f := range buckets {
 		if now.Sub(f.last) > limitReset {
-			delete(l.byIP, ip)
+			delete(buckets, ip)
 			continue
 		}
 		if oldestIP == "" || f.last.Before(oldest) {
 			oldestIP, oldest = ip, f.last
 		}
 	}
-	if len(l.byIP) >= limitEntries && oldestIP != "" {
-		delete(l.byIP, oldestIP)
+	if len(buckets) >= limitEntries && oldestIP != "" {
+		delete(buckets, oldestIP)
 		if l.fullLogged.IsZero() || now.Sub(l.fullLogged) >= limitFullLogEvery || now.Before(l.fullLogged) {
 			l.fullLogged = now
 			l.logf("web: auth limiter table full (%d buckets with recent failures); oldest entry evicted", limitEntries)

@@ -220,6 +220,7 @@ func TestMarshalPostProcessingKeys(t *testing.T) {
 	cfg.Channels = N5ProChannels()
 	cfg.Channels[2].Hysteresis = 2
 	cfg.Channels[2].MinOn = 90 * time.Second
+	cfg.Channels[2].PostSet = true // the written keys read back as "set"
 	cfg.Channels[2].Sensor = "drivetemp:max,ec:hdd"
 	raw := string(Marshal(cfg))
 	if !strings.Contains(raw, "min_on = \"1m30s\"") || !strings.Contains(raw, "hysteresis = 2") {

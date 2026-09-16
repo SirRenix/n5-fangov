@@ -710,9 +710,11 @@ func bearerSecret(authz string) (string, bool) {
 }
 
 // resolveBearer looks a presented token up. The lookup is one sha256, so
-// it goes through the limiter's delay counter and the concurrency cap
-// (busy) but not the PBKDF2 semaphore. A rejected token is counted and
-// logged; an accepted one is bounded by the per-token request limiter.
+// it goes through the limiter's concurrency cap (busy) and its own delay
+// counter (the bearer buckets — a valid token resets those, never the
+// password counter of the address) but not the PBKDF2 semaphore. A
+// rejected token is counted and logged; an accepted one is bounded by the
+// per-token request limiter.
 func (s *Server) resolveBearer(w http.ResponseWriter, r *http.Request, secret string) (Caller, bool) {
 	ip := remoteIP(r)
 	if s.limiter.busy(ip) {
@@ -725,12 +727,12 @@ func (s *Server) resolveBearer(w http.ResponseWriter, r *http.Request, secret st
 		if expired {
 			reason = "expired"
 		}
-		n, delay := s.limiter.fail(ip)
+		n, delay := s.limiter.failBearer(ip)
 		s.logf("web: bearer token rejected from %s: %s (%s %s, %d recent failures, delay %s)", ip, reason, r.Method, r.URL.Path, n, delay)
 		writeError(w, http.StatusUnauthorized, "authentication failed: token "+reason)
 		return Caller{}, false
 	}
-	s.limiter.reset(ip)
+	s.limiter.resetBearer(ip)
 	if !s.tokenLimit.allow(t.ID) {
 		writeError(w, http.StatusTooManyRequests, "token rate limit")
 		return Caller{}, false

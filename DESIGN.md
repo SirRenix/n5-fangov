@@ -101,7 +101,7 @@ system test failsafe passwd cert alerts token export import version`; hidden: `h
 (stdout, nothing else on stdout so it can be captured), `token list` (table: id, name,
 scope, created, expires, last used, last address) and `token revoke ID` talk to the
 daemon over the socket (the daemon owns `tokens.json`; without a running daemon: exit 1
-with the hint). `alerts status` shows `webhook_url` (redacted query) and format.
+with the hint). `alerts status` shows `webhook_url` (redacted, section 7) and format.
 Environment: `N5FANGOV_RUN_DIR` (default `/run/n5-fangov`), `N5FANGOV_STATE_DIR` (default
 `$STATE_DIRECTORY`, else `/var/lib/n5-fangov`), `N5FANGOV_SYSFS` (default `/sys`);
 `N5FANGOV_LOG_ROOT` moves the `[log].file` root for tests only.
@@ -155,8 +155,8 @@ refused). `Default()` has **no channels**; `N5ProChannels()` is the verified set
 | `hysteresis` | 0..10 °C (integer); 0 = off (section 6 "Curve post-processing") | 0 | reload |
 | `min_on` | `0s`..`1h` duration; `0s` = off | `0s` | reload |
 | `[[schedule]] preset` | preset name `^[a-z0-9_-]{1,64}$` (existence is checked when the switch happens, not at parse) | — | reload |
-| `from`, `to` | `HH:MM` (24 h, local time of the host; a one-digit hour is accepted and stored as `HH:MM`), both or neither (empty strings count as absent); `from == to` → entry dropped; `to < from` = the window crosses midnight | — | reload |
-| `days` | subset of `mon tue wed thu fri sat sun` (lower-cased, distinct); the day of the window is the day `from` falls in; missing = every day | all | reload |
+| `from`, `to` | `HH:MM` strings (24 h, local time of the host; a one-digit hour is accepted and stored as `HH:MM`), both or neither (empty strings count as absent; a value that is not a string — a bare TOML time literal `22:00:00`, an integer — drops the entry with a warning, it never reads as absent); `from == to` → entry dropped; `to < from` = the window crosses midnight | — | reload |
+| `days` | subset of `mon tue wed thu fri sat sun` (lower-cased, distinct); the day of the window is the day `from` falls in; missing = every day; on the fallback the key is ignored with a warning (`days ignored on the fallback`) and cleared | all | reload |
 
 Schedule rules: at most 16 entries; an entry without `from`/`to` is the **fallback** that
 applies whenever no window matches — at most one, a second one is dropped with a warning;
@@ -167,19 +167,30 @@ unknown key is a warning. Config JSON (`GET /api/config`) carries `schedule[]` w
 "reload" = applied by `PUT /api/config`, preset apply and import without a restart;
 "restart" = read once at start (the account and certificate APIs edit the file and apply
 their keys live). A changed channel set or profile makes `Service.Reload` return
-`ErrRestartRequired` (HTTP 202). `[[schedule]]` tables are read by the scheduler (cmd) from
-every reload as well.
+`ErrRestartRequired` (HTTP 202); the controller then applies nothing, but `[alert]` and
+`[[schedule]]` are still taken from the written file (the reload hook in cmd hands them to
+the alert manager and the scheduler on success and on 202 alike — the file is the truth
+for the two sections that need no restart). `[[schedule]]` tables are read by the
+scheduler (cmd) from every reload.
 
 Presets: name `^[a-z0-9_-]{1,64}$`. A preset file holds `[[channel]]` tables with every
 channel key; `hysteresis` and `min_on` are written only when set (`Marshal` omits them at
 their defaults, like the dashboard does), so a preset written before 0.3.1 simply reads as
-the defaults. **Apply merges by pwm:** a channel of the preset replaces the config channel
-with the same `pwm` (the config channel's `name` is kept when the preset uses another name
-for that pwm), config channels the preset does not name are kept unchanged — so an optional
-`pwm4` channel survives a built-in preset and the apply never needs a restart for it. A
-preset channel whose pwm the config lacks is added (that is the case that still returns
-202); when its name collides with a kept config channel it is added as `pwm<N>` so the
-file stays valid. Built-in N5 Pro sets (listed for the `n5pro` profile
+the defaults. The parser flags a channel table that carries either key
+(`Channel.PostSet`, `toml:"-"`; `Clone` copies it, `Marshal` ignores it). **Apply merges
+by pwm:** a channel of the preset replaces the config channel with the same `pwm` (the
+config channel's `name` is kept when the preset uses another name for that pwm; its
+`hysteresis`/`min_on` are kept when the preset table sets neither key), config channels
+the preset does not name are kept unchanged — so an optional `pwm4` channel survives a
+built-in preset and the apply never needs a restart for it. A preset channel whose pwm the
+config lacks is added (that is the case that still returns 202); when its name collides
+with a kept config channel it is added as `pwm<N>`, `pwm<N>_2`, … (the first unused) so
+the file stays valid. The apply (API and scheduler) splices the merged tables into the
+config **text** in place (`config.ReplaceChannels`: every `[[channel]]` block from its
+header to its last key line is removed, `MarshalChannels` goes where the first one was or
+at the end; comments, `[[schedule]]`, `[alert]`, `password_hash` and every other byte
+stay) and falls back to a full `Marshal` only when the spliced text does not parse (an
+inline `channel = [{…}]`). Built-in N5 Pro sets (listed for the `n5pro` profile
 only; `PUT` on a built-in name → 409, apply on another profile → 404; a user file with a
 built-in name is shadowed and logged):
 
@@ -313,8 +324,11 @@ func CSV(w io.Writer, pts []Point, channels []string, extras []string) error
 Tiers: **raw** = one point per cycle, 2 h (`historySpan`, capacity `2h / interval` as
 before); **1-min** = 1440 buckets of 60 s, 24 h; **5-min** = 2016 buckets of 300 s, 7 d.
 A bucket is the arithmetic mean of the raw points that fall into it (temp per channel and
-extra id, duty and rpm rounded to int; a value absent in every raw point stays absent);
-`ts` = bucket start; temperatures are rounded to three decimals. Buckets close when the
+extra id, duty and rpm rounded to int; a value absent in every raw point stays absent; a
+negative duty — the controller's `-1` for "unknown after a failed write" — stays in the
+raw point but is skipped by the means, so a channel unknown throughout a bucket has no
+duty there); `ts` = bucket start; temperatures are rounded to three decimals. Buckets
+close when the
 first point of the next bucket arrives; the open bucket is included in `Range` with its
 running mean and is written to the file as a plain point — `Load` rebuilds it from the
 raw points that fall into it, so a restart inside a bucket continues the mean. File
@@ -334,9 +348,10 @@ file `state.json` is unchanged.
 - `MinHDDOverride = 60`: a manual override below 60 is refused (400) on a channel with a
   fixed stop duty or pwm3 on the N5 Pro.
 - `Run(ctx)` calls `Stop()` itself (also after a recovered panic, returned as an error);
-  `Stop()` is idempotent, takes only the hardware mutex and makes a running cycle skip its
-  writes. serve waits for `Run` (15 s cap). `Failsafe(cfg, dev)` = SafeStop of every channel
-  without a controller (`n5-fangov failsafe`).
+  `Stop()` is idempotent, takes only the hardware mutex for the safe-state writes (never
+  `c.mu`), makes a running cycle skip its writes and saves the history after the mutex is
+  released. serve waits for `Run` (15 s cap). `Failsafe(cfg, dev)` = SafeStop of every
+  channel without a controller (`n5-fangov failsafe`).
 - `SanitizeChannels` (in `New`, `Apply`, `Failsafe`): drops channels whose pwm the device
   lacks, adds the missing N5 Pro channels, forces `stop = 140` on N5 Pro pwm3; notes go out
   as one `config-channels` alert (deliberately not `config`: serve stamps that kind for
@@ -395,7 +410,7 @@ a restart loop cannot spam PVE.
 ```go
 type Entry struct { Preset string; From, To string; Days []time.Weekday; Fallback bool }
 func FromConfig(in []config.Schedule) []Entry                    // parsed [[schedule]] tables → entries
-func Equal(a, b Entry) bool                                      // same preset, window and days
+func Equal(a, b Entry) bool                                      // same preset, window and days (Days as a set: order and repeats do not count)
 func Active(entries []Entry, now time.Time) (idx int, ok bool)   // first windowed entry that contains now, else the fallback, else ok=false
 func Next(entries []Entry, now time.Time) (at time.Time, idx int, ok bool)   // next moment the active entry changes (≤ 8 days ahead);
                                                                               // idx = entry active from then (−1 none); ok=false when nothing changes
@@ -407,15 +422,20 @@ midnight (`to < from`) belongs to the day `from` falls in and also matches the e
 of the following day. `Next` evaluates `Active` at every window boundary and every full
 hour of the coming 8 days, so a boundary inside a DST gap or repeated hour is resolved at
 the hour mark. The scheduler in cmd ticks every 30 s and evaluates once at start (after
-READY): the first evaluation applies the active entry (a daemon start is a transition —
-after a reboot inside a window the window's preset is in effect); afterwards it applies a
-preset only when the active entry (compared by value, `Equal`, or `ok`) differs from the
-previous evaluation, through the same `dirPresetStore.Apply` the API uses (merge by pwm,
-config written, reload); a switch that leaves every window without a fallback applies
-nothing and only logs. Success: one log line `schedule: preset "night" applied
-(22:00–07:00)` (`(fallback)` for the fallback). Failure (including `ErrRestartRequired`):
-log + `schedule` alert (cooled 30 min, `sendAlertCooled`), the previous curves stay, the
-scheduler retries at the next transition (not every tick). A manual preset apply or curve
+READY): the first evaluation applies the active entry when there is one (a daemon start
+inside a window is a transition — after a reboot the window's preset is in effect; a start
+with no entries or outside every window is not, nothing is applied or logged); afterwards
+it applies a preset only when the active entry (compared by value, `Equal`, or `ok`)
+differs from the previous evaluation, through the same `dirPresetStore.Apply` the API uses
+(merge by pwm, config text spliced, reload); a switch that leaves every window without a
+fallback applies nothing and only logs. A scheduler wired without an apply function logs
+the wiring error and applies nothing. Success: one log line `schedule: preset "night"
+applied (22:00–07:00)` (`(fallback)` for the fallback). Failure (including
+`ErrRestartRequired`): log with the full error + `schedule` alert (cooled 30 min,
+`sendAlertCooled`), the previous curves stay, the scheduler retries at the next transition
+(not every tick); the alert and `last.error` of the API carry only the failure **class**
+— `preset missing`, `preset invalid`, `write failed`, `reload failed`, `restart required`
+(else `apply failed`) — never a path or parser text. A manual preset apply or curve
 edit during a window is respected — the scheduler acts on **transitions only**, never
 re-applies within a window. `Reload` (config PUT, import, preset apply) hands the new
 `[[schedule]]` list to the scheduler (`Set(entries)`), which re-evaluates at the next
@@ -461,9 +481,15 @@ followed), `User-Agent: n5-fangov/<version>`, headers `X-N5-Fangov-Kind: <kind>`
 the message); `text` → `Content-Type: text/plain; charset=utf-8`, body `<msg>` (ntfy and
 plain receivers). A 2xx answer is success; anything else or a transport error is the
 delivery error `webhook: <status or error>` (returned by `Send`, logged by `Alert`). Log
-lines and `AlertStatus` name the URL **without query and userinfo** (`https://ntfy.example/n5`)
-because Gotify puts its key into the query; the full URL appears only in
-`GET /api/alerts` `webhook_url` (protected) and the config file.
+lines, `check` and the CLI name the URL **redacted** (`RedactURL`: scheme, host and the
+first path segment — `https://ntfy.example/n5`, `https://ha.example/api/…` —, never the
+userinfo, the query or a deeper path; a string that does not parse is cut by the same
+rules) because Gotify puts its key into the query and Home Assistant an id into the path;
+the full URL appears only in the config file and in `GET`/`PUT /api/alerts` `webhook_url`
+for the operator's cookie, Basic and socket callers — a **token caller** of any scope gets
+it redacted there as well. The parser's warning about an invalid `webhook_url` names the
+value's origin only (`https://h.example/… must not carry user:password (userinfo), ignored`;
+`value is not a URL, ignored` when there is no scheme and host), never the value.
 `Available()` is unchanged; the panel's "tool available" for webhook is always true.
 
 ## 8. Certificates (internal/tlscert) and TLSMgr (cmd)
@@ -539,7 +565,9 @@ doubling to 2 s, reset after 10 min or a success —, the concurrency cap per fu
 — at most 4 delayed attempts in flight, further ones `429` before any PBKDF2, so one host
 cannot lock its whole /64 out —, and process-wide at most 4 password verifications at the
 same time, whatever the source (`429` beyond). Bearer lookups are one sha256 and go
-through the delay counter and the concurrency cap, not the PBKDF2 semaphore.
+through the concurrency cap and a delay counter **of their own** (separate buckets per
+prefix: a valid token resets only the bearer bucket, a password success only the password
+bucket — neither shortens the other's delay), not the PBKDF2 semaphore.
 `http.AllowQuerySemicolons` wraps both handlers. Body limits: 256 KiB config/import, 64
 KiB certificate upload, 4 KiB override/login/account/token JSON; 413 above. Errors are
 `{"error": "..."}` (plus `"errors": [...]` where a list exists). Every write to the config
@@ -552,7 +580,7 @@ Created, Expires (zero = never), LastUsed, LastIP}` and mirrors every change to 
 `ID` = first 8 hex of the hash. `LastUsed`/`LastIP` are refreshed at most once a minute.
 Tokens are **not** bound to the credential epoch: a password change, "Sign out other
 sessions" and a user rename leave them valid — revocation is explicit. With
-`auth = "none"` a Bearer header is ignored (everyone is signed in, `via: "none"`).
+`auth = "none"` a Bearer header is ignored (everyone is signed in, `via: "none"`) and `POST /api/tokens` answers 409 `auth is none`.
 Name rule `^[A-Za-z0-9][A-Za-z0-9 ._-]{0,31}$`, unique among stored tokens (409).
 Scopes, cumulative:
 
@@ -605,7 +633,7 @@ counts as signed in, `via: "none"`):
 
 | Endpoint | Class | Request | Answer |
 |---|---|---|---|
-| `GET /api/version` | public | — | `{name, version, prerelease, tls, auth, limits{…}}`; `limits` = validation bounds for the UI (curve points 2..8, temp −20..120, critical ≤ 150, stop ≥ 60, hdd override ≥ 60, password 8..128, user/preset/channel name rules, dashboard sensors ≤ 8) |
+| `GET /api/version` | public | — | `{name, version, prerelease, tls, auth, limits{…}}`; `limits` = validation bounds for the UI (curve points 2..8, temp −20..120, critical ≤ 150, stop ≥ 60, hdd override ≥ 60, password 8..128, user/preset/channel name rules, dashboard sensors ≤ 8, `hysteresis_max`, `min_on_max_s`); the OpenAPI `Version.limits` schema lists exactly these keys (test) |
 | `GET /api/about` | public | — | `{name, version, prerelease, license, license_url, repo, author, author_url, go, credits[{name,url,note}]}` |
 | `GET /api/session` | public | — | `{authenticated, mode: none\|basic, user, expires?, remember?, via: cookie\|basic\|bearer\|none, scope?, token_id?}` (token caller: `user` = token name) |
 | `GET /api/openapi.json` | public | — | OpenAPI 3.1 document (above) |
@@ -615,7 +643,7 @@ counts as signed in, `via: "none"`):
 | `GET /api/history?minutes=120&since=TS` | filtered | `minutes` 1..10080 (default 120); tier by span (section 6a) | `[{ts, temp{}, duty{}, rpm{}, extra{}}]`, only `ts > since` |
 | `GET /api/history.csv?minutes=N` | protected, `read` | `minutes` as above | text/csv attachment `n5-fangov-history-<host>-<ts>.csv`: header `ts,time,<ch>_temp,<ch>_duty,<ch>_rpm,…,<extra id>…` (channels in daemon order, then extra ids sorted), `time` RFC 3339 local, empty cell = absent |
 | `GET /api/tokens` | protected, session only | — | `{tokens[{id, name, scope, created, expires (null = never), last_used, last_ip, expired}]}`; 403 for a token caller |
-| `POST /api/tokens` | protected, session only, CSRF | `{name, scope: read\|control\|admin, ttl_days: 0..3650}` (scope default `read`, ttl default 90, 0 = never) ≤ 4 KiB | 201 `{ok, token, id, name, scope, expires, warning?}` (`warning` = "token never expires" for 0); 400 rule; 409 name taken or 50 tokens; 403 token caller |
+| `POST /api/tokens` | protected, session only, CSRF | `{name, scope: read\|control\|admin, ttl_days: 0..3650}` (scope default `read`, ttl default 90, 0 = never) ≤ 4 KiB | 201 `{ok, token, id, name, scope, expires, warning?}` (`warning` = "token never expires" for 0); 400 rule; 409 `auth is none`, name taken or 50 tokens; 403 token caller (list and revoke work with `auth = "none"`, create does not) |
 | `DELETE /api/tokens/{id}` | protected, session only, CSRF | `{id}` = 8 hex | 200 `{ok, revoked}`; 404 |
 | `GET /api/schedules` | protected, `read` | — | `{entries[{preset, from, to, days[], fallback, active}], active: idx\|-1, next: {ts, preset}\|null, last: {ts, preset, ok, error}\|null, timezone}`; 501 without a scheduler |
 | `GET /api/config` | protected | — | `{raw, config{daemon, web, log, alert, dashboard, channel[], warnings[]}}`; `password_hash` is `<unchanged>` in both |
@@ -625,7 +653,7 @@ counts as signed in, `via: "none"`):
 | `PUT /api/override/{name}` | protected | `{duty}` or `{percent}` ≤ 4 KiB | 200 `{ok, channel, duty, mode}` (applies next cycle; critical/stall win); 400 below `MinHDDOverride` |
 | `DELETE /api/override/{name}` | protected | — | 200 `{ok, channel, mode}` |
 | `GET /api/presets` | protected | — | `[{name, channels[names], builtin, description}]` |
-| `GET /api/presets/{name}` | protected | — | `{name, builtin, description, channels[{name,pwm,sensor,curve,critical,stop}]}`; 404 |
+| `GET /api/presets/{name}` | protected | — | `{name, builtin, description, channels[{name,pwm,sensor,curve,critical,stop,hysteresis,min_on}]}`; 404 |
 | `POST /api/presets/{name}/apply` | protected | — | 200 `{ok, applied}` / 202 `{restart_required}`; 404 unknown or built-in of another profile |
 | `PUT /api/presets/{name}` | protected | empty | saves the current `[[channel]]` tables; 200 `{ok, saved}`; 409 built-in |
 | `POST /api/presets/{name}/rename` | protected | `{name}` | 200 `{ok, name}`; 409 built-in or target exists; 404 |
@@ -646,8 +674,8 @@ counts as signed in, `via: "none"`):
 | `POST /api/account/password` | protected | `{current_password, new_password}` (8..128) | `{ok}`; 403 `current password wrong` (counted); 409 `auth is none` |
 | `POST /api/account/user` | protected | `{current_password, user}` | `{ok, user}`; same errors |
 | `POST /api/account/sessions/revoke` | protected | `{others:true}` | `{ok, revoked}` |
-| `GET /api/alerts` | protected | — | `AlertStatus{transport, effective, mail_to, webhook_url, webhook_format, pve_available, mail_available, template{installed,current,writable,path,reason}, cooldown, kinds[]} + {last{kind:ts}, recent[{ts,kind,msg}]}` |
-| `PUT /api/alerts` | protected | `{transport, mail_to, webhook_url?, webhook_format?}` (omitted keys keep their value) | `{ok, status}`; 400 (invalid URL, format, mail_to; `webhook` without URL) |
+| `GET /api/alerts` | protected | — | `AlertStatus{transport, effective, mail_to, webhook_url, webhook_format, pve_available, mail_available, template{installed,current,writable,path,reason}, cooldown, kinds[]} + {last{kind:ts}, recent[{ts,kind,msg}]}`; `webhook_url` full for cookie, Basic and socket callers, redacted (`RedactURL`) for a token caller of any scope |
+| `PUT /api/alerts` | protected | `{transport, mail_to, webhook_url?, webhook_format?}` (omitted keys keep the value **in the file** — the merge basis is the `[alert]` section read under the file lock, only the keys sent are written) | `{ok, status}` (`webhook_url` redacted for a token caller as in `GET`); 400 (invalid URL, format, mail_to; `webhook` without URL) |
 | `POST /api/alerts/test` | protected | — | `{ok, transport}`; 502 `{error, transport}` delivery failed; 409 test in progress |
 | `POST /api/alerts/template` | protected | — | `{ok, path}`; 501 no PVE; 500 with the CLI hint |
 | `GET /api/system` | protected | — | `sysinfo.Info` verbatim (section 10), `Cache-Control: no-store` |
@@ -667,7 +695,7 @@ password rotated outside the dashboard drops every persisted session at the next
 `AccountStore.Update(user, passwordHash)` rewrites `[web]` in place and returns the
 `AuthConfig` now in effect (atomic pointer in the server). `AlertMgr`: `Status()`,
 `Recent(n)`, `Test()`, `InstallTemplate()`, `Configure(AlertSettings{Transport, MailTo,
-WebhookURL, WebhookFormat})` (`*string` members, nil keeps the value in effect; the merged
+WebhookURL, WebhookFormat})` (`*string` members, nil keeps the value in the file — the basis is the `[alert]` section parsed from the file under `configFileMu`, not the section in effect, and only the set keys are written; the merged
 section is validated as a whole) — the template probe is cached 10 min. `DashboardStore`:
 `Sensors()`, `SetSensors(ids)`. `TokenStore` (`NewTokenStore(path, logf)`): `Create(name,
 scope string, expires time.Time) (secret string, t Token, err)`, `Lookup(secret, ip) (Token,
@@ -835,7 +863,10 @@ Runtime files: `/run/n5-fangov/n5-fangov.sock` (CLI, root only), `state.json`,
 runs without persistence; `.gitignore` and the pre-commit file guard list all four);
 `/etc/n5-fangov/{config.toml, presets/, tls/}`; `/var/log/n5-fangov/n5-fangov.log[.N]`.
 The settings bundle (`export`/`import`) carries config and presets only — never tokens,
-sessions or history.
+sessions or history. The password hash is redacted (`<unchanged>`, restored on import from
+the running config); **the bundle carries the webhook URL** as it stands in the config
+(with the receiver's key): it is a setting the bundle exists to move between hosts, and the
+placeholder mechanism is the password's — treat the file like the config.
 
 Install (`deploy/install.sh`, needs `dist/n5-fangov` or `./n5-fangov`): stops and disables
 `n5-fand.service`, installs binary, onfailure script (`/usr/libexec/n5-fangov/`), both

@@ -113,7 +113,8 @@ func readConfigRaw(path string) ([]byte, error) {
 // table `section = { … }`, is refused with a clear message instead of
 // leaving the file inconsistent — then pin and save. edit sees
 // the file text as read, so a store that keeps the untouched value takes
-// it from there.
+// it from there; an edit that returns nil declines (its own validation
+// failed on the file's values) and nothing is written.
 func editConfig(path string, pin func([]byte) []byte, section string, edit func([]byte) []byte, verify func(config.Config) bool) error {
 	configFileMu.Lock()
 	defer configFileMu.Unlock()
@@ -122,7 +123,9 @@ func editConfig(path string, pin func([]byte) []byte, section string, edit func(
 		return err
 	}
 	_, _, beforeErr := config.Parse(raw)
-	raw = edit(raw)
+	if raw = edit(raw); raw == nil {
+		return nil
+	}
 	cfg, _, err := config.Parse(raw)
 	switch {
 	case err != nil && beforeErr == nil:

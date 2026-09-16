@@ -94,28 +94,40 @@ func (s dirPresetStore) load(name string) ([]config.Channel, []config.Warning, e
 	return config.LoadPreset(s.dir, name)
 }
 
+// Preset apply error classes (errors.Is): the scheduler reports the class
+// through GET /api/schedules, the full text goes to the log only.
+var (
+	errPresetInvalid = errors.New("preset invalid")
+	errPresetWrite   = errors.New("write failed")
+)
+
 // Apply merges the [[channel]] tables of the preset into the config file
-// by pwm (mergeChannelsByPWM), writes the file and reloads the daemon. The
-// file is rewritten from the parsed config, so comments in it are lost.
-// control.ErrRestartRequired passes through unchanged (the web layer
-// answers 202 for it; with the merge that only happens when the preset
-// names a pwm the config lacks); any other reload failure comes back as
-// web.ReloadError — "preset written, reload failed" — so it is told apart
-// from a write error.
+// by pwm (mergeChannelsByPWM), splices them into the file text
+// (config.ReplaceChannels — comments, [[schedule]] and the other sections
+// stay byte-identical) and reloads the daemon. control.ErrRestartRequired
+// passes through unchanged (the web layer answers 202 for it; with the
+// merge that only happens when the preset names a pwm the config lacks);
+// any other reload failure comes back as web.ReloadError — "preset
+// written, reload failed" — so it is told apart from a write error. A
+// missing preset is fs.ErrNotExist, an unparsable one errPresetInvalid, a
+// failed file write errPresetWrite.
 func (s dirPresetStore) Apply(name string) error {
 	chans, warns, err := s.load(name)
 	if err != nil {
-		return err
+		if errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		return fmt.Errorf("%w: %w", errPresetInvalid, err)
 	}
 	for _, w := range warns {
 		log.Printf("preset %s: %s", name, w)
 	}
 	if len(chans) == 0 {
-		return fmt.Errorf("preset %q contains no usable [[channel]] table", name)
+		return fmt.Errorf("%w: preset %q contains no usable [[channel]] table", errPresetInvalid, name)
 	}
 	raw, n, err := s.write(name, chans)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %w", errPresetWrite, err)
 	}
 	log.Printf("preset %s applied to %s (%d channels, %d in the file)", name, s.cfgPath, len(chans), n)
 	if err := s.svc.Reload(raw); err != nil {
@@ -131,12 +143,14 @@ func (s dirPresetStore) Apply(name string) error {
 // (DESIGN "Presets: Apply merges by pwm"): a preset channel replaces the
 // config channel with the same pwm, keeping the config channel's name (the
 // daemon's channel set is keyed by name and pwm, so a renamed channel would
-// force a restart); config channels the preset does not name stay as they
-// are (an optional pwm4 channel survives a built-in preset); preset
-// channels whose pwm the config lacks are appended. A preset name that
-// collides with a kept config channel of another pwm is replaced by
-// "pwm<N>" so the file stays valid. Order: config channels first (in their
-// order), then the additions in preset order.
+// force a restart) and — when the preset table carries neither hysteresis
+// nor min_on (Channel.PostSet) — the config channel's post-processing;
+// config channels the preset does not name stay as they are (an optional
+// pwm4 channel survives a built-in preset); preset channels whose pwm the
+// config lacks are appended. A preset name that collides with a kept
+// config channel is replaced by "pwm<N>", "pwm<N>_2", … until unused so
+// the file stays valid. Order: config channels first (in their order),
+// then the additions in preset order.
 func mergeChannelsByPWM(cfgChans, preset []config.Channel) []config.Channel {
 	out := config.CloneChannels(cfgChans)
 	if out == nil {
@@ -150,6 +164,9 @@ func mergeChannelsByPWM(cfgChans, preset []config.Channel) []config.Channel {
 	for _, pc := range config.CloneChannels(preset) {
 		if i, ok := byPWM[pc.PWM]; ok {
 			pc.Name = out[i].Name
+			if !pc.PostSet {
+				pc.Hysteresis, pc.MinOn, pc.PostSet = out[i].Hysteresis, out[i].MinOn, out[i].PostSet
+			}
 			out[i] = pc
 			continue
 		}
@@ -162,6 +179,9 @@ func mergeChannelsByPWM(cfgChans, preset []config.Channel) []config.Channel {
 	for _, pc := range adds {
 		if names[pc.Name] {
 			pc.Name = fmt.Sprintf("pwm%d", pc.PWM)
+			for n := 2; names[pc.Name]; n++ {
+				pc.Name = fmt.Sprintf("pwm%d_%d", pc.PWM, n)
+			}
 		}
 		names[pc.Name] = true
 		out = append(out, pc)
@@ -170,16 +190,29 @@ func mergeChannelsByPWM(cfgChans, preset []config.Channel) []config.Channel {
 }
 
 // write is Apply's read-modify-write of the config file, under the file
-// lock. It returns the written text and the number of channels in it.
+// lock: the merged [[channel]] tables are spliced into the file text in
+// place (config.ReplaceChannels), so comments and the other sections keep
+// their bytes. Should the spliced text not parse (an inline `channel =
+// [{…}]` at the top level, which ReplaceChannels cannot replace), the file
+// is rewritten from the parsed config instead, as before 0.3.1. It returns
+// the written text and the number of channels in it.
 func (s dirPresetStore) write(name string, chans []config.Channel) ([]byte, int, error) {
 	configFileMu.Lock()
 	defer configFileMu.Unlock()
-	cfg, _, err := config.Load(s.cfgPath)
+	old, err := os.ReadFile(s.cfgPath)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, 0, fmt.Errorf("current config: %w", err)
+	}
+	cfg, _, err := config.Parse(old)
 	if err != nil {
 		return nil, 0, fmt.Errorf("current config: %w", err)
 	}
 	cfg.Channels = mergeChannelsByPWM(cfg.Channels, chans)
-	raw := config.Marshal(cfg)
+	raw := config.ReplaceChannels(old, cfg.Channels)
+	if back, _, err := config.Parse(raw); err != nil || len(back.Channels) != len(cfg.Channels) {
+		log.Printf("preset %s: %s could not be edited in place (%v), rewritten from the parsed config", name, s.cfgPath, err)
+		raw = config.Marshal(cfg)
+	}
 	if s.pin != nil {
 		raw = s.pin(raw)
 	}

@@ -105,6 +105,49 @@ days = [1, 2]`, "schedule[0].days"},
 	}
 }
 
+// TestScheduleTimeLiteralDropped: from/to written as bare TOML time
+// literals (from = 22:00:00) are not strings — the entry is dropped with a
+// warning and never becomes the fallback by looking absent.
+func TestScheduleTimeLiteralDropped(t *testing.T) {
+	for _, raw := range []string{
+		"[[schedule]]\npreset = \"night\"\nfrom = 22:00:00\nto = 07:00:00\n",
+		"[[schedule]]\npreset = \"night\"\nfrom = \"22:00\"\nto = 07:00:00\n",
+		"[[schedule]]\npreset = \"night\"\nfrom = 2200\nto = \"07:00\"\n",
+	} {
+		scheds, warns := parseSchedules(t, raw)
+		if len(scheds) != 0 {
+			t.Errorf("%q: entry kept: %+v", raw, scheds)
+		}
+		hasWarn(t, warns, "schedule[0]")
+		if len(warns) != 1 || !strings.Contains(warns[0].Msg, "must be strings") {
+			t.Errorf("%q: warnings: %v", raw, warns)
+		}
+	}
+	// a following fallback is still accepted: the dropped entry took no slot
+	scheds, _ := parseSchedules(t, "[[schedule]]\npreset = \"night\"\nfrom = 22:00:00\nto = 07:00:00\n\n[[schedule]]\npreset = \"day\"\n")
+	if len(scheds) != 1 || scheds[0].Preset != "day" || !scheds[0].Fallback() {
+		t.Errorf("fallback after a dropped literal entry: %+v", scheds)
+	}
+}
+
+// TestScheduleFallbackDaysIgnored: the fallback applies on every day; a
+// days list on it is cleared with a warning, the entry stays.
+func TestScheduleFallbackDaysIgnored(t *testing.T) {
+	scheds, warns := parseSchedules(t, "[[schedule]]\npreset = \"day\"\ndays = [\"mon\", \"tue\"]\n")
+	hasWarn(t, warns, "schedule[0].days")
+	if len(warns) != 1 || warns[0].Msg != "days ignored on the fallback" {
+		t.Errorf("warnings: %v", warns)
+	}
+	if len(scheds) != 1 || !scheds[0].Fallback() || scheds[0].Days != nil {
+		t.Errorf("schedules: %+v", scheds)
+	}
+	// an unusable days value on the fallback is ignored the same way
+	scheds, warns = parseSchedules(t, "[[schedule]]\npreset = \"day\"\ndays = [1]\n")
+	if len(scheds) != 1 || scheds[0].Days != nil || len(warns) != 1 {
+		t.Errorf("bad days on the fallback: %+v %v", scheds, warns)
+	}
+}
+
 func TestScheduleOthersStay(t *testing.T) {
 	// rule 8: the invalid entry is dropped, the valid ones keep their order
 	scheds, warns := parseSchedules(t, `

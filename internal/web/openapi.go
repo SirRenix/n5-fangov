@@ -208,7 +208,7 @@ func (s *Server) routeTable() []route {
 			Summary: "The API tokens (never the secrets)", Responses: map[int]string{200: "token list", 403: "token caller"}},
 		{Method: "POST", Path: "/api/tokens", Handler: s.createToken, Class: classProtected, Scope: scopeSession,
 			Summary: "Create an API token; the secret is returned once", Body: jsonBody("TokenCreate", "name, scope (default read), ttl_days (default 90, 0 = never)"), Response: "TokenCreated",
-			Responses: map[int]string{201: "created; \"token\" is the secret, shown only now", 400: "name, scope or ttl_days outside the rules", 403: "token caller", 409: "name in use or 50 tokens stored", 413: "body too large"}},
+			Responses: map[int]string{201: "created; \"token\" is the secret, shown only now", 400: "name, scope or ttl_days outside the rules", 403: "token caller", 409: "auth is none, name in use or 50 tokens stored", 413: "body too large"}},
 		{Method: "DELETE", Path: "/api/tokens/{id}", Handler: s.revokeToken, Class: classProtected, Scope: scopeSession,
 			Summary: "Revoke an API token by id", Responses: map[int]string{200: "revoked", 400: "id is not 8 hex characters", 403: "token caller", 404: "unknown id"}},
 	}
@@ -414,6 +414,8 @@ func openAPISchemas() map[string]any {
 				"dashboard_sensors_max": integer(""),
 				"password_min":          integer(""),
 				"password_max":          integer(""),
+				"hysteresis_max":        integer("highest [[channel]] hysteresis (°C)"),
+				"min_on_max_s":          integer("longest [[channel]] min_on, in seconds"),
 			}),
 		}),
 		"Session": object("GET /api/session", []string{"authenticated", "mode", "user", "via"}, map[string]any{
@@ -454,7 +456,7 @@ func openAPISchemas() map[string]any {
 			"transport":      strEnum("configured transport", "auto", "pve", "mail", "webhook", "log", "off"),
 			"effective":      strEnum("sink in effect", "pve-notify", "mail", "webhook", "log", "off"),
 			"mail_to":        str("mail recipient"),
-			"webhook_url":    str("full webhook URL (protected endpoint; logs show it without the query)"),
+			"webhook_url":    str("webhook URL; full for cookie, Basic and socket callers, for a token caller (any scope) redacted to scheme, host and the first path segment — no query, no key"),
 			"webhook_format": strEnum("webhook body", "json", "text"),
 			"pve_available":  boolean("PVE::Notify and perl present"),
 			"mail_available": boolean("mail(1) present"),

@@ -1001,34 +1001,42 @@ func (c *Controller) failsafeAll(chans []*channel, mode Mode) (allFailed bool) {
 	return allFailed
 }
 
-// Stop returns every channel to its configured safe state (rule 7) and
-// removes the state file. Safe to call more than once and concurrently
-// with a running cycle: it takes only hwMu (never c.mu, so a panic inside
-// a locked section cannot block it) and sets the stopped flag first, so a
-// cycle that is in progress skips its write phase.
+// Stop returns every channel to its configured safe state (rule 7),
+// removes the state file and saves the history. Safe to call more than
+// once and concurrently with a running cycle: the hardware part takes
+// only hwMu (never c.mu, so a panic inside a locked section cannot block
+// it) and sets the stopped flag first, so a cycle that is in progress
+// skips its write phase. The history file is written after hwMu is
+// released — the store has its own lock, and a slow disk must not hold
+// the hardware mutex.
 func (c *Controller) Stop() {
 	c.stopOnce.Do(func() {
 		c.stopped.Store(true)
-		c.hwMu.Lock()
-		defer c.hwMu.Unlock()
-		// c.chans is immutable after New; ch.cfg is only swapped by
-		// applyPendingLocked, which also holds hwMu.
-		chans := c.chans
-		var parts []string
-		for _, ch := range chans {
-			parts = append(parts, fmt.Sprintf("%s=%s", ch.cfg.Name, ch.cfg.Stop))
-		}
-		c.log.Printf("stop: safe state %s", strings.Join(parts, " "))
-		if !c.opts.DryRun {
-			for _, ch := range chans {
-				if err := c.dev.SafeStop(ch.cfg.PWM, ch.cfg.Stop); err != nil {
-					c.log.Printf("%s: safe stop (%s) failed: %v", ch.cfg.Name, ch.cfg.Stop, err)
-				}
-			}
-		}
-		c.removeRunFile("state.json", "state.json")
+		c.safeStopLocked()
 		_ = c.hist.Save()
 	})
+}
+
+// safeStopLocked is Stop's hardware part under hwMu.
+func (c *Controller) safeStopLocked() {
+	c.hwMu.Lock()
+	defer c.hwMu.Unlock()
+	// c.chans is immutable after New; ch.cfg is only swapped by
+	// applyPendingLocked, which also holds hwMu.
+	chans := c.chans
+	var parts []string
+	for _, ch := range chans {
+		parts = append(parts, fmt.Sprintf("%s=%s", ch.cfg.Name, ch.cfg.Stop))
+	}
+	c.log.Printf("stop: safe state %s", strings.Join(parts, " "))
+	if !c.opts.DryRun {
+		for _, ch := range chans {
+			if err := c.dev.SafeStop(ch.cfg.PWM, ch.cfg.Stop); err != nil {
+				c.log.Printf("%s: safe stop (%s) failed: %v", ch.cfg.Name, ch.cfg.Stop, err)
+			}
+		}
+	}
+	c.removeRunFile("state.json", "state.json")
 }
 
 // Failsafe puts every configured channel that exists on dev into its

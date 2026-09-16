@@ -210,12 +210,59 @@ func (m *alertManager) InstallTemplate() (string, error) {
 
 // Configure validates, writes [alert] to the config file (comments kept,
 // tls pin applied) and hot-applies it. A nil member of s keeps the value
-// in effect; the merged section is validated as a whole (a transport
-// "webhook" needs a URL, whichever request supplied it).
+// in the file — the merge basis is the [alert] section of the file as
+// read under the file lock, not the section in effect, so a value another
+// writer put there (PUT /api/config, an import) is neither overwritten
+// nor lost; only the keys s sets are written. The merged section is
+// validated as a whole (a transport "webhook" needs a URL, whichever
+// request supplied it).
 func (m *alertManager) Configure(s web.AlertSettings) (web.AlertStatus, error) {
-	m.mu.Lock()
-	a := m.cur
-	m.mu.Unlock()
+	var a config.Alert
+	var verr error
+	err := editConfig(m.cfgPath, m.pin, "alert", func(raw []byte) []byte {
+		base := config.Default().Alert
+		if cfg, _, perr := config.Parse(raw); perr == nil {
+			base = cfg.Alert
+		} else {
+			m.mu.Lock()
+			base = m.cur
+			m.mu.Unlock()
+		}
+		if a, verr = mergeAlertSettings(base, s); verr != nil {
+			return nil
+		}
+		if s.Transport != nil {
+			raw = setConfigKey(raw, "alert", "transport", tomlString(a.Transport))
+		}
+		if s.MailTo != nil {
+			raw = setConfigKey(raw, "alert", "mail_to", tomlString(a.MailTo))
+		}
+		if s.WebhookURL != nil {
+			raw = setConfigKey(raw, "alert", "webhook_url", tomlString(a.WebhookURL))
+		}
+		if s.WebhookFormat != nil {
+			raw = setConfigKey(raw, "alert", "webhook_format", tomlString(a.WebhookFormat))
+		}
+		return raw
+	}, func(cfg config.Config) bool {
+		return cfg.Alert == a
+	})
+	if verr != nil {
+		return web.AlertStatus{}, verr
+	}
+	if err != nil {
+		return web.AlertStatus{}, err
+	}
+	m.apply(a)
+	m.invalidateTemplate()
+	return m.Status(), nil
+}
+
+// mergeAlertSettings lays the set members of s over base, normalises
+// (trim, lower-case, defaults for an empty mail_to and format) and
+// validates the result as a whole.
+func mergeAlertSettings(base config.Alert, s web.AlertSettings) (config.Alert, error) {
+	a := base
 	if s.Transport != nil {
 		a.Transport = strings.ToLower(strings.TrimSpace(*s.Transport))
 	}
@@ -235,36 +282,23 @@ func (m *alertManager) Configure(s web.AlertSettings) (web.AlertStatus, error) {
 		a.WebhookFormat = config.DefaultWebhookFormat
 	}
 	if !contains(config.AlertTransports, a.Transport) {
-		return web.AlertStatus{}, fmt.Errorf("transport %q unknown (%s)", a.Transport, strings.Join(config.AlertTransports, "|"))
+		return a, fmt.Errorf("transport %q unknown (%s)", a.Transport, strings.Join(config.AlertTransports, "|"))
 	}
 	if !config.ValidMailTo(a.MailTo) {
-		return web.AlertStatus{}, fmt.Errorf("mail_to %q is not a local user or address", a.MailTo)
+		return a, fmt.Errorf("mail_to %q is not a local user or address", a.MailTo)
 	}
 	if a.WebhookURL != "" {
 		if err := config.ValidWebhookURL(a.WebhookURL); err != nil {
-			return web.AlertStatus{}, fmt.Errorf("webhook_url %v", err)
+			return a, fmt.Errorf("webhook_url %v", err)
 		}
 	}
 	if !contains(config.WebhookFormats, a.WebhookFormat) {
-		return web.AlertStatus{}, fmt.Errorf("webhook_format %q unknown (%s)", a.WebhookFormat, strings.Join(config.WebhookFormats, "|"))
+		return a, fmt.Errorf("webhook_format %q unknown (%s)", a.WebhookFormat, strings.Join(config.WebhookFormats, "|"))
 	}
 	if a.Transport == alert.TransportWebhook && a.WebhookURL == "" {
-		return web.AlertStatus{}, fmt.Errorf("transport %q needs webhook_url", a.Transport)
+		return a, fmt.Errorf("transport %q needs webhook_url", a.Transport)
 	}
-	err := editConfig(m.cfgPath, m.pin, "alert", func(raw []byte) []byte {
-		raw = setConfigKey(raw, "alert", "transport", tomlString(a.Transport))
-		raw = setConfigKey(raw, "alert", "mail_to", tomlString(a.MailTo))
-		raw = setConfigKey(raw, "alert", "webhook_url", tomlString(a.WebhookURL))
-		return setConfigKey(raw, "alert", "webhook_format", tomlString(a.WebhookFormat))
-	}, func(cfg config.Config) bool {
-		return cfg.Alert == a
-	})
-	if err != nil {
-		return web.AlertStatus{}, err
-	}
-	m.apply(a)
-	m.invalidateTemplate()
-	return m.Status(), nil
+	return a, nil
 }
 
 func contains(list []string, s string) bool {

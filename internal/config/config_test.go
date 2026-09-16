@@ -1033,6 +1033,28 @@ func TestAlertWebhook(t *testing.T) {
 	if cfg.Alert.Transport != "log" || cfg.Alert.WebhookURL != "" || len(warns) != 1 {
 		t.Errorf("userinfo url: %+v %v", cfg.Alert, warns)
 	}
+	// the warning names scheme and host only: never the userinfo, the
+	// path or the query (the text reaches the journal and the dashboard)
+	_, warns, _ = Parse([]byte("[alert]\nwebhook_url = \"https://user:secret@h.example.test/x?token=k\"\n"))
+	if len(warns) != 1 || warns[0].Field != "alert.webhook_url" {
+		t.Fatalf("userinfo warning: %v", warns)
+	}
+	if msg := warns[0].Msg; msg != "https://h.example.test/… must not carry user:password (userinfo), ignored" ||
+		strings.Contains(msg, "secret") || strings.Contains(msg, "/x") || strings.Contains(msg, "token") {
+		t.Errorf("userinfo warning text: %q", msg)
+	}
+	_, warns, _ = Parse([]byte("[alert]\nwebhook_url = \"ftp://user:secret@h.example.test/x\"\n"))
+	if len(warns) != 1 || strings.Contains(warns[0].Msg, "secret") || !strings.HasPrefix(warns[0].Msg, "ftp://h.example.test/… is not an http or https URL") {
+		t.Errorf("ftp warning text: %v", warns)
+	}
+	_, warns, _ = Parse([]byte("[alert]\nwebhook_url = \"not a url secret\"\n"))
+	if len(warns) != 1 || strings.Contains(warns[0].Msg, "secret") || warns[0].Msg != "value is not an http or https URL, ignored" {
+		t.Errorf("text warning: %v", warns)
+	}
+	_, warns, _ = Parse([]byte("[alert]\nwebhook_url = \"https://user:secret@h.example.test/%zz\"\n"))
+	if len(warns) != 1 || strings.Contains(warns[0].Msg, "secret") || warns[0].Msg != "value is not a URL, ignored" {
+		t.Errorf("unparsable warning: %v", warns)
+	}
 	// unknown format → default + warning; an empty one is silent
 	cfg, warns, _ = Parse([]byte("[alert]\nwebhook_format = \"xml\"\n"))
 	hasWarn(t, warns, "alert.webhook_format")
@@ -1364,5 +1386,94 @@ func TestBehindTLSProxy(t *testing.T) {
 	back, warns, err := Parse(Marshal(c))
 	if err != nil || len(warns) != 0 || !back.Web.BehindTLSProxy {
 		t.Errorf("round trip: %v %v %v", err, warns, back.Web.BehindTLSProxy)
+	}
+}
+
+// TestReplaceChannels: the [[channel]] tables are swapped in the text, every
+// other byte stays — comments, key order, [[schedule]], [alert] with a
+// keyed webhook URL, password_hash. A comment above the first [[channel]]
+// and above the section after the last one keep their places; blocks
+// spread over the file are collected at the first one; without a block
+// the tables go to the end.
+func TestReplaceChannels(t *testing.T) {
+	chans := []Channel{
+		{Name: "cpu", PWM: 1, Sensor: "k10temp", Curve: [][2]int{{30, 60}, {80, 255}}, Critical: 85, Stop: "auto", Hysteresis: 2},
+		{Name: "hdd", PWM: 3, Sensor: "drivetemp:max", Curve: [][2]int{{30, 90}, {50, 255}}, Critical: 60, Stop: "140", MinOn: 90 * time.Second},
+	}
+	body := string(MarshalChannels(chans))
+	src := "# top comment\n[daemon]\ninterval = \"10s\" # keep\n\n[web]\nauth = \"basic\"\nuser = \"admin\"\npassword_hash = \"" + strings.Repeat("ab", 32) + "\"\n\n" +
+		"[alert]\ntransport = \"webhook\"\nwebhook_url = \"https://gotify.example.test/message?token=abc\"\n\n" +
+		"# Fan channels\n[[channel]] # cpu\nname = \"cpu\"\npwm = 1\nsensor = \"k10temp\"\n# the curve\ncurve = [[45,85],[80,255]]\ncritical = 88\n\n" +
+		"# second table\n[[channel]]\nname = \"hdd\"\npwm = 3\nsensor = \"drivetemp:max\"\ncurve = [[36,105],[46,255]]\n\n\n" +
+		"# Schedules\n[[schedule]]\npreset = \"night\"\nfrom = \"22:00\"\nto = \"07:00\"\n"
+	got := string(ReplaceChannels([]byte(src), chans))
+	want := "# top comment\n[daemon]\ninterval = \"10s\" # keep\n\n[web]\nauth = \"basic\"\nuser = \"admin\"\npassword_hash = \"" + strings.Repeat("ab", 32) + "\"\n\n" +
+		"[alert]\ntransport = \"webhook\"\nwebhook_url = \"https://gotify.example.test/message?token=abc\"\n\n" +
+		"# Fan channels\n" + body + "\n# second table\n\n\n# Schedules\n[[schedule]]\npreset = \"night\"\nfrom = \"22:00\"\nto = \"07:00\"\n"
+	if got != want {
+		t.Errorf("replace:\n--- got\n%s\n--- want\n%s", got, want)
+	}
+	back, warns, err := Parse([]byte(got))
+	if err != nil || len(warns) != 0 || len(back.Channels) != 2 || back.Channels[1].MinOn != 90*time.Second || back.Channels[0].Hysteresis != 2 ||
+		back.Alert.WebhookURL != "https://gotify.example.test/message?token=abc" || len(back.Schedules) != 1 || back.Web.PasswordHash != strings.Repeat("ab", 32) {
+		t.Errorf("result parse: %v %v\n%+v", err, warns, back)
+	}
+	// channel blocks spread over the file: all removed, tables at the first
+	spread := "[[channel]]\nname = \"a\"\npwm = 1\nsensor = \"k10temp\"\n\n[alert]\ntransport = \"log\"\n\n[[channel]]\nname = \"b\"\npwm = 2\nsensor = \"k10temp\"\n[channel.extra]\nx = 1\n\n[[schedule]]\npreset = \"p\"\n"
+	got = string(ReplaceChannels([]byte(spread), chans[:1]))
+	want = string(MarshalChannels(chans[:1])) + "\n[alert]\ntransport = \"log\"\n\n\n[[schedule]]\npreset = \"p\"\n"
+	if got != want {
+		t.Errorf("spread:\n--- got\n%s\n--- want\n%s", got, want)
+	}
+	// a block at the end of the file, the last line without a newline
+	got = string(ReplaceChannels([]byte("[daemon]\ninterval = \"10s\"\n\n[[channel]]\nname = \"a\"\npwm = 1\nsensor = \"k10temp\""), chans[:1]))
+	if want = "[daemon]\ninterval = \"10s\"\n\n" + string(MarshalChannels(chans[:1])); got != want {
+		t.Errorf("at EOF:\n--- got\n%s\n--- want\n%s", got, want)
+	}
+	// no block: appended after a blank line; an empty file gets only the tables
+	got = string(ReplaceChannels([]byte("[daemon]\ninterval = \"10s\"\n"), chans[:1]))
+	if want = "[daemon]\ninterval = \"10s\"\n\n" + string(MarshalChannels(chans[:1])); got != want {
+		t.Errorf("no block:\n--- got\n%s\n--- want\n%s", got, want)
+	}
+	if got = string(ReplaceChannels(nil, chans[:1])); got != string(MarshalChannels(chans[:1])) {
+		t.Errorf("empty file:\n%s", got)
+	}
+	// round trip of the daemon's own output: Marshal → replace → Parse equals
+	cfg := Default()
+	cfg.Channels = N5ProChannels()
+	cfg.Schedules = []Schedule{{Preset: "p"}}
+	back, warns, err = Parse(ReplaceChannels(Marshal(cfg), chans))
+	if err != nil || len(warns) != 0 || len(back.Channels) != 2 || back.Channels[0].Critical != 85 || len(back.Schedules) != 1 {
+		t.Errorf("marshal round trip: %v %v\n%+v", err, warns, back.Channels)
+	}
+}
+
+// TestChannelPostSet: the parser flags a channel table that carries
+// hysteresis or min_on (also at their default values); Clone copies the
+// flag; Marshal never writes it.
+func TestChannelPostSet(t *testing.T) {
+	head := "[[channel]]\nname = \"cpu\"\npwm = 1\nsensor = \"k10temp\"\ncurve = [[45,85],[80,255]]\ncritical = 88\n"
+	for raw, want := range map[string]bool{
+		head:                          false,
+		head + "hysteresis = 0\n":     true,
+		head + "hysteresis = 3\n":     true,
+		head + "min_on = \"0s\"\n":    true,
+		head + "min_on = \"2m\"\n":    true,
+		head + "hysteresis = \"x\"\n": true, // present but invalid: the key was there, the default applies
+	} {
+		chans, _, err := ParseChannels([]byte(raw))
+		if err != nil || len(chans) != 1 {
+			t.Fatalf("%q: %v %v", raw, chans, err)
+		}
+		if chans[0].PostSet != want {
+			t.Errorf("%q: PostSet = %v, want %v", raw, chans[0].PostSet, want)
+		}
+		if strings.Contains(string(MarshalChannels(chans)), "PostSet") || strings.Contains(string(MarshalChannels(chans)), "post_set") {
+			t.Errorf("Marshal writes the flag")
+		}
+	}
+	ch := Channel{Name: "cpu", PWM: 1, Sensor: "k10temp", Curve: [][2]int{{45, 85}, {80, 255}}, Critical: 88, Stop: "auto", PostSet: true}
+	if cl := CloneChannels([]Channel{ch}); !cl[0].PostSet {
+		t.Errorf("Clone drops the flag")
 	}
 }

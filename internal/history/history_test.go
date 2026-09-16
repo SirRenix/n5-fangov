@@ -118,6 +118,40 @@ func TestBucketMeans(t *testing.T) {
 	}
 }
 
+// TestBucketMeanSkipsUnknownDuty: the controller records -1 for a duty
+// unknown after a failed write; the raw tier keeps the marker, the means
+// are formed from the written duties only, and a channel whose duty was
+// unknown in every point of the bucket has no duty in the mean.
+func TestBucketMeanSkipsUnknownDuty(t *testing.T) {
+	c := &clock{t: time.Unix(t0, 0)}
+	s := New("", 10*time.Second, c.now, nil)
+	for i, d := range []int{100, -1, 120, -1, -1, 140} {
+		p := point(c.t.Unix(), 30, d, 1000)
+		p.Duty["hdd"] = -1
+		s.Push(p)
+		if i == 0 {
+			if raw := s.Range(RawSpan, 0); raw[0].Duty["cpu"] != 100 {
+				t.Fatalf("raw: %+v", raw)
+			}
+		}
+		c.advance(10 * time.Second)
+	}
+	raw := s.Range(RawSpan, 0)
+	if len(raw) != 6 || raw[1].Duty["cpu"] != -1 || raw[5].Duty["hdd"] != -1 {
+		t.Errorf("raw tier must keep the marker: %+v", raw)
+	}
+	got := s.Range(3*time.Hour, 0)
+	if len(got) != 1 || got[0].Duty["cpu"] != 120 { // (100+120+140)/3, not (100-3+120+140)/6 = 60
+		t.Errorf("1-min mean: %+v", got)
+	}
+	if _, ok := got[0].Duty["hdd"]; ok {
+		t.Errorf("a duty unknown in every point must be absent from the mean: %+v", got[0].Duty)
+	}
+	if got5 := s.Range(48*time.Hour, 0); len(got5) != 1 || got5[0].Duty["cpu"] != 120 {
+		t.Errorf("5-min mean: %+v", got5)
+	}
+}
+
 func TestTierCutoffsAndCapacity(t *testing.T) {
 	c := &clock{t: time.Unix(t0, 0)}
 	s := New("", 60*time.Second, c.now, nil)

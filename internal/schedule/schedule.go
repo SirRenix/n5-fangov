@@ -55,16 +55,23 @@ func FromConfig(in []config.Schedule) []Entry {
 }
 
 // Equal reports whether two entries describe the same window and preset.
+// Days compare as a set: the order in the config and a repeated name do
+// not make another entry (the scheduler would otherwise see a transition
+// on a reload that only reordered them).
 func Equal(a, b Entry) bool {
-	if a.Preset != b.Preset || a.From != b.From || a.To != b.To || a.Fallback != b.Fallback || len(a.Days) != len(b.Days) {
+	if a.Preset != b.Preset || a.From != b.From || a.To != b.To || a.Fallback != b.Fallback {
 		return false
 	}
-	for i := range a.Days {
-		if a.Days[i] != b.Days[i] {
-			return false
-		}
+	return daySet(a.Days) == daySet(b.Days)
+}
+
+// daySet is the bit set of days (bit d for time.Weekday d).
+func daySet(days []time.Weekday) uint8 {
+	var set uint8
+	for _, d := range days {
+		set |= 1 << uint(d)
 	}
-	return true
+	return set
 }
 
 // minutes parses "HH:MM" into minutes of the day; -1 when malformed.

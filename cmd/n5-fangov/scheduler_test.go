@@ -4,12 +4,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/SirRenix/n5-fangov/internal/config"
 	"github.com/SirRenix/n5-fangov/internal/schedule"
+	"github.com/SirRenix/n5-fangov/internal/web"
 )
 
 type schedTest struct {
@@ -116,14 +118,18 @@ func TestSchedulerNoFallback(t *testing.T) {
 func TestSchedulerFailureAlertsOnceRetriesNextTransition(t *testing.T) {
 	st := newSchedTest(t, 21, 59)
 	st.s.Set(schedEntries())
-	st.fail["night"] = errors.New("preset not found")
+	st.fail["night"] = fmt.Errorf("preset %q: %w", "/etc/n5-fangov/presets/night.toml", fs.ErrNotExist)
 	st.s.evaluate() // fallback applied
 	st.tick(time.Minute)
 	if strings.Join(st.applied, ",") != "balanced,night" {
 		t.Fatalf("applied %v", st.applied)
 	}
-	if len(st.alerts) != 1 || !strings.Contains(st.alerts[0], "preset not found") {
+	// the alert and the API carry the class, the log the full error
+	if len(st.alerts) != 1 || !strings.Contains(st.alerts[0], "preset missing") || strings.Contains(st.alerts[0], "/etc/") {
 		t.Errorf("alerts: %v", st.alerts)
+	}
+	if l := strings.Join(st.logs, "\n"); !strings.Contains(l, "(preset missing): preset \"/etc/n5-fangov/presets/night.toml\": file does not exist") {
+		t.Errorf("logs: %v", st.logs)
 	}
 	// no retry on the following ticks
 	st.tick(30 * time.Second)
@@ -132,7 +138,7 @@ func TestSchedulerFailureAlertsOnceRetriesNextTransition(t *testing.T) {
 		t.Errorf("retried inside the window: applied %v alerts %v", st.applied, st.alerts)
 	}
 	status := st.s.Status().(scheduleStatus)
-	if status.Last == nil || status.Last.OK || status.Last.Preset != "night" || status.Last.Error != "preset not found" {
+	if status.Last == nil || status.Last.OK || status.Last.Preset != "night" || status.Last.Error != "preset missing" {
 		t.Errorf("last: %+v", status.Last)
 	}
 	// the next transition (07:00 → fallback) applies again
@@ -143,6 +149,75 @@ func TestSchedulerFailureAlertsOnceRetriesNextTransition(t *testing.T) {
 	status = st.s.Status().(scheduleStatus)
 	if status.Last == nil || !status.Last.OK || status.Last.Preset != "balanced" || status.Last.Error != "" {
 		t.Errorf("last after success: %+v", status.Last)
+	}
+}
+
+// TestPresetErrorClass: the API sees a class, never the file path or the
+// parser text of the failure.
+func TestPresetErrorClass(t *testing.T) {
+	for _, c := range []struct {
+		err  error
+		want string
+	}{
+		{fmt.Errorf("preset %q: %w", "x", fs.ErrNotExist), "preset missing"},
+		{fmt.Errorf("%w: config: toml: line 3: expected value", errPresetInvalid), "preset invalid"},
+		{fmt.Errorf("%w: current config: open /etc/n5-fangov/config.toml: permission denied", errPresetWrite), "write failed"},
+		{fmt.Errorf("preset x written, %w", &web.ReloadError{Err: errors.New("channel cpu: pwm1_enable not writable")}), "reload failed"},
+		{errRestartRequired(), "restart required"},
+		{errors.New("something else"), "apply failed"},
+	} {
+		if got := presetErrorClass(c.err); got != c.want {
+			t.Errorf("presetErrorClass(%v) = %q, want %q", c.err, got, c.want)
+		}
+	}
+	// the class of every Apply failure reaches Status().last.error
+	st := newSchedTest(t, 21, 59)
+	st.s.Set(schedEntries())
+	st.fail["night"] = fmt.Errorf("%w: config: toml: line 3: expected value", errPresetInvalid)
+	st.s.evaluate()
+	st.tick(time.Minute)
+	b, _ := json.Marshal(st.s.Status())
+	if s := string(b); !strings.Contains(s, `"error":"preset invalid"`) || strings.Contains(s, "toml") {
+		t.Errorf("status: %s", s)
+	}
+}
+
+// TestSchedulerFirstRunNothingActive: an empty entry list, or a start
+// outside every window without a fallback, is not a transition — nothing
+// is applied, nothing is logged. Leaving a window later still logs.
+func TestSchedulerFirstRunNothingActive(t *testing.T) {
+	st := newSchedTest(t, 12, 0)
+	st.s.evaluate()
+	st.tick(30 * time.Second)
+	if len(st.applied) != 0 || len(st.alerts) != 0 || len(st.logs) != 0 {
+		t.Errorf("empty list: applied %v alerts %v logs %v", st.applied, st.alerts, st.logs)
+	}
+	st2 := newSchedTest(t, 19, 0)
+	st2.s.Set(schedEntries()[:2])
+	st2.s.evaluate()
+	if len(st2.applied) != 0 || len(st2.logs) != 0 {
+		t.Errorf("outside every window: applied %v logs %v", st2.applied, st2.logs)
+	}
+	// 22:00 → night, 07:00 → nothing active: that leave is logged
+	st2.tick(3 * time.Hour)
+	st2.tick(9 * time.Hour)
+	if strings.Join(st2.applied, ",") != "night" || !strings.Contains(strings.Join(st2.logs, "\n"), "no window active") {
+		t.Errorf("leave: applied %v logs %v", st2.applied, st2.logs)
+	}
+}
+
+// TestSchedulerNoApplier: a scheduler without an apply function logs the
+// wiring error and records no switch instead of panicking.
+func TestSchedulerNoApplier(t *testing.T) {
+	st := newSchedTest(t, 12, 0)
+	st.s.apply = nil
+	st.s.Set(schedEntries())
+	st.s.evaluate()
+	if l := strings.Join(st.logs, "\n"); !strings.Contains(l, "no preset store") {
+		t.Errorf("logs: %v", st.logs)
+	}
+	if status := st.s.Status().(scheduleStatus); status.Last != nil {
+		t.Errorf("last: %+v", status.Last)
 	}
 }
 

@@ -7,11 +7,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"sync"
 	"time"
 
 	"github.com/SirRenix/n5-fangov/internal/schedule"
+	"github.com/SirRenix/n5-fangov/internal/web"
 )
 
 // schedulerTick is how often the scheduler evaluates the entries.
@@ -29,19 +32,41 @@ type scheduler struct {
 	mu      sync.Mutex
 	entries []schedule.Entry
 	// baseline of the last evaluation: the active entry (copy) and
-	// whether one was active; evaluated is false before the first run.
-	evaluated bool
+	// whether one was active. Before the first run nothing is active, so
+	// the first run is a transition only when an entry is active then.
 	lastOK    bool
 	lastEntry schedule.Entry
 	last      *scheduleSwitch
 }
 
-// scheduleSwitch is the last preset switch the scheduler attempted.
+// scheduleSwitch is the last preset switch the scheduler attempted. Error
+// is the class of the failure (presetErrorClass) — the full text is in
+// the log; the API body must not carry file paths or parser output.
 type scheduleSwitch struct {
 	TS     int64  `json:"ts"`
 	Preset string `json:"preset"`
 	OK     bool   `json:"ok"`
 	Error  string `json:"error,omitempty"`
+}
+
+// presetErrorClass names the failure class of a dirPresetStore.Apply error
+// for the API: "preset missing", "preset invalid", "write failed", "reload
+// failed", "restart required", else "apply failed".
+func presetErrorClass(err error) string {
+	var re *web.ReloadError
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return "preset missing"
+	case errors.Is(err, errPresetInvalid):
+		return "preset invalid"
+	case errors.Is(err, errPresetWrite):
+		return "write failed"
+	case isRestartRequired(err):
+		return "restart required"
+	case errors.As(err, &re):
+		return "reload failed"
+	}
+	return "apply failed"
 }
 
 func newScheduler(apply func(string) error, alert func(msg string), logf func(string, ...any), now func() time.Time) *scheduler {
@@ -84,8 +109,10 @@ func (s *scheduler) Run(ctx context.Context) {
 // evaluate is one tick: on a transition the preset of the now active
 // entry is applied (outside the lock — Apply reloads the daemon, and the
 // reload hook calls Set). Leaving every window without a fallback applies
-// nothing. A failed apply is logged and alerted once; the baseline moves
-// anyway, so the retry happens at the next transition, not every tick.
+// nothing; a first run without an active entry (no entries, or outside
+// every window) is no transition and logs nothing. A failed apply is
+// logged and alerted once; the baseline moves anyway, so the retry
+// happens at the next transition, not every tick.
 func (s *scheduler) evaluate() {
 	now := s.now()
 	s.mu.Lock()
@@ -94,8 +121,8 @@ func (s *scheduler) evaluate() {
 	if ok {
 		entry = s.entries[idx]
 	}
-	transition := !s.evaluated || ok != s.lastOK || (ok && !schedule.Equal(entry, s.lastEntry))
-	s.evaluated, s.lastOK, s.lastEntry = true, ok, entry
+	transition := ok != s.lastOK || (ok && !schedule.Equal(entry, s.lastEntry))
+	s.lastOK, s.lastEntry = ok, entry
 	s.mu.Unlock()
 	if !transition {
 		return
@@ -109,11 +136,17 @@ func (s *scheduler) evaluate() {
 		window = entry.From + "–" + entry.To
 	}
 	sw := scheduleSwitch{TS: now.Unix(), Preset: entry.Preset, OK: true}
+	if s.apply == nil {
+		// wired without a preset store (serve sets apply after the
+		// stores exist; a nil here is a wiring error, not an operator one)
+		s.logf("%sschedule: preset %q (%s) not applied: no preset store", logError, entry.Preset, window)
+		return
+	}
 	if err := s.apply(entry.Preset); err != nil {
 		sw.OK = false
-		sw.Error = err.Error()
-		s.logf("%sschedule: preset %q (%s) not applied: %v — the previous curves stay", logError, entry.Preset, window, err)
-		s.alert(fmt.Sprintf("scheduled preset %q (%s) could not be applied: %v\nThe previous curves stay in effect; the scheduler retries at the next switch.", entry.Preset, window, err))
+		sw.Error = presetErrorClass(err)
+		s.logf("%sschedule: preset %q (%s) not applied (%s): %v — the previous curves stay", logError, entry.Preset, window, sw.Error, err)
+		s.alert(fmt.Sprintf("scheduled preset %q (%s) could not be applied: %s\nThe previous curves stay in effect; the scheduler retries at the next switch. Details are in the daemon log.", entry.Preset, window, sw.Error))
 	} else {
 		s.logf("schedule: preset %q applied (%s)", entry.Preset, window)
 	}

@@ -564,6 +564,46 @@ func TestHistoryRing(t *testing.T) {
 	}
 }
 
+// TestHistoryMeanSkipsUnknownDuty: a channel whose duty is unknown after
+// a failed write carries the -1 marker in the raw point (the dashboard
+// shows it as unknown; safety_test pins it), but the 1-minute means are
+// formed from the written duties only — a -1 would pull them below every
+// duty ever written.
+func TestHistoryMeanSkipsUnknownDuty(t *testing.T) {
+	cfg := n5cfg()
+	cfg.Daemon.StaleCycles = 600
+	h := newHarness(t, cfg, nil)
+	h.cycles(1)
+	h.expectDuty("cpu", 85)
+	h.sensors.get("k10temp").set(60000) // a new target, so the next cycle writes
+	h.dev.setFailWrite(1, true)
+	h.cycles(1) // first failure: cpu unknown, no failsafe yet
+	h.expectDuty("cpu", -1)
+	raw := h.c.History(time.Hour)
+	if len(raw) != 2 {
+		t.Fatalf("raw points: %d", len(raw))
+	}
+	if raw[1].Duty["cpu"] != -1 {
+		t.Errorf("raw point must carry the unknown marker: %+v", raw[1].Duty)
+	}
+	if raw[1].Duty["ssd"] != 74 || raw[0].Duty["cpu"] != 85 {
+		t.Errorf("known duties missing: %+v %+v", raw[0].Duty, raw[1].Duty)
+	}
+	h.dev.setFailWrite(1, false)
+	h.cycles(4) // recovery: the target (158 at 60 °C) is written directly
+	h.expectDuty("cpu", 158)
+	// six cycles (10 s each) sit in one 1-minute bucket: the mean of cpu is
+	// (85 + 4 × 158) / 5 = 143, not (85 − 1 + 4 × 158) / 6 = 119
+	means := h.c.HistoryRange(3*time.Hour, 0)
+	if len(means) == 0 {
+		t.Fatal("no 1-min points")
+	}
+	last := means[len(means)-1]
+	if d, ok := last.Duty["cpu"]; !ok || d != 143 {
+		t.Errorf("1-min mean of cpu = %d (%v), want 143 (the known duties only)", d, ok)
+	}
+}
+
 func TestReload(t *testing.T) {
 	h := newHarness(t, n5cfg(), nil)
 	h.cycles(1)
