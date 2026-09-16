@@ -331,20 +331,27 @@ func TestBearerRejected(t *testing.T) {
 	if n == 0 {
 		t.Errorf("bad bearer tokens beyond limitFree must be delayed")
 	}
+	// three rejected tokens above plus limitFree here in the bearer
+	// bucket; the empty "Bearer " header failed as a Basic credential and
+	// sits in the password bucket alone
 	e.srv.limiter.mu.Lock()
-	counted := e.srv.limiter.byIP[limitKey("127.0.0.1")]
+	counted := e.srv.limiter.bearer[limitKey("127.0.0.1")]
+	pw := e.srv.limiter.byIP[limitKey("127.0.0.1")]
 	e.srv.limiter.mu.Unlock()
-	if counted == nil || counted.n != 4+limitFree {
-		t.Errorf("failures counted: %+v, want %d", counted, 4+limitFree)
+	if counted == nil || counted.n != 3+limitFree {
+		t.Errorf("failures counted: %+v, want %d", counted, 3+limitFree)
 	}
-	if !strings.Contains(e.logLines(), fmt.Sprintf("%d recent failures", 4+limitFree)) {
+	if pw == nil || pw.n != 1 {
+		t.Errorf("password bucket: %+v, want the one malformed header", pw)
+	}
+	if !strings.Contains(e.logLines(), fmt.Sprintf("%d recent failures", 3+limitFree)) {
 		t.Errorf("failures not in the log: %s", e.logLines())
 	}
 	// a valid token resets the counter
 	good, _ := mint(t, e, "good", "read", 0)
 	wantCode(t, e.do(t, "GET", "/api/sensors", "", bearer(good)), 200)
 	e.srv.limiter.mu.Lock()
-	entries := len(e.srv.limiter.byIP)
+	entries := len(e.srv.limiter.bearer)
 	e.srv.limiter.mu.Unlock()
 	if entries != 0 {
 		t.Errorf("limiter not reset after a valid token: %d entries", entries)
@@ -363,6 +370,52 @@ func TestBearerRejected(t *testing.T) {
 	}()
 	wantCode(t, e.do(t, "GET", "/api/sensors", "", bearer(good)), 200)
 	wantError(t, e.do(t, "GET", "/api/config", "", basicAuth("admin", "pw")), 429, "too many concurrent")
+}
+
+// TestBearerSuccessKeepsPasswordDelay: the password and the bearer
+// failures live in separate buckets — a valid token does not reset the
+// delay that Basic failures from the same address earned, and a Basic
+// success does not reset the bearer bucket.
+func TestBearerSuccessKeepsPasswordDelay(t *testing.T) {
+	e, _ := tokenEnv(t)
+	var slept []time.Duration
+	var mu sync.Mutex
+	e.srv.limiter.sleep = func(d time.Duration) { mu.Lock(); slept = append(slept, d); mu.Unlock() }
+	for i := 0; i < limitFree; i++ {
+		wantCode(t, e.do(t, "GET", "/api/config", "", basicAuth("admin", "wrong")), 401)
+	}
+	good, _ := mint(t, e, "good", "read", 0)
+	wantCode(t, e.do(t, "GET", "/api/sensors", "", bearer(good)), 200)
+	mu.Lock()
+	before := len(slept)
+	mu.Unlock()
+	if before != 0 {
+		t.Fatalf("free attempts were delayed: %v", slept)
+	}
+	// the sixth Basic failure is still delayed
+	wantCode(t, e.do(t, "GET", "/api/config", "", basicAuth("admin", "wrong")), 401)
+	mu.Lock()
+	after := len(slept)
+	mu.Unlock()
+	if after != 1 {
+		t.Errorf("a bearer success reset the password delay: %d sleeps, want 1", after)
+	}
+	// the other direction: bearer failures, then a Basic success, then the
+	// next bad token is still delayed
+	e2, _ := tokenEnv(t)
+	slept = nil
+	e2.srv.limiter.sleep = e.srv.limiter.sleep
+	for i := 0; i < limitFree; i++ {
+		wantCode(t, e2.do(t, "GET", "/api/config", "", bearer("n5t_nope")), 401)
+	}
+	wantCode(t, e2.do(t, "GET", "/api/config", "", basicAuth("admin", "pw")), 200)
+	wantCode(t, e2.do(t, "GET", "/api/config", "", bearer("n5t_nope")), 401)
+	mu.Lock()
+	n := len(slept)
+	mu.Unlock()
+	if n != 1 {
+		t.Errorf("a Basic success reset the bearer delay: %d sleeps, want 1", n)
+	}
 }
 
 // TestBearerConcurrencyCap: an address with limitConcurrent delayed
@@ -473,8 +526,12 @@ func TestAuthNoneIgnoresBearer(t *testing.T) {
 	if strings.Contains(e.logLines(), "rejected") {
 		t.Errorf("bearer looked up with auth none: %s", e.logLines())
 	}
-	// tokens can still be managed (the endpoints are not gated by mode)
-	wantCode(t, e.do(t, "POST", "/api/tokens", `{"name":"x"}`, csrf), 201)
+	// a token cannot be minted with auth none (anyone reaching the
+	// listener could, and the guard would ignore it anyway); list and
+	// revoke stay available for the clean-up before switching to basic
+	wantError(t, e.do(t, "POST", "/api/tokens", `{"name":"x"}`, csrf), 409, "auth is none")
+	wantCode(t, e.do(t, "GET", "/api/tokens", "", nil), 200)
+	wantCode(t, e.do(t, "DELETE", "/api/tokens/0123abcd", "", csrf), 404)
 }
 
 func TestBearerRateLimit(t *testing.T) {

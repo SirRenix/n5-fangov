@@ -47,8 +47,15 @@ func (s *Server) getTokens(w http.ResponseWriter, r *http.Request) {
 
 // createToken: {"name","scope","ttl_days"} → 201 with the secret. scope
 // defaults to read, ttl_days to TokenTTLDefault; 0 never expires and
-// comes back with a warning.
+// comes back with a warning. With auth = none a token would be minted by
+// anyone who reaches the listener and ignored by the guard — 409 like the
+// account changes; list and revoke stay (an operator switching to basic
+// may want to clean up first).
 func (s *Server) createToken(w http.ResponseWriter, r *http.Request) {
+	if !s.basicMode() {
+		writeError(w, http.StatusConflict, "auth is none")
+		return
+	}
 	var b struct {
 		Name    string `json:"name"`
 		Scope   string `json:"scope"`
