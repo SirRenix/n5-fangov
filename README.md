@@ -130,12 +130,19 @@ protected request (CLI, curl, scripts), the cookie session is for browsers:
   stored hashed; at most 50, oldest dropped).
 - **Sign out** revokes the session and clears the cookie. The settings gear lists the
   active sessions (id, created, last seen, IP, remember) and offers *Sign out other
-  sessions*.
+  sessions*. A browser that still holds Basic credentials from a v0.2 session sends them
+  with every request and counts as signed in ("via basic"); *Sign out* cannot clear
+  those — close the browser or clear the site data.
+- A password or user change made outside the dashboard (`n5-fangov passwd`, editing the
+  file) drops every persisted session at the next start; changes made through the
+  settings gear keep the session that made them.
 - **Change password… / Change user…** (settings gear) ask for the current password, write
   the new `password_hash` (or `user`) into the config file in place — comments and every
   other key untouched — apply it at once and sign every *other* session out. User names
   are `[A-Za-z0-9_.-]{1,32}`, passwords 8..128 characters. A wrong current password
-  counts as a failed login for the rate limiter. `n5-fangov passwd` still works from the
+  counts as a failed login for the rate limiter. The in-place edit handles the `[web]`
+  header and the dotted `web.user = …` layout; an inline table `web = { … }` is refused
+  with a message (edit the file by hand) — the same applies to `[alert]` and `[dashboard]`. `n5-fangov passwd` still works from the
   shell (restart to apply) — for a forgotten password, for instance.
 - With `auth = "none"` every visitor counts as signed in; the account forms answer
   `409 auth is none`.
@@ -353,8 +360,9 @@ rows when the field loses focus.
 `/etc/n5-fangov/presets/<name>.toml` holds only `[[channel]]` tables; *Save current
 curves as…* writes one, *Apply* replaces the channel set of the config file with it and
 reloads (a changed channel set or profile answers "restart required"), *Delete* removes a
-user preset. Three N5 Pro sets are **built in** (embedded in the binary, listed for the
-`n5pro` profile only, never saved over or deleted — the API answers 409):
+user preset. Three N5 Pro sets are **built in** (embedded in the binary, listed and
+applicable for the `n5pro` profile only — on another profile the API answers 404 —, never
+saved over or deleted — the API answers 409):
 
 | Preset | cpu (`k10temp`, critical 88) | ssd (`nvme:max`, critical 72) | hdd (`drivetemp:max`, stop 140) |
 |---|---|---|---|
@@ -406,14 +414,19 @@ the recent alerts (newest first, the last 50, kept across restarts in
   no restart. A `PUT /api/config`, a settings import or a preset apply re-applies whatever
   `[alert]` the written file contains.
 - **Send test alert** — kind `test`, no cooldown, through the real transport; the response
-  carries the delivery error when perl/mail fail. It also lands in the recent list.
+  carries the delivery error when perl/mail fail. It also lands in the recent list. One
+  test at a time (a second click while one runs answers `409 test in progress`), bounded
+  to 20 s. `mail_to` is a local user or an address without spaces or quotes and never
+  starts with `-`; the recipient is passed to `mail(1)` after `--`.
 - **Install / Update template** — writes the two PVE notification template files
   (`n5-fangov-subject.txt.hbs`, `n5-fangov-body.txt.hbs`, embedded in the binary) to
   `/etc/pve/notification-templates/default/`. The button is disabled with the reason when
   the directory is missing or not writable: the daemon's sandbox may write *into* that
   directory but cannot create it, so on a fresh box `install.sh` or `n5-fangov alerts
   template` (root, outside the sandbox) create it. *Current* compares the installed files
-  with the embedded ones after an upgrade.
+  with the embedded ones after an upgrade. The writable probe (a temp file created and
+  removed in the directory, a write on pmxcfs) runs at most every 10 minutes and right
+  after *Install* or *Save*, not on every poll of the panel.
 
 **The PVE side.** Alerts arrive as severity *warning* with the fields `type = n5-fangov`,
 `hostname` and `kind = <alert kind>`. Without a matcher they follow the default matcher

@@ -92,6 +92,18 @@ func (b fileBundle) Import(data []byte) (bool, error) {
 	if strings.TrimSpace(in.Config) == "" {
 		return false, errors.New("bundle: config is empty")
 	}
+	// R-L4: the current hash is read from the file and the file rewritten
+	// below; no other store may write in between. Released before the
+	// reload (the controller and the alert manager take their own locks).
+	configFileMu.Lock()
+	locked := true
+	unlock := func() {
+		if locked {
+			locked = false
+			configFileMu.Unlock()
+		}
+	}
+	defer unlock()
 	var errs []string
 	raw := in.Config
 	if strings.Contains(raw, redactedHash) {
@@ -166,6 +178,7 @@ func (b fileBundle) Import(data []byte) (bool, error) {
 			return false, fmt.Errorf("preset %s: config written, presets from %q on not: %w", name, name, err)
 		}
 	}
+	unlock()
 	if b.reload == nil {
 		return false, nil
 	}

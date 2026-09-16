@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/SirRenix/n5-fangov/internal/alert"
@@ -107,6 +109,15 @@ func tomlString(s string) string { return strconv.Quote(s) }
 
 // saveConfig writes raw atomically.
 func saveConfig(path string, raw []byte) error { return config.Save(path, raw) }
+
+// configFileMu serialises every read-modify-write of the config file
+// inside the daemon (R-L4): the account, alert and dashboard stores, the
+// editor's Save, a preset apply and a bundle import each rewrite the whole
+// file from what they read, so two of them interleaving would drop one
+// change. Lock order: configFileMu before any store/controller/tls mutex;
+// the certificate manager's writeMode runs under its own lock and stays
+// outside (it would invert the order via pinConfig).
+var configFileMu sync.Mutex
 
 // n5proChannels is the verified N5 Pro channel set.
 func n5proChannels() []chanSpec { return channelSpecs(config.Config{Channels: config.N5ProChannels()}) }
@@ -612,6 +623,8 @@ func (s fileConfigStore) Save(raw []byte) error {
 	if err != nil {
 		return err
 	}
+	configFileMu.Lock() // R-L4
+	defer configFileMu.Unlock()
 	if s.pin != nil {
 		raw = s.pin(raw)
 	}
@@ -730,9 +743,16 @@ func channelNames(chans []config.Channel) []string {
 }
 
 // load returns the channel tables of a preset: the embedded text for a
-// built-in name, else the file.
+// built-in name of the active profile, else the file. A built-in of
+// another profile is not applied (R-L8): it is not listed either, and its
+// channels name pwm outputs this device may not have — fs.ErrNotExist,
+// which the web layer answers with 404. A user file of that name is
+// shadowed by the built-in in List and therefore not applied here either.
 func (s dirPresetStore) load(name string) ([]config.Channel, []config.Warning, error) {
-	if raw, ok := builtinPresetRaw(name); ok {
+	if raw, prof, ok := builtinPresetRaw(name); ok {
+		if prof != s.profile {
+			return nil, nil, fmt.Errorf("preset %q: built-in for profile %s, not %s: %w", name, prof, s.profile, fs.ErrNotExist)
+		}
 		return config.ParseChannels(raw)
 	}
 	return config.LoadPreset(s.dir, name)
@@ -753,9 +773,22 @@ func (s dirPresetStore) Apply(name string) error {
 	if len(chans) == 0 {
 		return fmt.Errorf("preset %q contains no usable [[channel]] table", name)
 	}
+	raw, err := s.write(name, chans)
+	if err != nil {
+		return err
+	}
+	log.Printf("preset %s applied to %s (%d channels)", name, s.cfgPath, len(chans))
+	return s.svc.Reload(raw)
+}
+
+// write is Apply's read-modify-write of the config file, under the file
+// lock (R-L4).
+func (s dirPresetStore) write(name string, chans []config.Channel) ([]byte, error) {
+	configFileMu.Lock()
+	defer configFileMu.Unlock()
 	cfg, _, err := config.Load(s.cfgPath)
 	if err != nil {
-		return fmt.Errorf("current config: %w", err)
+		return nil, fmt.Errorf("current config: %w", err)
 	}
 	cfg.Channels = config.CloneChannels(chans)
 	raw := config.Marshal(cfg)
@@ -763,10 +796,9 @@ func (s dirPresetStore) Apply(name string) error {
 		raw = s.pin(raw)
 	}
 	if err := config.Save(s.cfgPath, raw); err != nil {
-		return err
+		return nil, err
 	}
-	log.Printf("preset %s applied to %s (%d channels)", name, s.cfgPath, len(chans))
-	return s.svc.Reload(raw)
+	return raw, nil
 }
 
 // Save stores the channel tables of the current config file as preset
