@@ -125,9 +125,10 @@ func keyAlgo(pub any) string {
 // ValidatePair warns.
 const ExpiresSoon = 30 * 24 * time.Hour
 
-// ErrEncryptedKey: the key PEM is password-protected (PKCS#8 ENCRYPTED
-// PRIVATE KEY or a legacy "Proc-Type: 4,ENCRYPTED" block). The daemon has
-// no way to ask for the passphrase (L3).
+// ErrEncryptedKey is returned by ValidatePair when the key PEM is
+// password-protected (PKCS#8 ENCRYPTED PRIVATE KEY or a legacy
+// "Proc-Type: 4,ENCRYPTED" block). The daemon has no way to ask for the
+// passphrase (L3).
 var ErrEncryptedKey = errors.New("encrypted private keys are not supported — decrypt with openssl first (openssl pkey -in key.pem -out key-plain.pem)")
 
 // ValidatePair checks an uploaded certificate/key pair before it is
@@ -150,16 +151,14 @@ func ValidatePair(certPEM, keyPEM []byte, hosts []string) (tls.Certificate, []st
 	if len(certs) == 0 {
 		return tls.Certificate{}, nil, errors.New("certificate: no PEM CERTIFICATE block")
 	}
-	var keyBlock *pem.Block
-	for _, b := range pemBlocks(keyPEM, func(t string) bool { return strings.HasSuffix(t, "PRIVATE KEY") }) {
-		if b.Type == "ENCRYPTED PRIVATE KEY" || strings.Contains(b.Headers["Proc-Type"], "ENCRYPTED") {
-			return tls.Certificate{}, nil, fmt.Errorf("key: %w", ErrEncryptedKey)
-		}
-		keyBlock = b
-		break
-	}
-	if keyBlock == nil {
+	// the first PRIVATE KEY block counts; an encrypted one is refused
+	keys := pemBlocks(keyPEM, func(t string) bool { return strings.HasSuffix(t, "PRIVATE KEY") })
+	if len(keys) == 0 {
 		return tls.Certificate{}, nil, errors.New("key: no PEM PRIVATE KEY block")
+	}
+	keyBlock := keys[0]
+	if keyBlock.Type == "ENCRYPTED PRIVATE KEY" || strings.Contains(keyBlock.Headers["Proc-Type"], "ENCRYPTED") {
+		return tls.Certificate{}, nil, fmt.Errorf("key: %w", ErrEncryptedKey)
 	}
 	leaf, err := x509.ParseCertificate(certs[0].Bytes)
 	if err != nil {

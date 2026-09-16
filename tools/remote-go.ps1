@@ -13,8 +13,8 @@ param(
     [Alias("Host")][string]$BuildHost = "builder",
     [string]$Cmd = "",
     # Builder image. The default is cgo-free (static builds); the race
-    # detector needs cgo: -Image golang:1.25-bookworm -Cmd "go test -race -count=1 ./..."
-    [string]$Image = "golang:1.25-alpine",
+    # detector needs cgo: -Image golang:1.26-bookworm -Cmd "go test -race -count=1 ./..."
+    [string]$Image = "golang:1.26-alpine",
     [switch]$Fetch
 )
 $ErrorActionPreference = "Stop"

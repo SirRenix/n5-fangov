@@ -45,11 +45,14 @@ type AccountStore interface {
 	Update(user, passwordHash string) (AuthConfig, error)
 }
 
-// AlertRecord is one delivered alert (ring of the last 50).
+// AlertRecord is one alert that went through the ring (last 50). Error is
+// the delivery failure text when the transport reported one; absent for a
+// delivered alert.
 type AlertRecord struct {
-	TS   int64  `json:"ts"`
-	Kind string `json:"kind"`
-	Msg  string `json:"msg"`
+	TS    int64  `json:"ts"`
+	Kind  string `json:"kind"`
+	Msg   string `json:"msg"`
+	Error string `json:"error,omitempty"`
 }
 
 // AlertKind describes one alert type for the panel.
@@ -75,7 +78,8 @@ type AlertStatus struct {
 	PVEAvailable  bool           `json:"pve_available"`
 	MailAvailable bool           `json:"mail_available"`
 	Template      TemplateStatus `json:"template"`
-	Cooldown      string         `json:"cooldown"`
+	Cooldown      string         `json:"cooldown"`   // Go duration text ("30m0s"), kept for older clients
+	CooldownS     int64          `json:"cooldown_s"` // the same in seconds (0 offline) for the dashboard to format
 	Kinds         []AlertKind    `json:"kinds"`
 }
 

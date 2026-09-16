@@ -25,11 +25,13 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/SirRenix/n5-fangov/internal/config"
 	"github.com/SirRenix/n5-fangov/internal/control"
 	"github.com/SirRenix/n5-fangov/internal/ipc"
+	"github.com/SirRenix/n5-fangov/internal/logfile"
 	"github.com/SirRenix/n5-fangov/internal/tlscert"
 )
 
@@ -52,9 +54,6 @@ const (
 
 // HSTS is sent on every response that arrived over TLS (ServeTLS).
 const hstsValue = "max-age=31536000"
-
-// exportLines is how many lines a journal-only log source exports.
-const exportLines = 5000
 
 // ConfigStore is the daemon's config file access.
 type ConfigStore interface {
@@ -82,6 +81,30 @@ type Preset struct {
 // ErrPresetBuiltin is returned by PresetStore.Save/Delete for a built-in preset (409).
 var ErrPresetBuiltin = errors.New("built-in preset")
 
+// ErrStore marks a store failure that is not the caller's fault (the file
+// could not be written): the API answers 500 instead of 400. Stores may
+// wrap it explicitly; an OS-level error in the chain (fs.PathError,
+// os.LinkError, fs.ErrPermission, syscall.Errno such as EROFS/ENOSPC)
+// counts as well, so plain write errors need no wrapping.
+var ErrStore = errors.New("store error")
+
+// isStoreError reports whether err is an I/O failure rather than a
+// validation refusal (see ErrStore).
+func isStoreError(err error) bool {
+	var pe *fs.PathError
+	var le *os.LinkError
+	var errno syscall.Errno
+	return errors.Is(err, ErrStore) || errors.Is(err, fs.ErrPermission) || errors.As(err, &pe) || errors.As(err, &le) || errors.As(err, &errno)
+}
+
+// storeStatus is 500 for an I/O failure, 400 for a refusal.
+func storeStatus(err error) int {
+	if isStoreError(err) {
+		return http.StatusInternalServerError
+	}
+	return http.StatusBadRequest
+}
+
 // PresetStore lists, applies and saves curve presets.
 type PresetStore interface {
 	List() ([]Preset, error)
@@ -92,15 +115,8 @@ type PresetStore interface {
 	Save(name string) error
 }
 
-// LogSource returns the last n log lines.
-//
-// Deprecated: pass a LogStore in Deps.Log. A LogSource is still accepted for
-// one release (v0.2) and adapted: /api/log answers with source "journal",
-// /api/log/export streams the newest exportLines lines, DELETE /api/log
-// answers 501.
-type LogSource func(lines int) ([]string, error)
-
-// LogStore is the daemon's log file (implemented by internal/logfile).
+// LogStore is the daemon's log file (implemented by internal/logfile; cmd
+// substitutes a journal-backed store when no file is configured).
 type LogStore interface {
 	// Lines returns the newest n lines (from the journal when the file is disabled).
 	Lines(n int) ([]string, error)
@@ -119,43 +135,9 @@ type Bundle interface {
 	Export() ([]byte, error)
 	// Import validates every part before writing anything; password_hash
 	// "<unchanged>" keeps the current hash. restartRequired → 202.
-	Import(b []byte) (restartRequired bool, err error)
-}
-
-// funcLogStore adapts a LogSource to LogStore (journal only).
-type funcLogStore struct{ f LogSource }
-
-func (s funcLogStore) Lines(n int) ([]string, error) { return s.f(n) }
-func (s funcLogStore) Export(w io.Writer) error {
-	lines, err := s.f(exportLines)
-	if err != nil {
-		return err
-	}
-	for _, l := range lines {
-		if _, err := io.WriteString(w, l+"\n"); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-func (s funcLogStore) Clear() error {
-	return fmt.Errorf("journal-only log source: %w", errors.ErrUnsupported)
-}
-func (s funcLogStore) Path() string { return "" }
-
-// logStoreOf accepts the two supported Deps.Log forms; nil for anything else.
-func logStoreOf(v any) LogStore {
-	switch l := v.(type) {
-	case nil:
-		return nil
-	case LogStore:
-		return l
-	case LogSource:
-		return funcLogStore{l}
-	case func(int) ([]string, error):
-		return funcLogStore{l}
-	}
-	return nil
+	// warnings are the config's per-field warnings (values replaced by
+	// defaults), reported in the 200/202 answer.
+	Import(b []byte) (restartRequired bool, warnings []string, err error)
 }
 
 // ProfileInfo describes one hardware profile for /api/profiles.
@@ -192,11 +174,8 @@ type Deps struct {
 	// PUT (400); warnings are returned to the client but do not block.
 	Validate func(raw []byte) (warnings []string, err error)
 	Presets  PresetStore
-	// Log is the log backend: a LogStore (file: lines, export, clear) or —
-	// accepted for one more release — a LogSource / func(int) ([]string,
-	// error) (journal only, see LogSource). Any other value counts as nil
-	// and is logged once at New.
-	Log any
+	// Log is the log backend (lines, export, clear); nil → 501.
+	Log LogStore
 	// Bundle backs GET /api/config/export and POST /api/config/import.
 	Bundle   Bundle
 	Profiles func() []ProfileInfo
@@ -209,7 +188,12 @@ type Deps struct {
 	// TLS is informational: true when the TCP listener is TLS-terminated,
 	// exposed as "tls" in GET /api/version for the UI indicator. ServeTLS
 	// sets it itself; a TLS reverse proxy in front of plain Serve may set it.
+	// It also marks the session cookie Secure.
 	TLS bool
+	// BehindTLSProxy ([web] behind_tls_proxy): the plain-HTTP listener is
+	// only reached through a TLS-terminating reverse proxy, so the session
+	// cookie is marked Secure although r.TLS is nil.
+	BehindTLSProxy bool
 	// TLSMgr backs the /api/tls endpoints (certificate panel). nil → 501.
 	TLSMgr TLSMgr
 	// TLSHosts are the addresses the certificate should cover (listen host,
@@ -261,16 +245,14 @@ func New(deps Deps) *Server {
 	if s.logf == nil {
 		s.logf = log.Printf
 	}
+	s.limiter.logf = s.logf
 	auth := deps.Auth
 	s.auth.Store(&auth)
 	// R-M1: the mirror file is only loaded when it was written under the
 	// credentials in effect now; a rotation outside the daemon drops it.
 	s.sessions = NewSessionStoreEpoch(deps.SessionFile, CredentialEpoch(auth.User, auth.PasswordHash), s.logf)
 	s.tlsNoise = newHandshakeFilter(s.logf, time.Now)
-	s.logs = logStoreOf(deps.Log)
-	if s.logs == nil && deps.Log != nil {
-		s.logf("web: Deps.Log has unsupported type %T; log endpoints answer 501", deps.Log)
-	}
+	s.logs = deps.Log
 	for _, h := range deps.AllowedHosts {
 		h = normalizeHost(h)
 		switch h {
@@ -289,6 +271,30 @@ func New(deps Deps) *Server {
 	s.socket = http.AllowQuerySemicolons(withCaller(s.mux, Caller{Authenticated: true, Via: "socket"}))
 	s.tcp = http.AllowQuerySemicolons(s.guard(s.mux))
 	return s
+}
+
+// apiFallback answers every /api/ request no method pattern took: 405
+// with an Allow header when the path exists for other methods (the mux's
+// own 405 never triggers because this catch-all matches first), else 404.
+// Both in the JSON error document every API answer uses.
+func (s *Server) apiFallback(w http.ResponseWriter, r *http.Request) {
+	var allowed []string
+	for _, m := range []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete} {
+		if m == r.Method {
+			continue
+		}
+		probe := r.Clone(r.Context())
+		probe.Method = m
+		if _, pat := s.mux.Handler(probe); pat != "" && pat != "/api/" && pat != "/" {
+			allowed = append(allowed, m)
+		}
+	}
+	if len(allowed) > 0 {
+		w.Header().Set("Allow", strings.Join(allowed, ", "))
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	writeError(w, http.StatusNotFound, "unknown endpoint")
 }
 
 // NewHandler returns the TCP handler (Host check, CSRF, auth enforced).
@@ -332,7 +338,7 @@ func (s *Server) ListenAndServe(ctx context.Context, tcpAddr string) error {
 // API can then change fan duties for anyone on the LAN.
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	if !s.basicMode() && !listenerIsLoopback(ln) {
-		s.logf("WARNING: web listening on non-loopback %s without auth; anyone reaching this port can change fan duties. Set [web].auth = \"basic\" or bind to 127.0.0.1 behind a TLS reverse proxy.", ln.Addr())
+		s.logf("%sWARNING: web listening on non-loopback %s without auth; anyone reaching this port can change fan duties. Set [web].auth = \"basic\" or bind to 127.0.0.1 behind a TLS reverse proxy.", logfile.PrefixWarning, ln.Addr())
 	}
 	return s.serve(ctx, ln)
 }
@@ -357,7 +363,7 @@ func (s *Server) ServeTLSStore(ctx context.Context, ln net.Listener, store *tlsc
 	cfg := tlscert.ServerConfig(store.Get)
 	s.deps.TLS = true // before serving: handlers read it without a lock
 	if !s.basicMode() && !listenerIsLoopback(ln) {
-		s.logf("WARNING: web listening on non-loopback %s with TLS but without auth; anyone reaching this port can change fan duties. Set [web].auth = \"basic\".", ln.Addr())
+		s.logf("%sWARNING: web listening on non-loopback %s with TLS but without auth; anyone reaching this port can change fan duties. Set [web].auth = \"basic\".", logfile.PrefixWarning, ln.Addr())
 	}
 	return s.serve(ctx, tls.NewListener(ln, cfg))
 }
@@ -496,9 +502,7 @@ func (s *Server) routes() {
 	m.HandleFunc("PUT /api/dashboard", s.putDashboard)
 	m.HandleFunc("GET /api/about", s.getAbout)
 	m.HandleFunc("GET /api/system", s.getSystem)
-	m.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
-		writeError(w, http.StatusNotFound, "unknown endpoint")
-	})
+	m.HandleFunc("/api/", s.apiFallback)
 	m.HandleFunc("/", s.static)
 }
 
@@ -601,24 +605,51 @@ func (s *Server) resolveCaller(w http.ResponseWriter, r *http.Request) (Caller, 
 		return Caller{Via: "none"}, true
 	}
 	ip := remoteIP(r)
-	// An IP that already has limitConcurrent failed attempts sleeping gets
-	// an immediate 429 before any hash is computed (M3c): the delay cannot
-	// be side-stepped with parallel requests, and the PBKDF2 cost is not
-	// paid for them.
-	if s.limiter.busy(ip) {
+	// A bucket that already has limitConcurrent failed attempts sleeping
+	// gets an immediate 429 before any hash is computed (M3c): the delay
+	// cannot be side-stepped with parallel requests, and the PBKDF2 cost
+	// is not paid for them. The same answer when the process-wide
+	// verification slots are all taken.
+	if s.limiter.busy(ip) || !s.limiter.acquire() {
 		writeError(w, http.StatusTooManyRequests, "too many concurrent authentication attempts")
 		return Caller{}, false
 	}
-	if !s.authorized(r) {
-		user, _, _ := r.BasicAuth()
+	ok := s.authorized(r)
+	s.limiter.release()
+	user, pass, _ := r.BasicAuth()
+	if !ok {
 		n, delay := s.limiter.fail(ip)
-		s.logf("web: auth failure from %s (user %q, %s %s, %d recent failures, delay %s)", ip, user, r.Method, r.URL.Path, n, delay)
+		s.logf("web: auth failure from %s (user %.64q, %s %s, %d recent failures, delay %s)", ip, user, r.Method, r.URL.Path, n, delay)
 		writeError(w, http.StatusUnauthorized, "authentication required")
 		return Caller{}, false
 	}
 	s.limiter.reset(ip)
-	user, _, _ := r.BasicAuth()
+	s.upgradeLegacyHash(user, pass)
 	return Caller{Authenticated: true, User: user, Via: "basic"}, true
+}
+
+// upgradeLegacyHash rewrites a stored legacy sha256("user:password") hash
+// as PBKDF2 after a successful verification — the only moment the
+// password is at hand. Needs an AccountStore; without one the legacy form
+// simply stays. The sessions are kept: the epoch follows the new hash so
+// the mirror file is still loaded after a restart.
+func (s *Server) upgradeLegacyHash(user, password string) {
+	if s.deps.Account == nil {
+		return
+	}
+	cfg := s.authCfg()
+	ph, err := config.ParsePasswordHash(cfg.PasswordHash)
+	if err != nil || ph.Legacy == nil {
+		return
+	}
+	next, err := s.deps.Account.Update("", PasswordHash(user, password))
+	if err != nil {
+		s.logf("web: legacy password hash not upgraded: %v", err)
+		return
+	}
+	s.auth.Store(&next)
+	s.sessions.SetEpoch(CredentialEpoch(next.User, next.PasswordHash))
+	s.logf("web: legacy password hash upgraded to pbkdf2 for user %.64q", user)
 }
 
 // hostAllowed accepts IP literals, localhost and the configured hosts (M1).
@@ -681,7 +712,7 @@ func (s *Server) credentialsOK(user, pass string) bool {
 // hwmon path, extra temperatures, alert times or watched sensors.
 type publicState struct {
 	TS       int64           `json:"ts"`
-	Status   string          `json:"status"`
+	Status   control.Status  `json:"status"`
 	Profile  string          `json:"profile"`
 	Verified bool            `json:"verified"`
 	DryRun   bool            `json:"dry_run"`
@@ -802,6 +833,16 @@ func mapHashLiterals(raw string, f func(val string) (string, bool)) string {
 	})
 }
 
+// RestoreHash rewrites every password_hash assignment whose value is the
+// RedactedHash placeholder to hash; comments and other values that
+// mention the placeholder are left alone. PUT /api/config and the bundle
+// import use it.
+func RestoreHash(raw, hash string) string {
+	return mapHashLiterals(raw, func(v string) (string, bool) {
+		return hash, v == RedactedHash
+	})
+}
+
 // RedactRaw replaces a non-empty password_hash value in TOML text (H1).
 // The line forms are rewritten by regex; in addition the hash the parser
 // actually sees is replaced wherever it appears (inline table, unusual
@@ -879,7 +920,10 @@ func (s *Server) getConfig(w http.ResponseWriter, r *http.Request) {
 
 // putConfig: read (413 on overflow) → restore a redacted hash → validate
 // (400, nothing written) → save → reload. Order matters (M2): a syntax
-// error never reaches the file.
+// error never reaches the file. With ?strict=1 (the dashboard editor)
+// validation warnings refuse the PUT as well — 400 with the warning list —
+// instead of writing a file whose invalid values the daemon replaces by
+// defaults (rule 8 is for the start, not for an interactive edit).
 func (s *Server) putConfig(w http.ResponseWriter, r *http.Request) {
 	if s.deps.Config == nil || s.deps.Service == nil {
 		writeError(w, http.StatusNotImplemented, "no config store")
@@ -904,10 +948,7 @@ func (s *Server) putConfig(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "read current config: "+err.Error())
 			return
 		}
-		hash := currentHash(string(cur))
-		body = []byte(mapHashLiterals(string(body), func(v string) (string, bool) {
-			return hash, v == RedactedHash
-		}))
+		body = []byte(RestoreHash(string(body), currentHash(string(cur))))
 	}
 	var warnings []string
 	if s.deps.Validate != nil {
@@ -916,9 +957,17 @@ func (s *Server) putConfig(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "config rejected: " + err.Error(), "errors": nonNil(warns)})
 			return
 		}
+		if len(warns) > 0 && strictQuery(r) {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "config rejected", "errors": warns})
+			return
+		}
 		warnings = warns
 	}
 	if err := s.deps.Config.Save(body); err != nil {
+		if isStoreError(err) {
+			writeError(w, http.StatusInternalServerError, "config not written: "+err.Error())
+			return
+		}
 		writeError(w, http.StatusBadRequest, "config rejected: "+err.Error())
 		return
 	}
@@ -931,6 +980,15 @@ func (s *Server) putConfig(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusInternalServerError, "config saved, reload failed: "+err.Error())
 	}
+}
+
+// strictQuery reports ?strict=1 (or true/yes) on a request.
+func strictQuery(r *http.Request) bool {
+	switch strings.ToLower(r.URL.Query().Get("strict")) {
+	case "1", "true", "yes":
+		return true
+	}
+	return false
 }
 
 func nonNil(s []string) []string {
@@ -1091,7 +1149,7 @@ func (s *Server) applyPreset(w http.ResponseWriter, r *http.Request) {
 			// profile counts as missing).
 			writeError(w, http.StatusNotFound, "unknown preset "+name)
 		default:
-			writeError(w, http.StatusBadRequest, "apply preset: "+err.Error())
+			writeError(w, storeStatus(err), "apply preset: "+err.Error())
 		}
 		return
 	}
@@ -1114,7 +1172,7 @@ func (s *Server) savePreset(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "save preset: "+err.Error())
 			return
 		}
-		writeError(w, http.StatusBadRequest, "save preset: "+err.Error())
+		writeError(w, storeStatus(err), "save preset: "+err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "saved": name})
@@ -1259,17 +1317,21 @@ func (s *Server) importConfig(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "body must be a JSON settings bundle")
 		return
 	}
-	restart, err := s.deps.Bundle.Import(body)
+	restart, warnings, err := s.deps.Bundle.Import(body)
 	if err != nil {
 		lines := importErrorLines(err)
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "import rejected: " + lines[0], "errors": lines})
+		status, what := storeStatus(err), "import rejected: "
+		if status == http.StatusInternalServerError {
+			what = "import failed: "
+		}
+		writeJSON(w, status, map[string]any{"error": what + lines[0], "errors": lines})
 		return
 	}
 	if restart {
-		writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "restart_required": true, "message": "restart required: systemctl restart n5-fangov"})
+		writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "restart_required": true, "message": "restart required: systemctl restart n5-fangov", "warnings": nonNil(warnings)})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "restart_required": false})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "restart_required": false, "warnings": nonNil(warnings)})
 }
 
 // importErrorLines turns a Bundle.Import error into the "errors" list: an
@@ -1329,8 +1391,39 @@ func (s *Server) getProfiles(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, p)
 }
 
+// Limits is the "limits" member of GET /api/version: the bounds the
+// dashboard validates against before it sends, taken from the same
+// constants the server enforces.
+type Limits struct {
+	MinHDDOverride      int `json:"min_hdd_override"`
+	CriticalMin         int `json:"critical_min"`
+	CriticalMax         int `json:"critical_max"`
+	CurvePointsMax      int `json:"curve_points_max"`
+	DashboardSensorsMax int `json:"dashboard_sensors_max"`
+	PasswordMin         int `json:"password_min"`
+	PasswordMax         int `json:"password_max"`
+}
+
+// apiLimits are the current bounds (see Limits).
+func apiLimits() Limits {
+	return Limits{
+		MinHDDOverride:      control.MinHDDOverride,
+		CriticalMin:         criticalMin,
+		CriticalMax:         config.MaxCritical,
+		CurvePointsMax:      config.MaxCurvePts,
+		DashboardSensorsMax: config.MaxDashboardSensors,
+		PasswordMin:         minPasswordLen,
+		PasswordMax:         maxPasswordLen,
+	}
+}
+
+// criticalMin is the lowest critical temperature the editor may send: the
+// config parser demands last curve point + 1, and a curve point may be as
+// low as config.MinCurveTemp; the dashboard's own field minimum.
+const criticalMin = 30
+
 func (s *Server) getVersion(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"name": "n5-fangov", "version": s.deps.Version, "tls": s.deps.TLS, "prerelease": s.deps.About.Prerelease, "auth": s.authMode()})
+	writeJSON(w, http.StatusOK, map[string]any{"name": "n5-fangov", "version": s.deps.Version, "tls": s.deps.TLS, "prerelease": s.deps.About.Prerelease, "auth": s.authMode(), "limits": apiLimits()})
 }
 
 func (s *Server) getSensors(w http.ResponseWriter, r *http.Request) {

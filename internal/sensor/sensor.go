@@ -5,8 +5,10 @@ package sensor
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -16,11 +18,16 @@ import (
 )
 
 // Plausibility window in millidegrees. Readings outside are reported as
-// errors so a stuck or garbage sensor triggers the failsafe path.
+// errors; the controller then holds that channel at its safe duty (mode
+// sensor-error) while the other channels keep regulating. This is the one
+// definition; internal/control imports it.
 const (
 	MinPlausible = -20000
 	MaxPlausible = 120000
 )
+
+// Plausible reports whether a millidegree reading lies inside the window.
+func Plausible(milli int) bool { return milli >= MinPlausible && milli <= MaxPlausible }
 
 // ErrImplausible wraps readings outside MinPlausible..MaxPlausible.
 var ErrImplausible = errors.New("sensor: implausible reading")
@@ -44,7 +51,7 @@ type Info struct {
 
 // checkPlausible rejects readings outside the plausibility window.
 func checkPlausible(id string, v int) (int, error) {
-	if v < MinPlausible || v > MaxPlausible {
+	if !Plausible(v) {
 		return 0, fmt.Errorf("%w: %s = %d", ErrImplausible, id, v)
 	}
 	return v, nil
@@ -152,7 +159,7 @@ func Parse(id string, fs *hwmon.FS, dev profile.Device) (Source, error) {
 		devs := fs.FindByName(m[1])
 		if len(devs) == 0 {
 			// also accept the directory name (hwmon:hwmon14:temp2)
-			for _, d := range mustList(fs) {
+			for _, d := range listOrEmpty(fs) {
 				if filepath.Base(d.Path) == m[1] {
 					devs = append(devs, d)
 				}
@@ -180,7 +187,9 @@ func Parse(id string, fs *hwmon.FS, dev profile.Device) (Source, error) {
 	return nil, fmt.Errorf("sensor: unknown id %q", id)
 }
 
-func mustList(fs *hwmon.FS) []hwmon.Device {
+// listOrEmpty lists the hwmon devices; a List error (no /sys/class/hwmon)
+// reads as no devices, the caller then reports "no matching device".
+func listOrEmpty(fs *hwmon.FS) []hwmon.Device {
 	devs, _ := fs.List()
 	return devs
 }
@@ -218,14 +227,7 @@ func tempInputs(devPath string) []string {
 	return out
 }
 
-func sortedKeys(m map[string]string) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
-}
+func sortedKeys(m map[string]string) []string { return slices.Sorted(maps.Keys(m)) }
 
 // Known lists the sensor ids usable on this machine: the concrete ids that
 // resolve right now (with the current reading in the description when
@@ -251,7 +253,7 @@ func Known(fs *hwmon.FS, dev profile.Device) []Info {
 		}
 	}
 	seen := map[string]bool{}
-	for _, d := range mustList(fs) {
+	for _, d := range listOrEmpty(fs) {
 		if seen[d.Name] {
 			continue // hwmon:<name> always resolves to the first device of that name
 		}

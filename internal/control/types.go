@@ -1,7 +1,22 @@
 // Package control implements the regulation loop (see DESIGN.md "Controller").
 package control
 
-import "time"
+import (
+	"errors"
+	"time"
+)
+
+// Status of the last regulation cycle (Snapshot.Status). The dashboard
+// keys its status classes on the same strings.
+type Status string
+
+const (
+	StatusStarting    Status = "starting"     // no cycle finished yet
+	StatusOK          Status = "ok"           // every channel read and written
+	StatusWriteError  Status = "write-error"  // at least one pwm write failed this cycle
+	StatusSensorError Status = "sensor-error" // every channel's sensor failed
+	StatusDryRun      Status = "dry-run"      // --dry-run: ok, nothing written
+)
 
 // Mode of a channel in the current cycle.
 type Mode string
@@ -30,7 +45,7 @@ type ChannelState struct {
 // Snapshot is the daemon state exposed to CLI and web.
 type Snapshot struct {
 	TS         int64              `json:"ts"`
-	Status     string             `json:"status"` // ok | sensor-error | write-error | dry-run
+	Status     Status             `json:"status"` // starting | ok | sensor-error | write-error | dry-run
 	Profile    string             `json:"profile"`
 	Verified   bool               `json:"verified"`
 	HwmonPath  string             `json:"hwmon_path"`
@@ -66,10 +81,6 @@ type Service interface {
 	Reload(rawTOML []byte) error
 }
 
-// ErrRestartRequired is returned by Reload when a restart is needed.
-type restartRequired struct{}
-
-func (restartRequired) Error() string { return "restart required: channel set or profile changed" }
-
-// ErrRestartRequired sentinel.
-var ErrRestartRequired error = restartRequired{}
+// ErrRestartRequired is returned by Reload when the channel set or the
+// profile changed: nothing was applied, the restart reads the file.
+var ErrRestartRequired = errors.New("restart required: channel set or profile changed")

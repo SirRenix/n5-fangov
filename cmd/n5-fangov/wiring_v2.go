@@ -14,10 +14,9 @@ import (
 	"github.com/SirRenix/n5-fangov/internal/web"
 )
 
-// applyV2Deps sets the v0.2 members of web.Deps. Deps.Log is `any`: web
-// accepts a LogStore (our logStore has the same method set) or the legacy
-// func(int) ([]string, error). Bundle and TLS map 1:1; TLSMgr only when
-// set (a typed nil would look non-nil behind the interface).
+// applyV2Deps sets the v0.2 members of web.Deps. Log, Bundle and TLS map
+// 1:1 (logStore has web.LogStore's method set); TLSMgr only when set (a
+// typed nil would look non-nil behind the interface).
 func applyV2Deps(deps *web.Deps, d webDeps) {
 	deps.Log = d.Log
 	deps.Bundle = d.Bundle

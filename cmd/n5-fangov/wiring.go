@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/SirRenix/n5-fangov/internal/alert"
 	"github.com/SirRenix/n5-fangov/internal/config"
@@ -62,6 +63,9 @@ type webSpec struct {
 	TLS          string   // auto | off | file
 	CertFile     string
 	KeyFile      string
+	// BehindTLSProxy marks the session cookie Secure on a plain listener
+	// that sits behind a TLS reverse proxy ([web] behind_tls_proxy).
+	BehindTLSProxy bool
 }
 
 // logSpec is the [log] section.
@@ -75,10 +79,6 @@ func logOf(cfg config.Config) logSpec {
 	return logSpec{File: cfg.Log.File, MaxSizeMB: cfg.Log.MaxSizeMB, MaxFiles: cfg.Log.MaxFiles}
 }
 
-// defaultTLSMode is the tls mode for a listen address without an explicit
-// setting: "off" on loopback, "auto" elsewhere.
-func defaultTLSMode(listen string) string { return config.DefaultTLS(listen) }
-
 // passwordHash computes the [web].password_hash value for user/password:
 // salted PBKDF2-HMAC-SHA256 (`pbkdf2$<iter>$<salt>$<key>`). The legacy
 // sha256("user:password") hex form stays accepted by the daemon.
@@ -87,6 +87,23 @@ func passwordHash(user, password string) string { return web.PasswordHash(user, 
 // verifyPassword checks a password against a stored hash of either form.
 func verifyPassword(user, password, stored string) bool {
 	return web.VerifyPassword(user, password, stored)
+}
+
+// User name and password rules of the account API (config: one rule for
+// the parser, the API and the CLI).
+var userNameRe = config.UserRe
+
+const (
+	passwordMinLen = config.MinPasswordLen
+	passwordMaxLen = config.MaxPasswordLen
+)
+
+// isLegacyHash reports whether a stored password hash is the unsalted
+// sha256("user:password") form (the daemon re-hashes it after the next
+// successful login; `check` points at `passwd`).
+func isLegacyHash(stored string) bool {
+	ph, err := config.ParsePasswordHash(stored)
+	return err == nil && ph.Legacy != nil
 }
 
 // redactedHash is the placeholder the API and bundles use for the stored
@@ -98,14 +115,53 @@ const redactedHash = web.RedactedHash
 // substring only when it is long enough not to hit other text) (M7).
 func redactConfigText(raw string) string { return web.RedactRaw(raw) }
 
+// restoreHash puts hash back where a password_hash assignment carries the
+// placeholder — the assignment lines only, not comments or other values
+// (the same rewrite PUT /api/config uses).
+func restoreHash(raw, hash string) string { return web.RestoreHash(raw, hash) }
+
 // setConfigKey edits one key of a top-level table in raw TOML text without
 // touching comments or other keys (passwd, setup on an existing file).
 func setConfigKey(raw []byte, section, key, value string) []byte {
 	return config.SetKey(raw, section, key, value)
 }
 
-// tomlString quotes s as a TOML basic string.
-func tomlString(s string) string { return strconv.Quote(s) }
+// tomlString quotes s as a TOML basic string. strconv.Quote is not the
+// same grammar: it renders control characters as \x01, which TOML does
+// not know (only \b \t \n \f \r \" \\ and \uXXXX are escapes).
+func tomlString(s string) string {
+	var b strings.Builder
+	b.Grow(len(s) + 2)
+	b.WriteByte('"')
+	for _, r := range s {
+		switch r {
+		case '"':
+			b.WriteString(`\"`)
+		case '\\':
+			b.WriteString(`\\`)
+		case '\b':
+			b.WriteString(`\b`)
+		case '\t':
+			b.WriteString(`\t`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\f':
+			b.WriteString(`\f`)
+		case '\r':
+			b.WriteString(`\r`)
+		case utf8.RuneError:
+			b.WriteString(`\uFFFD`)
+		default:
+			if r < 0x20 || r == 0x7f {
+				fmt.Fprintf(&b, `\u%04X`, r)
+			} else {
+				b.WriteRune(r)
+			}
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
+}
 
 // saveConfig writes raw atomically.
 func saveConfig(path string, raw []byte) error { return config.Save(path, raw) }
@@ -137,6 +193,7 @@ func renderConfig(profileName string, chans []chanSpec, w webSpec) []byte {
 		Listen: w.Listen, Auth: w.Auth, User: w.User, PasswordHash: w.PasswordHash,
 		AllowedHosts: append([]string(nil), w.AllowedHosts...),
 		TLS:          w.TLS, CertFile: w.CertFile, KeyFile: w.KeyFile,
+		BehindTLSProxy: w.BehindTLSProxy,
 	}
 	return config.Marshal(cfg)
 }
@@ -246,14 +303,15 @@ func daemonOf(cfg config.Config) daemonSpec {
 
 func webOf(cfg config.Config) webSpec {
 	return webSpec{
-		Listen:       cfg.Web.Listen,
-		Auth:         cfg.Web.Auth,
-		User:         cfg.Web.User,
-		PasswordHash: cfg.Web.PasswordHash,
-		AllowedHosts: append([]string(nil), cfg.Web.AllowedHosts...),
-		TLS:          cfg.Web.TLS,
-		CertFile:     cfg.Web.CertFile,
-		KeyFile:      cfg.Web.KeyFile,
+		Listen:         cfg.Web.Listen,
+		Auth:           cfg.Web.Auth,
+		User:           cfg.Web.User,
+		PasswordHash:   cfg.Web.PasswordHash,
+		AllowedHosts:   append([]string(nil), cfg.Web.AllowedHosts...),
+		TLS:            cfg.Web.TLS,
+		CertFile:       cfg.Web.CertFile,
+		KeyFile:        cfg.Web.KeyFile,
+		BehindTLSProxy: cfg.Web.BehindTLSProxy,
 	}
 }
 
@@ -370,6 +428,22 @@ func sendAlertCooled(runDir string, a alert.Sink, kind, msg string) {
 	a.Alert(kind, msg)
 }
 
+// startAlert is sendAlertCooled on its own goroutine for the alerts serve
+// raises before the loop runs: the cooldown stamp is written synchronously
+// (so a restart loop still sees it), the delivery — up to Timeout plus
+// WaitDelay of perl or mail — does not hold up the first cycle and READY=1.
+// A sink panic costs the alert, not the daemon.
+func startAlert(runDir string, a alert.Sink, kind, msg string) {
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("%salert sink panicked delivering %s: %v", logError, kind, r)
+			}
+		}()
+		sendAlertCooled(runDir, a, kind, msg)
+	}()
+}
+
 func firstLine(s string) string {
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
 		return s[:i]
@@ -400,9 +474,34 @@ func newController(cfg config.Config, dev profile.Device, f sensorFactory, a ale
 		DryRun: o.DryRun,
 		RunDir: o.RunDir,
 		Logger: log.Default(),
-		Notify: func() { _ = sdnotify.Watchdog() },
-		Status: func(s string) { _ = sdnotify.Status(s) },
+		Notify: func() { noteNotify("WATCHDOG=1", sdnotify.Watchdog()) },
+		Status: func(s string) { noteNotify("STATUS", sdnotify.Status(s)) },
 	})
+}
+
+// notifyMu guards notifyErr: the last sd_notify error text, logged when it
+// changes and cleared (with a line) when a send works again. A broken
+// NOTIFY_SOCKET otherwise ends in a silent watchdog kill with only
+// systemd's side of the story in the journal.
+var (
+	notifyMu  sync.Mutex
+	notifyErr string
+)
+
+func noteNotify(what string, err error) {
+	notifyMu.Lock()
+	defer notifyMu.Unlock()
+	if err == nil {
+		if notifyErr != "" {
+			log.Printf("sd_notify %s works again", what)
+			notifyErr = ""
+		}
+		return
+	}
+	if msg := err.Error(); msg != notifyErr {
+		notifyErr = msg
+		log.Printf("%ssd_notify %s failed: %v (systemd may restart the daemon on the watchdog)", logWarning, what, err)
+	}
 }
 
 // runController blocks until ctx is done or the loop fails fatally. The
@@ -421,9 +520,9 @@ func controllerInterval(c *control.Controller) time.Duration { return c.Interval
 // controllerConfig is a copy of the configuration the controller runs with.
 func controllerConfig(c *control.Controller) config.Config { return c.Config() }
 
-func notifyReady()    { _ = sdnotify.Ready() }
-func notifyStopping() { _ = sdnotify.Stopping() }
-func notifyWatchdog() { _ = sdnotify.Watchdog() }
+func notifyReady()    { noteNotify("READY=1", sdnotify.Ready()) }
+func notifyStopping() { noteNotify("STOPPING=1", sdnotify.Stopping()) }
+func notifyWatchdog() { noteNotify("WATCHDOG=1", sdnotify.Watchdog()) }
 
 // ---------------------------------------------------------------------------
 // Web handler and IPC (agent C).
@@ -467,7 +566,7 @@ type logStore interface {
 // bundle is the settings bundle (DESIGN v0.2 "Settings bundle").
 type bundle interface {
 	Export() ([]byte, error)
-	Import(b []byte) (restartRequired bool, err error)
+	Import(b []byte) (restartRequired bool, warnings []string, err error)
 }
 
 // webServer exposes the two handler flavours of internal/web: the TCP one
@@ -533,13 +632,14 @@ func newWebServer(d webDeps) webServer {
 			_, warns, err := config.Parse(raw)
 			return warningStrings(warns), err
 		},
-		Presets:      dirPresetStore{dir: d.PresetDir, cfgPath: d.ConfigPath, svc: d.Service, pin: d.ConfigPin, profile: active},
-		Profiles:     profiles,
-		Version:      version.Version,
-		Auth:         web.AuthConfig{Mode: d.Web.Auth, User: d.Web.User, PasswordHash: d.Web.PasswordHash},
-		Sensors:      sensors,
-		AllowedHosts: allowed,
-		Logf:         log.Printf,
+		Presets:        dirPresetStore{dir: d.PresetDir, cfgPath: d.ConfigPath, svc: d.Service, pin: d.ConfigPin, profile: active},
+		Profiles:       profiles,
+		Version:        version.Version,
+		Auth:           web.AuthConfig{Mode: d.Web.Auth, User: d.Web.User, PasswordHash: d.Web.PasswordHash},
+		Sensors:        sensors,
+		AllowedHosts:   allowed,
+		Logf:           log.Printf,
+		BehindTLSProxy: d.Web.BehindTLSProxy,
 	}
 	if d.Log == nil {
 		d.Log = journalLogStore{}
@@ -556,10 +656,14 @@ func newWebServer(d webDeps) webServer {
 // come from journalctl, Clear is refused (the journal is never touched).
 type journalLogStore struct{}
 
-func (journalLogStore) Lines(n int) ([]string, error) { return journalLines(unitName, n) }
+func (journalLogStore) Lines(n int) ([]string, error) {
+	return journalLines(unitName, n, journalTimeout)
+}
 
+// Export streams the newest journalExportLines lines. journalctl over a
+// large journal takes a while, hence the longer bound than for Lines.
 func (journalLogStore) Export(w io.Writer) error {
-	lines, err := journalLines(unitName, 100000)
+	lines, err := journalLines(unitName, journalExportLines, journalExportTimeout)
 	if err != nil {
 		return err
 	}
@@ -585,8 +689,17 @@ func newLogFile(l logSpec) (*logfile.Writer, error) {
 }
 
 // teeLog makes the standard logger write to stdout (journald) and, stamped
-// with the local time, to w.
+// with the local time and without the priority prefix, to w.
 func teeLog(w io.Writer) { log.SetOutput(io.MultiWriter(os.Stdout, logfile.Timestamped(w))) }
+
+// journald priority prefixes for lines that are more than information:
+// journald files a stdout line starting with "<N>" at that priority, so
+// `journalctl -p warning` shows alerts, fatal errors and warnings. The
+// log file gets the line without the prefix (teeLog).
+const (
+	logError   = logfile.PrefixErr
+	logWarning = logfile.PrefixWarning
+)
 
 // Read-side helpers for the CLI on a file the daemon owns.
 func readLogLines(path string, n int) ([]string, error) { return logfile.ReadLines(path, n) }
@@ -672,6 +785,7 @@ func configJSON(cfg config.Config, warns []config.Warning) map[string]any {
 			"password_hash": cfg.Web.PasswordHash, // redacted by the web layer before it leaves the daemon
 			"allowed_hosts": nonNilStrings(cfg.Web.AllowedHosts),
 			"tls":           cfg.Web.TLS, "cert_file": cfg.Web.CertFile, "key_file": cfg.Web.KeyFile,
+			"behind_tls_proxy": cfg.Web.BehindTLSProxy,
 		},
 		"log": map[string]any{
 			"file": cfg.Log.File, "max_size_mb": cfg.Log.MaxSizeMB, "max_files": cfg.Log.MaxFiles,

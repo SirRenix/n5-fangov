@@ -202,7 +202,7 @@ func TestAlertManagerConfigure(t *testing.T) {
 	m := newAlertManager(cfgPath, alertsPath(state), config.Alert{Transport: "log", MailTo: "root"}, nil)
 	m.cooldown = func() time.Duration { return 30 * time.Minute }
 	st := m.Status()
-	if st.Transport != "log" || st.Effective != "log" || st.Cooldown != "30m0s" || len(st.Kinds) != 11 || st.Template.Path == "" {
+	if st.Transport != "log" || st.Effective != "log" || st.Cooldown != "30m0s" || len(st.Kinds) != len(alertKinds) || st.Template.Path == "" {
 		t.Errorf("status: %+v", st)
 	}
 	kinds := map[string]bool{}

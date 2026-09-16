@@ -186,7 +186,12 @@ func (c alertsClient) test() int {
 		Transport string `json:"transport"`
 		Error     string `json:"error"`
 	}
-	_, err := newAPI(c.dir).doRaw("POST", "/api/alerts/test", "", nil, &resp)
+	// The daemon delivers synchronously for up to testDeliveryLimit (perl
+	// or mail); the default 5 s client would give up first and a retry
+	// would meet 409 "test in progress".
+	a := newAPI(c.dir)
+	a.c.Timeout = testDeliveryLimit + 5*time.Second
+	_, err := a.doRaw("POST", "/api/alerts/test", "", nil, &resp)
 	switch {
 	case err == nil:
 		fmt.Printf("test alert sent via %s (daemon); it is listed in the dashboard's recent alerts\n", resp.Transport)

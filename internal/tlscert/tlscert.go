@@ -23,6 +23,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/SirRenix/n5-fangov/internal/fsutil"
 )
 
 // File names inside Options.Dir.
@@ -253,34 +255,9 @@ func CheckKeyMode(path string) error {
 }
 
 // writePrivate writes data to path with mode 0600 via an unpredictable
-// temp file in the same directory (os.CreateTemp creates it 0600) and a
-// rename (L3).
+// temp file in the same directory and a rename (L3).
 func writePrivate(path string, data []byte) error {
-	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*.tmp")
-	if err != nil {
-		return fmt.Errorf("tlscert: write %s: %w", path, err)
-	}
-	tmp := f.Name()
-	fail := func(err error) error {
-		f.Close()
-		os.Remove(tmp)
-		return fmt.Errorf("tlscert: write %s: %w", path, err)
-	}
-	if err := f.Chmod(0o600); err != nil {
-		return fail(err)
-	}
-	if _, err := f.Write(data); err != nil {
-		return fail(err)
-	}
-	if err := f.Sync(); err != nil {
-		return fail(err)
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(tmp)
-		return fmt.Errorf("tlscert: write %s: %w", path, err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
+	if err := fsutil.WriteAtomic(path, data, 0o600); err != nil {
 		return fmt.Errorf("tlscert: write %s: %w", path, err)
 	}
 	return nil

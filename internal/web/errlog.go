@@ -18,10 +18,17 @@ type handshakeFilter struct {
 	now     func() time.Time
 	count   int
 	clients map[string]struct{}
-	last    time.Time // last summary
+	// overflow: clients beyond handshakeClientsMax were seen (counted, not stored).
+	overflow bool
+	last     time.Time // last summary
 }
 
 const handshakeSummaryEvery = 10 * time.Minute
+
+// handshakeClientsMax caps the per-client map between two summaries; a
+// flood of rejected handshakes from rotating IPv6 addresses is counted
+// beyond that but no longer stored per address.
+const handshakeClientsMax = 1024
 
 const handshakeMarker = "TLS handshake error"
 
@@ -39,10 +46,18 @@ func (f *handshakeFilter) Write(p []byte) (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.count++
-	f.clients[handshakeIP(line)] = struct{}{}
+	if ip := handshakeIP(line); len(f.clients) < handshakeClientsMax {
+		f.clients[ip] = struct{}{}
+	} else if _, known := f.clients[ip]; !known {
+		f.overflow = true
+	}
 	if now := f.now(); now.Sub(f.last) >= handshakeSummaryEvery {
-		f.logf("web: %d TLS handshakes rejected by %d client(s) since last summary (certificate not trusted by the browser yet?)", f.count, len(f.clients))
-		f.count, f.clients, f.last = 0, map[string]struct{}{}, now
+		more := ""
+		if f.overflow {
+			more = " or more"
+		}
+		f.logf("web: %d TLS handshakes rejected by %d%s client(s) since last summary (certificate not trusted by the browser yet?)", f.count, len(f.clients), more)
+		f.count, f.clients, f.last, f.overflow = 0, map[string]struct{}{}, now, false
 	}
 	return len(p), nil
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime/debug"
@@ -16,8 +17,11 @@ import (
 	"time"
 
 	"github.com/SirRenix/n5-fangov/internal/config"
+	"github.com/SirRenix/n5-fangov/internal/fsutil"
+	"github.com/SirRenix/n5-fangov/internal/logfile"
 	"github.com/SirRenix/n5-fangov/internal/profile"
 	"github.com/SirRenix/n5-fangov/internal/sdnotify"
+	"github.com/SirRenix/n5-fangov/internal/sensor"
 )
 
 // SensorReader is what the controller needs from a temperature source.
@@ -59,10 +63,11 @@ type Options struct {
 	SyncAlerts bool
 }
 
-// Limits on temperature plausibility in millidegrees.
+// Limits on temperature plausibility in millidegrees; defined once in
+// internal/sensor, re-exported here for the callers of this package.
 const (
-	MinPlausible = -20000
-	MaxPlausible = 120000
+	MinPlausible = sensor.MinPlausible
+	MaxPlausible = sensor.MaxPlausible
 )
 
 // MinHDDOverride is the lowest duty a manual override may set on a channel
@@ -155,9 +160,14 @@ type Controller struct {
 	snap      Snapshot
 	hist      []HistoryPoint // ring, oldest first
 	histCap   int
-	alerts    map[string]int64 // kind → unix ts of last delivered alert
-	extra     map[string]string
-	pending   *config.Config // accepted by Apply, swapped in by the loop
+	alerts    map[string]int64 // kind → unix ts of last delivered alert (snapshot, stamp files)
+	// alertAt is the in-memory cooldown clock per kind: Options.Now()
+	// readings, which carry a monotonic reading in production, so a wall
+	// clock step (NTP correction after a wrong RTC at boot) neither
+	// silences nor repeats alerts. alerts above is the wall-clock view.
+	alertAt map[string]time.Time
+	extra   map[string]string
+	pending *config.Config // accepted by Apply, swapped in by the loop
 	// watched are the [dashboard].sensors readers (v0.3); rebuilt by the
 	// loop at the start of a cycle when watchDirty is set (Apply with a
 	// changed list, SetWatched). Read by the loop goroutine only.
@@ -233,6 +243,7 @@ func New(cfg config.Config, dev profile.Device, sensors SensorFactory, alerter A
 		log:       opts.Logger,
 		overrides: map[string]int{},
 		alerts:    map[string]int64{},
+		alertAt:   map[string]time.Time{},
 		lastMsg:   map[string]string{},
 		extra:     dev.ExtraTemps(),
 	}
@@ -255,7 +266,7 @@ func New(cfg config.Config, dev profile.Device, sensors SensorFactory, alerter A
 		c.loadOverrides()
 	}
 	c.started = c.opts.Now()
-	c.snap = c.buildSnapshot("starting")
+	c.snap = c.buildSnapshot(StatusStarting)
 	return c, nil
 }
 
@@ -283,7 +294,9 @@ func realWait(ctx context.Context, d time.Duration) bool {
 
 type alertLogger struct{ l Logger }
 
-func (a alertLogger) Alert(kind, msg string) { a.l.Printf("ALERT[%s]: %s", kind, msg) }
+func (a alertLogger) Alert(kind, msg string) {
+	a.l.Printf("%sALERT[%s]: %s", logfile.PrefixErr, kind, msg)
+}
 
 // buildChannels creates the runtime channels for cfg. Channels whose pwm
 // the device lacks are skipped; one note per skipped channel is returned
@@ -435,7 +448,7 @@ func (c *Controller) Interval() time.Duration { return c.interval() }
 func (c *Controller) Run(ctx context.Context) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			c.log.Printf("PANIC in regulation loop: %v\n%s", r, debug.Stack())
+			c.log.Printf("%sPANIC in regulation loop: %v\n%s", logfile.PrefixErr, r, debug.Stack())
 			err = fmt.Errorf("control: panic in regulation loop: %v", r)
 		}
 		c.Stop()
@@ -505,7 +518,7 @@ func (c *Controller) cycle() error {
 		switch {
 		case err != nil:
 			ch.sensorErr = "read: " + err.Error()
-		case v < MinPlausible || v > MaxPlausible:
+		case !sensor.Plausible(v):
 			ch.sensorErr = fmt.Sprintf("implausible %d m°C", v)
 		default:
 			ch.temp, ch.tempOK = v, true
@@ -529,7 +542,9 @@ func (c *Controller) cycle() error {
 		c.lastRaw, c.haveRaw = raw, true
 		if c.sameRaw >= d.StaleCycles {
 			chans[0].tempOK = false
-			chans[0].sensorErr = fmt.Sprintf("unchanged for %s (%d m°C) -> frozen?", time.Duration(c.sameRaw)*d.Interval, raw)
+			// The text names the threshold, not the running duration, so the
+			// line is logged once per frozen episode, not once per cycle.
+			chans[0].sensorErr = fmt.Sprintf("unchanged for %s or longer (%d m°C) -> frozen?", time.Duration(d.StaleCycles)*d.Interval, raw)
 			c.logOnce("stale", "sensor %s (%s): %s", chans[0].cfg.Sensor, chans[0].cfg.Name, chans[0].sensorErr)
 		} else {
 			c.logClear("stale")
@@ -576,6 +591,8 @@ func (c *Controller) cycle() error {
 		c.raise("sensor", "sensor error: "+strings.Join(lines, "; ")+"; "+scope+" (journalctl -u n5-fangov)")
 	}
 	if nBad > 0 {
+		// One line per change of the affected set, not per cycle: the
+		// summary carries no live temperatures (k10temp moves every cycle).
 		c.logOnce("sensor", "sensor error -> %d of %d channel(s) at safe duty (%s)", nBad, len(chans), c.sensorSummary(chans))
 	} else {
 		c.logClear("sensor")
@@ -644,12 +661,12 @@ func (c *Controller) cycle() error {
 
 	// -- slew + write -----------------------------------------------------
 	werr, wrote := c.writePhase(chans, d, n)
-	status := "ok"
+	status := StatusOK
 	var lost error
 	if werr {
 		c.wrErr++
 		c.log.Printf("pwm write error (%d consecutive)", c.wrErr)
-		status = "write-error"
+		status = StatusWriteError
 		if c.wrErr >= writeErrorsBeforeFailsafe {
 			c.raise("write", "repeated pwm write errors -> all channels 255; check driver/EC (dmesg, journalctl -u n5-fangov)")
 			c.reresolve(chans)
@@ -664,7 +681,7 @@ func (c *Controller) cycle() error {
 		}
 	}
 	if nBad > 0 && nBad == len(chans) {
-		status = "sensor-error"
+		status = StatusSensorError
 	}
 	c.finishCycle(chans, extra, watchedVals, status, d)
 	return lost
@@ -744,9 +761,9 @@ func (c *Controller) noteFailsafe(allFailed bool) error {
 }
 
 // finishCycle publishes the snapshot, appends history and logs periodically.
-func (c *Controller) finishCycle(chans []*channel, extra, watched map[string]float64, status string, d config.Daemon) {
-	if c.opts.DryRun && status == "ok" {
-		status = "dry-run"
+func (c *Controller) finishCycle(chans []*channel, extra, watched map[string]float64, status Status, d config.Daemon) {
+	if c.opts.DryRun && status == StatusOK {
+		status = StatusDryRun
 	}
 	now := c.opts.Now()
 	c.mu.Lock()
@@ -758,7 +775,7 @@ func (c *Controller) finishCycle(chans []*channel, extra, watched map[string]flo
 	c.n++
 	c.lastCycle.Store(now.UnixNano())
 	line := c.statusLine(chans)
-	c.opts.Status(status + ": " + line)
+	c.opts.Status(string(status) + ": " + line)
 	if d.LogEvery > 0 && (c.n-1)%d.LogEvery == 0 {
 		c.log.Printf("%s", line)
 	}
@@ -781,19 +798,35 @@ func fmtTemp(milli int) string {
 	return strconv.FormatFloat(float64(milli)/1000, 'f', 1, 64) + "C"
 }
 
+// sensorSummary names the channels whose sensor failed and why, as
+// "name=class" (unresolved, read error, implausible, frozen). Healthy
+// channels and live readings stay out: the text is a logOnce key.
 func (c *Controller) sensorSummary(chans []*channel) string {
 	var parts []string
 	for _, ch := range chans {
-		v := "?"
-		switch {
-		case ch.tempOK:
-			v = fmtTemp(ch.temp)
-		case ch.sensorErr != "":
-			v = ch.sensorErr
+		if ch.tempOK {
+			continue
 		}
-		parts = append(parts, ch.cfg.Name+"="+v)
+		parts = append(parts, ch.cfg.Name+"="+sensorClass(ch.sensorErr))
 	}
 	return strings.Join(parts, " ")
+}
+
+// sensorClass reduces a sensorErr text to its kind.
+func sensorClass(sensorErr string) string {
+	switch {
+	case sensorErr == "":
+		return "unknown"
+	case sensorErr == "unresolved":
+		return "unresolved"
+	case strings.HasPrefix(sensorErr, "read: "):
+		return "read error"
+	case strings.HasPrefix(sensorErr, "implausible"):
+		return "implausible"
+	case strings.Contains(sensorErr, "frozen"):
+		return "frozen"
+	}
+	return "error"
 }
 
 func (c *Controller) readRPMs(chans []*channel) {
@@ -827,7 +860,7 @@ func (c *Controller) readExtra() map[string]float64 {
 			continue
 		}
 		v, err := strconv.Atoi(strings.TrimSpace(string(b)))
-		if err != nil || v < MinPlausible || v > MaxPlausible {
+		if err != nil || !sensor.Plausible(v) {
 			continue
 		}
 		out[id] = float64(v) / 1000
@@ -914,9 +947,7 @@ func (c *Controller) Stop() {
 				}
 			}
 		}
-		if c.opts.RunDir != "" {
-			_ = os.Remove(filepath.Join(c.opts.RunDir, "state.json"))
-		}
+		c.removeRunFile("state.json", "state.json")
 	})
 }
 
@@ -1037,9 +1068,9 @@ func (c *Controller) Snapshot() Snapshot {
 	s := c.snap
 	s.Uptime = int64(c.opts.Now().Sub(c.started).Seconds())
 	s.Channels = append([]ChannelState(nil), s.Channels...)
-	s.ExtraTemps = copyMapF(s.ExtraTemps)
-	s.Watched = copyMapF(s.Watched)
-	s.Alerts = copyMapI(s.Alerts)
+	s.ExtraTemps = maps.Clone(s.ExtraTemps)
+	s.Watched = maps.Clone(s.Watched)
+	s.Alerts = maps.Clone(s.Alerts)
 	return s
 }
 
@@ -1092,17 +1123,27 @@ func (c *Controller) ClearOverride(name string) error {
 	}
 	delete(c.overrides, name)
 	c.log.Printf("%s: override cleared, back to curve", name)
-	if c.opts.RunDir != "" {
-		_ = os.Remove(filepath.Join(c.opts.RunDir, "override."+name))
-	}
+	c.removeRunFile("override."+name, name+": override file")
 	return nil
+}
+
+// removeRunFile removes a run-dir file; a failure other than "already
+// gone" is logged, because loadOverrides would restore a leftover
+// override file at the next start.
+func (c *Controller) removeRunFile(name, what string) {
+	if c.opts.RunDir == "" {
+		return
+	}
+	if err := os.Remove(filepath.Join(c.opts.RunDir, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		c.log.Printf("%s: remove: %v", what, err)
+	}
 }
 
 // Overrides returns a copy of the active overrides.
 func (c *Controller) Overrides() map[string]int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return copyMapInt(c.overrides)
+	return maps.Clone(c.overrides)
 }
 
 // Reload parses rawTOML and applies it. Daemon parameters, curves, sensors,
@@ -1127,14 +1168,15 @@ func (c *Controller) Apply(cfg config.Config) error {
 	// N5 Pro channel matches the completed set (no spurious restart).
 	var notes []string
 	cfg.Channels, notes = SanitizeChannels(c.dev.Profile().Name(), cfg.Channels)
-	c.reportNotes("config corrected on reload", notes)
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	base := c.cfg
 	if c.pending != nil {
 		base = *c.pending
 	}
 	if cfg.Daemon.Profile != base.Daemon.Profile || !sameChannelSet(cfg.Channels, base.Channels) {
+		c.mu.Unlock()
+		// Nothing is applied: the corrections belong to the config the
+		// restart will read, not to this daemon — no log, no alert.
 		return ErrRestartRequired
 	}
 	// Channel structs belong to the loop goroutine; the swap happens at the
@@ -1142,6 +1184,8 @@ func (c *Controller) Apply(cfg config.Config) error {
 	clone := cfg.Clone()
 	c.pending = &clone
 	c.log.Printf("config reload accepted (interval=%s, %d channels), applied on next cycle", cfg.Daemon.Interval, len(cfg.Channels))
+	c.mu.Unlock()
+	c.reportNotes("config corrected on reload", notes)
 	return nil
 }
 
@@ -1250,13 +1294,13 @@ func (c *Controller) findLocked(name string) *channel {
 
 // ---- snapshot / history / state file ------------------------------------------
 
-func (c *Controller) buildSnapshot(status string) Snapshot {
+func (c *Controller) buildSnapshot(status Status) Snapshot {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.buildSnapshotLocked(status, nil, nil, c.opts.Now())
 }
 
-func (c *Controller) buildSnapshotLocked(status string, extra, watched map[string]float64, now time.Time) Snapshot {
+func (c *Controller) buildSnapshotLocked(status Status, extra, watched map[string]float64, now time.Time) Snapshot {
 	s := Snapshot{
 		TS:         now.Unix(),
 		Status:     status,
@@ -1267,7 +1311,7 @@ func (c *Controller) buildSnapshotLocked(status string, extra, watched map[strin
 		Channels:   make([]ChannelState, 0, len(c.chans)),
 		ExtraTemps: extra,
 		Watched:    watched,
-		Alerts:     copyMapI(c.alerts),
+		Alerts:     maps.Clone(c.alerts),
 		Uptime:     int64(now.Sub(c.started).Seconds()),
 	}
 	if s.ExtraTemps == nil {
@@ -1292,7 +1336,7 @@ func (c *Controller) buildSnapshotLocked(status string, extra, watched map[strin
 func (c *Controller) pushHistoryLocked(chans []*channel, watched map[string]float64, now time.Time) {
 	p := HistoryPoint{TS: now.Unix(), Temp: map[string]float64{}, Duty: map[string]int{}, RPM: map[string]int{}}
 	if len(watched) > 0 {
-		p.Extra = copyMapF(watched)
+		p.Extra = maps.Clone(watched)
 	}
 	for _, ch := range chans {
 		if ch.tempOK {
@@ -1326,12 +1370,10 @@ func (c *Controller) writeState(s Snapshot) {
 	c.logClear("state")
 }
 
+// writeFileAtomic writes a run-dir file (state.json, override.<name>)
+// atomically, world-readable: they hold nothing confidential.
 func writeFileAtomic(path string, data []byte) error {
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return fsutil.WriteAtomic(path, data, 0o644)
 }
 
 // loadOverrides restores override.<name> files from RunDir (a restart of the
@@ -1345,7 +1387,7 @@ func (c *Controller) loadOverrides() {
 		v, err := strconv.Atoi(strings.TrimSpace(string(b)))
 		if err != nil || v < 0 || v > 255 || (c.hddLike(ch.cfg) && v < MinHDDOverride) {
 			c.log.Printf("%s: override file invalid (%q), removed", ch.cfg.Name, strings.TrimSpace(string(b)))
-			_ = os.Remove(filepath.Join(c.opts.RunDir, "override."+ch.cfg.Name))
+			c.removeRunFile("override."+ch.cfg.Name, ch.cfg.Name+": override file")
 			continue
 		}
 		c.overrides[ch.cfg.Name] = v
@@ -1357,27 +1399,60 @@ func (c *Controller) loadOverrides() {
 
 // raise delivers an alert of kind unless one of the same kind was delivered
 // within AlertCooldown. Stamps live in memory and in RunDir/alert.<kind> so
-// a restart does not repeat the alert.
+// a restart does not repeat the alert. The in-memory check uses the
+// Options.Now readings themselves (monotonic in production); a stamp file
+// that lies in the future — the wall clock stepped back after the stamp
+// was written — counts as expired and is overwritten, like serve's
+// start-up cooldown does, instead of silencing the kind until the clock
+// catches up.
 func (c *Controller) raise(kind, msg string) {
-	now := c.opts.Now().Unix()
+	nowT := c.opts.Now()
+	now := nowT.Unix()
 	c.mu.Lock()
-	cool := int64(c.cfg.Daemon.AlertCooldown.Seconds())
-	last, seen := c.alerts[kind]
-	if seen && now-last < cool {
+	cool := c.cfg.Daemon.AlertCooldown
+	suppressed := false
+	if at, ok := c.alertAt[kind]; ok {
+		if el := nowT.Sub(at); el >= 0 && el < cool {
+			suppressed = true
+		}
+	} else if last, seen := c.alerts[kind]; seen {
+		// stamp file from a previous process: wall clock only
+		if d := now - last; d >= 0 && d < int64(cool.Seconds()) {
+			suppressed = true
+		}
+	}
+	if suppressed {
 		c.mu.Unlock()
 		return
 	}
 	c.alerts[kind] = now
+	c.alertAt[kind] = nowT
 	c.mu.Unlock()
 	if c.opts.RunDir != "" {
-		_ = os.WriteFile(filepath.Join(c.opts.RunDir, "alert."+kind), []byte(strconv.FormatInt(now, 10)+"\n"), 0o644)
+		stamp := filepath.Join(c.opts.RunDir, "alert."+kind)
+		if err := os.WriteFile(stamp, []byte(strconv.FormatInt(now, 10)+"\n"), 0o644); err != nil {
+			c.logOnce("stamp."+kind, "alert stamp %s: %v (cooldown kept in memory only)", stamp, err)
+		} else {
+			c.logClear("stamp." + kind)
+		}
 	}
-	c.log.Printf("ALERT[%s]: %s", kind, msg)
+	c.log.Printf("%sALERT[%s]: %s", logfile.PrefixErr, kind, msg)
 	if c.opts.SyncAlerts {
 		c.alert.Alert(kind, msg)
 		return
 	}
-	go c.alert.Alert(kind, msg)
+	go c.deliver(kind, msg)
+}
+
+// deliver runs a sink on its own goroutine. The Sink contract says "never
+// panic", but a panic there must cost the alert, not the regulation loop.
+func (c *Controller) deliver(kind, msg string) {
+	defer func() {
+		if r := recover(); r != nil {
+			c.log.Printf("%salert sink panicked delivering %s: %v", logfile.PrefixErr, kind, r)
+		}
+	}()
+	c.alert.Alert(kind, msg)
 }
 
 func (c *Controller) loadAlertStamps() {
@@ -1420,28 +1495,4 @@ func (c *Controller) logClear(key string) {
 	c.logMu.Lock()
 	delete(c.lastMsg, key)
 	c.logMu.Unlock()
-}
-
-func copyMapF(m map[string]float64) map[string]float64 {
-	out := make(map[string]float64, len(m))
-	for k, v := range m {
-		out[k] = v
-	}
-	return out
-}
-
-func copyMapI(m map[string]int64) map[string]int64 {
-	out := make(map[string]int64, len(m))
-	for k, v := range m {
-		out[k] = v
-	}
-	return out
-}
-
-func copyMapInt(m map[string]int) map[string]int {
-	out := make(map[string]int, len(m))
-	for k, v := range m {
-		out[k] = v
-	}
-	return out
 }

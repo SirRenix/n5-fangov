@@ -232,7 +232,7 @@ func TestWebAuthFailOpen(t *testing.T) {
 	cases := map[string]string{
 		"basic without hash":  "[web]\nlisten = \"0.0.0.0:8010\"\nauth = \"basic\"\nuser = \"admin\"\n",
 		"basic with bad hash": "[web]\nlisten = \"198.51.100.20:8010\"\nauth = \"basic\"\nuser = \"admin\"\npassword_hash = \"zz\"\n",
-		"typo in auth":        "[web]\nlisten = \"[::]:8010\"\nauth = \"Basic\"\nuser = \"admin\"\npassword_hash = \"" + strings.Repeat("ab", 32) + "\"\n",
+		"typo in auth":        "[web]\nlisten = \"[::]:8010\"\nauth = \"basci\"\nuser = \"admin\"\npassword_hash = \"" + strings.Repeat("ab", 32) + "\"\n",
 	}
 	for name, src := range cases {
 		cfg, warns, err := Parse([]byte(src))

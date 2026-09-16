@@ -198,7 +198,20 @@ type Collector struct {
 	mu       sync.Mutex
 	static   Info
 	staticAt time.Time
+	// refreshing is set while one Collect rebuilds the static part outside
+	// the lock; concurrent callers use the previous static part meanwhile
+	// (or wait for the first one when there is none yet).
+	refreshing bool
+	refreshed  *sync.Cond
+	// lspciFailed: the last static collection could not run lspci; the
+	// names are retried after LspciRetry instead of after CacheTTL.
+	lspciFailed bool
 }
+
+// LspciRetry is how soon a failed lspci run (timeout, missing binary) is
+// retried — sooner than CacheTTL, but not on every poll of the panel: a
+// hanging lspci costs lspciTimeout per attempt.
+const LspciRetry = time.Minute
 
 // NewCollector fills the defaults and returns a Collector.
 func NewCollector(o Options) *Collector {
@@ -223,27 +236,44 @@ func NewCollector(o Options) *Collector {
 	if o.CacheTTL <= 0 {
 		o.CacheTTL = DefaultCacheTTL
 	}
-	return &Collector{o: o}
+	c := &Collector{o: o}
+	c.refreshed = sync.NewCond(&c.mu)
+	return c
 }
 
 // Collect returns a one-shot inventory without a cache.
 func Collect(o Options) Info { return NewCollector(o).Collect() }
 
 // Collect returns the inventory: cached static parts (refreshed after
-// CacheTTL) with the live parts read now.
+// CacheTTL, or after LspciRetry when lspci failed) with the live parts
+// read now. The static collection — up to lspciTimeout of lspci — runs
+// outside the lock: a second caller meanwhile gets the previous static
+// part instead of waiting (the very first callers wait for the first
+// collection, there is nothing older to hand out).
 func (c *Collector) Collect() Info {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	now := c.o.Now()
-	if c.staticAt.IsZero() || now.Sub(c.staticAt) >= c.o.CacheTTL || now.Before(c.staticAt) {
-		c.static = c.collectStatic()
-		c.staticAt = now
+	age := now.Sub(c.staticAt)
+	stale := c.staticAt.IsZero() || age >= c.o.CacheTTL || age < 0 || (c.lspciFailed && age >= LspciRetry)
+	if stale && !c.refreshing {
+		c.refreshing = true
+		c.mu.Unlock()
+		in, lspciFailed := c.collectStatic()
+		c.mu.Lock()
+		c.static, c.staticAt, c.lspciFailed = in, now, lspciFailed
 		c.static.StaticAt = now.Unix()
+		c.refreshing = false
+		c.refreshed.Broadcast()
+	}
+	for c.refreshing && c.staticAt.IsZero() {
+		c.refreshed.Wait()
 	}
 	out := c.static
-	// Copies of the slices the live part edits (NICs) so the cache stays clean.
-	out.NICs = append([]NIC(nil), c.static.NICs...)
+	// Copies of the slices the live part edits (NICs) so the cache stays
+	// clean; never null in JSON.
+	out.NICs = append(make([]NIC, 0, len(c.static.NICs)), c.static.NICs...)
 	out.Errors = append([]string(nil), c.static.Errors...)
+	c.mu.Unlock()
 	out.Collected = now.Unix()
 	c.collectLive(&out)
 	if out.Errors == nil {
@@ -261,10 +291,14 @@ func (c *Collector) Invalidate() {
 
 // ---- static -----------------------------------------------------------------
 
-func (c *Collector) collectStatic() Info {
-	var in Info
+// collectStatic reads the static inventory; lspciFailed reports that the
+// PCI names could not be resolved (retried on the next Collect).
+func (c *Collector) collectStatic() (in Info, lspciFailed bool) {
 	fail := func(src string, err error) {
 		if err != nil {
+			if src == "lspci" {
+				lspciFailed = true
+			}
 			in.Errors = append(in.Errors, src+": "+err.Error())
 		}
 	}
@@ -307,7 +341,7 @@ func (c *Collector) collectStatic() Info {
 	if in.Memory.Modules == nil {
 		in.Memory.Modules = []MemoryModule{}
 	}
-	return in
+	return in, lspciFailed
 }
 
 // ---- live -------------------------------------------------------------------

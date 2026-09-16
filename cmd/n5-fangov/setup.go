@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/SirRenix/n5-fangov/internal/hwmon"
 	"github.com/SirRenix/n5-fangov/internal/profile"
@@ -129,12 +130,16 @@ func cmdSetup(args []string) int {
 		w.User = strings.TrimSpace(*user)
 		if w.User == "" {
 			if *yes {
-				fmt.Fprintln(os.Stderr, "setup: --yes with a LAN listener needs --user and --password")
+				fmt.Fprintln(os.Stderr, "setup: --yes with a LAN listener needs --user and --password-file (or --password -)")
 				return exitUsage
 			}
 			if w.User, err = pr.ask("web user", setupAdmin); err != nil {
 				return exitFail
 			}
+		}
+		if err := validUserName(w.User); err != nil {
+			fmt.Fprintln(os.Stderr, "setup:", err)
+			return exitUsage
 		}
 		pw := pwArg
 		if pw == "" {
@@ -146,6 +151,10 @@ func cmdSetup(args []string) int {
 				fmt.Fprintln(os.Stderr, "setup:", err)
 				return exitFail
 			}
+		}
+		if err := validPassword(pw); err != nil {
+			fmt.Fprintln(os.Stderr, "setup:", err)
+			return exitUsage
 		}
 		w.PasswordHash = passwordHash(w.User, pw)
 	}
@@ -170,7 +179,8 @@ func cmdSetup(args []string) int {
 	// 4. write
 	raw := setupConfigText(p.Name(), chans, w)
 	if _, warns, err := parseConfigErr(raw); err != nil || len(warns) != 0 {
-		fmt.Fprintf(os.Stderr, "setup: generated config does not validate (%v %v):\n%s", err, warns, raw)
+		// The text may carry the password hash: only the redacted form leaves the process.
+		fmt.Fprintf(os.Stderr, "setup: generated config does not validate (%v %v):\n%s", err, warns, redactConfigText(string(raw)))
 		return exitFail
 	}
 	if err := saveConfig(*cfgPath, raw); err != nil {
@@ -331,6 +341,18 @@ func cmdPasswd(args []string) int {
 		return exitFail
 	}
 	u := strings.TrimSpace(*user)
+	if u != "" {
+		if err := validUserName(u); err != nil {
+			fmt.Fprintln(os.Stderr, "passwd:", err)
+			return exitUsage
+		}
+	}
+	if pw != "" {
+		if err := validPassword(pw); err != nil {
+			fmt.Fprintln(os.Stderr, "passwd:", err)
+			return exitUsage
+		}
+	}
 	if u == "" || pw == "" {
 		pr := openPrompter()
 		defer pr.close()
@@ -342,9 +364,17 @@ func cmdPasswd(args []string) int {
 			if u, err = pr.ask("web user", def); err != nil {
 				return exitFail
 			}
+			if err := validUserName(u); err != nil {
+				fmt.Fprintln(os.Stderr, "passwd:", err)
+				return exitFail
+			}
 		}
 		if pw == "" {
 			if pw, err = pr.askPasswordTwice(); err != nil {
+				fmt.Fprintln(os.Stderr, "passwd:", err)
+				return exitFail
+			}
+			if err := validPassword(pw); err != nil {
 				fmt.Fprintln(os.Stderr, "passwd:", err)
 				return exitFail
 			}
@@ -368,17 +398,38 @@ func cmdPasswd(args []string) int {
 	return exitOK
 }
 
-// Password flag help (M6): a password on the command line is visible in
-// `ps`, the shell history and the journal; a file or stdin is not.
+// Password flag help: a password on the command line is visible in `ps`,
+// the shell history and the journal, so --password only accepts "-"
+// (stdin); a literal value is refused. --password-file reads a file.
 const (
-	passwordFlagHelp     = "password; \"-\" reads one line from stdin. A literal value is visible in ps/history — prefer --password-file or \"-\""
+	passwordFlagHelp     = "\"-\" reads the password from stdin (one line). No literal value: it would be visible in ps/history; use --password-file or \"-\""
 	passwordFileFlagHelp = "file whose first line is the password (mode 0600 recommended)"
 )
 
+// validPassword applies the account API's password length rule (runes):
+// the CLI must not write what the dashboard would refuse.
+func validPassword(pw string) error {
+	if n := utf8.RuneCountInString(pw); n < passwordMinLen || n > passwordMaxLen {
+		return fmt.Errorf("password must be %d..%d characters", passwordMinLen, passwordMaxLen)
+	}
+	return nil
+}
+
+// validUserName applies the account API's user name rule.
+func validUserName(u string) error {
+	if !userNameRe.MatchString(u) {
+		return fmt.Errorf("user %q must match %s", u, userNameRe)
+	}
+	return nil
+}
+
 // passwordFromArgs resolves the password flags: --password-file wins, then
-// --password "-" (one line from stdin), then the literal. "" means "ask".
+// --password "-" (one line from stdin). "" means "ask"; any other
+// --password value is refused (it would sit in ps and the shell history).
 func passwordFromArgs(literal, file string, stdin io.Reader) (string, error) {
 	switch {
+	case literal != "" && literal != "-":
+		return "", errors.New("--password takes only \"-\" (read from stdin); a literal password is not accepted, use --password-file")
 	case file != "":
 		b, err := os.ReadFile(file)
 		if err != nil {
@@ -401,7 +452,7 @@ func passwordFromArgs(literal, file string, stdin io.Reader) (string, error) {
 		}
 		return pw, nil
 	}
-	return literal, nil
+	return "", nil
 }
 
 // setWebAuth edits the three auth keys of [web] in place.

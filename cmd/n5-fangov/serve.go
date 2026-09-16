@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -41,6 +42,14 @@ func cmdServe(args []string) int {
 		fmt.Fprintln(os.Stderr, "serve: unexpected arguments")
 		return exitUsage
 	}
+	// Relative paths would be taken from the working directory ("/" under
+	// systemd, ProtectSystem=strict): make every directory flag absolute
+	// once, here, like newTLSManager does for the config path.
+	for _, p := range []*string{cfgPath, rdir, sdir} {
+		if abs, err := filepath.Abs(*p); err == nil {
+			*p = abs
+		}
+	}
 
 	// journald adds timestamps; keep the lines bare.
 	log.SetFlags(0)
@@ -67,7 +76,9 @@ func cmdServe(args []string) int {
 	alerter := alertMgr.sink()
 	log.Printf("alerts: transport %s (%s), history %s", cfg.Alert.Transport, alertMgr.effective, orMemory(alertsPath(state)))
 	if len(warns) > 0 {
-		sendAlertCooled(*rdir, alerter, "config", fmt.Sprintf("%d config problem(s), built-in defaults in effect:\n%s",
+		// Asynchronous like the controller's alerts: a PVE::Notify delivery
+		// may take 30 s and must not delay the first cycle and READY=1.
+		startAlert(*rdir, alerter, "config", fmt.Sprintf("%d config problem(s), built-in defaults in effect:\n%s",
 			len(warns), strings.Join(warns, "\n")))
 	}
 	if err != nil {
@@ -105,7 +116,7 @@ func cmdServe(args []string) int {
 	p := dev.Profile()
 	log.Printf("profile %s (%s) at %s, %d channel(s), verified=%v", p.Name(), p.Title(), dev.HwmonPath(), len(dev.Channels()), p.Verified())
 	if !p.Verified() {
-		log.Printf("WARNING: profile %s is from documentation only, not verified on hardware", p.Name())
+		log.Printf("%sWARNING: profile %s is from documentation only, not verified on hardware", logWarning, p.Name())
 	}
 	for _, c := range chans {
 		if !hasChannel(dev, c.PWM) {
@@ -154,7 +165,7 @@ func cmdServe(args []string) int {
 			// No plain-HTTP fallback: a LAN listener without TLS would carry
 			// basic auth in clear text.
 			log.Printf("web: TLS (%s): %v — web UI disabled, the CLI socket still works", wspec.TLS, err)
-			sendAlertCooled(*rdir, alerter, "web", fmt.Sprintf("web UI disabled: TLS (%s) could not be set up on %s: %v", wspec.TLS, addr, err))
+			startAlert(*rdir, alerter, "web", fmt.Sprintf("web UI disabled: TLS (%s) could not be set up on %s: %v", wspec.TLS, addr, err))
 			addr = ""
 		case fellBack != nil:
 			// M3: the configured pair is unreadable or unusable; the listener
@@ -162,7 +173,7 @@ func cmdServe(args []string) int {
 			// reset`/`cert upload`) can repair it. The config keeps tls = "file".
 			log.Printf("web: TLS file pair %s / %s unusable: %v — FALLBACK to the automatic certificate %s (mode %q); fix with the certificate panel, `n5-fangov cert upload` or `cert reset`",
 				wspec.CertFile, wspec.KeyFile, fellBack, certPath, modeFallback)
-			sendAlertCooled(*rdir, alerter, "tls", fmt.Sprintf("custom certificate unreadable, serving the automatic certificate\n%s / %s: %v\nThe dashboard on %s stays up with the self-signed certificate %s; a browser that does not trust that one refuses the LAN name under HSTS — reach the dashboard by IP or import the certificate (n5-fangov cert export). Repair: certificate panel, `n5-fangov cert upload CERT KEY` or `n5-fangov cert reset`.",
+			startAlert(*rdir, alerter, "tls", fmt.Sprintf("custom certificate unreadable, serving the automatic certificate\n%s / %s: %v\nThe dashboard on %s stays up with the self-signed certificate %s; a browser that does not trust that one refuses the LAN name under HSTS — reach the dashboard by IP or import the certificate (n5-fangov cert export). Repair: certificate panel, `n5-fangov cert upload CERT KEY` or `n5-fangov cert reset`.",
 				wspec.CertFile, wspec.KeyFile, fellBack, addr, certPath))
 			useTLS = true
 		case wspec.TLS == "auto":
@@ -171,7 +182,7 @@ func cmdServe(args []string) int {
 		case wspec.TLS == "file":
 			log.Printf("web: TLS from %s / %s", wspec.CertFile, wspec.KeyFile)
 			if merr := tlsCheckKeyMode(wspec.KeyFile); merr != nil {
-				log.Printf("WARNING: %v", merr)
+				log.Printf("%sWARNING: %v", logWarning, merr)
 			}
 			useTLS = true
 		}
@@ -197,7 +208,7 @@ func cmdServe(args []string) int {
 		Sysfs:       hw,
 		Web:         wspec,
 		Log:         store,
-		Bundle:      fileBundle{cfgPath: *cfgPath, presetDir: defaultPresetDir, reload: svc.Reload, pin: tlsMgr.pinConfig},
+		Bundle:      fileBundle{cfgPath: *cfgPath, presetDir: defaultPresetDir, reload: svc.Reload, pin: tlsMgr.pinConfig, logf: log.Printf},
 		TLS:         useTLS,
 		TLSMgr:      tlsMgr,
 		TLSHosts:    hosts,
@@ -223,7 +234,7 @@ func cmdServe(args []string) int {
 		ln, err := net.Listen("tcp", addr)
 		if err != nil {
 			log.Printf("web: listen %s: %v (web UI disabled, socket still works)", addr, err)
-			sendAlert(alerter, "web", "web UI listener failed on "+addr+": "+err.Error())
+			startAlert(*rdir, alerter, "web", "web UI listener failed on "+addr+": "+err.Error())
 		} else if useTLS {
 			log.Printf("web: listening on https://%s", ln.Addr())
 			go func() { errc <- wrapErr("web", ws.ServeTLS(ctx, ln, tlsMgr)) }()
@@ -283,7 +294,7 @@ func cmdServe(args []string) int {
 		log.Printf("signal received, stopping")
 	case err := <-errc:
 		if err != nil && ctx.Err() == nil {
-			log.Printf("fatal: %v", err)
+			log.Printf("%sfatal: %v", logError, err)
 			exit = exitFail
 		}
 		cancel()
@@ -329,7 +340,7 @@ func waitFirstCycle(ctx context.Context, s control.Service, max time.Duration) b
 	t := time.NewTicker(200 * time.Millisecond)
 	defer t.Stop()
 	for {
-		if snap := s.Snapshot(); snap.TS > 0 && snap.Status != "starting" {
+		if snap := s.Snapshot(); snap.TS > 0 && snap.Status != control.StatusStarting {
 			return true
 		}
 		select {

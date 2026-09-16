@@ -271,7 +271,7 @@ func TestBundleExportImportRoundTrip(t *testing.T) {
 	}
 	var reloaded []byte
 	dst := fileBundle{cfgPath: cfg2, presetDir: pre2, reload: func(raw []byte) error { reloaded = raw; return nil }}
-	restart, err := dst.Import(data)
+	restart, _, err := dst.Import(data)
 	if err != nil || restart {
 		t.Fatalf("import: restart=%v err=%v", restart, err)
 	}
@@ -304,17 +304,17 @@ func TestBundleExportImportRoundTrip(t *testing.T) {
 
 	// restart sentinel from the daemon passes through
 	dst.reload = func([]byte) error { return errRestartRequired() }
-	if restart, err := dst.Import(data); err != nil || !restart {
+	if restart, _, err := dst.Import(data); err != nil || !restart {
 		t.Errorf("restart: %v %v", restart, err)
 	}
 	// reload failure after the write is reported
 	dst.reload = func([]byte) error { return errors.New("boom") }
-	if _, err := dst.Import(data); err == nil || !strings.Contains(err.Error(), "written, but") {
+	if _, _, err := dst.Import(data); err == nil || !strings.Contains(err.Error(), "written, but") {
 		t.Errorf("reload error: %v", err)
 	}
 	// no daemon: written, nothing to reload
 	dst.reload = nil
-	if restart, err := dst.Import(data); err != nil || restart {
+	if restart, _, err := dst.Import(data); err != nil || restart {
 		t.Errorf("offline: %v %v", restart, err)
 	}
 }
@@ -351,7 +351,7 @@ func TestBundleImportValidation(t *testing.T) {
 	}
 	cases["format 2"] = []byte(strings.Replace(string(cases["format 2"]), `"format":1`, `"format":2`, 1))
 	for name, data := range cases {
-		_, err := b.Import(data)
+		_, _, err := b.Import(data)
 		if err == nil {
 			t.Errorf("%s: accepted", name)
 			continue
@@ -362,7 +362,7 @@ func TestBundleImportValidation(t *testing.T) {
 		}
 	}
 	// several problems are all listed
-	_, err := b.Import(mk("[daemon\n", map[string]string{"bad": "[[[", "Bad": quietPreset}))
+	_, _, err := b.Import(mk("[daemon\n", map[string]string{"bad": "[[[", "Bad": quietPreset}))
 	var be *bundleError
 	if !errors.As(err, &be) || len(be.Errors()) != 3 {
 		t.Errorf("error list: %v", err)
@@ -372,7 +372,7 @@ func TestBundleImportValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	before, _ = os.ReadFile(cfgPath)
-	_, err = b.Import(mk("[web]\nauth = \"basic\"\nuser = \"a\"\npassword_hash = \"<unchanged>\"\n", nil))
+	_, _, err = b.Import(mk("[web]\nauth = \"basic\"\nuser = \"a\"\npassword_hash = \"<unchanged>\"\n", nil))
 	if err == nil || !strings.Contains(err.Error(), "passwd") {
 		t.Errorf("placeholder without local hash: %v", err)
 	}
@@ -516,8 +516,9 @@ func TestJournalLogStoreClearUnsupported(t *testing.T) {
 	}
 }
 
-// M6: the password comes from a file, from stdin ("-") or — still
-// accepted — from the flag; empty sources are refused.
+// The password comes from a file or from stdin ("-"); a literal flag
+// value is refused (it would sit in ps and the shell history), empty
+// sources are refused.
 func TestPasswordFromArgs(t *testing.T) {
 	dir := t.TempDir()
 	pf := filepath.Join(dir, "pw")
@@ -527,8 +528,8 @@ func TestPasswordFromArgs(t *testing.T) {
 	if pw, err := passwordFromArgs("", pf, nil); err != nil || pw != "s3cret" {
 		t.Errorf("file: %q %v", pw, err)
 	}
-	if pw, err := passwordFromArgs("literal", pf, nil); err != nil || pw != "s3cret" {
-		t.Errorf("file wins over literal: %q %v", pw, err)
+	if pw, err := passwordFromArgs("literal", pf, nil); err == nil {
+		t.Errorf("literal next to a file accepted: %q", pw)
 	}
 	if pw, err := passwordFromArgs("-", "", strings.NewReader("from-stdin\nignored\n")); err != nil || pw != "from-stdin" {
 		t.Errorf("stdin: %q %v", pw, err)
@@ -536,8 +537,8 @@ func TestPasswordFromArgs(t *testing.T) {
 	if pw, err := passwordFromArgs("-", "", strings.NewReader("no-newline")); err != nil || pw != "no-newline" {
 		t.Errorf("stdin without newline: %q %v", pw, err)
 	}
-	if pw, err := passwordFromArgs("literal", "", nil); err != nil || pw != "literal" {
-		t.Errorf("literal: %q %v", pw, err)
+	if pw, err := passwordFromArgs("literal", "", nil); err == nil || !strings.Contains(err.Error(), "--password-file") {
+		t.Errorf("literal accepted: %q %v", pw, err)
 	}
 	if pw, err := passwordFromArgs("", "", nil); err != nil || pw != "" {
 		t.Errorf("nothing given must mean ask: %q %v", pw, err)
@@ -689,7 +690,7 @@ func TestBundleImportStagesPresets(t *testing.T) {
 		t.Fatal(err)
 	}
 	b := fileBundle{cfgPath: filepath.Join(cfgDir, "config.toml"), presetDir: presetDir}
-	if _, err := b.Import(doc); err == nil {
+	if _, _, err := b.Import(doc); err == nil {
 		t.Fatal("import succeeded with an unwritable config path")
 	}
 	entries, _ := os.ReadDir(presetDir)
@@ -707,7 +708,7 @@ func TestBundleImportStagesPresets(t *testing.T) {
 	if err := os.Remove(cfgDir); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := b.Import(doc); err != nil {
+	if _, _, err := b.Import(doc); err != nil {
 		t.Fatal(err)
 	}
 	entries, _ = os.ReadDir(presetDir)

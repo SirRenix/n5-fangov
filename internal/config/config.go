@@ -10,12 +10,13 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"os"
 	"path"
 	"path/filepath"
 	"regexp"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -60,8 +61,17 @@ const (
 var Profiles = []string{"auto", "n5pro", "nct67xx", "it87xx", "monitor"}
 
 var (
-	nameRe   = regexp.MustCompile(`^[a-z0-9_]+$`)
+	nameRe   = regexp.MustCompile(`^[a-z0-9_]{1,32}$`)  // same rule as web.channelName
 	presetRe = regexp.MustCompile(`^[a-z0-9_-]{1,64}$`) // same rule as web.presetName
+	// UserRe is the web user name rule, shared with the account API and
+	// the CLI (setup, passwd).
+	UserRe = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,32}$`)
+)
+
+// Password length rule (runes) of the account API and the CLI.
+const (
+	MinPasswordLen = 8
+	MaxPasswordLen = 128
 )
 
 // Daemon holds the regulation parameters.
@@ -87,13 +97,17 @@ type Web struct {
 	TLS          string   `toml:"tls"`                     // auto | off | file (see TLSModes)
 	CertFile     string   `toml:"cert_file"`               // tls = "file": PEM certificate (chain) path
 	KeyFile      string   `toml:"key_file"`                // tls = "file": PEM private key path
+	// BehindTLSProxy: the plain-HTTP listener is only reached through a
+	// TLS-terminating reverse proxy; the session cookie is then marked
+	// Secure although the daemon itself serves HTTP.
+	BehindTLSProxy bool `toml:"behind_tls_proxy"`
 }
 
-// TLS modes accepted in web.tls. "auto" is a self-signed certificate the
-// daemon creates and keeps under the config directory, "file" uses
-// cert_file/key_file, "off" is plain HTTP. A non-loopback listener never
-// runs "off": it is forced to "auto" with a warning (LAN traffic is never
-// plain HTTP).
+// TLSModes lists the values accepted in web.tls. "auto" is a self-signed
+// certificate the daemon creates and keeps under the config directory,
+// "file" uses cert_file/key_file, "off" is plain HTTP. A non-loopback
+// listener never runs "off": it is forced to "auto" with a warning (LAN
+// traffic is never plain HTTP).
 var TLSModes = []string{"auto", "off", "file"}
 
 // Log holds the daemon's own log file settings. The journal (stdout) is
@@ -373,14 +387,7 @@ func (p *parser) warn(field, format string, args ...any) {
 	p.warns = append(p.warns, Warning{Field: field, Msg: fmt.Sprintf(format, args...)})
 }
 
-func sortedKeys[V any](m map[string]V) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
-}
+func sortedKeys[V any](m map[string]V) []string { return slices.Sorted(maps.Keys(m)) }
 
 func (p *parser) unknown(prefix string, sec map[string]toml.Primitive, known ...string) {
 	for _, k := range sortedKeys(sec) {
@@ -494,6 +501,7 @@ func (p *parser) daemon(sec map[string]toml.Primitive, d *Daemon) {
 	d.AlertCooldown = p.durField(pre, sec, "alert_cooldown", def.AlertCooldown, MinCooldown, MaxCooldown)
 	d.LogEvery = p.intField(pre, sec, "log_every", def.LogEvery, 0, 1000000)
 	prof, _ := p.strField(pre, sec, "profile", def.Profile)
+	prof = enumValue(prof)
 	if !contains(Profiles, prof) {
 		p.warn(pre+".profile", "%q unknown (%s), default %q used", prof, strings.Join(Profiles, "|"), def.Profile)
 		prof = def.Profile
@@ -503,14 +511,19 @@ func (p *parser) daemon(sec map[string]toml.Primitive, d *Daemon) {
 
 func (p *parser) web(sec map[string]toml.Primitive, w *Web) {
 	const pre = "web"
-	p.unknown(pre, sec, "listen", "auth", "user", "password_hash", "allowed_hosts", "tls", "cert_file", "key_file")
+	p.unknown(pre, sec, "listen", "auth", "user", "password_hash", "allowed_hosts", "tls", "cert_file", "key_file", "behind_tls_proxy")
 	def := Default().Web
 	listen, _ := p.strField(pre, sec, "listen", def.Listen)
-	if _, _, err := net.SplitHostPort(listen); err != nil {
+	listen = strings.TrimSpace(listen)
+	if _, port, err := net.SplitHostPort(listen); err != nil {
 		p.warn(pre+".listen", "%q is not host:port, default %q used", listen, def.Listen)
+		listen = def.Listen
+	} else if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
+		p.warn(pre+".listen", "%q: port must be 1..65535, default %q used", listen, def.Listen)
 		listen = def.Listen
 	}
 	auth, _ := p.strField(pre, sec, "auth", def.Auth)
+	auth = enumValue(auth)
 	// authBroken: the operator asked for something other than plain "none"
 	// and did not get it. Such a config must not end up reachable from the
 	// network without auth (H2: no fail-open).
@@ -525,6 +538,12 @@ func (p *parser) web(sec map[string]toml.Primitive, w *Web) {
 	if auth == "basic" {
 		if w.User == "" || w.PasswordHash == "" {
 			p.warn(pre+".auth", "basic requires user and password_hash, auth set to none")
+			auth = "none"
+			authBroken = true
+		} else if !UserRe.MatchString(w.User) {
+			// the same rule the account API and the CLI apply; a name the
+			// login form cannot send must not leave the file half-usable
+			p.warn(pre+".user", "%q does not match %s, auth set to none", w.User, UserRe)
 			auth = "none"
 			authBroken = true
 		} else if _, err := ParsePasswordHash(w.PasswordHash); err != nil {
@@ -552,6 +571,22 @@ func (p *parser) web(sec map[string]toml.Primitive, w *Web) {
 		}
 	}
 	p.tls(sec, w)
+	w.BehindTLSProxy = p.boolField(pre, sec, "behind_tls_proxy", def.BehindTLSProxy)
+}
+
+// boolField decodes a boolean; on any problem the default is kept and a
+// warning recorded.
+func (p *parser) boolField(prefix string, sec map[string]toml.Primitive, key string, def bool) bool {
+	prim, ok := sec[key]
+	if !ok {
+		return def
+	}
+	var v bool
+	if err := p.md.PrimitiveDecode(prim, &v); err != nil {
+		p.warn(prefix+"."+key, "not a boolean, default %v used", def)
+		return def
+	}
+	return v
 }
 
 // tls validates web.tls after listen is final: the default depends on it
@@ -560,7 +595,7 @@ func (p *parser) tls(sec map[string]toml.Primitive, w *Web) {
 	const pre = "web"
 	def := DefaultTLS(w.Listen)
 	mode, present := p.strField(pre, sec, "tls", def)
-	mode = strings.TrimSpace(mode)
+	mode = enumValue(mode)
 	w.CertFile, _ = p.strField(pre, sec, "cert_file", "")
 	w.KeyFile, _ = p.strField(pre, sec, "key_file", "")
 	w.CertFile = strings.TrimSpace(w.CertFile)
@@ -602,7 +637,7 @@ func (p *parser) alert(sec map[string]toml.Primitive, a *Alert) {
 	p.unknown(pre, sec, "transport", "mail_to")
 	def := Default().Alert
 	tr, _ := p.strField(pre, sec, "transport", def.Transport)
-	tr = strings.ToLower(strings.TrimSpace(tr))
+	tr = enumValue(tr)
 	if !contains(AlertTransports, tr) {
 		p.warn(pre+".transport", "%q unknown (%s), default %q used", tr, strings.Join(AlertTransports, "|"), def.Transport)
 		tr = def.Transport
@@ -769,7 +804,7 @@ func (p *parser) channels(secs []map[string]toml.Primitive) []Channel {
 		}
 		p.unknown(pre, sec, "name", "pwm", "sensor", "curve", "critical", "stop")
 		if !ok || !nameRe.MatchString(name) {
-			p.warn(pre+".name", "missing or not [a-z0-9_]+, channel dropped")
+			p.warn(pre+".name", "missing or not [a-z0-9_]{1,32}, channel dropped")
 			continue
 		}
 		if names[name] {
@@ -777,9 +812,10 @@ func (p *parser) channels(secs []map[string]toml.Primitive) []Channel {
 			continue
 		}
 		ch.Name = name
-		ch.PWM = p.intField(pre, sec, "pwm", 0, 1, MaxPWM)
+		// pwm has no default: one warning names the problem and drops the
+		// channel (intField's "default 0 used" line would be a second one).
+		ch.PWM = p.pwmField(pre, sec)
 		if ch.PWM == 0 {
-			p.warn(pre+".pwm", "missing or invalid, channel dropped")
 			continue
 		}
 		if pwms[ch.PWM] {
@@ -809,6 +845,26 @@ func (p *parser) channels(secs []map[string]toml.Primitive) []Channel {
 		out = append(out, ch)
 	}
 	return out
+}
+
+// pwmField decodes the mandatory pwm index (1..MaxPWM); 0 with one warning
+// when it is missing or unusable.
+func (p *parser) pwmField(pre string, sec map[string]toml.Primitive) int {
+	prim, ok := sec["pwm"]
+	if !ok {
+		p.warn(pre+".pwm", "missing, channel dropped")
+		return 0
+	}
+	var v int64
+	if err := p.md.PrimitiveDecode(prim, &v); err != nil {
+		p.warn(pre+".pwm", "not an integer, channel dropped")
+		return 0
+	}
+	if v < 1 || v > MaxPWM {
+		p.warn(pre+".pwm", "%d outside 1..%d, channel dropped", v, MaxPWM)
+		return 0
+	}
+	return int(v)
 }
 
 func (p *parser) curve(pre string, sec map[string]toml.Primitive) [][2]int {
@@ -884,8 +940,8 @@ func (p *parser) stop(pre string, sec map[string]toml.Primitive, sensor string) 
 	var n int64
 	var s string
 	if err := p.md.PrimitiveDecode(prim, &s); err == nil {
-		if s == "auto" {
-			return s
+		if enumValue(s) == "auto" {
+			return "auto"
 		}
 		v, perr := strconv.Atoi(strings.TrimSpace(s))
 		if perr != nil || v < 0 || v > 255 {
@@ -903,6 +959,10 @@ func (p *parser) stop(pre string, sec map[string]toml.Primitive, sensor string) 
 	}
 	return strconv.FormatInt(n, 10)
 }
+
+// enumValue normalises an enumeration key (profile, auth, tls, transport,
+// stop): surrounding blanks and letter case do not make a value unknown.
+func enumValue(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
 
 func contains(list []string, s string) bool {
 	for _, v := range list {

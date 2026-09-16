@@ -152,9 +152,18 @@ func parseDuty(s string) (int, error) {
 // pct converts a duty 0..255 to a percentage.
 func pct(duty int) int { return (duty*100 + 127) / 255 }
 
-// journalLines returns the last n lines of the unit's journal.
-func journalLines(unit string, n int) ([]string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+// journalctl bounds: a tail for the CLI and the API, the export of a large
+// journal (journalLogStore.Export).
+const (
+	journalTimeout       = 10 * time.Second
+	journalExportTimeout = 60 * time.Second
+	journalExportLines   = 100000
+)
+
+// journalLines returns the last n lines of the unit's journal, bounded by
+// timeout.
+func journalLines(unit string, n int, timeout time.Duration) ([]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, "journalctl", "-u", unit, "-n", strconv.Itoa(n), "--no-pager", "-o", "short").Output()
 	if err != nil {
@@ -165,17 +174,6 @@ func journalLines(unit string, n int) ([]string, error) {
 		return nil, nil
 	}
 	return lines, nil
-}
-
-// systemctlValue runs `systemctl show -p KEY --value UNIT`.
-func systemctlValue(unit, key string) string {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, "systemctl", "show", "-p", key, "--value", unit).Output()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(out))
 }
 
 // unitActive reports whether `systemctl is-active UNIT` says "active".

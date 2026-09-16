@@ -20,10 +20,16 @@ case "$1" in
                 systemctl disable n5-fand.service || true
             fi
         fi
+        # Best effort like install.sh: /etc/pve is pmxcfs and read-only
+        # without quorum; a failed mkdir must not leave the package
+        # half-configured (daemon-reload/enable below would be skipped).
         if [ -d /etc/pve ]; then
-            mkdir -p /etc/pve/notification-templates/default
-            cp /usr/share/n5-fangov/pve-notification/n5-fangov-subject.txt.hbs /etc/pve/notification-templates/default/ 2>/dev/null || true
-            cp /usr/share/n5-fangov/pve-notification/n5-fangov-body.txt.hbs    /etc/pve/notification-templates/default/ 2>/dev/null || true
+            if mkdir -p /etc/pve/notification-templates/default 2>/dev/null; then
+                cp /usr/share/n5-fangov/pve-notification/n5-fangov-subject.txt.hbs /etc/pve/notification-templates/default/ 2>/dev/null || true
+                cp /usr/share/n5-fangov/pve-notification/n5-fangov-body.txt.hbs    /etc/pve/notification-templates/default/ 2>/dev/null || true
+            else
+                echo "n5-fangov: /etc/pve/notification-templates not writable (no quorum?); install the template later: n5-fangov alerts template"
+            fi
         fi
         mkdir -p /etc/n5-fangov/presets
         mkdir -p /var/log/n5-fangov

@@ -1,8 +1,8 @@
 // Command n5-fangov is a guarded fan controller for Proxmox VE and Debian.
 //
 // main.go only dispatches. Every subcommand lives in its own file and
-// registers itself from init(); every call into an internal package goes
-// through wiring.go.
+// registers itself from init(); the adapters to the internal packages live
+// in the wiring*.go files.
 package main
 
 import (
@@ -30,11 +30,11 @@ const (
 	unitName          = "n5-fangov"
 )
 
-// command is one subcommand: run returns the process exit code.
+// command is one subcommand: run returns the process exit code; the usage
+// line comes from helpText.
 type command struct {
 	run    func(args []string) int
-	help   string // "<args>  description", shown by usage
-	hidden bool   // not listed in usage (e.g. "alert" used by the onfailure unit)
+	hidden bool // not listed in usage (e.g. "alert" used by the onfailure unit)
 }
 
 // commands is filled by init() in the subcommand files.

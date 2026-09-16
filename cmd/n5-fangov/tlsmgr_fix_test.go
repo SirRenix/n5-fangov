@@ -80,7 +80,7 @@ func TestTLSManagerPinsConfigKeys(t *testing.T) {
 	bundle, _ := json.Marshal(map[string]any{"format": 1, "version": "x", "exported": 1, "config": mgrTOML, "presets": map[string]string{}})
 	var reloaded []byte
 	fb := fileBundle{cfgPath: cfgPath, presetDir: filepath.Join(filepath.Dir(cfgPath), "presets"), reload: func(r []byte) error { reloaded = r; return nil }, pin: m.pinConfig}
-	if _, err := fb.Import(bundle); err != nil {
+	if _, _, err := fb.Import(bundle); err != nil {
 		t.Fatal(err)
 	}
 	if w := webOfFile(t, cfgPath); w.TLS != "file" || w.CertFile != certPath {

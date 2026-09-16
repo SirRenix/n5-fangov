@@ -55,6 +55,10 @@ func cmdTest(args []string) int {
 		fmt.Fprintln(os.Stderr, "usage: n5-fangov test <channel|pwmN> [--force]")
 		return exitUsage
 	}
+	if *sample <= 0 || *hold <= 0 || *sample > *hold {
+		fmt.Fprintf(os.Stderr, "test: --sample (%s) and --hold (%s) must be positive and sample <= hold\n", *sample, *hold)
+		return exitUsage
+	}
 	want := fs.Arg(0)
 
 	if os.Geteuid() != 0 && os.Getenv("N5FANGOV_SYSFS") == "" {

@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -103,6 +104,10 @@ var alertKinds = []web.AlertKind{
 	{Kind: "failed", Description: "the unit failed and did not come back (onfailure)"},
 	{Kind: "kernel", Description: "a kernel the box can boot into lacks the DKMS fan driver module (apt hook)"},
 	{Kind: "tls", Description: "the configured certificate pair could not be served; the automatic one is in use"},
+	{Kind: "device", Description: "the fan controller stopped accepting writes for several cycles; the daemon restarts to re-detect it"},
+	{Kind: "profile", Description: "no fan controller was detected at start; nothing is regulated, fans stay in BIOS/EC control"},
+	{Kind: "start", Description: "the controller could not be set up at start (see the journal)"},
+	{Kind: "web", Description: "the web UI listener could not be started (TLS setup or bind failed); the CLI socket keeps working"},
 	{Kind: "test", Description: "a test alert sent from the dashboard or `n5-fangov alerts test`"},
 }
 
@@ -206,15 +211,17 @@ func (m *alertManager) Status() web.AlertStatus {
 	m.mu.Unlock()
 	pve, mail := alert.Available()
 	cool := ""
+	var coolS int64
 	if m.cooldown != nil {
-		cool = m.cooldown().String()
+		d := m.cooldown()
+		cool, coolS = d.String(), int64(d.Seconds())
 	}
 	return web.AlertStatus{
 		Transport: transport, Effective: eff, MailTo: mailTo,
 		PVEAvailable: pve, MailAvailable: mail,
 		Template: m.templateStatus(),
-		Cooldown: cool,
-		Kinds:    append([]web.AlertKind(nil), alertKinds...),
+		Cooldown: cool, CooldownS: coolS,
+		Kinds: append([]web.AlertKind(nil), alertKinds...),
 	}
 }
 
@@ -223,7 +230,7 @@ func (m *alertManager) Recent(n int) []web.AlertRecord {
 	recs := m.ring.Recent(n)
 	out := make([]web.AlertRecord, 0, len(recs))
 	for _, r := range recs {
-		out = append(out, web.AlertRecord{TS: r.TS, Kind: r.Kind, Msg: r.Msg})
+		out = append(out, web.AlertRecord{TS: r.TS, Kind: r.Kind, Msg: r.Msg, Error: r.Error})
 	}
 	return out
 }
@@ -326,7 +333,7 @@ func editConfig(path string, pin func([]byte) []byte, section string, edit func(
 	cfg, _, err := config.Parse(raw)
 	switch {
 	case err != nil && beforeErr == nil:
-		return fmt.Errorf("config uses an inline [%s] table or a layout the in-place editor cannot handle; edit the file by hand (%v)", section, err)
+		return fmt.Errorf("config uses an inline [%s] table or a layout the in-place editor cannot handle; edit the file by hand (%w)", section, err)
 	case err != nil:
 		return fmt.Errorf("config would not parse after the edit: %w", err)
 	case !verify(cfg):
@@ -455,7 +462,7 @@ func (s *dashboardStore) SetSensors(ids []string) ([]string, error) {
 		}
 		if _, err := s.factory(id); err != nil {
 			if !errors.Is(err, sensor.ErrNoDevice) {
-				return nil, fmt.Errorf("sensor id %q: %v", id, err)
+				return nil, fmt.Errorf("sensor id %q: %w", id, err)
 			}
 			warns = append(warns, fmt.Sprintf("%s: %v (kept; charted once the device appears)", id, err))
 		}
@@ -463,7 +470,7 @@ func (s *dashboardStore) SetSensors(ids []string) ([]string, error) {
 	err := editConfig(s.cfgPath, s.pin, "dashboard", func(raw []byte) []byte {
 		return setConfigKey(raw, "dashboard", "sensors", tomlStringArray(clean))
 	}, func(cfg config.Config) bool {
-		return sameStrings(cfg.Dashboard.Sensors, clean)
+		return slices.Equal(cfg.Dashboard.Sensors, clean)
 	})
 	if err != nil {
 		return nil, err
@@ -473,18 +480,6 @@ func (s *dashboardStore) SetSensors(ids []string) ([]string, error) {
 		warns = []string{}
 	}
 	return warns, nil
-}
-
-func sameStrings(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
 
 // tomlStringArray renders ids as a TOML array of basic strings.
