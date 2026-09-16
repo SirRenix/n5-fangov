@@ -67,11 +67,12 @@ try {
 	// 08 curves validation error: second cpu point below the first -> client-side notice, no PUT
 	await evalJS(`(()=>{const i=document.querySelector('#editors input[type=text][placeholder=auto]'); i.value='300'; i.dispatchEvent(new Event('input',{bubbles:true})); const c=document.querySelector('#editors input[type=number][min="30"]'); c.value=''; c.dispatchEvent(new Event('input',{bubbles:true})); return 1;})()`);
 	await click('#cv-apply'); await sleep(300); await hideToasts(); await shot('08-curves-error.png');
-	// 09 curves restart required (mock: fewer [[channel]] tables -> 202); the notice is visible only
-	// between the PUT answer and the editor reload in this build, so capture right after the answer
-	// (editor state is closure-scoped; the notice text below is the client's verbatim string)
-	await nav('?mock=1&user=1&tab=curves', { wait: 1500 });
-	await evalJS(`(()=>{const n=document.getElementById('cv-notice'); n.hidden=false; n.className='notice'; n.textContent='Saved — restart required (channel set or profile changed): systemctl restart n5-fangov'; return 1;})()`);
+	// 09 curves restart required: a real 202 through the mock (&restart=1 makes PUT /api/config answer 202);
+	// the notice survives the editor reload after Apply and stays until Revert
+	await nav('?mock=1&user=1&tab=curves&restart=1', { wait: 1500 });
+	await evalJS(`(()=>{const c=document.querySelector('#editors input[type=number][min="30"]'); c.value=String(+c.value+1); c.dispatchEvent(new Event('input',{bubbles:true})); return 1;})()`);
+	await click('#cv-apply'); await sleep(900); await hideToasts();
+	await evalJS(`(()=>{const n=document.getElementById('cv-notice'); if(n.hidden||!/restart required/.test(n.textContent)) throw new Error('09: restart notice not shown after the 202'); return 1;})()`);
 	await shot('09-curves-restart-required.png');
 	// 10 manual with hdd slider below 60
 	await nav('?mock=1&user=1&tab=manual', { wait: 1500 });
