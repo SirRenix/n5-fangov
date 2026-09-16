@@ -209,7 +209,12 @@ type Deps struct {
 	// TLS is informational: true when the TCP listener is TLS-terminated,
 	// exposed as "tls" in GET /api/version for the UI indicator. ServeTLS
 	// sets it itself; a TLS reverse proxy in front of plain Serve may set it.
+	// It also marks the session cookie Secure.
 	TLS bool
+	// BehindTLSProxy ([web] behind_tls_proxy): the plain-HTTP listener is
+	// only reached through a TLS-terminating reverse proxy, so the session
+	// cookie is marked Secure although r.TLS is nil.
+	BehindTLSProxy bool
 	// TLSMgr backs the /api/tls endpoints (certificate panel). nil → 501.
 	TLSMgr TLSMgr
 	// TLSHosts are the addresses the certificate should cover (listen host,
@@ -261,6 +266,7 @@ func New(deps Deps) *Server {
 	if s.logf == nil {
 		s.logf = log.Printf
 	}
+	s.limiter.logf = s.logf
 	auth := deps.Auth
 	s.auth.Store(&auth)
 	// R-M1: the mirror file is only loaded when it was written under the
@@ -601,24 +607,51 @@ func (s *Server) resolveCaller(w http.ResponseWriter, r *http.Request) (Caller, 
 		return Caller{Via: "none"}, true
 	}
 	ip := remoteIP(r)
-	// An IP that already has limitConcurrent failed attempts sleeping gets
-	// an immediate 429 before any hash is computed (M3c): the delay cannot
-	// be side-stepped with parallel requests, and the PBKDF2 cost is not
-	// paid for them.
-	if s.limiter.busy(ip) {
+	// A bucket that already has limitConcurrent failed attempts sleeping
+	// gets an immediate 429 before any hash is computed (M3c): the delay
+	// cannot be side-stepped with parallel requests, and the PBKDF2 cost
+	// is not paid for them. The same answer when the process-wide
+	// verification slots are all taken.
+	if s.limiter.busy(ip) || !s.limiter.acquire() {
 		writeError(w, http.StatusTooManyRequests, "too many concurrent authentication attempts")
 		return Caller{}, false
 	}
-	if !s.authorized(r) {
-		user, _, _ := r.BasicAuth()
+	ok := s.authorized(r)
+	s.limiter.release()
+	user, pass, _ := r.BasicAuth()
+	if !ok {
 		n, delay := s.limiter.fail(ip)
-		s.logf("web: auth failure from %s (user %q, %s %s, %d recent failures, delay %s)", ip, user, r.Method, r.URL.Path, n, delay)
+		s.logf("web: auth failure from %s (user %.64q, %s %s, %d recent failures, delay %s)", ip, user, r.Method, r.URL.Path, n, delay)
 		writeError(w, http.StatusUnauthorized, "authentication required")
 		return Caller{}, false
 	}
 	s.limiter.reset(ip)
-	user, _, _ := r.BasicAuth()
+	s.upgradeLegacyHash(user, pass)
 	return Caller{Authenticated: true, User: user, Via: "basic"}, true
+}
+
+// upgradeLegacyHash rewrites a stored legacy sha256("user:password") hash
+// as PBKDF2 after a successful verification — the only moment the
+// password is at hand. Needs an AccountStore; without one the legacy form
+// simply stays. The sessions are kept: the epoch follows the new hash so
+// the mirror file is still loaded after a restart.
+func (s *Server) upgradeLegacyHash(user, password string) {
+	if s.deps.Account == nil {
+		return
+	}
+	cfg := s.authCfg()
+	ph, err := config.ParsePasswordHash(cfg.PasswordHash)
+	if err != nil || ph.Legacy == nil {
+		return
+	}
+	next, err := s.deps.Account.Update("", PasswordHash(user, password))
+	if err != nil {
+		s.logf("web: legacy password hash not upgraded: %v", err)
+		return
+	}
+	s.auth.Store(&next)
+	s.sessions.SetEpoch(CredentialEpoch(next.User, next.PasswordHash))
+	s.logf("web: legacy password hash upgraded to pbkdf2 for user %.64q", user)
 }
 
 // hostAllowed accepts IP literals, localhost and the configured hosts (M1).

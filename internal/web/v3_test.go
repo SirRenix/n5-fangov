@@ -595,7 +595,10 @@ func TestAccountUser(t *testing.T) {
 	if !strings.Contains(r.body, `"user":"root.ops-1"`) {
 		t.Errorf("body = %s", r.body)
 	}
-	if len(acc.updates) != 1 || acc.updates[0][0] != "root.ops-1" || !strings.HasPrefix(acc.updates[0][1], "pbkdf2$") || !VerifyPassword("root.ops-1", "pw", acc.updates[0][1]) {
+	// updates[0] is the transparent legacy→PBKDF2 upgrade of the first login
+	// (TestLegacyHashUpgraded); the rename is the last one.
+	last := acc.updates[len(acc.updates)-1]
+	if len(acc.updates) != 2 || last[0] != "root.ops-1" || !strings.HasPrefix(last[1], "pbkdf2$") || !VerifyPassword("root.ops-1", "pw", last[1]) {
 		t.Fatalf("updates = %v", acc.updates)
 	}
 	if !strings.Contains(e.logLines(), "web: account user changed by 127.0.0.1") {
@@ -846,7 +849,8 @@ func TestAboutAndVersion(t *testing.T) {
 	wantCode(t, r, 200)
 	var a About
 	decode(t, r.body, &a)
-	if a.Name != "n5-fangov" || a.Version != "0.3.0-beta.1" || a.Prerelease != "beta.1" || a.License != "GPL-2.0-only" || a.Go != runtime.Version() || len(a.Credits) != 1 {
+	// anonymous: no toolchain version (see TestAboutGoOnlySignedIn)
+	if a.Name != "n5-fangov" || a.Version != "0.3.0-beta.1" || a.Prerelease != "beta.1" || a.License != "GPL-2.0-only" || a.Go != "" || len(a.Credits) != 1 {
 		t.Errorf("about = %+v", a)
 	}
 	r = e.do(t, "GET", "/api/version", "", nil)

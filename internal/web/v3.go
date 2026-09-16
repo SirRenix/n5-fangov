@@ -47,10 +47,14 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 // ---- sessions ---------------------------------------------------------------
 
 // setSessionCookie sends the session cookie; maxAge <= 0 clears it. Secure
-// only over TLS, so a plain-HTTP loopback setup still works; SameSite=Strict
-// plus the CSRF header keep a cross-site page from riding the cookie.
-func setSessionCookie(w http.ResponseWriter, r *http.Request, token string, maxAge int) {
-	ck := &http.Cookie{Name: sessionCookie, Value: token, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: r.TLS != nil, MaxAge: maxAge}
+// when the request came over TLS, when the listener is known to be
+// TLS-terminated (Deps.TLS) or when a TLS reverse proxy is declared
+// ([web] behind_tls_proxy); a plain-HTTP loopback setup without either
+// still works. SameSite=Strict plus the CSRF header keep a cross-site page
+// from riding the cookie.
+func (s *Server) setSessionCookie(w http.ResponseWriter, r *http.Request, token string, maxAge int) {
+	secure := r.TLS != nil || s.deps.TLS || s.deps.BehindTLSProxy
+	ck := &http.Cookie{Name: sessionCookie, Value: token, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: secure, MaxAge: maxAge}
 	if maxAge <= 0 {
 		ck.Value = ""
 		ck.MaxAge = -1
@@ -79,19 +83,26 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &b) {
 		return
 	}
-	if !s.credentialsOK(b.User, b.Password) {
+	if !s.limiter.acquire() {
+		writeError(w, http.StatusTooManyRequests, "too many concurrent authentication attempts")
+		return
+	}
+	ok := s.credentialsOK(b.User, b.Password)
+	s.limiter.release()
+	if !ok {
 		n, delay := s.limiter.fail(ip)
-		s.logf("web: login failure from %s (user %q, %d recent failures, delay %s)", ip, b.User, n, delay)
+		s.logf("web: login failure from %s (user %.64q, %d recent failures, delay %s)", ip, b.User, n, delay)
 		writeError(w, http.StatusUnauthorized, "invalid user or password")
 		return
 	}
 	s.limiter.reset(ip)
+	s.upgradeLegacyHash(b.User, b.Password)
 	token, sess, err := s.sessions.Create(b.User, b.Remember, ip)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "create session: "+err.Error())
 		return
 	}
-	setSessionCookie(w, r, token, int(time.Until(sess.Expires).Seconds()))
+	s.setSessionCookie(w, r, token, int(time.Until(sess.Expires).Seconds()))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "user": sess.User, "expires": sess.Expires.Unix(), "remember": sess.Remember})
 }
 
@@ -100,7 +111,7 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	if ck, err := r.Cookie(sessionCookie); err == nil && ck.Value != "" {
 		s.sessions.Revoke(ck.Value)
 	}
-	setSessionCookie(w, r, "", 0)
+	s.setSessionCookie(w, r, "", 0)
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -164,10 +175,16 @@ func (s *Server) verifyCurrent(w http.ResponseWriter, r *http.Request, current s
 		writeError(w, http.StatusTooManyRequests, "too many concurrent authentication attempts")
 		return false
 	}
+	if !s.limiter.acquire() {
+		writeError(w, http.StatusTooManyRequests, "too many concurrent authentication attempts")
+		return false
+	}
 	cfg := s.authCfg()
-	if !VerifyPassword(cfg.User, current, cfg.PasswordHash) {
+	ok := VerifyPassword(cfg.User, current, cfg.PasswordHash)
+	s.limiter.release()
+	if !ok {
 		n, delay := s.limiter.fail(ip)
-		s.logf("web: auth failure from %s (user %q, account change, %d recent failures, delay %s)", ip, cfg.User, n, delay)
+		s.logf("web: auth failure from %s (user %.64q, account change, %d recent failures, delay %s)", ip, cfg.User, n, delay)
 		writeError(w, http.StatusForbidden, "current password wrong")
 		return false
 	}
@@ -434,8 +451,10 @@ func (s *Server) putDashboard(w http.ResponseWriter, r *http.Request) {
 
 // ---- about ------------------------------------------------------------------
 
-// getAbout serves Deps.About; empty name/version/go fall back to what the
-// server knows so the card is never blank.
+// getAbout serves Deps.About; empty name/version fall back to what the
+// server knows so the card is never blank. The Go toolchain version is
+// only shown to a signed-in caller: together with a public version number
+// it would tell an anonymous LAN host which stdlib to look up CVEs for.
 func (s *Server) getAbout(w http.ResponseWriter, r *http.Request) {
 	a := s.deps.About
 	if a.Name == "" {
@@ -444,7 +463,9 @@ func (s *Server) getAbout(w http.ResponseWriter, r *http.Request) {
 	if a.Version == "" {
 		a.Version = s.deps.Version
 	}
-	if a.Go == "" {
+	if !CallerFrom(r.Context()).Authenticated {
+		a.Go = ""
+	} else if a.Go == "" {
 		a.Go = runtime.Version()
 	}
 	if a.Credits == nil {
