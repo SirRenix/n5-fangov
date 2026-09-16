@@ -117,7 +117,7 @@ refused). `Default()` has **no channels**; `N5ProChannels()` is the verified set
 | `[alert] transport` | `auto` \| `pve` \| `mail` \| `log` \| `off` (lower-cased) | `auto` | reload |
 | `mail_to` | `^[A-Za-z0-9_][A-Za-z0-9._%+-]*(@[A-Za-z0-9.-]+)?$`, ≤ 254 (`R-M3`: never starts with `-`) | `root` | reload |
 | `[dashboard] sensors` | 0..8 distinct sensor ids (shape only; resolution is the controller's business) | `[]` | reload |
-| `[[channel]] name` | `^[a-z0-9_]+$`, unique; else the channel is dropped | — | restart when the set changes |
+| `[[channel]] name` | `^[a-z0-9_]{1,32}$`, unique; else the channel is dropped | — | restart when the set changes |
 | `pwm` | 1..8, unique | — | restart when the set changes |
 | `sensor` | non-empty sensor id (section 5) | — | reload |
 | `curve` | 2..8 points `[temp, duty]`, temp −20..120 strictly ascending, duty 0..255 non-decreasing; else `[[45,85],[80,255]]` | — | reload |
@@ -338,13 +338,16 @@ be an IP literal, `localhost`, the listen host or an `allowed_hosts` entry (else
 resolved once (cookie session → `AuthConfig` Basic) and rides in the request context
 (`web.CallerFrom`). Anonymous access to a protected path is a silent 401 (no log, no
 limiter count, no `WWW-Authenticate`). A presented Basic credential that fails is counted
-and logged (`web: auth failure from <ip> (user …)`); limiter per client IP: 5 free, then
-250 ms doubling to 2 s, reset after 10 min or a success; at most 4 delayed attempts in
-flight per IP, further ones `429` before any PBKDF2 (`M3`). `http.AllowQuerySemicolons`
-wraps both handlers. Body limits: 256 KiB config/import, 64 KiB certificate upload, 4 KiB
-override/login/account JSON; 413 above. Errors are `{"error": "..."}` (plus `"errors":
-[...]` where a list exists). Every write to the config file is serialised in cmd
-(`configFileMu`).
+and logged (`web: auth failure from <ip> (user …)`); limiter in three layers: the delay
+counter per IPv4 address or IPv6 /64 prefix (zone stripped) — 5 free, then 250 ms
+doubling to 2 s, reset after 10 min or a success —, the concurrency cap per full address
+— at most 4 delayed attempts in flight, further ones `429` before any PBKDF2 (`M3`), so
+one host cannot lock its whole /64 out —, and process-wide at most 4 password
+verifications at the same time, whatever the source (`429` beyond).
+`http.AllowQuerySemicolons` wraps both handlers. Body limits: 256 KiB config/import, 64
+KiB certificate upload, 4 KiB override/login/account JSON; 413 above. Errors are
+`{"error": "..."}` (plus `"errors": [...]` where a list exists). Every write to the config
+file is serialised in cmd (`configFileMu`).
 
 `Deps` members and the 501 rule: `Service` (control), `Config` (`ConfigStore`), `Validate`
 (`config.Parse`), `Presets` (`PresetStore` + optional `PresetDetailer`, `PresetRenamer`),
@@ -372,7 +375,7 @@ counts as signed in, `via: "none"`):
 | `GET /api/state` | filtered | — | snapshot (section 6) |
 | `GET /api/history?minutes=120&since=TS` | filtered | — | `[{ts, temp{}, duty{}, rpm{}, extra{}}]`, only `ts > since` |
 | `GET /api/config` | protected | — | `{raw, config{daemon, web, log, alert, dashboard, channel[], warnings[]}}`; `password_hash` is `<unchanged>` in both |
-| `PUT /api/config[?strict=1]` | protected | raw TOML ≤ 256 KiB; `<unchanged>` restores the stored hash | 400 `{error, errors[]}` on a syntax error (nothing written); with `strict=1` also on any value that would be replaced by a default; else write (tls keys pinned, `[alert]` re-applied) → reload: 200 `{ok, restart_required:false, warnings[]}` or 202 `{restart_required:true}` |
+| `PUT /api/config[?strict=1]` | protected | raw TOML ≤ 256 KiB; `<unchanged>` restores the stored hash | 400 `{error, errors[]}` on a syntax error (nothing written); with `strict=1` also on any `[[channel]]` value that would be replaced by a default (warnings on the other tables stay `warnings[]`); else write (tls keys pinned, `[alert]` re-applied) → reload: 200 `{ok, restart_required:false, warnings[]}` or 202 `{restart_required:true}` |
 | `GET /api/config/export` | protected | — | JSON attachment `n5-fangov-settings-<ts>.json`: `{format:1, version, exported, config, presets{}}`, hash redacted |
 | `POST /api/config/import` | protected | the bundle | everything validated first; 200 / 202 / 400 `{error: "import rejected: …", errors[]}` |
 | `PUT /api/override/{name}` | protected | `{duty}` or `{percent}` ≤ 4 KiB | 200 `{ok, channel, duty, mode}` (applies next cycle; critical/stall win); 400 below `MinHDDOverride` |
@@ -475,9 +478,10 @@ version string is one constant in that block, bumped with the release.
   (inserted at the middle of the widest gap, table kept sorted), measured duty→RPM
   reference on the N5 Pro. Client validation before the PUT: 2..8 points, temperatures
   ascending, duties non-decreasing, critical above the last point, stop `auto` or 60..255;
-  errors in a `role="alert"` notice. *Apply to daemon* sends `PUT /api/config?strict=1`;
-  202 shows the restart notice, warnings stay visible until *Revert*. A dirty indicator
-  marks unsaved edits and a confirm dialog guards tab changes and session loss.
+  errors in a `role="alert"` notice (no toast on top: one announcement). *Apply to daemon*
+  sends `PUT /api/config?strict=1`; 202 shows the restart notice, warnings stay visible
+  until *Revert*. A dirty indicator marks unsaved edits and a confirm dialog guards tab
+  changes and session loss.
 - **Manual:** slider + *Set* / *Back to auto* per channel; HDD-like channels show the
   minimum-60 hint and refuse lower values client-side.
 - **Presets:** cards with built-in/recommended badges and description, *Apply*, *Details*

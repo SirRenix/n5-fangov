@@ -312,7 +312,7 @@ certificate panels edit the file and apply their keys live).
 | `[alert] transport` | `auto` \| `pve` \| `mail` \| `log` \| `off` | `auto` | reload |
 | `mail_to` | local user or address, no spaces or quotes, never starts with `-` | `root` | reload |
 | `[dashboard] sensors` | 0..8 sensor ids charted on the Overview | `[]` | reload |
-| `[[channel]] name` | unique, `[a-z0-9_]+` | — | restart when the set changes |
+| `[[channel]] name` | unique, `[a-z0-9_]{1,32}` | — | restart when the set changes |
 | `pwm` | 1..8, `pwmN` of the profile's hwmon device, unique | — | restart when the set changes |
 | `sensor` | `k10temp` \| `coretemp` \| `nvme:max` \| `drivetemp:max` \| `hwmon:<name>:tempN` \| `ec:<label>` | — | reload |
 | `curve` | 2..8 `[temp_c, duty]` points, temps −20..120 ascending, duties 0..255 not descending; else `[[45,85],[80,255]]` | — | reload |

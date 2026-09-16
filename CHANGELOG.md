@@ -73,6 +73,26 @@ Pre-release hardening after the acceptance audit of `v0.3.0-beta.4` (16 Septembe
   rollback and uninstall.
 - Deploy README: the kernel gate covers the kernels the box can boot into, not every
   directory under `/lib/modules` (the README already said so).
+- `PUT /api/config?strict=1` refuses only warnings on the `[[channel]]` tables (what the
+  curve editor writes); a pre-existing warning elsewhere in the file (an unknown key in
+  `[web]`, say) no longer blocks the editor and comes back under `warnings` as before.
+- Auth limiter: the concurrency cap (four delayed attempts in flight, then `429`) is
+  counted per address, not per IPv6 /64 — one misbehaving host no longer locks its whole
+  LAN prefix out; the delay counter stays per /64. A link-local zone (`fe80::1%vmbr0`)
+  is stripped before bucketing.
+- A legacy `sha256` hash hit by two successful verifications at the same time was
+  rewritten twice; the upgrade is serialised.
+- The cooldown stamp of a start-up alert is written before the delivery goroutine
+  starts, so an early exit of `serve` cannot lose it.
+- Bundle import and `PUT /api/config` refuse a config whose `password_hash` placeholder
+  sits in an inline `web = { … }` table (the restore does not reach it; the placeholder
+  would have become the stored hash).
+- Preset apply: a preset that was written but not taken by the daemon answers `500`
+  "preset written, reload failed" instead of `400`.
+- `tools/remote-go.ps1` picks `golang:1.26-bookworm` on its own when `-Cmd` contains
+  `-race` (the race detector needs cgo and glibc) unless `-Image` is given.
+- Curve editor: a rejected apply no longer announces twice to screen readers (the
+  `role="alert"` notice stays, the assertive toast is gone).
 
 ## [0.3.0-beta.4] — 2026-09-16
 
