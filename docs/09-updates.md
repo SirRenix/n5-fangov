@@ -74,6 +74,7 @@ The export is the config file text (comments included — so also `[[schedule]]`
 `[alert]` webhook keys) plus every user preset (the built-in ones travel with the
 binary), with the password hash redacted to `<unchanged>`. It never carries API
 tokens, sessions or the chart history.
+<!-- webhook_url in the bundle: see CHANGELOG Fixed -->
 `import` refuses the whole bundle when any part fails to parse — nothing is written in
 that case. `<unchanged>` is resolved from the password stored on the importing machine;
 on a fresh box run `n5-fangov passwd` first (or put a real hash into the bundle). Presets

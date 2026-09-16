@@ -751,8 +751,10 @@ sensors.
 - **Header:** brand, profile title, verified badge; status chip, uptime, version with
   `beta` badge when `prerelease != ""`, lock button (`🔒 TLS` / `🔓 HTTP`; warn colour
   when plain HTTP off loopback, during a certificate fallback or below 30 days to expiry),
-  live/paused indicator, user name, *Sign in* / *Sign out*, settings gear. Gear, lock and
-  every tab except Overview and About carry `data-auth` and are hidden while anonymous.
+  live/paused indicator, user name, *Sign in* / *Sign out*, settings gear. Every tab
+  except Overview and About carries `data-auth` and is hidden while anonymous; gear, lock,
+  user name, *Sign in* / *Sign out* and the CSV button are toggled by the id list in
+  `applyAuth` (no `data-auth`).
   Below 700 px the header is one line and the tab bar is sticky.
 - **Tabs** (`role="tablist"`, keyboard): Overview, Curves, Manual, Presets, Alerts, System,
   Log, Compatibility, About. Every tab id has a dispatch entry (`TestTabsHaveHandlers`).
@@ -779,9 +781,12 @@ sensors.
   hysteresis 0..10; errors in a `role="alert"` notice (no toast on top: one
   announcement). *Apply to daemon* sends `PUT /api/config?strict=1`; the `[[channel]]`
   tables it writes carry `sensor` (array form for a composite), `hysteresis` and
-  `min_on` (omitted at their defaults). 202 shows the restart notice, warnings stay
-  visible until *Revert*. A dirty indicator marks unsaved edits and a confirm dialog
-  guards tab changes and session loss.
+  `min_on` (omitted at their defaults). 202 shows the restart notice; the notice and
+  the warnings survive the editor reload after Apply and stay until *Revert*, the next
+  Apply or a session change. A dirty indicator on the tab and in the panel marks unsaved
+  edits; the edits persist across tab changes (no dialog), *Sign out* asks before
+  discarding them, a session loss stashes them for the next sign-in (below), and the
+  browser's `beforeunload` prompt covers a page close.
 - **Manual:** slider + *Set* / *Back to auto* per channel; HDD-like channels show the
   minimum-60 hint and refuse lower values client-side.
 - **Presets:** cards with built-in/recommended badges and description, *Apply*, *Details*
@@ -821,8 +826,9 @@ sensors.
   sign-in). **Toasts:** at most 3 visible per region, the oldest is dropped when a fourth
   arrives.
 - **Mock:** `?mock=1` anonymous, `&user=1` signed in, `&auth=none`, `&tls=off|file|soon|fallback`,
-  `&tab=<id>`, `&syserr=1`, `&reject=1` (strict PUT 400), `&expire=1` (session dies after
-  15 s), `&schedfail=1` (last schedule switch failed), `&pwm4=1` (fourth channel `pcie`,
+  `&tab=<id>`, `&syserr=1`, `&reject=1` (strict PUT 400), `&restart=1` (PUT /api/config
+  answers 202), `&expire=1` (session dies after 15 s), `&schedfail=1` (last schedule
+  switch failed), `&pwm4=1` (fourth channel `pcie`,
   pwm 4, no tach); every endpoint above is implemented (login `admin`/`admin`); names and
   addresses are documentation values (`n5host`, `192.0.2.x`, `n5.lan`).
 

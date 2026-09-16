@@ -78,8 +78,10 @@ by `index.html`: with `?mock=1` `app.js` inserts the script tag and routes every
 `api()` call to `window.n5mock(path, opt)` instead of `fetch`; the production page
 never requests it. Serve the directory with any static server and open
 `index.html?mock=1` — anonymous; `&user=1` signed in (login `admin`/`admin`);
-`&auth=none`; `&tls=off|file|soon|fallback`; `&tab=<id>`; `&syserr=1`; `&schedfail=1`
-(the last schedule switch failed). The mock implements every endpoint — tokens
+`&auth=none`; `&tls=off|file|soon|fallback`; `&tab=<id>`; `&syserr=1`; `&reject=1`
+(strict PUT answers 400); `&restart=1` (PUT answers 202); `&expire=1` (the session dies
+after 15 s); `&schedfail=1` (the last schedule switch failed); `&pwm4=1` (a fourth
+channel without tach). The mock implements every endpoint — tokens
 (`n5t_mock…`), schedules, the 24 h / 7 d history tiers, CSV, the webhook status,
 `disk:*` sensors; new endpoints get a mock branch in the same change. The mock's
 version string is one constant in `mock.js`, bumped with the release.

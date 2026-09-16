@@ -23,7 +23,7 @@ by clicking the same controls a user would.
 | `06-settings-popover.png` | Settings gear | `?mock=1&user=1` → ⚙ | unit, interval, theme, export/import, Certificate…, Account… |
 | `07-curves.png` | Curves | `?mock=1&user=1&tab=curves` | editor, table, `+ add point`, crit line, now marker, duty→RPM reference |
 | `08-curves-error.png` | Curves, validation error | critical cleared, stop `300` → *Apply* | red notice, nothing sent |
-| `09-curves-restart-required.png` | Curves, restart required | notice text set to the client's 202 string | **synthesised**: in the audited build the notice is hidden again by the editor reload right after Apply (`docs/AUDIT.md` §4); regenerate through a real 202 once the frontend fix is merged |
+| `09-curves-restart-required.png` | Curves, restart required | `?mock=1&user=1&tab=curves&restart=1`, critical +1 → *Apply* (the mock answers 202) | restart notice, stays after the editor reload until *Revert* |
 | `10-manual.png` | Manual | `?mock=1&user=1&tab=manual`, hdd slider at 40 | minimum-60 hint for HDD-like channels |
 | `11-presets.png` | Presets | `?mock=1&user=1&tab=presets` → *Details* | built-in / recommended badges, channel tables |
 | `12-alerts.png` | Alerts | `?mock=1&user=1&tab=alerts` | transport form, template card, kinds table, recent |

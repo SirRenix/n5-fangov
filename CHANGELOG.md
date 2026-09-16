@@ -346,6 +346,35 @@ curl path is re-run once at 0.4.0.
   --staged` (gitleaks 8.19+) and falls back to the old spelling.
 - The settings bundle keeps the webhook URL in full (a setting the bundle exists to carry;
   only the password hash is redacted) — stated in DESIGN §12 rather than changed.
+- Curve editor: *Apply* dropped every `[[schedule]]` table that followed a `[[channel]]`
+  table — the rewrite ended a channel block at `[section]` headers only, so the next
+  header `[[schedule]]` was swallowed with the channel and the daemon ran without
+  schedules after the first apply. The block now ends at any table header; a multi-line
+  `curve` array no longer leaks its element lines either. The mock parses the
+  `[[schedule]]` tables back on `PUT /api/config`, so a dropped table is visible there
+  (`TestCurveEditorKeepsOtherTables`).
+- Curve editor: the *restart required* notice and the warnings of an apply were cleared
+  by the editor reload right after the answer; they now stay until *Revert*, the next
+  apply or a session change. Screenshot 09 is taken through a real 202 (mock flag
+  `&restart=1`).
+- Overview: the 2 h history kept at most 720 points, which assumed a 10 s interval — with
+  `interval = "2s"` the chart showed 24 minutes. The cap follows `[daemon] interval` from
+  the config (anonymous: the window alone trims).
+- About: *built with* appears after signing in and disappears after signing out; the page
+  was fetched once at boot only.
+- About: the mock hint lists `&restart=1`.
+- DESIGN §11: curve edits persist across tab changes (no dialog), *Sign out* asks, a
+  session loss stashes them; gear and lock are toggled by the id list in `applyAuth`,
+  not by `data-auth`.
+- Docs: `limits` in `GET /api/version` lists its real keys (configuration); the webhook
+  URL is redacted for token callers and shown in full to a browser session only (alerts,
+  security, API); `starting` in the `/api/state` status list (API); behind a reverse proxy
+  the throttling buckets, the per-address cap, `last_ip` and the log see the proxy's
+  address — rate-limit at the proxy (security); a preset apply or scheduled switch
+  rewrites the `[[channel]]` tables only and keeps `hysteresis`/`min_on` the preset does
+  not set, the scheduler applies the active entry once after every start, `days` on the
+  fallback is ignored with a warning (configuration); mock flags listed completely
+  (development).
 
 ## [0.3.0-rc1] — 2026-09-16
 

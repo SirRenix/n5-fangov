@@ -26,7 +26,13 @@ scheduled preset switch or an import without a restart; *restart* = read once at
 
 The daemon writes the file itself in some cases — curve editor, preset apply (by hand or
 by a schedule), import, account and certificate panels, Alerts tab *Save* — always in
-place: comments and every other key stay. A config file that carries a `password_hash`
+place: comments and every other key stay. The curve editor and a preset apply replace
+the `[[channel]]` tables as a block (comments *inside* a channel table are lost;
+everything else — comments elsewhere, `[[schedule]]`, `[alert]`, `[web]` — stays
+byte-identical); the other writers change single keys. While `[[schedule]]` entries
+exist the channel tables are machine-managed: the scheduler applies the active entry
+once after every daemon start (a fallback counts), so a hand edit inside a window
+lasts until the next restart or transition. A config file that carries a `password_hash`
 is written `0600`; an existing wider mode is tightened and logged. The file is
 forward-compatible: a newer daemon reads an older file, an older daemon warns about
 unknown keys and ignores them.
@@ -173,7 +179,10 @@ preset file with a built-in name is shadowed by the built-in (logged when listin
 
 **Apply merges by pwm.** A channel of the preset replaces the config channel with the
 same `pwm` (the config channel's `name` is kept when the preset uses another name for
-that pwm); config channels the preset does not name are kept unchanged. So an optional
+that pwm; `hysteresis` and `min_on` of the config channel are kept when the preset does
+not set them); config channels the preset does not name are kept unchanged. The apply
+rewrites the `[[channel]]` tables only — comments inside them are lost, the rest of the
+file stays byte-identical ([How the file is read](#how-the-file-is-read)). So an optional
 [pwm4 channel](#pwm4-on-the-n5-pro) survives a built-in preset, and an apply never
 needs a restart for it. A preset channel whose pwm the config lacks is added — that is
 the one case that still answers *restart required* (202).
@@ -215,10 +224,12 @@ channel alone (merge by pwm).
 ## Schedules
 
 `[[schedule]]` tables switch presets by time of day. The scheduler ticks every 30 s
-(and once at start) and acts on **transitions only**: when the active entry changes it
-applies that entry's preset through the same path as *Apply* on the Presets tab (merge
-by pwm, config written, reload). A manual preset apply or a curve edit inside a window
-is respected — nothing is re-applied until the next transition. A switch that fails
+and acts on **transitions only**: when the active entry changes it applies that
+entry's preset through the same path as *Apply* on the Presets tab (merge by pwm,
+config written, reload). It also applies the active entry **once after every daemon
+start** — the fallback counts as active —, so with schedules configured the channel
+tables are the scheduler's: a manual preset apply or a curve edit inside a window is
+respected until the next transition or restart. A switch that fails
 (preset missing, invalid, write or reload error) keeps the previous curves, logs, raises
 the `schedule` alert (30-min cooldown) and is retried at the next transition, not every
 tick.
@@ -238,8 +249,9 @@ preset = "n5pro-balanced"    # no from/to: the fallback, active whenever no wind
   listed day; a window across midnight belongs to the day `from` falls in and also
   matches the early hours of the next day. The first windowed entry that matches wins.
 - The entry without `from`/`to` is the **fallback** — at most one (a second is dropped
-  with a warning). Without a fallback, leaving every window applies nothing: the curves
-  of the last switch stay until the next window.
+  with a warning); `days` on the fallback is ignored with a warning. Without a fallback,
+  leaving every window applies nothing: the curves of the last switch stay until the
+  next window.
 - At most 16 entries. An invalid entry is dropped with a warning, the others stay; an
   unknown key is a warning. The preset's existence is checked at the switch, not when
   the file is read — a typo shows up as a `schedule` alert at the first transition.
@@ -259,10 +271,13 @@ a Home Assistant automation applies a preset through the API with a `control` to
 `PUT /api/config?strict=1` rejects values the daemon would otherwise replace by defaults
 with `400` and the warning list instead of accepting them silently. The curve editor
 uses it, so an operator's curve is never swapped for the built-in default behind their
-back; the validation bounds the UI checks against (curve points, temperatures,
-critical, stop, HDD override minimum, password length, preset and user name rules,
-dashboard sensor cap) come from `GET /api/version` as `limits`. A hand-edited file goes
-through the lenient path: defaults plus a `config` alert.
+back. The bounds the UI checks against come from `GET /api/version` as `limits`:
+`curve_points_max`, `critical_min`, `critical_max`, `min_hdd_override` (the lowest
+fixed `stop` and the manual-override floor for HDD-like channels), `hysteresis_max`,
+`min_on_max_s`, `password_min`, `password_max` and `dashboard_sensors_max` — nothing
+else; the temperature range, the duty scale and the name rules for users, presets and
+channels are client constants that mirror the parser. A hand-edited file goes through
+the lenient path: defaults plus a `config` alert.
 
 Next: [Alerts](07-alerts.md) · [Dashboard: Curves](04-dashboard.md#curves) ·
 [API and integrations](12-api.md) · [Backup and restore](09-updates.md#backup-and-restore)

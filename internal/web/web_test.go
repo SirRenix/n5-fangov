@@ -1516,6 +1516,45 @@ func TestTabsHaveHandlers(t *testing.T) {
 	}
 }
 
+// TestCurveEditorKeepsOtherTables: the curve editor rewrites the config
+// file as "everything but the [[channel]] tables" + its own channel tables
+// (stripChannels in app.js). The skip of a channel table must end at the
+// next table header of any kind — [section] and [[other]] alike — or the
+// [[schedule]] tables that follow a channel table are silently dropped by
+// the next Apply (the daemon then runs without schedules). The test pins the
+// header regexp the client uses and the mock flag that drives a 202 through
+// the same path; the behaviour itself is checked against the mock in the
+// browser (docs/screenshots/shots.mjs step 09).
+func TestCurveEditorKeepsOtherTables(t *testing.T) {
+	js, err := staticFS.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(js)
+	i := strings.Index(src, "const stripChannels =")
+	if i < 0 {
+		t.Fatal("stripChannels not found in app.js")
+	}
+	fn := src[i:]
+	if j := strings.Index(fn, "const fromCfg"); j > 0 {
+		fn = fn[:j]
+	}
+	// the header test ends the skip on "[[" as well: an optional second bracket
+	if !strings.Contains(src, `const TOML_HDR = /^\[\[?`) {
+		t.Errorf("app.js: TOML_HDR must accept [section] and [[array-table]] headers alike")
+	}
+	if strings.Contains(fn, `/^\[[^\[]/`) {
+		t.Errorf("app.js: stripChannels still ends a channel block at [section] headers only, [[schedule]] tables after a channel would be dropped")
+	}
+	if !strings.Contains(fn, "TOML_HDR.test(") || !strings.Contains(fn, "CH_HDR.test(") {
+		t.Errorf("app.js: stripChannels must use TOML_HDR / CH_HDR: %.200s", fn)
+	}
+	mock, _ := staticFS.ReadFile("static/mock.js")
+	if !strings.Contains(string(mock), "Q.get('restart') === '1'") || !strings.Contains(string(mock), "parseSchedules(") {
+		t.Errorf("mock.js: PUT /api/config must honour &restart=1 (202) and parse the [[schedule]] tables back, so a dropped table is visible in the mock")
+	}
+}
+
 // TestPrimaryButtonContrast (AUDIT hoch 5): the primary button's text must
 // keep WCAG AA contrast (4.5:1) on --info in both themes. The dark theme
 // uses var(--bg) as text, the light theme white.

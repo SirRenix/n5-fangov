@@ -71,11 +71,12 @@ non-PVE hosts without a mail set-up and for ntfy, Gotify and Home Assistant.
 - **Headers** on every request: `Content-Type` (by format), `User-Agent:
   n5-fangov/<version>`, `X-N5-Fangov-Kind: <kind>` and `Title: n5-fangov <kind> on
   <host>` (ntfy reads `Title`).
-- **Redaction:** log lines, `n5-fangov alerts status` and the effective-transport line
-  of the Alerts tab show the URL **without query and userinfo**
+- **Redaction:** the journal, `n5-fangov check`, `n5-fangov alerts status` and
+  `GET /api/alerts` for a **token** caller show the URL **without query and userinfo**
   (`https://gotify.example.test/message`) because Gotify carries its key in the query.
-  The full URL is in the config file and in `GET /api/alerts` (protected; readable with
-  a `read` token — [tokens](08-https-security.md#api-tokens)).
+  The full URL is in the config file and in `GET /api/alerts` for a browser session or
+  Basic auth — the Alerts tab shows it in full; a `read` token gets the redacted form
+  ([tokens](08-https-security.md#api-tokens)).
 
 `webhook_format = "json"` (default) sends `Content-Type: application/json`:
 
@@ -92,7 +93,7 @@ and any receiver that wants a plain line.
 | Receiver | `webhook_url` | `webhook_format` | Notes |
 |---|---|---|---|
 | ntfy | `https://ntfy.example.test/n5` | `text` | topic in the path; the `Title` header becomes the notification title. n5-fangov sends no `Authorization` header and refuses userinfo in the URL — a protected topic takes its access token as the `auth` query parameter (ntfy docs, *Authentication → Query param*), which is redacted in logs like the Gotify key |
-| Gotify | `https://gotify.example.test/message?token=<app token>` | `json` | the app token is the query — redacted in logs and status, present in the file and `GET /api/alerts` |
+| Gotify | `https://gotify.example.test/message?token=<app token>` | `json` | the app token is the query — redacted in logs, status and for token callers, present in the file and in `GET /api/alerts` for a session |
 | Home Assistant | `http://ha.example.test:8123/api/webhook/<id>` | `json` | webhook trigger in an automation; the payload is `trigger.json` (`trigger.json.kind`, `.title`, `.message`). Use a long random `<id>`; HA webhooks carry no other auth |
 
 A Home Assistant automation on the receiving side:
