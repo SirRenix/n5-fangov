@@ -17,10 +17,13 @@
   <div class="hdr-r">
     <span class="chip" id="h-status" role="status">…</span>
     <span class="meta" id="h-uptime" title="daemon uptime">up —</span>
-    <span class="meta" id="h-version">v —</span>
-    <button class="meta sec" id="h-sec" type="button" title="transport" aria-haspopup="dialog" aria-controls="cert">—</button>
+    <span class="meta ver"><span id="h-version">v —</span><span class="badge beta" id="h-beta" hidden>beta</span></span>
+    <button class="meta sec" id="h-sec" type="button" title="transport" aria-haspopup="dialog" aria-controls="cert" hidden>—</button>
     <span class="live" id="h-live" aria-live="polite"><i></i>live</span>
-    <button class="btn icon" id="h-settings" aria-expanded="false" aria-controls="settings" title="Settings">⚙<span class="sr">Settings</span></button>
+    <span class="meta user" id="h-user" title="signed in as" hidden></span>
+    <button class="btn sm" id="h-signin" type="button" aria-haspopup="dialog" aria-controls="login" hidden>Sign in</button>
+    <button class="btn sm" id="h-signout" type="button" hidden>Sign out</button>
+    <button class="btn icon" id="h-settings" aria-expanded="false" aria-controls="settings" title="Settings" hidden>⚙<span class="sr">Settings</span></button>
   </div>
   <div class="popover" id="settings" hidden>
     <label>Temperature unit
@@ -37,27 +40,26 @@
     <hr>
     <button class="btn" id="s-cert" type="button">Certificate…</button>
     <span class="hint sm" id="s-cert-hint">TLS certificate of this dashboard.</span>
+    <div id="s-account" hidden>
+      <hr>
+      <button class="btn" id="s-acc" type="button">Account…</button>
+      <span class="hint sm">Password, user name, sessions.</span>
+    </div>
   </div>
 </header>
 
 <div class="banner" id="banner" role="alert" hidden>Connection to the daemon lost — retrying. Fans keep running on the daemon side.</div>
 <div class="banner warn" id="g-notice" role="status" hidden></div>
 
-<form class="login" id="login" hidden>
-  <strong>Sign in</strong>
-  <label>User <input id="l-user" autocomplete="username" required></label>
-  <label>Password <input id="l-pass" type="password" autocomplete="current-password" required></label>
-  <button class="btn primary" type="submit">Sign in</button>
-  <span class="hint">Kept in memory only.</span>
-</form>
-
 <nav class="tabs" role="tablist" aria-label="Sections" id="tabs">
   <button role="tab" id="tab-overview" aria-controls="p-overview" aria-selected="true">Overview</button>
-  <button role="tab" id="tab-curves" aria-controls="p-curves" aria-selected="false" tabindex="-1">Curves</button>
-  <button role="tab" id="tab-manual" aria-controls="p-manual" aria-selected="false" tabindex="-1">Manual</button>
-  <button role="tab" id="tab-presets" aria-controls="p-presets" aria-selected="false" tabindex="-1">Presets</button>
-  <button role="tab" id="tab-log" aria-controls="p-log" aria-selected="false" tabindex="-1">Log</button>
-  <button role="tab" id="tab-compat" aria-controls="p-compat" aria-selected="false" tabindex="-1">Compatibility</button>
+  <button role="tab" id="tab-curves" aria-controls="p-curves" aria-selected="false" tabindex="-1" data-auth hidden>Curves</button>
+  <button role="tab" id="tab-manual" aria-controls="p-manual" aria-selected="false" tabindex="-1" data-auth hidden>Manual</button>
+  <button role="tab" id="tab-presets" aria-controls="p-presets" aria-selected="false" tabindex="-1" data-auth hidden>Presets</button>
+  <button role="tab" id="tab-alerts" aria-controls="p-alerts" aria-selected="false" tabindex="-1" data-auth hidden>Alerts</button>
+  <button role="tab" id="tab-log" aria-controls="p-log" aria-selected="false" tabindex="-1" data-auth hidden>Log</button>
+  <button role="tab" id="tab-compat" aria-controls="p-compat" aria-selected="false" tabindex="-1" data-auth hidden>Compatibility</button>
+  <button role="tab" id="tab-about" aria-controls="p-about" aria-selected="false" tabindex="-1">About</button>
 </nav>
 
 <main>
@@ -77,10 +79,16 @@
       <div class="chart" id="ch-fan"><canvas></canvas><div class="tip" hidden></div></div>
     </div>
   </div>
-  <div class="grid3">
-    <div class="card"><h2>Extra sensors</h2><div class="chips" id="extra"></div></div>
-    <div class="card"><h2>Hardware</h2><dl class="kv" id="hw"></dl></div>
-    <div class="card"><h2>Recent alerts</h2><ul class="alerts" id="alerts"></ul></div>
+  <div id="ov-more" hidden>
+    <div class="card chart-card wide" id="extra-card" hidden>
+      <div class="card-h"><h2>Extra sensors · last 2 h</h2><div class="legend rm" id="lg-extra"></div></div>
+      <div class="chart" id="ch-extra"><canvas></canvas><div class="tip" hidden></div></div>
+    </div>
+    <div class="grid3 ov">
+      <div class="card sensors"><div class="card-h"><h2>Sensors</h2><span class="hint sm">chart = record in the history (max 8)</span></div><div id="sensors"></div></div>
+      <div class="card"><h2>System</h2><dl class="kv" id="sys"></dl></div>
+      <div class="card"><h2>Recent alerts</h2><ul class="alerts" id="alerts"></ul></div>
+    </div>
   </div>
 </section>
 
@@ -106,6 +114,32 @@
   <div class="list" id="presets"></div>
 </section>
 
+<section id="p-alerts" role="tabpanel" aria-labelledby="tab-alerts" hidden>
+  <div class="grid2">
+    <div class="card al">
+      <h2>Transport</h2>
+      <form class="inline" id="al-form">
+        <label>Transport <select id="al-transport"><option value="auto">auto</option><option value="pve">pve</option><option value="mail">mail</option><option value="log">log</option><option value="off">off</option></select></label>
+        <label>Mail to <input id="al-mailto" placeholder="root" maxlength="128" autocomplete="off"></label>
+        <button class="btn primary" type="submit">Save</button>
+      </form>
+      <p class="hint sm">auto = pve-notify when PVE::Notify and perl exist, else mail(1), else the log.</p>
+      <dl class="kv" id="al-status"></dl>
+      <div class="act"><button class="btn" id="al-test" type="button">Send test alert</button><span class="hint sm">kind <code>test</code>, no cooldown</span></div>
+    </div>
+    <div class="card al" id="al-tpl-card">
+      <h2>PVE notification template</h2>
+      <p class="hint sm">Two <code>.hbs</code> files under the PVE template directory render the alert subject and body. Without them PVE shows the raw text.</p>
+      <dl class="kv" id="al-tpl"></dl>
+      <div class="act"><button class="btn" id="al-tpl-btn" type="button">Install template</button><span class="hint sm" id="al-tpl-reason"></span></div>
+    </div>
+  </div>
+  <div class="grid2">
+    <div class="card tbl-wrap"><table class="tbl" id="al-kinds"><thead><tr><th>Kind</th><th>Description</th><th>Last sent</th></tr></thead><tbody></tbody></table></div>
+    <div class="card"><h2>Recent alerts</h2><ul class="alerts" id="al-recent"></ul></div>
+  </div>
+</section>
+
 <section id="p-log" role="tabpanel" aria-labelledby="tab-log" hidden>
   <div class="bar">
     <label class="grow">Filter <input id="lg-filter" type="search" placeholder="substring…"></label>
@@ -121,7 +155,60 @@
 <section id="p-compat" role="tabpanel" aria-labelledby="tab-compat" hidden>
   <div class="card tbl-wrap"><table class="tbl" id="profiles"><thead><tr><th>Profile</th><th>Title</th><th>Status</th><th>Notes</th></tr></thead><tbody></tbody></table></div>
 </section>
+
+<section id="p-about" role="tabpanel" aria-labelledby="tab-about" hidden>
+  <div class="card about">
+    <p class="ab-t"><b id="ab-name">n5-fangov</b> <span class="mono" id="ab-version"></span> <span class="badge beta" id="ab-beta" hidden>beta</span></p>
+    <p>A fan governor for small servers whose EC or Super-I/O exports its fan outputs through a kernel hwmon driver. The daemon takes over the <code>pwm</code> channels the driver exposes, drives each from its own curve with a selectable temperature source (CPU package, NVMe max, drive max, EC and other hwmon sensors), slews between steps and stands guard: a critical temperature forces full duty, a stall (fan reports 0 rpm) kicks the channel up, a systemd watchdog restarts a hung daemon and the failsafe leaves the channels at a safe duty when it stops. This dashboard and the <code>n5-fangov</code> CLI share one API.</p>
+    <dl class="kv">
+      <dt>licence</dt><dd><a id="ab-license" rel="noopener" target="_blank">GPL-2.0-only</a></dd>
+      <dt>repository</dt><dd><a id="ab-repo" rel="noopener" target="_blank"></a></dd>
+      <dt>author</dt><dd><a id="ab-author" rel="noopener" target="_blank"></a></dd>
+      <dt>built with</dt><dd id="ab-go">—</dd>
+      <dt>credits</dt><dd><ul class="credits" id="ab-credits"></ul></dd>
+    </dl>
+    <p class="hint sm">Dashboard mock: <code>?mock=1</code> (<code>&amp;user=1</code> signed in, <code>&amp;auth=none</code> auth off).</p>
+  </div>
+</section>
 </main>
+
+<dialog class="dlg narrow" id="login" aria-labelledby="l-title">
+  <form id="login-f" novalidate>
+    <div class="dlg-h"><h2 id="l-title">Sign in</h2><button class="btn icon" id="l-close" type="button" aria-label="Close">×</button></div>
+    <label>User <input id="l-user" autocomplete="username" required autocapitalize="off" spellcheck="false"></label>
+    <label>Password <input id="l-pass" type="password" autocomplete="current-password" required></label>
+    <label class="chk"><input type="checkbox" id="l-remember"> <span>Remember me <span class="hint sm">30 days on this browser</span></span></label>
+    <div class="notice err" id="l-err" hidden></div>
+    <div class="act"><button class="btn primary" id="l-submit" type="submit">Sign in</button></div>
+  </form>
+</dialog>
+
+<dialog class="dlg" id="account" aria-labelledby="ac-title">
+  <div class="dlg-h"><h2 id="ac-title">Account</h2><span class="meta mono" id="ac-user"></span><button class="btn icon" id="ac-close" type="button" aria-label="Close">×</button></div>
+  <div id="ac-body">
+    <div class="act">
+      <button class="btn" id="ac-pw" type="button">Change password…</button>
+      <button class="btn" id="ac-us" type="button">Change user…</button>
+      <button class="btn" id="ac-revoke" type="button">Sign out other sessions</button>
+    </div>
+    <form class="sub" id="ac-pw-f" hidden novalidate>
+      <p class="hint">8–128 characters. Every other session is signed out; this one stays.</p>
+      <label>Current password <input type="password" id="ac-cur" autocomplete="current-password" required></label>
+      <label>New password <input type="password" id="ac-new" autocomplete="new-password" minlength="8" maxlength="128" required></label>
+      <label>Confirm <input type="password" id="ac-new2" autocomplete="new-password" required></label>
+      <div class="act"><button class="btn primary" type="submit">Change password</button><button class="btn" type="button" data-cancel>Cancel</button></div>
+    </form>
+    <form class="sub" id="ac-us-f" hidden novalidate>
+      <p class="hint">Letters, digits, <code>_ . -</code>, 1–32 characters. Every other session is signed out.</p>
+      <label>Current password <input type="password" id="ac-ucur" autocomplete="current-password" required></label>
+      <label>New user name <input id="ac-uname" autocomplete="off" autocapitalize="off" spellcheck="false" pattern="[A-Za-z0-9_.\-]{1,32}" maxlength="32" required></label>
+      <div class="act"><button class="btn primary" type="submit">Change user</button><button class="btn" type="button" data-cancel>Cancel</button></div>
+    </form>
+    <div class="notice" id="ac-notice" hidden></div>
+    <h3>Sessions</h3>
+    <div class="tbl-wrap"><table class="tbl sm" id="ac-sessions"><thead><tr><th>ID</th><th>Created</th><th>Last seen</th><th>Expires</th><th>IP</th></tr></thead><tbody></tbody></table></div>
+  </div>
+</dialog>
 
 <dialog class="dlg" id="cert" aria-labelledby="cert-title">
   <div class="dlg-h"><h2 id="cert-title">Certificate</h2><span class="badge" id="ct-mode">—</span><button class="btn icon" id="ct-close" type="button" aria-label="Close">×</button></div>
