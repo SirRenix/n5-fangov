@@ -204,9 +204,10 @@ The PCIe fan header (`pwm4`) has **no tachometer**. It is an optional fourth cha
 add `[[channel]] pwm = 4` with any name and sensor; the daemon neither adds nor corrects
 it, `rpm` is reported as −1 (`no tach` on the Overview) and the channel never enters
 the stall check. `stop = "auto"` writes `pwm4_enable = 2` like pwm1/pwm2 — the idle
-state observed on the reference host is enable 2, duty 255, 0 RPM — but **whether the EC
-regulates pwm4 again after a write is not measured**; for a defined state after a stop
-set a fixed `stop`.
+state observed on the reference host is enable 2, duty 255, 0 RPM — but **the EC does
+not take pwm4 back after a write** (measured 2026-09-17: after a manual duty of 100 and
+`pwm4_enable = 2` the duty stayed at 100), so `auto` leaves the last written duty in
+place, exactly like pwm3. For a defined state after a stop set a fixed `stop`.
 
 ```toml
 [[channel]]
@@ -215,7 +216,7 @@ pwm = 4
 sensor = "k10temp"
 curve = [[45,85],[80,255]]
 critical = 88
-stop = 140            # not measured whether the EC takes pwm4 back after a write
+stop = 140            # fixed: the EC does not take pwm4 back after a write (like pwm3)
 ```
 
 A changed channel set needs a restart; after that the built-in presets leave the

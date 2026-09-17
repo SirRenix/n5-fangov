@@ -33,7 +33,12 @@ in 0.3.1-rc1 below. Open:
   meta-package as dependency (user path: two `apt install` + `setup`).
 - Reboot proof on the reference host (DKMS + daemon together) — the last open operations
   question, no code; part of the release-gate test.
-- Measure whether the EC regulates pwm4 again after a write (DESIGN §6 says "not measured").
+- ~~Measure whether the EC regulates pwm4 again after a write~~ — measured 2026-09-17 on
+  the reference host: the driver refuses a `pwm4` write while `pwm4_enable = 2` (EBUSY);
+  after `enable = 1`, duty 100 and `enable = 2` again the EC left 100 in place for 90 s.
+  pwm4 behaves like pwm3 — `stop = "auto"` keeps the last written duty. Documented in
+  DESIGN §6, `docs/06-configuration.md` and `config.example.toml`; whether `auto` on pwm4
+  should be forced to a fixed stop like pwm3 is an open operator decision.
 
 ### Planned (0.4.0, separate session) — dashboard redesign, public release
 

@@ -299,8 +299,12 @@ stall, failsafe, slew and the safe duty are exactly as before):
 `pwm4` on the N5 Pro (PCIe header, no tachometer) is an **optional** channel: the config
 may carry `[[channel]] pwm = 4` (any name, any sensor; `stop = "auto"` writes
 `pwm4_enable = 2` like pwm1/2 — observed idle state on the reference host 16.09.2026:
-enable 2, duty 255, fan4 0 RPM; whether the EC regulates pwm4 again after a write is
-**not measured**, an operator who wants a defined state sets a fixed `stop`);
+enable 2, duty 255, fan4 0 RPM. **Measured 17.09.2026:** the driver refuses a `pwm4`
+write while `pwm4_enable = 2` (EBUSY, so the regulator's enable-first order is required);
+after `enable = 1`, duty 100 and `enable = 2` again the EC left duty 100 in place for
+90 s — like pwm3, the EC does not reassert its own duty after a write. `stop = "auto"` on
+pwm4 therefore means "the last written duty stays"; an operator who wants a defined state
+sets a fixed `stop`);
 `SanitizeChannels` neither adds nor corrects it; a channel without tach has `rpm = -1`
 and never enters the stall check. The built-in presets do not name pwm4; the merge rule
 above keeps it across an apply.

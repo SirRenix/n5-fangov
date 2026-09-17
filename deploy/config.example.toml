@@ -109,8 +109,9 @@ min_on = "60s"          # ... and keep a step-up for a minute so the disks actua
 
 # PCIe fan header (pwm4), OPTIONAL fourth channel on the N5 Pro: no tachometer (rpm = -1, never in the
 # stall check). The daemon neither adds nor corrects it; the built-in presets do not name it and an
-# apply keeps it (merge by pwm). Whether the EC regulates pwm4 again after a write is NOT measured
-# (idle state seen: enable 2, duty 255, 0 RPM) -- a fixed stop gives a defined state. Adding it needs
+# apply keeps it (merge by pwm). The EC does NOT take pwm4 back after a write (measured 2026-09-17:
+# idle state enable 2, duty 255, 0 RPM; after a manual duty and enable 2 again the duty stayed), so
+# stop = "auto" leaves the last duty in place -- a fixed stop gives a defined state. Adding it needs
 # a restart (changed channel set).
 # [[channel]]
 # name = "pcie"
