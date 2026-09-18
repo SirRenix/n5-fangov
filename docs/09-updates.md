@@ -81,8 +81,8 @@ on a fresh box run `n5-fangov passwd` first (or put a real hash into the bundle)
 that exist locally but not in the bundle stay. A running daemon reloads curves and
 `[daemon]` values; a changed channel set or profile, or any `[web]`/`[log]` change, needs
 `systemctl restart n5-fangov` (the command says so). The API offers the same
-(`GET /api/config/export`, `POST /api/config/import`, auth + CSRF), and the settings gear
-has both as buttons ([Settings gear](04-dashboard.md#settings-gear)).
+(`GET /api/config/export`, `POST /api/config/import`, auth + CSRF), and Settings → *Backup*
+has both as buttons ([Backup](04-dashboard.md#backup)).
 
 ## Uninstall
 

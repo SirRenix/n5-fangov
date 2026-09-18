@@ -22,14 +22,14 @@ Invalid values never prevent a start: each one falls back to its default with a
 warning in the journal and a `config` alert (`n5-fangov check` prints them). In the
 table, *reload* = applied by `PUT /api/config`, the curve editor, a preset apply, a
 scheduled preset switch or an import without a restart; *restart* = read once at start
-(the account and certificate panels edit the file and apply their keys live).
+(the account and certificate sections of the Settings page edit the file and apply their keys live).
 
 The daemon writes the file itself in some cases — curve editor, preset apply (by hand or
-by a schedule), import, account and certificate panels, Alerts tab *Save* — always in
+by a schedule), the schedule editor, import, the account, certificate and alert-transport sections of the Settings page — always in
 place: comments and every other key stay. The curve editor and a preset apply replace
 the `[[channel]]` tables as a block (comments *inside* a channel table are lost;
 everything else — comments elsewhere, `[[schedule]]`, `[alert]`, `[web]` — stays
-byte-identical); the other writers change single keys. While `[[schedule]]` entries
+byte-identical); the schedule editor replaces the `[[schedule]]` tables the same way; the other writers change single keys. While `[[schedule]]` entries
 exist the channel tables are machine-managed: the scheduler applies the active entry
 once after every daemon start (a fallback counts), so a hand edit inside a window
 lasts until the next restart or transition. A config file that carries a `password_hash`
@@ -51,11 +51,11 @@ unknown keys and ignores them.
 | `profile` | `auto` \| `n5pro` \| `nct67xx` \| `it87xx` \| `monitor` | `auto` | restart |
 | `[web] listen` | `host:port` | `127.0.0.1:8010` | restart |
 | `auth` | `none` \| `basic` (needs `user` + `password_hash`, otherwise `none` **and** loopback) | `none` | restart |
-| `user` | web user (`[A-Za-z0-9_.-]{1,32}` when set through the API) | `""` | restart / live via Account |
-| `password_hash` | `pbkdf2$<iter>$<salt>$<key>` from `passwd`/`setup`; legacy 64-hex sha256 of `user:password` still accepted ([hashes](08-https-security.md#password-hashes)) | `""` | restart / live via Account |
+| `user` | web user (`[A-Za-z0-9_.-]{1,32}` when set through the API) | `""` | restart / live via Settings → Account |
+| `password_hash` | `pbkdf2$<iter>$<salt>$<key>` from `passwd`/`setup`; legacy 64-hex sha256 of `user:password` still accepted ([hashes](08-https-security.md#password-hashes)) | `""` | restart / live via Settings → Account |
 | `allowed_hosts` | extra `Host` header values (reverse-proxy names); `"*"` disables the check | `[]` | restart |
-| `tls` | `auto` \| `off` \| `file`; `off` on a non-loopback listen is replaced by `auto` ([HTTPS](08-https-security.md#modes-and-actions)) | `off` loopback / `auto` else | restart / live via the certificate panel |
-| `cert_file`, `key_file` | PEM paths for `tls = "file"` | `""` | restart / live via the certificate panel |
+| `tls` | `auto` \| `off` \| `file`; `off` on a non-loopback listen is replaced by `auto` ([HTTPS](08-https-security.md#modes-and-actions)) | `off` loopback / `auto` else | restart / live via Settings → Certificate |
+| `cert_file`, `key_file` | PEM paths for `tls = "file"` | `""` | restart / live via Settings → Certificate |
 | `behind_tls_proxy` | `true` when a reverse proxy terminates TLS in front of a plain listener: the session cookie gets `Secure` | `false` | restart |
 | `[log] file` | absolute clean path under `/var/log/`, `""` = journal only; not a symlink, device or directory ([Logs](10-troubleshooting.md#logs)) | `/var/log/n5-fangov/n5-fangov.log` | restart |
 | `max_size_mb` | 1..100 | 5 | restart |
@@ -64,7 +64,7 @@ unknown keys and ignores them.
 | `mail_to` | local user or address, no spaces or quotes, never starts with `-` | `root` | reload |
 | `webhook_url` | absolute `http`/`https` URL with a host, no userinfo, ≤ 2048 characters; required for `transport = "webhook"` — missing or invalid → transport `auto` with a warning ([Webhook](07-alerts.md#webhook)) | `""` | reload |
 | `webhook_format` | `json` \| `text` | `json` | reload |
-| `[dashboard] sensors` | 0..8 distinct sensor ids charted on the Overview ([Extra sensors](04-dashboard.md#extra-sensors)) | `[]` | reload |
+| `[dashboard] sensors` | 0..8 distinct sensor ids charted on the Overview ([Extra sensors](04-dashboard.md#overview)) | `[]` | reload |
 | `[[channel]] name` | unique, `[a-z0-9_]{1,32}`; else the channel is dropped | — | restart when the set changes |
 | `pwm` | 1..8, `pwmN` of the profile's hwmon device, unique | — | restart when the set changes |
 | `sensor` | one [sensor id](#sensor-ids) as a string, **or an array of 1..4 ids** (`["drivetemp:max", "ec:hdd"]` = maximum of the parts; each non-empty, distinct, without `,`) — stored and reported as the composite id `a,b` (comma-joined, no spaces); a string with commas is accepted in the same form | — | reload |
@@ -78,7 +78,7 @@ unknown keys and ignores them.
 | `days` | subset of `mon tue wed thu fri sat sun` (lower-cased, distinct); the day of a window is the day `from` falls in; missing = every day | all | reload |
 
 Changing `[web]` or `[log]` settings takes a restart (except user/password through the
-account forms and the tls keys through the certificate panel); `PUT /api/config`
+account forms and the tls keys through the Certificate section); `PUT /api/config`
 reloads curves, sensors, `[daemon]`, `[alert]`, `[dashboard]` values and the
 `[[schedule]]` list. A changed channel set or profile answers *restart required* and
 the daemon keeps running the old set until then.
@@ -170,9 +170,9 @@ should follow the hottest of a mixed group is a composite (`["nvme:max", "disk:s
 
 `/etc/n5-fangov/presets/<name>.toml` holds only `[[channel]]` tables — every channel
 key including `hysteresis` and `min_on` (a preset written by an earlier release lacks them:
-the defaults apply). *Save current curves as…* writes one, *Apply* merges it into the
-config file and reloads, *Delete* removes a user preset
-([Presets tab](04-dashboard.md#presets)). Three N5 Pro sets are **built in** (embedded
+the defaults apply). *Save current as…* on the Fans page writes one from the preset editor
+(any values, nothing applied), *Apply* merges it into the config file and reloads,
+*Delete* removes a user preset ([Presets](04-dashboard.md#presets)). Three N5 Pro sets are **built in** (embedded
 in the binary, listed and applicable for the `n5pro` profile only — on another profile
 the API answers 404 —, never saved over or deleted — the API answers 409). A user
 preset file with a built-in name is shadowed by the built-in (logged when listing).
@@ -226,7 +226,7 @@ channel alone (merge by pwm).
 
 `[[schedule]]` tables switch presets by time of day. The scheduler ticks every 30 s
 and acts on **transitions only**: when the active entry changes it applies that
-entry's preset through the same path as *Apply* on the Presets tab (merge by pwm,
+entry's preset through the same path as *Apply* on the Fans page (merge by pwm,
 config written, reload). It also applies the active entry **once after every daemon
 start** — the fallback counts as active —, so with schedules configured the channel
 tables are the scheduler's: a manual preset apply or a curve edit inside a window is
@@ -258,10 +258,11 @@ preset = "n5pro-balanced"    # no from/to: the fallback, active whenever no wind
   the file is read — a typo shows up as a `schedule` alert at the first transition.
 - The list applies on reload (`PUT /api/config`, import); a changed list that changes
   the active entry counts as a transition.
-- The Presets tab's *Schedules* card and `GET /api/schedules` show the entries, the
-  active one, the next switch, the last switch with its error and the timezone the
-  host uses ([Dashboard](04-dashboard.md#presets), [API](12-api.md#endpoints)). The
-  list is edited in the file only.
+- The list is edited on the dashboard's [Schedules page](04-dashboard.md#schedules) or in
+  this file — both write the same `[[schedule]]` tables (the editor replaces them as a
+  block with `PUT /api/config?strict=1`, everything else stays). The page and
+  `GET /api/schedules` show the entries, the active one, the next switch, the last switch
+  with its error and the timezone the host uses ([API](12-api.md#endpoints)).
 
 Time-of-day is the only trigger. For anything else (presence, a noise sensor, guests)
 a Home Assistant automation applies a preset through the API with a `control` token
@@ -270,9 +271,10 @@ a Home Assistant automation applies a preset through the API with a `control` to
 ## Strict writes
 
 `PUT /api/config?strict=1` rejects values the daemon would otherwise replace by defaults
-with `400` and the warning list instead of accepting them silently. The curve editor
-uses it, so an operator's curve is never swapped for the built-in default behind their
-back. The bounds the UI checks against come from `GET /api/version` as `limits`:
+with `400` and the warning list instead of accepting them silently. The curve editor and
+the schedule editor use it, so an operator's curve is never swapped for the built-in
+default behind their back; the preset body of `PUT /api/presets/{name}` is checked the
+same way. The bounds the UI checks against come from `GET /api/version` as `limits`:
 `curve_points_max`, `critical_min`, `critical_max`, `min_hdd_override` (the lowest
 fixed `stop` and the manual-override floor for HDD-like channels), `hysteresis_max`,
 `min_on_max_s`, `password_min`, `password_max` and `dashboard_sensors_max` — nothing
@@ -280,5 +282,5 @@ else; the temperature range, the duty scale and the name rules for users, preset
 channels are client constants that mirror the parser. A hand-edited file goes through
 the lenient path: defaults plus a `config` alert.
 
-Next: [Alerts](07-alerts.md) · [Dashboard: Curves](04-dashboard.md#curves) ·
+Next: [Alerts](07-alerts.md) · [Dashboard: Fans](04-dashboard.md#fans) ·
 [API and integrations](12-api.md) · [Backup and restore](09-updates.md#backup-and-restore)

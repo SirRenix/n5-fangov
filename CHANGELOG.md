@@ -8,82 +8,208 @@ pre-release suffix to `~` (`0.3.0~beta.4`).
 Review findings referenced as `M1`…`M7`, `H1`…`H4`, `L1`…`L9` (reviews of v0.1/v0.2) and
 `R-M*`/`R-L*` (review of v0.3.0-beta) are the tags of the review rounds; since 0.3.1 they
 live in [`docs/REVIEW-TAGS.md`](docs/REVIEW-TAGS.md), not in the code. The audit that
-drove the *Unreleased* work is `docs/AUDIT.md` (code) and `docs/DESIGN-AUDIT.md`
-(dashboard).
+drove the 0.3.1 work is `docs/AUDIT.md` (code) and `docs/DESIGN-AUDIT.md`
+(dashboard); the reviews of the 0.4.0 redesign are referenced as `C01`… (code) and
+`D01`… (design) in the 0.4.0-rc1 section.
 
 ## [Unreleased]
 
+### Still open from the 0.3.x plan (decided 2026-09-16)
+
+- Repository public after the history rewrite — with the 0.4.0 release, once the release
+  gate (0.4.0-rc1 section) has passed; upstream issues (driver validation data, ProxFansX compatibility
+  note); DKMS `.deb` in the sibling repository with the header meta-package as dependency
+  (user path: two `apt install` + `setup`).
+- pwm4 `stop = "auto"` stays as it is (keeps the last written duty, documented in DESIGN §6
+  and the configuration page); re-measured only if a use case for pwm4 comes up (operator
+  decision 2026-09-18). Measured 2026-09-17 on the reference host: the driver refuses a
+  `pwm4` write while `pwm4_enable = 2` (EBUSY); after `enable = 1`, duty 100 and
+  `enable = 2` again the EC left 100 in place for 90 s — pwm4 behaves like pwm3. Whether
+  `auto` on pwm4 should be forced to a fixed stop like pwm3 is an open operator decision.
+- Certificate-trust walkthrough with screenshots of the English Windows wizard (release-gate
+  finding 2026-09-18; the text recipe is in place, the images are not).
+
+**Not planned**: MQTT/discovery (REST + token is enough and smaller), a German UI
+(audience is GitHub), multi-host management, a frontend framework.
+
+## [0.4.0-rc1] — 2026-09-18
+
+The dashboard redesign: a sidebar shell with eight pages instead of nine tabs, a
+channel-centric Fans page with an explicit override switch and a preset editor, an
+editable Schedules page, one Settings page in place of the gear popover and the two
+dialogs, SVG icons, sparklines, a new screenshot set — and the one backend change it
+needs, the optional body of `PUT /api/presets/{name}`. Concept and decisions:
+[`docs/design/REDESIGN-CONCEPT.md`](docs/design/REDESIGN-CONCEPT.md); the running
+dashboard is DESIGN §11, the decisions and rules §11a. **0.4.0 is the release that
+switches the repository to public** once it has passed the release gate below.
+
+### Added
+
+- **Shell**: a sidebar (220 px; icon rail 56 px via *Collapse* or Settings → Display →
+  *Navigation*, stored in this browser, forced between 700 and 1099 px) with the pages
+  in five groups — Monitor: Overview, System; Control: Fans, Schedules; Operate: Alerts,
+  Log; Settings; Info: About —, hash routing (`#fans`, `#settings/st-cert`,
+  `#about/compat`; Back/Forward follow the hash), a page header with title, profile,
+  status chip, uptime, version, a **certificate warning chip** shown only while the
+  certificate is in fallback, expires within 30 days, is expired or the listener is
+  plain HTTP off loopback (click → Settings → Certificate), live indicator and user.
+  Below 700 px a fixed bottom bar (Overview · Fans · Alerts · Settings · *More* sheet).
+  Skip link; a user page switch focuses the heading. `TestNavHasPages` pins page
+  sections, `PAGES` and the dispatch map to each other.
+- **Overview**: channel tiles with a 2 h **sparkline** each (temperature 32/700, mode and
+  hold badges, duty bar with target marker, rpm); the extra-sensors chart as a third
+  chart of the same kind (three columns from 1500 px); the Sensors card lists every disk
+  under its group; empty states name the next step.
+- **Fans page** (Curves + Manual + Presets): one card per channel — the curve editor on
+  the left (sensor, critical, stop, hysteresis, min on, canvas, point table, *+ add
+  point* as an inline row, the N5 Pro duty→RPM reference) and **Live & override** on the
+  right: reading → running duty, rpm, curve target / held value, and the **Manual
+  override switch** (`role="switch"`): on holds the duty the channel runs at that moment
+  (`PUT /api/override` with the snapshot duty, raised to the HDD minimum), slider +
+  number + *Set* change it, off is the `DELETE`; slider and *Set* are disabled while off;
+  the switch keeps the client's state through one daemon cycle and stays switchable off
+  under `critical`/`stall`; the HDD minimum follows the daemon's `hddLike` rule (fixed
+  stop duty or pwm3 on the N5 Pro). A **preset badge** per channel names the preset
+  its values match (`custom` otherwise). Sticky action bar with the dirty indicator,
+  *Revert*, *Apply to daemon*. Below 700 px a channel selector shows one card at a time.
+- **Presets row** under the channel cards: chips with active dot, ★ recommended,
+  built-in badge, description, *Apply* (confirm), *Details* (built-in, read-only) /
+  *Edit*, *Delete*; *Save current as…* opens the **preset editor** dialog — *Start from*
+  the editor's unsaved values, the daemon's running curves or any preset; name; per
+  channel critical / stop / hysteresis / min on and an editable point table, validated
+  with the curve editor's rules; *Save* stores exactly the values shown and applies
+  nothing; rename in the editor's name field (saved under the old name first, then
+  `POST …/rename`); overwrite and discard confirmations.
+- **`PUT /api/presets/{name}` with an optional JSON body** `{channels: [{name, pwm,
+  sensor, curve, critical, stop?, hysteresis?, min_on?}]}` (≤ 256 KiB; OpenAPI schema
+  `PresetSave`): the body is rendered as `[[channel]]` TOML and parsed with the config's
+  channel rules — every warning the lenient parser would replace by a default is a
+  `400 {error, errors[]}`, a malformed point or trailing data after the object too —,
+  the channel set must be the running config's (`name@pwmN`), a built-in name is 409,
+  the store without `PresetChannelSaver` 501; an empty body saves the running tables as
+  before. Tests `TestPresetSaveBody` and a SaveChannels → Detail → Apply round trip.
+- **Schedules page**: the `[[schedule]]` tables as an editor — one row per entry with
+  the preset select (a missing name stays selectable as `<name> (missing)` and is
+  flagged), *From* / *To* time inputs, seven day toggles (none = every day), fallback row
+  with *make fallback* / *add window*, ACTIVE, remove; *Add entry*, *Revert*, *Save*
+  (client validation: preset set, both times on a windowed entry, from ≠ to, one
+  fallback, ≤ 16; then the `[[schedule]]` tables are spliced into the config the way
+  *Apply* splices `[[channel]]` and written with `PUT /api/config?strict=1`; the daemon
+  takes them without a restart; `TestScheduleEditorKeepsOtherTables`). Status card
+  with the active entry, next switch, last switch with its error, timezone. Leave-page,
+  sign-out and `beforeunload` guards; unsaved schedule edits are stashed on a session
+  loss and restored after the next sign-in, like curve edits.
+- **Settings page** with a sub-navigation: *Display* (unit, interval, theme,
+  navigation), *Account & sessions*, *API tokens*, *Certificate* (incl. *How to trust*),
+  *Alert transport* (form, PVE template card, test button), *Backup* (export / import),
+  *Danger zone* (clear log, regenerate with new key, back to auto). Deep link
+  `#settings/<section>`. The Alerts page keeps delivery status, kinds, recent alerts and
+  *Send test alert* and links to the transport section.
+- **About** carries the Compatibility card (`#about/compat`, signed in).
+- One inline SVG sprite (26 symbols, 16 px, `currentColor`) replaces the ⚙ 🔒 × glyphs
+  and the text badges where an icon is clearer; new tokens `--nav-w`, `--rail-w`,
+  `--bottom-h`, `--subnav-w`, `--spark-h`, `--fs-20`, `--fs-32`, `--z-nav`,
+  `--nav-active`, `--ic`, `--ic-stroke`; inline SVG favicon.
+- Mock flags `&lag=1` (an override shows in `/api/state` two polls later — the daemon's
+  next-cycle lag) and `&down=1` (state, history and sensors unreachable from 2 s after
+  the boot — the connection banner); the mock stores the preset body, checks curves,
+  stop and min_on with the daemon's rules, answers 404 for a rename of a missing preset
+  and 400 for a manual duty below the HDD minimum; `&schedfail=1` also points the first
+  entry at a missing preset.
+- Screenshot set `docs/screenshots/01–28` regenerated from the new `shots.mjs` (hash
+  routing, full-page captures for the pages, viewport clips for dialogs, header crops and
+  toasts); the Home Assistant tiles image is `28-home-assistant-tiles.png`.
+- Documentation: the dashboard page rewritten for the pages, the preset body on the API
+  page, schedules editable on the dashboard or in the file on the configuration page,
+  every other page follows the new structure (Settings sections instead of gear, lock,
+  Account and Certificate dialogs); release-gate row 6 walks the new pages.
+
+### Changed
+
+- Budgets: `app.js` ≤ 128 KiB, `mock.js` ≤ 48 KiB, `app.css` ≤ 48 KiB (`web_test.go`);
+  `index.html` carries the sprite and has no budget.
+- Settings in `localStorage` (`n5-fangov`) gain the key `nav` (`side` | `rail`),
+  whitelisted like the others.
+- The sign-in dialog, Confirm and the preset editor are the only `<dialog>`s besides the
+  phone's *More* sheet; the page header no longer carries a lock button — the transport
+  and certificate state appear as the warning chip only when something is wrong, the
+  full state is Settings → Certificate.
+- *Save current as…* no longer stores the daemon's running curves unasked: it opens the
+  preset editor, prefilled from the editor's unsaved values (*Start from* switches to
+  the running curves or a preset).
+- The "active" preset and the per-channel preset badge compare against what *Apply*
+  would merge (a preset without hysteresis/min_on keeps the host's post-processing;
+  names follow the config by pwm), not against the raw preset file; preset details are
+  re-read on every load and cleared on sign-out.
+- Light theme `--info` is `#1a5fb4` (contrast of nav text, active entry, primary
+  buttons); switch track, day toggles and the preset dot at 3:1; sparkline stroke
+  checked per series.
+- Log page: *Clear* moved to Settings → Danger zone (disabled with the journal as source).
+- Alerts: the transport form and the PVE template card moved to Settings → Alert
+  transport; the Alerts page shows delivery status, kinds and recent alerts.
+- Toasts are lifted above the sticky action bar (`--actbar-h`); the rpm chart autoscales
+  like the temperature chart instead of a 0-based axis.
+
 ### Fixed
 
+- *Apply to daemon* (curves) and *Save* (schedules) rewrote the config from the copy the
+  page had read at sign-in: a `[dashboard]`, `[alert]` or `[[schedule]]` change made in
+  the meantime — by the other editor, the transport form, the CLI or a second browser —
+  was overwritten. Both re-read the file right before the splice, and the dashboard and
+  alert `PUT`s refresh the page's copy (review C01).
+- The boot and a fallback route pushed a history entry, so Back returned to the page
+  that had just redirected (trap); both use `replaceState` (C06).
+- Unsaved schedule edits were lost on a session expiry; they are stashed and restored
+  like curve edits (C07). Protected content stayed in the DOM after sign-out (hidden
+  only); it is cleared (C09).
+- Override switch: the snapshot trails a PUT/DELETE by one cycle, so the switch flicked
+  back to Auto for one poll; a snapshot duty of `-1` (write failed) would have held 0;
+  `critical`/`stall` hid the switch state; the manual block was dimmed but still
+  focusable — all fixed (client flag through one cycle, target instead of 0, flag
+  untouched by the guards, `disabled` while off, `aria-busy` instead of `disabled`
+  during the call).
+- Curve validation accepted non-integers (the daemon decodes int64: `45.5` was a 400
+  after the round trip) and a critical equal to the last point; integers only, critical
+  ≥ last point + 1, empty or case-insensitive `auto` for stop.
+- The preset editor saved a renamed preset under the new name first, so a failed rename
+  left two files; it saves under the old name, then renames. A new preset silently
+  overwrote a user preset of the same name; it asks. Escape in the editor closed the
+  editor and the confirm beneath it at once; each dialog answers its own Escape.
+- Sign-in / Sign-out buttons had no accessible name at phone width (icon only); the
+  settings sub-navigation marked the wrong section when the page was entered scrolled;
+  the phone's *More* sheet had no initial focus; the sparkline's range label overlapped
+  the line end; the status chip was rewritten on every poll (screen readers announced
+  it); table headers lacked `scope`; the actions column of the token table had no
+  header; the `.sr` helper widened the phone viewport; the charts stayed empty until
+  the second poll; the hidden username fields of the password forms were missing (browser
+  password managers).
+- `stripChannels` / `stripSchedules` are extracted from `app.js` and run in Go against
+  sample TOML (C17), so the "other tables survive the rewrite" rule is a test on both
+  editors.
 - `install.sh` ends with `run: n5-fangov check && systemctl start n5-fangov` when a config
   already exists (update, reinstall) instead of always suggesting `setup` (release-gate
   observation, 2026-09-18).
+
+### Removed
+
+- The tab bar and the nine tabs (Overview, Curves, Manual, Presets, Alerts, System, Log,
+  Compatibility, About); `TestTabsHaveHandlers`.
+- The settings gear popover, the Account dialog and the Certificate dialog (their
+  content is the Settings page); the lock button (`🔒 TLS` / `🔓 HTTP`) in the header.
+- The Manual tab's *Set* / *Back to auto* pair as the only way into `MANUAL`; the
+  read-only Schedules card on the Presets tab.
+- Six unused sprite symbols (C18) and dead CSS rules.
 
 ### Version plan (operator decision 2026-09-16, 22:30)
 
 - **0.3.x** (`0.3.1-rc*` → `0.3.1`, then `0.3.2`…; 0.3.0 stayed an rc): every feature of the
   plan (interface, regulation add-ons, dashboard history and per-device sensors, maintenance
   debt), as pre-releases on the private repository, each verified on the reference host.
-- **0.4.0**: the dashboard redesign (`docs/design/REDESIGN-CONCEPT.md`) with new documentation
-  screenshots — the release that goes **public**. The repository stays private until every
-  test has passed, at the latest when all 0.3.x features are in.
+  Shipped as 0.3.1.
+- **0.4.0**: the dashboard redesign with new documentation screenshots — the release that
+  goes **public**. Built as 0.4.0-rc1 (this section); the repository stays private until
+  the gate has passed.
 - Each rc becomes a release only through the release gate below.
-
-### Still open from the 0.3.x plan (decided 2026-09-16)
-
-Points 1–4 of the plan (interface, regulation add-ons, dashboard, maintenance debt) shipped
-in 0.3.1 below. Open:
-
-- Repository public after the history rewrite; upstream issues (driver validation data,
-  ProxFansX compatibility note); DKMS `.deb` in the sibling repository with the header
-  meta-package as dependency (user path: two `apt install` + `setup`).
-- ~~Reboot proof on the reference host (DKMS + daemon together)~~ — done 2026-09-18 in
-  the release-gate test of 0.3.1-rc1: module loaded from `modules-load.d` at boot, daemon
-  READY 40 s later, curves in effect, history reloaded from `history.json`, no alerts.
-- ~~`setup` writes the profile defaults, which match no built-in preset~~ — decided and
-  done in 0.3.1: `setup` writes `n5pro-balanced` (gate finding 5b).
-- pwm4 `stop = "auto"` stays as it is (keeps the last written duty, documented in DESIGN §6
-  and the configuration page); re-measured only if a use case for pwm4 comes up (operator
-  decision 2026-09-18).
-- ~~Measure whether the EC regulates pwm4 again after a write~~ — measured 2026-09-17 on
-  the reference host: the driver refuses a `pwm4` write while `pwm4_enable = 2` (EBUSY);
-  after `enable = 1`, duty 100 and `enable = 2` again the EC left 100 in place for 90 s.
-  pwm4 behaves like pwm3 — `stop = "auto"` keeps the last written duty. Documented in
-  DESIGN §6, `docs/06-configuration.md` and `config.example.toml`; whether `auto` on pwm4
-  should be forced to a fixed stop like pwm3 is an open operator decision.
-
-### Planned (0.4.0, separate session) — dashboard redesign, public release
-
-**Step 1 done 2026-09-18 (branch `feat/redesign`):** the target structure is the contract
-`DESIGN.md` §11a (page model Monitor / Control / Operate / Settings / Info, channel-centric
-Fans page with an explicit Auto/Manual switch, preset editor, editable Schedules page,
-consolidated Settings page, SVG sprite, new tokens, budgets `app.js` ≤ 128 KiB /
-`mock.js` ≤ 48 KiB / `app.css` ≤ 48 KiB) and a mock-only prototype in
-`docs/design/proto/` with the open decisions as flags (`nav=side|rail|top`, `spark=0`,
-`fans=tabs`, `compat=about`); `shots.mjs` + `compare.mjs` produce the old/new comparison
-page the operator decides on. Nothing in `internal/` changed. **Decided on the screenshots
-(2026-09-18):** sidebar expanded by default (no top bar), sparklines yes, Fans stacked with a
-channel selector below 700 px, Compatibility folded into About (eight sidebar entries).
-
-Structural redesign of the dashboard (sidebar navigation, channel-centric Fans page,
-consolidated Settings page, SVG icons, sparklines) — concept and hand-over in
-[`docs/design/REDESIGN-CONCEPT.md`](docs/design/REDESIGN-CONCEPT.md). Deliberately after
-the 0.3.x features so tokens, schedules and the longer history have their place in the new
-structure; prototype in the mock first, operator decides on screenshots; every documentation
-screenshot is regenerated for the new pages. 0.4.0 is the version that switches the
-repository to public.
-
-### Before the public release (documentation) — done 2026-09-16
-
-- **Split the README** (done): a short landing page (what it is, one screenshot, three-step
-  install, links) and a `docs/` set with one page per topic (install, kernel driver on the
-  N5 Pro, setup, dashboard guide with screenshots, CLI, configuration, alerts, HTTPS and
-  security, updates and rollback, troubleshooting, development). The 880-line README is
-  complete but tiring; a reader needs a table of contents and separation.
-- **Kernel driver page** (done, `docs/02-kernel-driver.md`): what the EC driver is, what DKMS does for it, install from the
-  sibling repository (later its `.deb`), verification (`dkms status`, `sensors`,
-  `n5-fangov detect`), the kernel-update gate, removal — the topic first-time users
-  stumble over.
 
 ### Release gate (decided 2026-09-16)
 
@@ -96,9 +222,20 @@ merged, history rewritten (all done). While the repository is private the releas
 are downloaded with `gh release download <tag>` on a signed-in client and copied to the
 host with `scp` (the host has no `gh`, gate finding 2026-09-18); the public curl path is
 re-run once at 0.4.0. First run 2026-09-18 on 0.3.1-rc1: passed, findings fixed in 0.3.1.
+For 0.4.0-rc1 row 6 (dashboard) walks the new pages: preset apply, override switch,
+preset editor, schedule edit, test alert, export, token, phone layout.
 
-**Not planned**: MQTT/discovery (REST + token is enough and smaller), a German UI
-(audience is GitHub), multi-host management, a frontend framework.
+### Before the public release (documentation) — done 2026-09-16
+
+- **Split the README** (done): a short landing page (what it is, one screenshot, three-step
+  install, links) and a `docs/` set with one page per topic (install, kernel driver on the
+  N5 Pro, setup, dashboard guide with screenshots, CLI, configuration, alerts, HTTPS and
+  security, updates and rollback, troubleshooting, development). The 880-line README is
+  complete but tiring; a reader needs a table of contents and separation.
+- **Kernel driver page** (done, `docs/02-kernel-driver.md`): what the EC driver is, what DKMS does for it, install from the
+  sibling repository (later its `.deb`), verification (`dkms status`, `sensors`,
+  `n5-fangov detect`), the kernel-update gate, removal — the topic first-time users
+  stumble over.
 
 ## [0.3.1] — 2026-09-18
 
@@ -690,7 +827,9 @@ of `v0.2.0`.
   security review `H1`–`H3`, `M1`–`M4`, `L1`–`L6` (Host header, CSRF, socket mode 0750,
   body limits, …).
 
-[Unreleased]: https://github.com/SirRenix/n5-fangov/compare/v0.3.0-rc1...HEAD
+[Unreleased]: https://github.com/SirRenix/n5-fangov/compare/v0.4.0-rc1...HEAD
+[0.4.0-rc1]: https://github.com/SirRenix/n5-fangov/releases/tag/v0.4.0-rc1
+[0.3.1]: https://github.com/SirRenix/n5-fangov/releases/tag/v0.3.1
 [0.3.0-rc1]: https://github.com/SirRenix/n5-fangov/releases/tag/v0.3.0-rc1
 [0.3.0-beta.4]: https://github.com/SirRenix/n5-fangov/releases/tag/v0.3.0-beta.4
 [0.3.0-beta.3]: https://github.com/SirRenix/n5-fangov/releases/tag/v0.3.0-beta.3

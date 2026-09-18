@@ -54,7 +54,7 @@ written: /etc/n5-fangov/config.toml
 The channel lines are the built-in preset `n5pro-balanced` (the recommended set), and that
 is what `setup` writes (since 0.3.1; before, a separate default set that matched no
 preset). `n5pro-quiet` and `n5pro-cool` are applied from the
-[Presets tab](04-dashboard.md#presets); the values of all three are in
+[Presets row of the Fans page](04-dashboard.md#presets); the values of all three are in
 [Presets](06-configuration.md#presets). The hwmon number (`hwmon10` here) is not stable
 across boots ([Verify](02-kernel-driver.md#verify)).
 
@@ -109,8 +109,8 @@ handled in [HTTPS](08-https-security.md#the-certificate).
 
 ## Change user or password later
 
-- In the dashboard: settings gear → *Account…* → *Change password…* / *Change user…*
-  ([Account](04-dashboard.md#account)); takes effect at once.
+- In the dashboard: Settings → *Account & sessions* → *Change password…* / *Change user…*
+  ([Account & sessions](04-dashboard.md#account--sessions)); takes effect at once.
 - From the shell: `n5-fangov passwd` (same `--user` / `--password-file` / `--password -`
   flags as `setup`) edits the file in place; `systemctl restart n5-fangov` applies it.
   This is also the way back in for a forgotten password. A change made outside the

@@ -1,10 +1,11 @@
-# Dashboard redesign — concept (for a separate session after 0.4.0)
+# Dashboard redesign — concept (built in 0.4.0)
 
-Status: **step 1 done 2026-09-18** (contract DESIGN §11a, prototype `proto/`, decisions below); the build follows on `feat/redesign`. Written 2026-09-16. Owner: operator. This page is
-the hand-over for the session that builds it. It assumes the 0.4.0 features (tokens,
-webhook transport, schedules, longer history) exist, because the new structure has a
-place for each of them; if 0.4.0 slips, the concept still holds — the affected panels
-are marked *(0.4.0)*.
+Status: **built in 0.4.0-rc1** (2026-09-18, branch `feat/redesign`): the running dashboard
+is described in `docs/04-dashboard.md` and DESIGN §11, the decisions and rules in DESIGN
+§11a; this page is the concept and the record of the decisions. Written 2026-09-16.
+Owner: operator. It assumed the 0.3.x features (tokens, webhook transport, schedules,
+longer history), which shipped in 0.3.1, because the new structure has a place for each
+of them; panels marked *(0.4.0)* below were written before that.
 
 ## Why a structural change, not a facelift
 
@@ -124,8 +125,9 @@ accordion (phone): **Display** (unit, interval, theme) · **Account & sessions**
 
 ## Findings from the 0.3.1 release gate (2026-09-18)
 
-UX items the manual gate test surfaced; the 0.3.1 documentation describes the current
-behaviour, the fix belongs to 0.4.0:
+UX items the manual gate test surfaced against 0.3.1 ("today" below = 0.3.1). The first
+three are built in 0.4.0-rc1 (preset editor, Schedules page, override switch); the
+certificate walkthrough with screenshots is still open (CHANGELOG, *Unreleased*):
 
 - **Preset editor.** Compose a set's values before saving. Today *Save current as…*
   stores the curves the daemon runs, so the new preset is the active one at once; other
@@ -150,5 +152,5 @@ behaviour, the fix belongs to 0.4.0:
 - **Compatibility** folds into About as a card (`#about/compat`); the sidebar has eight
   entries.
 
-The contract is `DESIGN.md` §11a; the prototype and the comparison page are described
-in `proto/README.md`.
+The decisions and rules are `DESIGN.md` §11a; the prototype and the comparison page are
+described in `proto/README.md` (kept for reference until 0.4.0 final).

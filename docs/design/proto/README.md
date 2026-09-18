@@ -3,8 +3,9 @@
 A throw-away prototype of the redesigned shell from `DESIGN.md` §11a, rendered against
 the mock only. Nothing here is served by the daemon: `proto.html` loads the production
 `app.css` and `mock.js` by relative path and draws the new structure with its own
-`proto.js` / `proto.css`. The operator decides on the screenshots before the real
-`index.html` / `app.js` / `app.css` are rebuilt; the prototype is then deleted.
+`proto.js` / `proto.css`. The operator decided on its screenshots (2026-09-18) and the real
+`index.html` / `app.js` / `app.css` were rebuilt as 0.4.0-rc1. The prototype is kept for
+reference until 0.4.0 final and is deleted then; it is not maintained.
 
 ## Run it
 

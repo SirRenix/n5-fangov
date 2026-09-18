@@ -46,7 +46,7 @@ signed in. With `auth = "basic"` there are three ways:
 
 An API token is the intended way for anything that runs unattended: it has a scope,
 an expiry and can be revoked alone, and it never carries the admin password. Create
-one in the dashboard (settings gear → *Account…* → *API tokens*) or with
+one in the dashboard (Settings → *API tokens*) or with
 `n5-fangov token create NAME --scope read|control|admin [--ttl DAYS]`; the secret is
 shown once. Storage, expiry, revocation, rate limit and what a token can never do:
 [API tokens](08-https-security.md#api-tokens).
@@ -158,7 +158,7 @@ Basic auth only, never a token.
 | `PUT` | `/api/config[?strict=1]` | write the config file and reload (200 / 202 / 400) |
 | `GET` | `/api/config/export` | settings bundle (config + presets, never tokens) |
 | `POST` | `/api/config/import` | restore a bundle |
-| `PUT` | `/api/presets/{name}` | save the current channel tables as a preset |
+| `PUT` | `/api/presets/{name}` | save a preset: the running channel tables (empty body) or the channels of the JSON body ([below](#saving-a-preset-with-a-body)) |
 | `POST` | `/api/presets/{name}/rename` | rename a user preset |
 | `DELETE` | `/api/presets/{name}` | delete a user preset |
 | `PUT` | `/api/alerts` | transport, `mail_to`, `webhook_url`, `webhook_format` |
@@ -180,9 +180,42 @@ Basic auth only, never a token.
 | `GET` | `/api/account` | user, mode, sessions |
 | `POST` | `/api/account/password`, `/api/account/user`, `/api/account/sessions/revoke` | credentials and sessions |
 
-Body limits: 256 KiB config/import, 64 KiB certificate upload, 4 KiB for override,
-login, account and token JSON (413 above). Every state-changing request from a cookie
-or Basic caller needs `X-N5-Fangov-Csrf: 1`.
+Body limits: 256 KiB config/import and preset body, 64 KiB certificate upload, 4 KiB for
+override, login, account and token JSON (413 above). Every state-changing request from a
+cookie or Basic caller needs `X-N5-Fangov-Csrf: 1`.
+
+### Saving a preset with a body
+
+`PUT /api/presets/{name}` (scope `admin`) with an **empty body** stores the `[[channel]]`
+tables the daemon runs. With a JSON body it stores the channels of the body instead —
+the preset editor's path; **nothing is applied** to the daemon either way:
+
+```json
+{"channels": [
+  {"name": "cpu", "pwm": 1, "sensor": "k10temp", "curve": [[45, 85], [80, 255]], "critical": 88, "stop": "auto"},
+  {"name": "ssd", "pwm": 2, "sensor": "nvme:max", "curve": [[40, 74], [70, 255]], "critical": 75, "stop": "auto", "hysteresis": 2, "min_on": "1m"},
+  {"name": "hdd", "pwm": 3, "sensor": "drivetemp:max,disk:sda", "curve": [[36, 105], [46, 255]], "critical": 56, "stop": "87", "hysteresis": 3, "min_on": "5m"}
+]}
+```
+
+Schema `PresetSave` in the OpenAPI document: `channels[]` (at least one) of `name`,
+`pwm`, `sensor` (several ids joined by `,`), `curve` (`[temp_c, duty]` pairs) and
+`critical` — required —, `stop` (`auto`, empty = `auto`, or a fixed duty `60..255` as a
+string), `hysteresis` (`0..10`), `min_on` (Go duration, `0s` = off). Unknown keys, a
+point that is not exactly two values, and anything after the JSON object are 400. The
+body is rendered as `[[channel]]` TOML and parsed with the config's own channel rules
+([curve rules](06-configuration.md#curve-rules)); every warning the lenient parser
+would replace by a default is an error here — `400 {"error": "preset rejected",
+"errors": […]}` like `PUT /api/config?strict=1`. The channel set must be the running
+config's (`name@pwmN` per channel; a preset is applied to this host and merged by pwm,
+so other names or pwms would swap curves): 400 otherwise. A built-in name is 409, a body
+above 256 KiB 413, a write failure 500, no preset store 501. 200 `{"ok": true, "saved":
+"<name>"}`.
+
+```
+curl -u admin -H "X-N5-Fangov-Csrf: 1" -H "Content-Type: application/json" \
+  -X PUT --data @summer.json https://n5host:8010/api/presets/summer
+```
 
 ## History and CSV
 
@@ -249,7 +282,7 @@ template if they should not reach the history.
 of the sensors above lives in `/config/packages/n5_fangov.yaml`, the card block in the
 dashboard YAML or the UI editor); a verified box, 2026-09-18, rest sensors polling every 30 s:
 
-![Home Assistant, System view: heading N5 fans, tiles for controller status, temperature and rpm per channel, hdd mode](screenshots/32-home-assistant-tiles.png)
+![Home Assistant, System view: heading N5 fans, tiles for controller status, temperature and rpm per channel, hdd mode](screenshots/28-home-assistant-tiles.png)
 
 ```yaml
 - type: grid

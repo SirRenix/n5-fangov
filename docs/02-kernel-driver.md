@@ -175,7 +175,7 @@ touch the module ([Uninstall](09-updates.md#uninstall)).
 Nuvoton NCT67xx and ITE IT87xx chips are served by `nct6775` / `it87` from the
 distribution kernel — no DKMS, no extra package, nothing on this page applies. The
 `nct67xx` / `it87xx` profiles ship *from documentation, untested*; the dashboard's
-Compatibility tab says so per profile.
+Compatibility card on the About page says so per profile.
 
 Next: [Install](01-install.md) · [Setup](03-setup.md) ·
 [Troubleshooting](10-troubleshooting.md)

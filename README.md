@@ -3,7 +3,7 @@
 Guarded fan control for Proxmox VE and Debian — daemon, CLI and web dashboard in one
 static binary. Hardware-verified on the Minisforum N5 Pro.
 
-![Dashboard overview: channel cards with temperature, duty and RPM, and the two-hour charts](docs/screenshots/03-overview-signed-in-top.png)
+![Dashboard overview: sidebar navigation, channel tiles with temperature, sparkline, duty and RPM, and the history charts](docs/screenshots/03-overview-signed-in.png)
 
 ## What it does
 
@@ -18,9 +18,9 @@ static binary. Hardware-verified on the Minisforum N5 Pro.
 - Alerts through the Proxmox notification stack (`PVE::Notify`), `mail(1)`, a
   webhook (ntfy, Gotify, Home Assistant) or the journal — testable from the dashboard.
 - Preset schedules by time of day (`[[schedule]]`), with an alert when a switch fails.
-- Web dashboard with curve editor, manual override, presets, alert and system tabs,
-  history over 2 h / 24 h / 7 d with CSV export; HTTPS and login on the LAN, plain and
-  open on loopback.
+- Web dashboard — Overview, System, Fans (curve editor, manual override switch, preset
+  editor), Schedules, Alerts, Log, Settings, About — with history over 2 h / 24 h / 7 d
+  and CSV export; HTTPS and login on the LAN, plain and open on loopback.
 - API tokens with scopes (`read` / `control` / `admin`), expiry and revocation for
   scripts and Home Assistant; OpenAPI document at `/api/openapi.json`.
 - Runs sandboxed under systemd with watchdog and failsafe on exit; one binary, one
@@ -67,8 +67,9 @@ Index of all pages: [docs/README.md](docs/README.md).
 ## Status
 
 Current release: **0.3.1** (2026-09-18), verified through the release gate on the reference
-host; a pre-release build shows its suffix in `n5-fangov version` and as a badge in the
-dashboard. Changes per version: [CHANGELOG.md](CHANGELOG.md).
+host; **0.4.0-rc1** (the dashboard redesign, the release that goes public) is the current
+release candidate. A pre-release build shows its suffix in `n5-fangov version` and as a
+badge in the dashboard. Changes per version: [CHANGELOG.md](CHANGELOG.md).
 Validation data, the measurement scripts and the Bash predecessor `n5-fand` live in
 [`minisforum-n5pro-fan-proxmox`](https://github.com/SirRenix/minisforum-n5pro-fan-proxmox);
 the EC driver is [`ltdstudio/minisforum-n5-it5571`](https://github.com/ltdstudio/minisforum-n5-it5571).

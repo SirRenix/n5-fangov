@@ -59,7 +59,7 @@ manual test before a release is [RELEASE-GATE.md](RELEASE-GATE.md).
   summaries, responses and scope values — a new endpoint is one row plus its schema,
   and the docs' endpoint table ([API](12-api.md#endpoints)) follows the row.
 - Frontend: `internal/web/web_test.go` checks the JS budgets, that `index.html` never
-  references `mock.js`, that every tab has a handler, the CSP and the contrast of the
+  references `mock.js`, that every page has a nav entry and a handler (`TestNavHasPages`), the CSP and the contrast of the
   primary buttons. Everything else is checked by hand against the mock.
 - Before a tag: the release is verified on the reference N5 Pro (channel mapping, stop
   behaviour, a multi-hour run) — the README's
@@ -78,16 +78,21 @@ by `index.html`: with `?mock=1` `app.js` inserts the script tag and routes every
 `api()` call to `window.n5mock(path, opt)` instead of `fetch`; the production page
 never requests it. Serve the directory with any static server and open
 `index.html?mock=1` — anonymous; `&user=1` signed in (login `admin`/`admin`);
-`&auth=none`; `&tls=off|file|soon|fallback`; `&tab=<id>`; `&syserr=1`; `&reject=1`
-(strict PUT answers 400); `&restart=1` (PUT answers 202); `&expire=1` (the session dies
-after 15 s); `&schedfail=1` (the last schedule switch failed); `&pwm4=1` (a fourth
-channel without tach). The mock implements every endpoint — tokens
-(`n5t_mock…`), schedules, the 24 h / 7 d history tiers, CSV, the webhook status,
-`disk:*` sensors; new endpoints get a mock branch in the same change. The mock's
+`&auth=none`; `&tls=off|file|soon|fallback`; `&tab=<id>` (the 0.3 parameter, mapped to
+the pages); `&syserr=1`; `&reject=1` (strict PUT answers 400); `&restart=1` (PUT answers
+202); `&expire=1` (the session dies after 15 s); `&schedfail=1` (the last schedule
+switch failed); `&pwm4=1` (a fourth channel without tach); `&lag=1` (an override shows
+in the state two polls later); `&down=1` (state, history and sensors unreachable after
+2 s — the connection banner). Pages by hash (`#fans`, `#settings/st-cert`,
+`#about/compat`); the table of every flag is in [Dashboard](04-dashboard.md#the-mock).
+The mock implements every endpoint — tokens (`n5t_mock…`), schedules, the 24 h / 7 d
+history tiers, CSV, the webhook status, `disk:*` sensors, the preset body; new
+endpoints get a mock branch in the same change. The mock's
 version string is one constant in `mock.js`, bumped with the release.
 
-**JS budgets:** `app.js` ≤ 96 KB and `mock.js` ≤ 40 KB raw (`web_test.go`). Do not
-raise a limit to make a change fit; move something to `index.html` markup or drop it.
+**Budgets:** `app.js` ≤ 128 KiB, `mock.js` ≤ 48 KiB, `app.css` ≤ 48 KiB raw
+(`web_test.go`); `index.html` carries the SVG sprite and has no budget. Do not raise a
+limit to make a change fit; move something to `index.html` markup or drop it.
 
 ## Screenshots
 
@@ -123,7 +128,7 @@ listed in [CHANGELOG.md](../CHANGELOG.md). `make` overrides it with `git describ
 
 `git tag -a vX.Y.Z` on a verified commit, then `make release NOTES="…"` (on a clean tag,
 gh CLI signed in) creates the GitHub release with the static binary and its sha256 —
-the releases page linked from the About tab is maintained this way, one entry per tag.
+the releases page linked from the About page is maintained this way, one entry per tag.
 The version literal is bumped in the release commit and nowhere else. The
 [release install](01-install.md#from-a-github-release) consumes exactly these assets.
 
@@ -131,8 +136,8 @@ The version literal is bumped in the release commit and nowhere else. The
 
 GPL-2.0-only; the full text is in [LICENSE](../LICENSE). The only dependency,
 [`BurntSushi/toml`](https://github.com/BurntSushi/toml), is MIT-licensed; its text is in
-`deploy/debian/copyright` (DEP-5). The About tab lists the credits
-([Dashboard](04-dashboard.md#compatibility-and-about)).
+`deploy/debian/copyright` (DEP-5). The About page lists the credits
+([Dashboard](04-dashboard.md#about)).
 
 Next: [CONTRIBUTING.md](../CONTRIBUTING.md) · [RELEASE-GATE.md](RELEASE-GATE.md) ·
 [DESIGN.md](../DESIGN.md)

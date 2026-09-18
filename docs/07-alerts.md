@@ -8,7 +8,7 @@ journal), the PVE side, cooldowns, the test alert and the alert history.
 - [Transports](#transports)
 - [Webhook](#webhook)
 - [Alert kinds](#alert-kinds)
-- [The Alerts tab](#the-alerts-tab)
+- [The Alerts page and the transport section](#the-alerts-page-and-the-transport-section)
 - [The PVE template](#the-pve-template)
 - [The PVE side](#the-pve-side)
 - [From the shell](#from-the-shell)
@@ -75,7 +75,7 @@ non-PVE hosts without a mail set-up and for ntfy, Gotify and Home Assistant.
   `GET /api/alerts` for a **token** caller show the URL **without query and userinfo**
   (`https://gotify.example.test/message`) because Gotify carries its key in the query.
   The full URL is in the config file and in `GET /api/alerts` for a browser session or
-  Basic auth — the Alerts tab shows it in full; a `read` token gets the redacted form
+  Basic auth — the dashboard shows it in full; a `read` token gets the redacted form
   ([tokens](08-https-security.md#api-tokens)).
 
 `webhook_format = "json"` (default) sends `Content-Type: application/json`:
@@ -125,7 +125,7 @@ automation:
           message: "{{ trigger.json.kind }}: {{ trigger.json.message }}"
 ```
 
-The Alerts tab's *Save* writes the four `[alert]` keys in place and applies them at
+*Save* in Settings → Alert transport writes the four `[alert]` keys in place and applies them at
 once; `PUT /api/alerts` answers 400 for an invalid URL, format or `mail_to`, and for
 `webhook` without a URL. The PVE notification stack has its own webhook and Gotify
 targets — on a PVE host `transport = "auto"` plus a matcher ([The PVE side](#the-pve-side))
@@ -161,19 +161,19 @@ under `/run/n5-fangov/`).
 fails, it reads `Result`/`ExecMainStatus`, waits 8 s and reports `restart` (daemon back)
 or `failed` (still down) with the real cause.
 
-## The Alerts tab
+## The Alerts page and the transport section
 
-Shows the configured and the effective transport, which tools the box has, the PVE
-template state, the cooldown, every alert kind with its last delivery, and the recent
-alerts (newest first, the last 50, kept across restarts in
-`/var/lib/n5-fangov/alerts.json`). Screenshot in [Dashboard](04-dashboard.md#alerts).
-Actions:
+The **Alerts page** shows the effective transport, which tools the box has, the cooldown,
+every alert kind with its last delivery, and the recent alerts (newest first, the last
+50, kept across restarts in `/var/lib/n5-fangov/alerts.json`); the transport form and
+the PVE template card are **Settings → Alert transport**. Screenshots in
+[Dashboard](04-dashboard.md#alerts). Actions:
 
-- **Save** transport and its fields — `mail_to` for `auto`/`mail`, `webhook_url` and
-  `webhook_format` for `webhook` — written to the config file in place and
-  hot-applied; no restart. A `PUT /api/config`, a settings import or a preset apply
+- **Save** (Settings → Alert transport) transport and its fields — `mail_to` for
+  `auto`/`mail`, `webhook_url` and `webhook_format` for `webhook` — written to the config
+  file in place and hot-applied; no restart. A `PUT /api/config`, a settings import or a preset apply
   re-applies whatever `[alert]` the written file contains.
-- **Send test alert** — kind `test`, no cooldown, through the real transport; the
+- **Send test alert** (Alerts page and the transport section) — kind `test`, no cooldown, through the real transport; the
   response carries the delivery error when perl, mail or the webhook receiver fail. It
   also lands in the recent list. One test at a time (a second click while one runs
   answers `409 test in progress`), bounded to 20 s. This is the test that proves
@@ -193,13 +193,13 @@ Actions:
 The two PVE notification template files (`n5-fangov-subject.txt.hbs`,
 `n5-fangov-body.txt.hbs`) are embedded in the binary and installed to
 `/etc/pve/notification-templates/default/` by `install.sh`, the deb postinst, the
-Alerts tab button or `n5-fangov alerts template`. The button is disabled with the reason
+*Install template* in Settings → Alert transport or `n5-fangov alerts template`. The button is disabled with the reason
 when the directory is missing or not writable: the daemon's sandbox may write *into*
 that directory but cannot create it, so on a fresh box `install.sh` or `n5-fangov alerts
 template` (root, outside the sandbox) create it. *Current* compares the installed files
 with the embedded ones after an upgrade. The writable probe (a temp file created and
 removed in the directory, a write on pmxcfs) runs at most every 10 minutes and right
-after *Install* or *Save*, not on every poll of the panel.
+after *Install* or *Save*, not on every poll of the page.
 
 ## The PVE side
 

@@ -391,7 +391,7 @@ a running `min_on` hold. History point:
 `{ts, temp{}, duty{}, rpm{}, extra{}}` maps by channel name (`extra` by sensor id,
 omitted when empty).
 
-Alert kinds (one line each, listed by the Alerts tab; cooldown = `alert_cooldown` unless
+Alert kinds (one line each, listed by the Alerts page; cooldown = `alert_cooldown` unless
 noted):
 
 | Kind | Raised by | Trigger → reaction |
@@ -410,7 +410,7 @@ noted):
 | `kernel` | `check --after-update` | DKMS module missing for a bootable kernel (own 30-min stamp) |
 | `restart`, `failed` | onfailure unit | unit failed and came back / stayed down (own 30-min stamps) |
 | `schedule` | scheduler (cmd) | a scheduled preset switch failed (preset missing, invalid, write or reload error); the previous curves stay (own 30-min stamp) |
-| `test` | Alerts tab, `alerts test` | no cooldown, single-flight, 20 s bound |
+| `test` | Alerts page / Settings → Alert transport, `alerts test` | no cooldown, single-flight, 20 s bound |
 
 serve routes its start-up alerts through `sendAlertCooled` (same stamp files, 30 min), so
 a restart loop cannot spam PVE.
@@ -748,11 +748,12 @@ first and collects locally otherwise.
 
 ## 11. Dashboard (internal/web/static)
 
-No framework, no build step; `app.js` ≤ **96 KB** and `mock.js` ≤ **40 KB** (test
-`web_test.go`), CSP `script-src 'self'`, no `innerHTML`, no inline handlers. Colours,
-spacing, radii and type scale are tokens in one `:root` block (dark; light overrides under
-`[data-theme="light"]` and `system`) and a JS constant block after `cssVar`; the mock's
-version string is one constant in `mock.js`, bumped with the release.
+No framework, no build step; `app.js` ≤ **128 KiB**, `mock.js` ≤ **48 KiB**, `app.css` ≤
+**48 KiB** (test `web_test.go`; `index.html` carries the SVG sprite and has no budget),
+CSP `script-src 'self'`, no `innerHTML`, no inline handlers. Colours, spacing, radii and
+type scale are tokens in one `:root` block (dark; light overrides under
+`[data-theme="light"]` and `system`) and a JS constant block (`UI`) after `cssVar`; the
+mock's version string is one constant in `mock.js` (`MV`), bumped with the release.
 
 **Mock split:** the mock lives in `mock.js` (served by the static handler as the fourth
 file, never referenced by `index.html`). With `?mock=1` `app.js` inserts
@@ -760,224 +761,289 @@ file, never referenced by `index.html`). With `?mock=1` `app.js` inserts
 `window.n5mock(path, opt) → Promise<{status, body, filename?}>` that `api()` calls
 instead of `fetch`. Without the parameter the production page never requests `mock.js`.
 The mock implements every endpoint of section 9 including tokens (`n5t_mock…`),
-schedules, history tiers (24 h / 7 d synthesised), CSV, webhook status and `disk:*`
-sensors.
+schedules, history tiers (24 h / 7 d synthesised), CSV, webhook status, `disk:*`
+sensors and the preset body, and checks curves, stop and min_on with the daemon's rules.
 
-- **Header:** brand, profile title, verified badge; status chip, uptime, version with
-  `beta` badge when `prerelease != ""`, lock button (`🔒 TLS` / `🔓 HTTP`; warn colour
-  when plain HTTP off loopback, during a certificate fallback or below 30 days to expiry),
-  live/paused indicator, user name, *Sign in* / *Sign out*, settings gear. Every tab
-  except Overview and About carries `data-auth` and is hidden while anonymous; gear, lock,
-  user name, *Sign in* / *Sign out* and the CSV button are toggled by the id list in
-  `applyAuth` (no `data-auth`).
-  Below 700 px the header is one line and the tab bar is sticky.
-- **Tabs** (`role="tablist"`, keyboard): Overview, Curves, Manual, Presets, Alerts, System,
-  Log, Compatibility, About. Every tab id has a dispatch entry (`TestTabsHaveHandlers`).
-- **Overview:** channel cards (temperature coloured by the channel's critical, duty bar with
-  target marker, mode badge, RPM — `no tach` for `rpm = -1`; a small `held` value when
-  `held_temp` differs, a `hold` badge with the remaining time while `hold_until` is set),
-  temperature and fan-speed charts (RPM/duty toggle) with a **range selector** `2 h · 24 h ·
-  7 d` (persisted in `localStorage`; 2 h polls `since` every 30 s, 24 h/7 d reload the
-  averaged tier every 60 s; x-axis shows `HH:MM` for 2 h, `Www HH:MM` for 24 h, `dd.mm
-  HH:MM` for 7 d) and a *CSV* button (signed in; `download('/api/history.csv?minutes=…')`);
-  signed in: Sensors card (catalogue grouped CPU / SSD·NVMe / HDD / GPU / NIC / EC·board /
-  other by `kind`, id prefix and hwmon name — `disk:*` goes to SSD·NVMe or HDD by `kind` —,
-  *chart* toggle → `PUT /api/dashboard`), Extra sensors chart (when the watched list is
-  non-empty), System card (at-a-glance inventory, refreshed every 30 s), Recent alerts.
-- **Curves:** one editor per channel — sensor select (a composite id is listed as one
-  option `a,b (max of 2)` so the editor never drops it; the catalogue's single ids follow),
-  critical, stop, **hysteresis** (0..10) and **min_on** (select `off · 30 s · 1 min · 2 min ·
-  5 min · 10 min · 30 min · 1 h`), canvas with drag points, `crit` line and `now` marker,
-  point table with *remove* and *+ add point* (inserted at the middle of the widest gap,
-  table kept sorted), **keyboard**: a focused point (points are focusable, `tabindex`)
-  moves with the arrow keys by 1 °C / 5 duty, Shift × 5, measured duty→RPM reference on
-  the N5 Pro. Client validation before the PUT: 2..8 points, temperatures ascending,
-  duties non-decreasing, critical above the last point, stop `auto` or 60..255,
-  hysteresis 0..10; errors in a `role="alert"` notice (no toast on top: one
-  announcement). *Apply to daemon* sends `PUT /api/config?strict=1`; the `[[channel]]`
-  tables it writes carry `sensor` (array form for a composite), `hysteresis` and
-  `min_on` (omitted at their defaults). 202 shows the restart notice; the notice and
-  the warnings survive the editor reload after Apply and stay until *Revert*, the next
-  Apply or a session change. A dirty indicator on the tab and in the panel marks unsaved
-  edits; the edits persist across tab changes (no dialog), *Sign out* asks before
-  discarding them, a session loss stashes them for the next sign-in (below), and the
-  browser's `beforeunload` prompt covers a page close.
-- **Manual:** slider + *Set* / *Back to auto* per channel; HDD-like channels show the
-  minimum-60 hint and refuse lower values client-side.
-- **Presets:** until 0.4.0 a card list; now the Presets row of the Fans page (section 11a):
-  chips with built-in/recommended badges and description, *Apply*, *Details / Edit* (the
-  preset editor dialog, read-only for a built-in), *Delete* (user presets), *Save current
-  as…* (client-side name rule, built-in names refused; the editor composes the channels and
-  saves them with `PUT /api/presets/{name}` + JSON body, nothing is applied).
-- **Schedules:** editor card, one row per entry of `GET /api/schedules` — preset select
-  (from `/api/presets`; a missing name stays selectable as `<name> (missing)`, flagged),
-  *From* / *To* (`<input type=time>`), day toggles Mo…Su (`aria-pressed`, none = every
-  day), fallback row (*fallback — outside every window*, *add window* / *make fallback*),
-  ACTIVE badge, *Remove*; *Add entry*, *Revert*, *Save* (disabled while clean; dirty
-  indicator, leave-page / sign-out / `beforeunload` guards). Client validation: preset
-  set, `HH:MM` both on a windowed entry, from ≠ to, one fallback, ≤ 16 entries; errors in
-  a `role="alert"` notice. Save = raw config → `stripSchedules` (`[[schedule]]` blocks
-  dropped up to the next header of any kind, `TOML_HDR`) + the editor's tables (`from`/`to`
-  only when windowed, `days` only when not every day) → `PUT /api/config?strict=1`; 200
-  toast, 202 restart notice, 400 the server's errors (`TestScheduleEditorKeepsOtherTables`).
-  Status card: active entry, next switch (`<time>` absolute + relative), last switch with
-  its error in `--crit`, timezone; polled every 60 s while current, a dirty editor is not
-  rebuilt. 501 → "scheduler unavailable"; no entries → "No schedule — the daemon keeps
-  the curves it has …". Editor and status side by side from 1400 px; below 700 px every
-  entry is a stacked block (preset · remove / from · to / days), no sideways scrolling.
-- **Alerts:** transport form (select incl. `webhook`; `mail_to` for auto/mail,
-  `webhook_url` + `webhook_format` for webhook, *Save*), effective transport and tool
-  availability, template card with *Install / Update template* (disabled with reason),
-  *Send test alert*, cooldown, kinds table with last delivery, recent alerts.
-- **System:** Host / Machine / CPU / Fan controller cards, Memory with module table,
-  GPU · NPU, Network, Storage (with a temperature column from `temp_c` and a sum row),
-  notice for `errors`, "live … · static … ago", *Refresh*; polled every 30 s while current.
-- **Log:** filter, auto-scroll, *Refresh* / *Export* / *Clear* (confirm), WARN/ERROR colouring.
-- **Compatibility:** profiles with ACTIVE and verified/untested badges. **About:** name,
-  version, description, licence, repository, author, credits, releases link (the mock hint
-  appears in mock mode only).
+- **Shell:** one `nav` (sidebar) + one page header + one `main` with one `section
+  id="p-<id>"` per page. `PAGES` in `app.js` defines the eight pages in five groups —
+  Monitor: `overview`, `system`; Control: `fans`, `schedules`; Operate: `alerts`, `log`;
+  Settings: `settings`; Info: `about` — with their sprite icon; `overview` and `about`
+  are anonymous, every other section and nav entry carries `data-auth` / is filtered by
+  `visible()`. The sidebar is 220 px, group captions in 11 px caps (`ul` labelled by
+  the caption), every entry a `button` in Tab order with `aria-current="page"` and an
+  accent bar; *Collapse* in the footer toggles the 56 px icon rail (`S.nav`, also the
+  *Navigation* select in Settings → Display). 700–1099 px force the rail (`RAIL_MQ`);
+  the stored preference applies from 1100 px. Below 700 px the sidebar is `display:none`
+  and `#bnav` is a fixed bottom bar with Overview · Fans · Alerts · Settings · *More*
+  (`BOTTOM`; the rest in the `<dialog class="sheet">` *More* with the group as
+  `aria-hidden` tag; anonymous: Overview · More → About); `main` gets `--bottom-h` as
+  bottom padding, the sticky action bar sits above the bar.
+- **Routing:** `go(id, sec, replace)` switches the section, marks every `[data-page]`,
+  writes `#<page>[/<section>]` (`replaceState` at boot and for a fallback, so Back never
+  re-triggers), renders the header, runs the page's dispatch entry (every page has one —
+  `TestNavHasPages` pins sections, `PAGES` and the dispatch map to each other),
+  scrolls to `sec` when given (Settings sections `st-*`, `compat` on About) and, after a
+  user-initiated switch (`goUser`: nav, `[data-go]` links, `hashchange`), focuses the
+  section or the page heading. A page that needs auth or an unknown hash falls back to
+  the Overview. In mock mode the 0.3 parameter `&tab=` is consumed once and maps
+  `curves|manual|presets → fans`, `compat → about` (screenshot script). `#skip` focuses
+  `main` without routing.
+- **Page header:** title from `PAGES` (`document.title` = `<page> · n5-fangov`), profile
+  title (verified state in its tooltip); right: status chip (`role="status"`, text
+  written only on change; `dry-run` wins over `status`), uptime, version + `beta` badge
+  when `prerelease != ""`, the **certificate warning chip** `#h-cert` (`secState`:
+  shown only while signed in and the certificate is in fallback, expires in < 30 days,
+  is expired, or the listener is plain HTTP off loopback; text `plain HTTP` /
+  `certificate fallback` / `certificate expires in N d` / `certificate expired`; click →
+  `go('settings', 'st-cert')`), live indicator (`paused` while `document.hidden`, `err`
+  after two failed polls), user name, *Sign in* / *Sign out* (icon + text; hidden with
+  `auth = "none"`). Below 1000 px uptime and version hide, below 900 px the chip is
+  icon-only (`aria-label` keeps the text), below 700 px `.mx` elements hide (profile,
+  button texts). `--hdr-h` (ResizeObserver) feeds the sticky sub-navigation and the
+  section scroll margin; `--actbar-h` lifts the toasts above the action bar.
+- **Overview:** tiles (`renderCards`, one `.tile` per channel built once and updated in
+  place): name, `pwmN · sensor`, `hold` badge with the remaining `min_on`, mode badge,
+  temperature 32/700 coloured by share of critical (`tempClass`, neutral without a
+  config = anonymous), `held …` when `held_temp` differs, a 2 h **sparkline** (canvas
+  `role="img"`, the channel's series colour, `--spark-h`; drawn from `hist` regardless
+  of the chart range, redrawn on poll, history load, theme change and resize), duty bar
+  with target marker (`(85 → 107)` while slewing), rpm (`no tach` for `rpm = -1`, `0
+  rpm` in `--crit`). History bar: range switch `2 h · 24 h · 7 d` (`S.range`; 2 h polls
+  `since` every 30 s, 24 h / 7 d reload the averaged tier every 60 s; x-axis `HH:MM`,
+  `Www HH:MM`, `dd.mm HH:MM`; the raw-tier cap follows `[daemon] interval`), *CSV*
+  (`data-auth`, `download('/api/history.csv?minutes=…')`). Charts: temperature, fan
+  (RPM autoscaled / duty 0..255), extra sensors as a third chart of the same kind
+  (`#extra-card`, hidden until `dash` is non-empty; legend entries with a remove `×`
+  → `PUT /api/dashboard`; legend names from the catalogue description); three columns
+  from 1500 px. Signed in: Sensors card (catalogue grouped CPU / SSD·NVMe / HDD / GPU /
+  NIC / EC·board / other by `kind`, id prefix and hwmon name; description, id, live
+  value, *chart* toggle with `aria-pressed`, disabled at `dashboard_sensors_max` with a
+  reason; empty state names the Log page), System glance (`data-go="system"`), Recent
+  alerts (`data-go="alerts"`; `not delivered: …`). Empty states name the next step.
+- **System:** hint line, `live HH:MM · static N ago`, *Refresh*; Host / Machine / CPU /
+  Fan controller cards, Memory with the module table, GPU · NPU, Network, Storage
+  (controllers; disks with `temp_c` and a sum row), notice for `errors` (`lspci` text
+  mapped to the apt hint), 501 → "no system inventory"; polled every 30 s while current
+  (also for the Overview glance).
+- **Fans:** glossary line + `<details>` *More about duty, critical, stall, stop*;
+  `#cv-notice` (`role="alert"`); the channel selector `#ch-sel` (below 700 px, one card
+  at a time, `SEL.ch` kept across rebuilds, dirty dot per entry); one `.card.fan` per
+  channel (`buildEditors` from `edState`, a copy of the config channels): header `h2`
+  name, `pwmN · sensor`, the **preset badge** (`presetOf`: the first preset whose channel
+  matches `chKey` after `mergePre` — the merge *Apply* would do, a preset without
+  hysteresis/min_on keeps the host's —, else `custom`) and the mode badge. Left, the
+  curve editor: sensor select (a composite id is one option `a,b (max of 2)`, the
+  catalogue's single ids with their reading follow), critical, stop (`auto`/empty =
+  auto), hysteresis, min_on (`MIN_ON` select, canonical Go form), canvas with drag
+  points (`bindCurveDrag`, touch radius 22 px), `crit` line and `now` marker, the point
+  table (re-sorted on `focusout`), *+ add point* (inline row prefilled by `gapPoint`,
+  *Add* / *Cancel*), the duty→RPM reference on the N5 Pro (`REF`, filled once the
+  profile is known); edited in °C whatever the display unit. Right, **Live & override**
+  (`renderLive` on every poll, no editor rebuild): reading → running duty · %, rpm,
+  `curve target N · mode` / `held N · mode` + badge, the `role="switch"` *Manual
+  override*, slider + number + %, *Set*, the guard note. Switch on = `PUT
+  /api/override/{name}` with the snapshot duty (target when duty is `-1`, never 0)
+  raised to `minDuty` — the daemon's `hddLike` rule: fixed stop duty or pwm3 on the N5
+  Pro → `min_hdd_override` —; off = `DELETE`; *Set* re-PUTs the slider value. The
+  switch shows the client flag `lv.on` through a pending window of two daemon intervals
+  (`lv.pend`) because the snapshot's `mode` follows a cycle later; `critical`/`stall`
+  leave the flag alone, so the override stays switchable off; slider, number and *Set*
+  are disabled (not only dimmed) while off, *Set* also below the minimum; `aria-busy`
+  during the call, never disabled. Sticky action bar `#actbar`: dirty indicator (also
+  `#nav-dirty` on the sidebar entry, the bottom bar and the selector entry), *Revert*
+  (`loadEditor`), *Apply to daemon*. Client validation (`validateChannel`, shared with
+  the preset editor) before the PUT: `curve_points_min..max` points, integers only,
+  temperatures −20..120 ascending, duties 0..255 non-decreasing, critical ≥ last point
+  + 1 and ≤ `critical_max`, stop `auto`/empty or `min_hdd_override..255`, hysteresis
+  0..`hysteresis_max`, min_on ≤ `min_on_max_s`; errors in the notice (no toast on top).
+  Apply re-reads the config first (`loadConfig`: `[dashboard]`, `[alert]`,
+  `[[schedule]]` may have changed), then `stripChannels(cfgRaw)` — every `[[channel]]`
+  block dropped up to the next table header of any kind (`TOML_HDR`) — plus
+  `tomlChannel` per channel (`sensor` as an array for a composite, `hysteresis`/`min_on`
+  omitted at their defaults) → `PUT /api/config?strict=1`; 202 shows the restart notice,
+  warnings outside the channel tables are listed; notice and warnings survive the editor
+  reload (`keepNotice`) until *Revert*, the next apply, a page switch or a session
+  change. Edits persist across page switches (no dialog), *Sign out* asks, a session
+  loss stashes them (`edStash`), `beforeunload` covers a page close.
+- **Presets** (row under the cards, `loadPresets`: list + every detail cached in `PD`,
+  re-read on every load and cleared on sign-out): one `.pchip` per preset — active dot
+  (`chKey(applied(preset, config)) === chKey(config)`), ★ recommended (`description`
+  starts with "Recommended" or name `n5pro-balanced`), name, `built-in` badge,
+  description, *Apply* (confirm; `active` and disabled while active; `POST …/apply`,
+  202 → `#ps-notice`), icon button *Details* (built-in → editor read-only) / *Edit*
+  (user preset), *Delete* (user preset, confirm). *Save current as…* opens the **preset
+  editor** `<dialog id="preset-ed">`: *Start from* (`editor` = `edState`, `daemon` =
+  `chList()`, `p:<name>`; fixed when editing), name (client rule `LIM.name`, built-in
+  names refused), one `peChannel` block per channel (critical / stop / hysteresis /
+  min_on, editable point table with `%`, remove, *add point*), Save = `PUT
+  /api/presets/{name}` with the composed channels (nothing applied) — under the old
+  name first, then `POST …/rename` when the name changed; a new preset over an existing
+  name asks; `peDirty` asks before Escape, backdrop or *Cancel* drop edits (Escape is
+  answered by the dialog's own `keydown`, `ask()` answers its own Escape, so one Escape
+  never closes both). No description field — user preset files carry none.
+- **Schedules:** editor card, one row per entry of `GET /api/schedules` (`scState`) —
+  preset select (from `/api/presets`; `— choose —` on a fresh row, a missing name stays
+  selectable as `<name> (missing)` and is flagged), *From* / *To* (`<input type=time>`),
+  day toggles Mo…Su (`aria-pressed`, updated in place; none = *every day*), fallback row
+  (*fallback — outside every window*; *make fallback* disabled while another fallback
+  exists / *add window*), ACTIVE, remove; *Add entry* (disabled without a scheduler or
+  without presets, hint names the Fans page), *Revert*, *Save* (disabled while clean;
+  dirty indicator, leave-page guard `scGuard` from `go`, sign-out and `beforeunload`
+  guards). Client validation: preset set, `HH:MM` both on a windowed entry, from ≠ to,
+  one fallback, ≤ 16 entries; errors in `#sc-err` (`role="alert"`). Save = fresh raw
+  config → `stripSchedules` (`[[schedule]]` blocks dropped up to the next header of any
+  kind) + `tomlSchedule` per entry (`from`/`to` only when windowed, `days` only when not
+  every day) → `PUT /api/config?strict=1`; 200 toast, 202 restart notice, 400 the
+  server's errors (`TestScheduleEditorKeepsOtherTables`; the strip regexps are run in Go
+  against sample TOML). Status card: active entry, next switch (`<time>` absolute +
+  `in …` + preset, `no preset (no fallback)`, `none within 8 days`), last switch with
+  `ok` or its error in `--crit` (also as a warn notice), timezone; polled every 60 s
+  while current, a dirty editor is never rebuilt. 501 → `unavailable (501)`; no entries
+  → the empty state names the next step. Editor and status side by side from 1400 px;
+  below 700 px every entry is a stacked block.
+- **Alerts:** Delivery card (effective transport, `pve-notify` / `mail(1)` availability
+  with the apt hint, webhook URL + format or `no URL configured`, cooldown; *Configure*
+  = `data-go="settings" data-sec="st-alerts"`), *Send test alert* (`sendTest`, shared
+  with the Settings section; 409 → "already running"), Recent alerts, kinds table with
+  last delivery (empty state for no kinds). The transport form lives in Settings.
+- **Log:** filter (`n of m match`), auto-scroll, `last N lines · source: file|journal`,
+  *Refresh*, *Export*; WARN/ERROR colouring; re-read every 10 s while current. *Clear
+  log* is in Settings → Danger zone (`#lg-clear`, disabled with `source = journal`).
+- **Settings:** one page, `section.card.st` with `id="st-…"` per block, sub-navigation
+  `#subnav` on the left from 900 px (sticky below `--hdr-h`; chips on top below that)
+  built from the visible sections, marker from an `IntersectionObserver` (a click pins
+  its section for `subLock` ms, the last sections cannot reach the top) and from the
+  scroll position on entry; a sub-nav click writes `#settings/<id>` with `replaceState`.
+  Sections: *Display* (`s-unit`, `s-interval`, `s-theme`, `s-nav`; hint about the forced
+  rail), *Account & sessions* (`signed in as`, *Change password…*, *Change user…*,
+  *Sign out other sessions*, the two forms with hidden username fields, sessions table
+  with THIS SESSION and `· remembered`), *API tokens* (`#st-tokens`, shown only when
+  `sess.via` is `cookie` or `basic`: table name · id · scope · created · expires ·
+  last used · last address · *Revoke* (confirm), *Create token…* form — name, scope
+  select with one-line explanations, expiry `30 d · 90 d · 1 y · never` with a `warn`
+  notice for never —, after creation the secret once in a read-only field with *Copy*
+  (clipboard, fallback selects the text) and *Done*), *Certificate* (badge `automatic`
+  / `own certificate` / `automatic (fallback)` / `TLS off`; TLS off = one hint;
+  otherwise key/value block, SAN chips, fingerprint + copy, notice with the server's
+  warnings (`SAN list lacks host …` folded into one HSTS sentence, the fallback
+  explanation first), *Download .crt/.cer*, *Regenerate…* with *generate a new key*
+  (hidden in file mode and fallback), *Upload own certificate…* with file inputs + PEM
+  textareas (64 KiB) and the *install anyway* checkbox after `force_required`, *Back to
+  auto* (file mode and fallback), collapsible *How to trust this certificate*), *Alert
+  transport* (select incl. `webhook`, unavailable transports disabled and marked;
+  `mail_to` for auto/mail, `webhook_url` + `webhook_format` for webhook; *Save* →
+  `PUT /api/alerts`; unsaved form edits survive the 60 s refresh (`alDirty`); PVE
+  template card hidden without `pve_available`, *Install / Update template* disabled
+  with reason; Test card with *Send test alert* and a link to the Alerts page), *Backup*
+  (Export/Import bundle — fetch + blob so the credential and the CSP stay; import
+  confirm, 1 MiB cap, 202 → `#g-notice`), *Danger zone* (*Clear log*, *Regenerate with
+  new key* (confirm), *Back to auto* (confirm); the certificate buttons enabled only
+  where they apply). Entering the page re-reads account, sessions, tokens, certificate
+  and the alert status. Display values persist in `localStorage` key `n5-fangov` as one
+  object `{unit, interval, theme, range, nav}`, whitelisted per key.
+- **About** (public): name, version, `beta` badge, description, licence, repository,
+  author, releases link, *built with* (signed in only; the page is re-read on every
+  sign-in / sign-out), credits, the mock hint (mock mode only, lists every flag). The
+  **Compatibility** card (`#compat`, `data-auth`): profiles table with ACTIVE and
+  verified/untested badges; deep link `#about/compat`.
 - **Dialogs** (`<dialog>`, focus trap, Escape): Login (user, password, *Remember me*,
   inline error, the recovery hint *Forgot the password? On the host, as root:
-  `n5-fangov passwd`* — root on the box is the only recovery path, by design), Account (*Change password…*, *Change user…*, *Sign out other sessions*,
-  sessions table with THIS SESSION, **API tokens** section: table name · scope · created ·
-  expires · last used · last address · *Revoke* (confirm), *Create token…* form (name,
-  scope select with one-line explanations, expiry select `30 d · 90 d · 1 y · never`),
-  after creation the secret once in a read-only field with *Copy* and the notice "shown
-  only now", a `warn` notice for *never*), Certificate (badge, key/value block, SAN chips,
-  fingerprint + copy, notice with the server's warnings, Download .crt/.cer, Regenerate…
-  with *generate a new key*, Upload own certificate… with file inputs + PEM textareas and
-  the *install anyway* checkbox after `force_required`, Back to auto, collapsible "How to
-  trust this certificate"), Confirm/Prompt (generic, replaces the native dialogs).
-- **Settings popover** (gear): unit °C/°F, refresh interval 5/10/30 s, theme
-  dark/light/system, Export/Import settings (fetch + blob, so the credential and the CSP
-  stay), Certificate…, Account…. Persisted in `localStorage` (`n5-fangov`, whitelisted values).
-- **Connection banner** after two failed polls; a 401 on a protected call shows "Session
-  expired" and returns to the anonymous Overview (unsaved curve edits are kept for the next
-  sign-in). **Toasts:** at most 3 visible per region, the oldest is dropped when a fourth
-  arrives.
+  `n5-fangov passwd`* — root on the box is the only recovery path, by design; after the
+  sign-in the focus goes to the page's nav entry that is rendered, else the heading),
+  Confirm (`ask(title, text, {ok, danger})` replaces the native dialogs; a second ask
+  answers the open one with "no"; danger focuses *Cancel*; Escape handled by the dialog
+  itself), the preset editor (above), the phone *More* sheet (initial focus on the
+  current page's entry).
+- **Auth split** (`applyAuth`): nav entries, bottom bar and every `[data-auth]` element
+  are hidden while anonymous; on sign-out the protected content leaves the DOM (tables,
+  lists, editors, forms, token secret) and the route falls back to the Overview. Sign-in
+  loads config, certificate, dashboard sensors, alerts, system, history and profiles,
+  restores a stashed curve (`edStash`) or schedule (`scStash`) state with a notice on
+  the page and a toast when another page is current, then routes and polls.
+- **Polling** (`schedule`): `/api/state` every `S.interval` s, history per range, alerts
+  every 60 s on Overview and Alerts, schedules every 60 s, system every 30 s on Overview
+  and System, log every 10 s; nothing while `document.hidden`; a poll called mid-poll
+  queues one more round.
+- **Connection banner** after two consecutive network / 5xx answers (`tally`; the mock's
+  `&down=1` answers status 0); the live dot turns `err`; a 401 on a protected call while
+  signed in (`sessionLost`) stashes dirty curve and schedule edits, toasts *Session
+  expired — sign in again — curve edits kept — schedule edits kept* and returns to the
+  anonymous Overview. **Toasts:** at most 3 visible per region (polite / assertive for
+  errors), the oldest is dropped when a fourth arrives.
+- **Keyboard / screen readers:** skip link; nav lists labelled by their group caption;
+  heading focus after a user page switch; every curve point focusable (`role="slider"`,
+  `aria-valuetext`, arrow keys 1 °C / 5 duty, Shift × 5, clamped to the neighbours);
+  the switch `role="switch"` + `aria-checked` + `aria-busy`; day, chart, range and
+  metric toggles `aria-pressed`; notices `role="alert"`; icon-only controls carry
+  `aria-label`, icons next to text are `aria-hidden`; `th scope="col"` everywhere, the
+  actions column has a visually hidden header. `prefers-reduced-motion` stops the live
+  pulse, the bar and switch transitions and the toast animation.
 - **Mock:** `?mock=1` anonymous, `&user=1` signed in, `&auth=none`, `&tls=off|file|soon|fallback`,
-  `&tab=<id>`, `&syserr=1`, `&reject=1` (strict PUT 400), `&restart=1` (PUT /api/config
-  answers 202), `&expire=1` (session dies after 15 s), `&schedfail=1` (last schedule
-  switch failed), `&pwm4=1` (fourth channel `pcie`,
-  pwm 4, no tach), `&lag=1` (an override PUT/DELETE shows in `/api/state` only after two
-  more polls — the daemon's next-cycle lag); every endpoint above is implemented (login `admin`/`admin`); names and
-  addresses are documentation values (`n5host`, `192.0.2.x`, `n5.lan`).
+  `&tab=<id>` (mapped, see routing), `&syserr=1`, `&reject=1` (strict PUT 400),
+  `&restart=1` (PUT /api/config answers 202), `&expire=1` (session dies after 15 s),
+  `&schedfail=1` (last schedule switch failed; the first entry names a preset the store
+  lacks), `&pwm4=1` (fourth channel `pcie`, pwm 4, no tach), `&lag=1` (an override
+  PUT/DELETE shows in `/api/state` only after two more polls — the daemon's next-cycle
+  lag), `&down=1` (state, history and sensors unreachable from 2 s after the boot — the
+  connection banner); login `admin`/`admin`; names and addresses are documentation
+  values (`n5host`, `192.0.2.x`, `n5.lan`).
 
-### 11a. Target structure for 0.4.0 (redesign contract)
+### 11a. Redesign decisions and rules (0.4.0)
 
 Decided 2026-09-18 from `docs/design/REDESIGN-CONCEPT.md` and the 0.3.1 release-gate
-findings. Until 0.4.0 ships, the bullets above describe the running dashboard; this
-subsection is the contract the redesign is built and reviewed against. What the concept
-lists under *What does not change* holds: anonymous view, API, mock, CSP, no framework,
-visibility model, keyboard and screen-reader behaviour, the backend packages.
+findings; section 11 describes the result. What the concept lists under *What does not
+change* holds: anonymous view, API, mock, CSP, no framework, visibility model, keyboard
+and screen-reader behaviour, the backend packages (the only backend change is the
+optional body of `PUT /api/presets/{name}`, section 9).
 
-**Budgets.** `app.js` ≤ **128 KiB**, `mock.js` ≤ **48 KiB**, `app.css` ≤ **48 KiB**
-(`web_test.go`; the 96 KiB budget is exhausted at 93 KB and the mock is already a
-separate file, so the room goes to the shell, the Fans page, the preset editor and the
-schedule editor). `index.html` carries the SVG sprite and has no budget.
-
-**Shell.** One `nav` (sidebar) + one page header + one `main` with one `section` per
-page. Pages and groups:
-
-| Group | Page id | Content | Anonymous |
-|---|---|---|---|
-| Monitor | `overview` | tiles, charts, sensors, system glance, recent alerts | yes (tiles + charts only) |
-| Monitor | `system` | the inventory of the System tab | no |
-| Control | `fans` | Curves + Manual + Presets, channel-centric | no |
-| Control | `schedules` | editable schedule table + status | no |
-| Operate | `alerts` | effective transport, kinds with last delivery, recent alerts, *Send test alert* | no |
-| Operate | `log` | the Log tab | no |
-| Settings | `settings` | Display · Account & sessions · API tokens · Certificate · Alert transport · Backup · Danger zone | no |
-| Info | `about` | the About tab + the Compatibility card (profiles table; deep link `#about/compat`) | yes (the card is signed-in only) |
-
-- Sidebar (decided 2026-09-18: sidebar, expanded by default; no top-bar variant): 220 px
-  expanded, 56 px icon rail (state in `localStorage`, key `nav`), group
-  captions in 11 px caps; the current page carries `aria-current="page"` and a 2 px
-  accent bar; every entry is a `button` in a `ul` (Tab order, Enter/Space), no roving
-  tabindex. Below 700 px the sidebar is a fixed **bottom bar** with Overview · Fans ·
-  Alerts · Settings · *More* (a sheet listing the remaining pages); `main` gets the bar's
-  height as bottom padding. Entries except Overview and About carry `data-auth`.
-- Routing: `location.hash = '#' + pageId`; the 0.3 mock parameter `&tab=` maps
-  `curves|manual|presets → fans` and is kept for the screenshot script. Every nav entry
-  has a page section and a dispatch entry (`TestNavHasPages` replaces `TestTabsHaveHandlers`).
-  Eight entries: Overview, System, Fans, Schedules, Alerts, Log, Settings, About.
-- Page header: page title (20/600) left; right: status chip, uptime, version + `beta`
-  badge, live indicator, **certificate warning chip** only while the certificate is in
-  fallback, expires in < 30 days, is expired, or the listener is plain HTTP off loopback
-  (click → Settings → Certificate), user name, *Sign in* / *Sign out*. The gear popover
-  is gone (its content is Settings → Display / Backup). Below 700 px: title, status chip,
-  live dot, user button.
-- Icons: one inline SVG sprite at the top of `index.html` (`<svg hidden><symbol id="i-…">`),
-  used as `<svg class="ic" aria-hidden="true"><use href="#i-gear"/></svg>`; 16 px,
-  `currentColor`, `stroke-width 1.75`. Icon-only controls carry `aria-label`; icons next
-  to text are `aria-hidden`. Set: gauge, chip, fan, clock, bell, list, gear, check-list,
-  info, lock, unlock, warn, close, external, chart, plus, trash, edit, copy, chevron-left,
-  chevron-down, more, user, sign-in, sign-out, play, check.
-
-**Overview.** Tiles keep temperature (32/700 on the redesign, coloured by critical), mode
-badge, duty bar with target marker, RPM, held/hold; a 2-hour temperature **sparkline**
-(canvas, `--spark-h`) sits between value and bars (decided 2026-09-18: yes).
-Charts and range switch as today; the extra-sensor chart is a third chart of the same
-kind. The Sensors card lists every disk individually under its group with the *chart*
-toggle. Empty states name the next step.
-
-**Fans page.** One card per channel, header `name · pwmN · sensor` + mode badge + the
-name of the preset whose channel values match (`chKey`) as a badge. Left: the curve
-editor of the Curves tab (fields sensor / critical / stop / hysteresis / min_on, canvas,
-point table). Right, *Live & override*: now-temperature → duty target, an explicit
-**Auto / Manual switch** (`role="switch"`, gate finding: switching to Manual holds the
-duty the channel runs at that moment — `PUT /api/override/{name}` with the snapshot duty,
-raised to the HDD minimum where it applies —, the slider + number field and *Set* then
-change it; switching back to Auto is the `DELETE /api/override/{name}`; the slider block
-is dimmed **and disabled** while the switch is off; the switch state is a client-side
-override flag held through one daemon cycle after a PUT/DELETE — the snapshot's `mode`
-follows a cycle later — and `critical`/`stall` leave it alone, so the override stays
-switchable off), the HDD minimum hint (the daemon's `hddLike` rule: fixed stop duty or
-pwm3 on the N5 Pro). The live block refreshes with
-every state poll without rebuilding the editor. Below the cards a **Presets row** of
-chips (active ●, recommended ★, built-in badge, description, *Apply* with confirm,
-icon buttons *Details* (built-in, read-only) / *Edit* (user preset) and *Delete*; rename
-happens in the editor's name field → `POST …/rename` before the save); *Save current as…*
-opens the **preset editor** dialog (*Start from*: the editor's unsaved values, the
-daemon's running curves or any preset; name; per-channel critical / stop / hysteresis /
-min_on and an editable point table, 2..8 points, validated with the curve editor's rules;
-no description — user preset files carry none; *Save* = `PUT /api/presets/{name}` with the
-composed channels — the editor's values, not the daemon's — nothing is applied). Sticky action bar with the dirty indicator, *Revert*,
-*Apply to daemon* (unchanged semantics, `PUT /api/config?strict=1`, `[[channel]]` splice).
-Decided 2026-09-18: all channels stacked on desktop; below 700 px a channel selector
-(segmented control above the card) shows one channel at a time — a breakpoint, not a setting.
-The dirty indicator then sits on the selector entry of the edited channel as well.
-
-**Schedules page.** The read-only card becomes an editor: one row per entry — preset
-(select from `/api/presets`), from / to (`<input type=time>`), days (seven toggle
-buttons, none = every day), *fallback* when the window is empty, ACTIVE badge —, *Add
-entry*, *Remove*, *Save* (`PUT /api/config?strict=1` after splicing the `[[schedule]]`
-tables the same way *Apply* splices `[[channel]]`; the daemon reloads schedules without a
-restart). Status block: active entry, next switch, last switch with its error, timezone.
-No backend change: the config PUT already accepts the tables.
-
-**Alerts page.** Status (effective transport, tool availability, cooldown) with a link
-to Settings → Alert transport, kinds table with last delivery, recent alerts, *Send
-test alert*. **Settings page** (`section` per block with `id="st-…"`, sub-navigation on
-the left ≥ 900 px, sticky; below that a stacked page with the sub-navigation as chips on
-top): *Display* (unit, interval, theme), *Account & sessions* (the account dialog's
-content), *API tokens* (the tokens panel), *Certificate* (the certificate dialog's
-content incl. *How to trust*), *Alert transport* (transport form, mail_to, webhook URL +
-format, *Save*, *Send test alert*, PVE template card), *Backup* (export / import bundle),
-*Danger zone* (clear log, reset certificate, regenerate with new key). Login,
-Confirm/Prompt and the preset editor remain `<dialog>`s; Account and Certificate dialogs
-are removed. Deep link `#settings/cert` scrolls to the section.
-
-**Tokens added to `:root`.** `--nav-w:220px; --rail-w:56px; --bottom-h:56px;
---spark-h:28px; --fs-20:20px; --fs-32:32px; --z-nav:15; --nav-active:color-mix(in srgb,
-var(--info) var(--tint-bg),transparent); --ic:16px; --ic-stroke:1.75`. Light theme
-overrides nothing new. The `--hdr-h` measurement stays for the sticky action bar.
-
-**Acceptance.** Every task of `docs/DESIGN-AUDIT.md` §4 in the same or fewer clicks
-(curve change 2, manual set 2 + switch, preset apply 2, password change 2 from the
-Settings page, certificate download 2); contrast table §5 recomputed for every new
-pair (nav text, active entry, sparkline stroke); 375 px pass with the bottom bar; no
-console messages in every mock state; `docs/screenshots/` regenerated for every page.
+- **Operator decisions (on the prototype screenshots, 2026-09-18):** sidebar, expanded by
+  default, collapsible to the icon rail — no top-bar variant; sparklines on the tiles:
+  yes; Fans stacked on desktop, a channel selector below 700 px (a breakpoint, not a
+  setting); Compatibility folded into About (`#about/compat`) — eight sidebar entries.
+- **Page model:** Monitor / Control / Operate / Settings / Info; Curves, Manual and
+  Presets become the channel-centric Fans page with an explicit override switch and a
+  preset editor; the read-only Schedules card becomes the editable Schedules page; gear
+  popover, Account dialog and Certificate dialog become sections of one Settings page
+  (Display · Account & sessions · API tokens · Certificate · Alert transport · Backup ·
+  Danger zone); the lock button becomes the header's certificate warning chip that is
+  shown only while something is wrong.
+- **Override switch (gate finding):** switching to Manual holds the duty the channel
+  runs at that moment (raised to the HDD minimum), *Set* changes it, Auto is the
+  `DELETE`; the client keeps its flag through one daemon cycle because the snapshot lags.
+- **Preset editor (gate finding):** *Save current as…* composes values (*Start from*
+  editor / daemon / preset) and saves without applying — `PUT /api/presets/{name}` with
+  a JSON body, validated with the config's channel rules against the running channel
+  set.
+- **Budgets:** `app.js` ≤ 128 KiB, `mock.js` ≤ 48 KiB, `app.css` ≤ 48 KiB
+  (`web_test.go`); `index.html` has none. Do not raise a limit to make a change fit.
+- **Icons:** one inline SVG sprite at the top of `index.html` (`<svg hidden><symbol
+  id="i-…">`), used as `<svg class="ic" aria-hidden="true"><use href="#i-gear"/></svg>`
+  or `ico('gear')` in `app.js`; 16 px, `currentColor`, `stroke-width 1.75`. Present:
+  gauge, chip, fan, clock, bell, list, gear, info, warn, close, external, chart, plus,
+  trash, edit, copy, chev-l, chev-r, more, user, sign-in, sign-out, check, download,
+  refresh, star. Unused symbols are removed (review C18). Icon-only controls carry
+  `aria-label`; icons next to text are `aria-hidden`.
+- **Navigation state:** the rail preference is the field `nav` (`side` | `rail`) of the
+  `n5-fangov` `localStorage` object next to unit, interval, theme and range; the rail
+  is forced below 1100 px and the preference never overrides that. Below 700 px the
+  bottom bar carries Overview · Fans · Alerts · Settings · More.
+- **Tokens added to `:root`:** `--nav-w:220px; --rail-w:56px; --bottom-h:56px;
+  --subnav-w:200px; --spark-h:28px; --fs-20:20px; --fs-32:32px; --z-nav:15;
+  --nav-active:color-mix(in srgb, var(--info) var(--tint-bg), transparent); --ic:16px;
+  --ic-stroke:1.75` (plus `--ic-sm/--ic-md/--ic-lg`, `--logo`). Light theme overrides
+  nothing new except `--info #1a5fb4` for contrast (review D11). `--hdr-h` and
+  `--actbar-h` are measured by `app.js`.
+- **Routing contract:** `location.hash = '#' + pageId[ + '/' + section]`; every nav entry
+  has a page section and a dispatch entry (`TestNavHasPages` replaces
+  `TestTabsHaveHandlers`); `&tab=` stays as a mock-only alias for the screenshot script.
+- **Acceptance:** every task of `docs/DESIGN-AUDIT.md` §4 in the same
+  or fewer clicks (curve change 2, manual set 2 + switch, preset apply 2, password
+  change 2 from the Settings page, certificate download 2); contrast table §5 recomputed
+  for every new pair (nav text, active entry, sparkline stroke, switch track, day
+  toggles, preset dot at 3:1); 375 px pass with the bottom bar; no console messages in
+  every mock state; `docs/screenshots/` regenerated for every page (set 01–28, done
+  2026-09-18). The contrast and console checks are part of the review rounds C/D and of
+  the release gate for 0.4.0.
 
 ## 12. Deploy
 
@@ -1073,7 +1139,7 @@ Windows checkout cannot hold them). Controller tests use a fake `Device`
 (`fakes_test.go`); the safety rules are pinned in `safety_test.go`. `TestServeSmoke`
 starts the real `cmdServe` (dry-run, fake sysfs, TCP + socket, override, SIGTERM).
 Frontend: `web_test.go` checks the JS budgets (`app.js`, `mock.js`), that `index.html`
-does not reference `mock.js`, the tab/handler list, the CSP and the contrast of the
+does not reference `mock.js`, the page/handler list (`TestNavHasPages`), the CSP and the contrast of the
 primary buttons; the mock (`?mock=1`) is the manual test bed. `TestOpenAPICoversRoutes`
 pins the route table to the document. `internal/history` is tested with a fake clock
 (bucket means, tier cut-offs, save/load round trip, corrupt file); `internal/schedule`

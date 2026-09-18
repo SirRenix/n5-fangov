@@ -29,7 +29,7 @@ and to 0.4.0 (the public one).
 | 3 | Install page, **release path**: source of the tag and binary + sha256 on the host (private phase: copied from a signed-in client, public phase: clone + curl), verify, `./deploy/install.sh` | installer output matches the page; `n5-fangov version` prints the release | ☐ |
 | 4 | Install page, **package path** (second run): the `.deb` release asset (private phase: copied from the signed-in client), `apt install ./n5-fangov_<debver>_amd64.deb` | same result; `dpkg -s n5-fangov` ok; the postinst line and the apt-hook line match the page | ☐ |
 | 5 | Setup page: `n5-fangov setup` interactively (`lan`, new user + password) | config written, unit started, `n5-fangov check` all `[ok]` | ☐ |
-| 6 | Dashboard page: open `https://<host>:8010`, trust the certificate per the HTTPS page, sign in, apply a built-in preset, set and clear a manual override, send a test alert | every step as described; test alert arrives by mail | ☐ |
+| 6 | Dashboard page: open `https://<host>:8010`, trust the certificate per the HTTPS page (Settings → Certificate → *Download*, *How to trust*), sign in; **Fans**: apply a built-in preset from the Presets row, switch *Manual override* on for one channel, *Set* another duty, switch it off; *Save current as…* → a user preset from *the daemon (running curves)*; **Schedules**: add a window with that preset, *Save*, check the status card, remove it, *Save*; **Alerts**: *Send test alert*; **Settings**: *Export settings*, *Create token…* and *Revoke* it; on a phone or a narrow window: bottom bar, *More*, the Fans channel selector | every step as described by the Dashboard page alone; the preset badge, the mode badge and the status card follow each action; test alert arrives by mail | ☐ |
 | 7 | Kernel driver page: `apt install --reinstall` of any small installed package (e.g. `lm-sensors`) — the hook runs after every dpkg run, a kernel reinstall is not needed | the hook line `n5-fangov: fan driver module present for N kernel(s): …` visible in the apt output ([the kernel-update gate](02-kernel-driver.md#the-kernel-update-gate)) | ☐ |
 | 8 | Reboot the host | daemon active after boot, DKMS module loaded, curves in effect (the pending reboot proof) | ☐ |
 | 9 | Troubleshooting page: provoke one listed symptom (e.g. stop the module → `check` fails) and follow the page | the page's fix works | ☐ |
@@ -49,7 +49,9 @@ release. Otherwise: fix the documentation or the code, new `-rc`, repeat the fai
 - The hwmon number (`hwmonN` in the setup dialog, `status` and `check`) may change after
   the reboot in step 8; that is not a deviation
   ([Verify](02-kernel-driver.md#verify)).
-- A preset applied in step 6 rewrites the curves in the config file. Afterwards either
+- A preset applied in step 6 rewrites the `[[channel]]` tables, the schedule test the
+  `[[schedule]]` tables of the config file; the user preset is a file in
+  `/etc/n5-fangov/presets/`. Afterwards either
   restore the config backed up in precondition 4 or keep the new curves deliberately —
   step 10 checks "config still in effect" against whichever you chose.
 - Record deviations as GitHub issues with the page name and the step number.

@@ -8,7 +8,7 @@ repository [README](../README.md).
 | [01 Install](01-install.md) | prerequisites, release binary or build, `.deb`, what the installer does, file layout |
 | [02 Kernel driver](02-kernel-driver.md) | the N5 Pro EC module: why out-of-tree, DKMS, install, `experimental_write=1`, verify, kernel-update gate, remove |
 | [03 Setup](03-setup.md) | `n5-fangov setup`: profile, scope local/lan, password rules, non-interactive, first start, changing credentials |
-| [04 Dashboard](04-dashboard.md) | every tab with a screenshot, history ranges and CSV, schedules card, settings gear, lock, account and API tokens, extra sensors, phone layout |
+| [04 Dashboard](04-dashboard.md) | the shell (sidebar, header, phone bar), every page with a screenshot — Overview, System, Fans (curve editor, manual switch, preset editor), Schedules editor, Alerts, Log, Settings, About —, dialogs, keyboard, deep links, the mock, connection loss |
 | [05 CLI reference](05-cli.md) | all subcommands and flags (incl. `token`), exit codes, environment, the socket |
 | [06 Configuration](06-configuration.md) | every key of `config.toml`, curve rules, hysteresis and min_on, sensor ids, presets and the built-in sets, pwm4, schedules, strict writes |
 | [07 Alerts and guards](07-alerts.md) | what the daemon guards against, alert kinds, transports incl. webhook (ntfy, Gotify, Home Assistant), the PVE side, test alert |
@@ -23,4 +23,4 @@ Also here: [RELEASE-GATE.md](RELEASE-GATE.md) (the manual test before a release)
 `openapi/` (the Home Assistant YAML files the API page embeds),
 `AUDIT.md` and `DESIGN-AUDIT.md` (the audits behind the current state),
 [REVIEW-TAGS.md](REVIEW-TAGS.md) (legend of the review findings the earlier rounds fixed),
-[design/REDESIGN-CONCEPT.md](design/REDESIGN-CONCEPT.md) (planned dashboard redesign).
+[design/REDESIGN-CONCEPT.md](design/REDESIGN-CONCEPT.md) (the concept and decisions behind the 0.4.0 dashboard).

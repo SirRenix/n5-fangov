@@ -52,20 +52,20 @@ The API changes fan duties, so treat the port like a management interface.
 
 ## The certificate
 
-The lock icon in the header shows the transport; its tooltip carries the certificate
-mode and expiry, and clicking it (or *Settings → Certificate…*) opens the certificate
-panel: subject, issuer, SANs, validity (highlighted below 30 days), key type, SHA-256
-fingerprint with a copy button, and the actions below
-([screenshots](04-dashboard.md#lock-and-certificate-panel)). Making the browser warning
-go away takes three steps:
+Settings → *Certificate* shows the mode badge, subject, issuer, SANs, validity
+(highlighted below 30 days), key type, SHA-256 fingerprint with a copy button, and the
+actions below ([screenshots](04-dashboard.md#certificate)). The page header carries a
+warning chip only while something is wrong — plain HTTP off loopback, a fallback, less
+than 30 days to expiry, expired — and the chip leads to that section. Making the browser
+warning go away takes three steps:
 
 1. **Download** — *Download .crt* (PEM: Firefox, macOS, Linux) or *Download .cer* (DER:
    Windows, Android). Both are the certificate only, never the key; like the rest of the
-   panel they need a signed-in session (`n5-fangov cert export` writes the same file from
+   section they need a signed-in session (`n5-fangov cert export` writes the same file from
    the shell). So the first visit goes through the browser's warning page once —
    *Advanced → proceed* (the wording differs per browser) —, then sign in, then
    download.
-2. **Trust** — the panel's *How to trust this certificate* lists the recipes.
+2. **Trust** — the section's *How to trust this certificate* lists the recipes.
    - Windows: double-click the `.cer` → *Install Certificate…* → *Local Machine* → on
      the store page **do not** leave the default *Automatically select the certificate
      store based on the type of certificate* (it lands in the wrong store and the
@@ -79,7 +79,7 @@ go away takes three steps:
    - Android: Settings → Security → Install a certificate → CA certificate.
    - Linux CLI: copy the `.crt` to `/usr/local/share/ca-certificates/` and run
      `update-ca-certificates`.
-3. **Reload** — the connection is now verified; the fingerprint in the panel is the one
+3. **Reload** — the connection is now verified; the fingerprint in the section is the one
    to compare against the browser's certificate viewer. Still a warning after the
    Windows import: [Troubleshooting](10-troubleshooting.md#symptoms).
 
@@ -120,7 +120,7 @@ that form) but carries **name constraints** limited to exactly its own names and
   - **Lock-out guard.** The upload is refused (400) when the certificate does not cover
     the name your browser session uses (SNI, else the Host header): after the swap the
     browser would see a name mismatch and, **under HSTS, refuse the connection** — no
-    warning page, no "proceed anyway", and this panel would be out of reach. The panel
+    warning page, no "proceed anyway", and this section would be out of reach. The section
     then offers an *install anyway* checkbox (`force=true` in the API); use it only when
     you can reach the dashboard by another covered name or by IP (browsers ignore HSTS
     for IP literals). Uploads through the CLI socket are not guarded.
@@ -128,9 +128,10 @@ that form) but carries **name constraints** limited to exactly its own names and
     served (file gone, key/cert mismatch, unusable key type), the daemon does **not**
     take the dashboard down: it serves the automatic certificate instead, logs
     `FALLBACK to the automatic certificate`, sends the alert `tls` (cooled like the other
-    start alerts) and reports mode `auto (fallback from file)` — the lock turns
-    warn-coloured, the panel shows an *automatic (fallback)* badge, `GET /api/tls` carries
-    `"fallback": true`. The config keeps `tls = "file"` and its paths. Repair from the panel
+    start alerts) and reports mode `auto (fallback from file)` — the header shows the
+    chip *certificate fallback*, the Certificate section an *automatic (fallback)* badge,
+    `GET /api/tls` carries `"fallback": true`. The config keeps `tls = "file"` and its
+    paths. Repair from the section
     (upload again or *Back to auto*) or with `n5-fangov cert upload CERT KEY` /
     `cert reset`, which work offline on a broken pair too (`cert info`/`cert export` need
     a loadable one).
@@ -141,19 +142,19 @@ that form) but carries **name constraints** limited to exactly its own names and
     config write that goes through the API — curves applied from the editor, a settings
     import, a preset — gets the three keys re-applied from the certificate manager, so an
     editor that still holds the pre-upload text cannot silently revert an upload or a
-    reset. Change the mode through the panel or `n5-fangov cert …`; a hand edit of the
+    reset. Change the mode through the section or `n5-fangov cert …`; a hand edit of the
     file takes effect at the next start (with `--listen` overriding the file, the keys are
     left as they are).
 - **`off`** — plain HTTP, loopback only. A reverse proxy terminating TLS in front of
   `127.0.0.1:8010` is the alternative to `auto` ([below](#behind-a-reverse-proxy)). The
-  panel then only says so; the certificate endpoints answer `409 tls is off`.
+  section then only says so; the certificate endpoints answer `409 tls is off`.
 
-Every change from the panel is **hot-swapped**: the new certificate serves the next
+Every change from the section is **hot-swapped**: the new certificate serves the next
 handshake, open connections and the fan controller are untouched, no restart. The
 listener issues no TLS session tickets, so a browser that reconnects sees the new
 certificate at once instead of resuming an old session. Changes are logged as
 `web: tls <regenerate|upload|reset> by <ip>` and need the same login as any other write
-(`auth = "basic"`). The panel's notice lists what the server finds worth knowing about
+(`auth = "basic"`). The section's notice lists what the server finds worth knowing about
 the active certificate (`warnings` in `GET /api/tls`): an expiry within 30 days, no
 SANs, and listen hosts the SAN list does not cover — under HSTS the browser will refuse
 such a name, so a certificate for the LAN name should carry every name you use.
@@ -169,7 +170,7 @@ n5-fangov cert reset                   back to the automatic certificate
 ```
 
 With the daemon running the commands go through the unix socket and take effect at once
-(same code path as the panel). Without it they work on the files and the config directly
+(same code path as the dashboard). Without it they work on the files and the config directly
 and print the `systemctl restart n5-fangov` that applies the change.
 
 ## Transport and HSTS
@@ -192,8 +193,8 @@ mirrors it):
 | | Anonymous | Signed in |
 |---|---|---|
 | Overview | channel cards and the charts (`GET /api/state` and `/api/history` in a **reduced** form: name, pwm, sensor, temp, duty, target, rpm, mode — no hwmon path, no EC temperatures, no alert stamps, no extra sensors, no held temperature or hold) | full: plus the Sensors card, the extra-sensor chart, the CSV export, System details, recent alerts |
-| About tab, version, `GET /api/openapi.json` | full | full |
-| Curves, Manual, Presets (with the Schedules card), Alerts, System, Log, Compatibility, certificate panel, settings gear | hidden; the API answers 401 | full |
+| About page, version, `GET /api/openapi.json` | full | full |
+| System, Fans (curves, override, presets), Schedules, Alerts, Log, Settings (account, tokens, certificate, alert transport, backup), the Compatibility card on About | hidden; the API answers 401 | full |
 
 Nothing pops up for an anonymous visitor: the reduced Overview is the landing page, the
 **Sign in** button in the header opens the form. With `auth = "none"` every visitor
@@ -210,14 +211,14 @@ session is for browsers.
   Sessions survive a daemon restart — including the restart a config change may
   require — because they are mirrored to `/var/lib/n5-fangov/sessions.json` (0600, tokens
   stored hashed; at most 50, oldest dropped).
-- **Sign out** revokes the session and clears the cookie. The Account dialog lists the
-  active sessions and offers *Sign out other sessions*
-  ([Account](04-dashboard.md#account)). A browser that still holds Basic credentials
+- **Sign out** revokes the session and clears the cookie. Settings → *Account & sessions*
+  lists the active sessions and offers *Sign out other sessions*
+  ([Account & sessions](04-dashboard.md#account--sessions)). A browser that still holds Basic credentials
   sends them with every request and counts as signed in ("via basic"); *Sign out* cannot
   clear those — close the browser or clear the site data.
 - A password or user change made outside the dashboard (`n5-fangov passwd`, editing the
   file) drops every persisted session at the next start; changes made through the
-  Account dialog keep the session that made them and sign every other one out.
+  Settings page keep the session that made them and sign every other one out.
 - The cookie is `HttpOnly; SameSite=Strict` (`Secure` over TLS or with
   `behind_tls_proxy = true`).
 - Sessions are for browsers and the dashboard. Scripts, Home Assistant and agents use
@@ -248,7 +249,7 @@ session or Basic auth. A request outside the scope answers 403
 userinfo redacted (the full URL is for browser sessions and Basic auth only), so a
 `read` token never reveals a Gotify key ([Webhook](07-alerts.md#webhook)).
 
-- **Create** — settings gear → *Account…* → *API tokens* → *Create token…* (name,
+- **Create** — Settings → *API tokens* → *Create token…* (name,
   scope, expiry `30 d · 90 d · 1 y · never`), or from the shell
   `n5-fangov token create NAME [--scope read|control|admin] [--ttl DAYS]`
   ([CLI](05-cli.md#subcommands)). The secret — `n5t_` + 43 characters — is shown **once**;
@@ -259,10 +260,10 @@ userinfo redacted (the full URL is for browser sessions and Basic auth only), so
   sessions. The settings bundle (`export`/`import`) never carries tokens; a purge or
   a reinstall removes the file and every client needs a new token
   ([Updates](09-updates.md#what-an-upgrade-can-affect)).
-- **List** — the same dialog and `n5-fangov token list`: id (8 hex), name, scope,
+- **List** — the same section and `n5-fangov token list`: id (8 hex), name, scope,
   created, expires, last used, last address (the last two refreshed at most once a
   minute). An expired token stays in the list, marked, until it is revoked.
-- **Revoke** — *Revoke* in the dialog (with confirmation) or `n5-fangov token revoke ID`;
+- **Revoke** — *Revoke* in the section (with confirmation) or `n5-fangov token revoke ID`;
   takes effect on the next request. Revocation is the **only** way to end a token
   early: a password change, *Sign out other sessions* and a user rename leave tokens
   valid, unlike browser sessions.
@@ -282,7 +283,7 @@ Basic or a Bearer token within its scope) except `GET /api/version`, `/api/about
 `/api/session`, `/api/openapi.json`, the login/logout endpoints and the **reduced**
 `GET /api/state` / `/api/history` (channel temperatures, duties, RPM and modes —
 [Who sees what](#who-sees-what)). Config, sensors, presets, schedules, the history CSV,
-profiles, log, certificate panel and downloads, alerts, account, tokens, system and
+profiles, log, certificate section and downloads, alerts, account, tokens, system and
 every write are protected.
 
 **The hash never leaves the daemon.** `GET /api/config` and the settings export show
@@ -348,7 +349,7 @@ on real hardware after every change — `/sys` writes are what most sandboxes fo
 | Setting | Effect |
 |---|---|
 | `NoNewPrivileges=yes`, `LockPersonality=yes`, `RestrictRealtime=yes` | no privilege escalation from the daemon |
-| `ProtectSystem=strict` + `ReadWritePaths=-/etc/n5-fangov -/run/n5-fangov -/var/log/n5-fangov -/var/lib/n5-fangov -/sys/class/hwmon -/sys/devices/platform -/var/spool/postfix/maildrop -/etc/pve/notification-templates` | whole file system read-only except config/presets/tls, runtime dir, logs, state dir, the hwmon attributes (the pwm files of the supported chips live under `/sys/devices/platform/<driver>/hwmon/hwmonN`, `/sys/class/hwmon` holds the symlinks; the rest of `/sys` — sensors, DMI, disk temperatures — is read), the postfix maildrop (alerts via `mail`) and the PVE template directory (the Alerts tab's install button; verified on the reference host — the daemon may write into it but cannot create it); `-` = a missing path does not fail the start |
+| `ProtectSystem=strict` + `ReadWritePaths=-/etc/n5-fangov -/run/n5-fangov -/var/log/n5-fangov -/var/lib/n5-fangov -/sys/class/hwmon -/sys/devices/platform -/var/spool/postfix/maildrop -/etc/pve/notification-templates` | whole file system read-only except config/presets/tls, runtime dir, logs, state dir, the hwmon attributes (the pwm files of the supported chips live under `/sys/devices/platform/<driver>/hwmon/hwmonN`, `/sys/class/hwmon` holds the symlinks; the rest of `/sys` — sensors, DMI, disk temperatures — is read), the postfix maildrop (alerts via `mail`) and the PVE template directory (the *Install template* button in Settings → Alert transport; verified on the reference host — the daemon may write into it but cannot create it); `-` = a missing path does not fail the start |
 | `ProtectKernelTunables=no` | **must stay `no`**: the pwm files are kernel tunables |
 | `ProtectHome=yes`, `PrivateTmp=yes`, `PrivateDevices=yes`, `ProtectControlGroups=yes` | no access to home, private /tmp, no physical devices in /dev, cgroups read-only |
 | `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK`, `RestrictNamespaces=yes` | socket, TCP/HTTP(S), netlink for the interface list (`net.Interfaces()` — the fallback when the TLS certificate needs the box's addresses), nothing else |
@@ -366,7 +367,7 @@ writes into `/var/spool/postfix/maildrop` — that directory is in `ReadWritePat
 it is `0730 postfix:postdrop` and `NoNewPrivileges` suppresses the setgid bit
 `postdrop` relies on, so this path additionally needs `CAP_DAC_OVERRIDE`. Not verified;
 if you need it, add a drop-in (`systemctl edit n5-fangov`) with
-`CapabilityBoundingSet=CAP_DAC_OVERRIDE` and test with the Alerts tab's *Send test
+`CapabilityBoundingSet=CAP_DAC_OVERRIDE` and test with the Alerts page's *Send test
 alert* — that one is sent by the daemon from inside the sandbox and reports the
 delivery error (`n5-fangov alert` or `alerts test` from a shell with the daemon stopped
 run outside the sandbox and prove nothing). A failed delivery is logged

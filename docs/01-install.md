@@ -16,7 +16,7 @@ and where the files end up.
 | | |
 |---|---|
 | OS | Proxmox VE 9.x (Debian 13 "trixie") or Debian 13 with systemd; the tested platform is in the README's [Tested hardware](../README.md#tested-hardware). Everything runs as root. |
-| Packages | `dkms` and the kernel headers for the running kernel (`proxmox-headers-$(uname -r)` on PVE, `linux-headers-$(uname -r)` on Debian) for the N5 Pro driver; `pciutils` (`lspci`, device names in the System tab; optional); `lm-sensors` (optional, `sensors` for cross-checks). |
+| Packages | `dkms` and the kernel headers for the running kernel (`proxmox-headers-$(uname -r)` on PVE, `linux-headers-$(uname -r)` on Debian) for the N5 Pro driver; `pciutils` (`lspci`, device names on the System page; optional); `lm-sensors` (optional, `sensors` for cross-checks). |
 | Fan driver | A hwmon driver that exposes the `pwm*` files. **N5 Pro:** the out-of-tree EC module — install it first, see [Kernel driver](02-kernel-driver.md). **Other boards:** `nct6775` / `it87` from the distribution kernel, no extra package. |
 | Check | `n5-fangov detect` (after the install below) lists the hwmon devices and the profile it would use. |
 
