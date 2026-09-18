@@ -61,7 +61,9 @@ consolidated Settings page, SVG sprite, new tokens, budgets `app.js` ≤ 128 KiB
 `mock.js` ≤ 48 KiB / `app.css` ≤ 48 KiB) and a mock-only prototype in
 `docs/design/proto/` with the open decisions as flags (`nav=side|rail|top`, `spark=0`,
 `fans=tabs`, `compat=about`); `shots.mjs` + `compare.mjs` produce the old/new comparison
-page the operator decides on. Nothing in `internal/` changed.
+page the operator decides on. Nothing in `internal/` changed. **Decided on the screenshots
+(2026-09-18):** sidebar expanded by default (no top bar), sparklines yes, Fans stacked with a
+channel selector below 700 px, Compatibility folded into About (eight sidebar entries).
 
 Structural redesign of the dashboard (sidebar navigation, channel-centric Fans page,
 consolidated Settings page, SVG icons, sparklines) — concept and hand-over in

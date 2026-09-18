@@ -1,6 +1,6 @@
 # Dashboard redesign — concept (for a separate session after 0.4.0)
 
-Status: **concept only, decided 2026-09-16, not started.** Owner: operator. This page is
+Status: **step 1 done 2026-09-18** (contract DESIGN §11a, prototype `proto/`, decisions below); the build follows on `feat/redesign`. Written 2026-09-16. Owner: operator. This page is
 the hand-over for the session that builds it. It assumes the 0.4.0 features (tokens,
 webhook transport, schedules, longer history) exist, because the new structure has a
 place for each of them; if 0.4.0 slips, the concept still holds — the affected panels
@@ -139,8 +139,16 @@ behaviour, the fix belongs to 0.4.0:
   wizard's default store choice (*Automatically select…*) is the step that fails
   silently, and text alone did not prevent it.
 
-## Open decisions for the operator
+## Decisions (operator, 2026-09-18, on the prototype screenshots)
 
-- Sidebar always visible on desktop, or collapsed by default (icon rail)?
-- Fans page: all channels stacked (scroll) or one channel at a time with a selector?
-- Keep the Compatibility page or fold it into About?
+- **Sidebar**, expanded by default, collapsible to the icon rail; the top-bar variant is
+  not built (a 2026 admin tool has a grouped left navigation; the top bar degenerates to
+  the old tab row at nine entries).
+- **Sparklines** on the channel tiles: yes.
+- **Fans page:** all channels stacked on desktop; below 700 px a channel selector shows one
+  channel at a time (breakpoint, not a setting).
+- **Compatibility** folds into About as a card (`#about/compat`); the sidebar has eight
+  entries.
+
+The contract is `DESIGN.md` §11a; the prototype and the comparison page are described
+in `proto/README.md`.

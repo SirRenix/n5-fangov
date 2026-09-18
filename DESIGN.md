@@ -869,10 +869,10 @@ page. Pages and groups:
 | Operate | `alerts` | effective transport, kinds with last delivery, recent alerts, *Send test alert* | no |
 | Operate | `log` | the Log tab | no |
 | Settings | `settings` | Display · Account & sessions · API tokens · Certificate · Alert transport · Backup · Danger zone | no |
-| Info | `compat` | profiles table (open: fold into About — mock flag `compat=about`) | no |
-| Info | `about` | the About tab | yes |
+| Info | `about` | the About tab + the Compatibility card (profiles table; deep link `#about/compat`) | yes (the card is signed-in only) |
 
-- Sidebar: 220 px expanded, 56 px icon rail (state in `localStorage`, key `nav`), group
+- Sidebar (decided 2026-09-18: sidebar, expanded by default; no top-bar variant): 220 px
+  expanded, 56 px icon rail (state in `localStorage`, key `nav`), group
   captions in 11 px caps; the current page carries `aria-current="page"` and a 2 px
   accent bar; every entry is a `button` in a `ul` (Tab order, Enter/Space), no roving
   tabindex. Below 700 px the sidebar is a fixed **bottom bar** with Overview · Fans ·
@@ -881,6 +881,7 @@ page. Pages and groups:
 - Routing: `location.hash = '#' + pageId`; the 0.3 mock parameter `&tab=` maps
   `curves|manual|presets → fans` and is kept for the screenshot script. Every nav entry
   has a page section and a dispatch entry (`TestNavHasPages` replaces `TestTabsHaveHandlers`).
+  Eight entries: Overview, System, Fans, Schedules, Alerts, Log, Settings, About.
 - Page header: page title (20/600) left; right: status chip, uptime, version + `beta`
   badge, live indicator, **certificate warning chip** only while the certificate is in
   fallback, expires in < 30 days, is expired, or the listener is plain HTTP off loopback
@@ -896,7 +897,7 @@ page. Pages and groups:
 
 **Overview.** Tiles keep temperature (32/700 on the redesign, coloured by critical), mode
 badge, duty bar with target marker, RPM, held/hold; a 2-hour temperature **sparkline**
-(canvas, `--spark-h`) sits between value and bars (open: flag `spark=0` renders without).
+(canvas, `--spark-h`) sits between value and bars (decided 2026-09-18: yes).
 Charts and range switch as today; the extra-sensor chart is a third chart of the same
 kind. The Sensors card lists every disk individually under its group with the *chart*
 toggle. Empty states name the next step.
@@ -915,8 +916,9 @@ stop / hysteresis / min_on, prefilled from the editor state or from an existing 
 *Save* = `PUT /api/presets/{name}` with the composed channels — the editor's values, not
 the daemon's — nothing is applied). Sticky action bar with the dirty indicator, *Revert*,
 *Apply to daemon* (unchanged semantics, `PUT /api/config?strict=1`, `[[channel]]` splice).
-Open: all channels stacked (`fans=stack`) or one channel at a time with a channel
-selector (`fans=tabs`).
+Decided 2026-09-18: all channels stacked on desktop; below 700 px a channel selector
+(segmented control above the card) shows one channel at a time — a breakpoint, not a setting.
+The dirty indicator then sits on the selector entry of the edited channel as well.
 
 **Schedules page.** The read-only card becomes an editor: one row per entry — preset
 (select from `/api/presets`), from / to (`<input type=time>`), days (seven toggle
