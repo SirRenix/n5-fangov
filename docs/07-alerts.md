@@ -90,6 +90,18 @@ as the message and takes the title from the header. `webhook_format = "text"` se
 `Content-Type: text/plain; charset=utf-8` with the alert text as the body — for ntfy
 and any receiver that wants a plain line.
 
+A test alert as a receiver sees it (`Send test alert`, format `json`), headers
+`User-Agent: n5-fangov/0.3.1-rc2`, `X-N5-Fangov-Kind: test`,
+`Title: n5-fangov test on n5host`, body:
+
+```json
+{"type":"n5-fangov","kind":"test","severity":"warning","hostname":"n5host","title":"n5-fangov test on n5host","message":"test alert from n5-fangov 0.3.1-rc2 on n5host at 2026-09-18 02:04:34 - delivery works if you can read this.","ts":1789689874}
+```
+
+To try the transport without a real receiver, any HTTP listener on the LAN that answers
+`200` will do — a few lines of python3 `http.server` with a `do_POST` that prints the
+headers and body — pointed at with `webhook_url = "http://192.0.2.50:8080/"`.
+
 | Receiver | `webhook_url` | `webhook_format` | Notes |
 |---|---|---|---|
 | ntfy | `https://ntfy.example.test/n5` | `text` | topic in the path; the `Title` header becomes the notification title. n5-fangov sends no `Authorization` header and refuses userinfo in the URL — a protected topic takes its access token as the `auth` query parameter (ntfy docs, *Authentication → Query param*), which is redacted in logs like the Gotify key |
@@ -165,7 +177,15 @@ Actions:
   response carries the delivery error when perl, mail or the webhook receiver fail. It
   also lands in the recent list. One test at a time (a second click while one runs
   answers `409 test in progress`), bounded to 20 s. This is the test that proves
-  delivery: it is sent by the daemon from inside its sandbox.
+  delivery: it is sent by the daemon from inside its sandbox. What arrives (mail body,
+  PVE notification, webhook `message`):
+
+  ```
+  test alert from n5-fangov 0.3.1-rc2 on n5host at 2026-09-18 02:01:54 - delivery works if you can read this.
+  ```
+
+  Alert texts are plain ASCII from 0.3.1-rc2 — the em dash used before was mangled by
+  mail clients.
 - **Install / Update template** — see below.
 
 ## The PVE template

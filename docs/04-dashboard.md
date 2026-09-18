@@ -69,7 +69,8 @@ polls every 30 s; 24 h and 7 d show one-minute and five-minute means and reload 
 60 s; the x-axis shows `HH:MM`, `Www HH:MM` or `dd.mm HH:MM` accordingly. The
 history survives restarts (`/var/lib/n5-fangov/history.json`, saved every 10 minutes
 and at stop — a crash can lose up to 10 minutes). Signed in, *CSV* downloads the
-selected range as `n5-fangov-history-<host>-<ts>.csv`
+selected range as `n5-fangov-history-<host>-<YYYYMMDD-HHMMSS>.csv`, the timestamp in
+the host's local time (from 0.3.1-rc2)
 ([History and CSV](12-api.md#history-and-csv)).
 
 ![Overview with the 24 h range: averaged charts, range selector, CSV button](screenshots/27-overview-24h.png)
@@ -132,10 +133,14 @@ the editor keeps them across a session expiry until you sign in again.
 ## Manual
 
 Holds a fixed duty per channel until *Back to auto*; critical and stall still apply on
-top. HDD-like channels (fixed stop, N5 Pro pwm3) refuse values below 60 — the EC stops
-regulating them after the first write and a low manual duty would be permanent for disks
-whose temperature reacts minutes later. The same from the shell: `n5-fangov set` /
-`auto` ([CLI](05-cli.md)).
+top. The slider starts at the channel's **current** duty (what the curve is writing
+right now), and *Set* applies the value the slider shows — moving the slider alone
+changes nothing, and there is no separate on/off switch: *Set* puts the channel into
+`MANUAL`, *Back to auto* returns it to the curve (an explicit per-channel toggle is on
+the 0.4.0 list). HDD-like channels (fixed stop, N5 Pro pwm3) refuse values below 60 — the
+EC stops regulating them after the first write and a low manual duty would be permanent
+for disks whose temperature reacts minutes later. The same from the shell:
+`n5-fangov set` / `auto` ([CLI](05-cli.md)).
 
 ![Manual tab: sliders per channel, minimum-60 hint on the HDD channel](screenshots/10-manual.png)
 
@@ -146,9 +151,12 @@ own files from `/etc/n5-fangov/presets/`. *Apply* merges the preset into the con
 file by pwm — channels the preset does not name (an optional pwm4) stay — and reloads;
 *Details* shows the preset's channel tables (sensor, curve points, critical, stop,
 hysteresis, min on); *Rename* and *Delete* work on user presets only; *Save current
-as…* stores the curves the daemon runs now (not the unsaved editor state). The values
-of the three built-in sets, the file format and the merge rule:
-[Presets](06-configuration.md#presets).
+as…* stores the curves the daemon runs now (not the unsaved editor state) — so the new
+preset shows as active at once, it *is* the running set. To compose a set with other
+values, edit the curves first (Curves tab, *Apply to daemon*) and then save, or write
+the preset file by hand ([Presets](06-configuration.md#presets)); a preset editor is on
+the 0.4.0 list. The values of the three built-in sets, the file format and the merge
+rule: [Presets](06-configuration.md#presets).
 
 ![Presets tab: built-in and recommended badges, Details with the channel tables](screenshots/11-presets.png)
 
@@ -156,8 +164,8 @@ The **Schedules** card below the presets is read-only: one row per `[[schedule]]
 entry (preset, window or *fallback*, days, an ACTIVE badge on the entry in effect),
 the next switch, the last switch — with its error as a warning when it failed — and
 the timezone the host's clock uses. The list is edited in the config file
-([Schedules](06-configuration.md#schedules)); the card refreshes every 60 s while the
-tab is open.
+([Schedules](06-configuration.md#schedules)), an editable card is on the 0.4.0 list;
+the card refreshes every 60 s while the tab is open.
 
 ![Presets tab, Schedules card: entries with the active one, next and last switch, timezone](screenshots/28-schedules.png)
 

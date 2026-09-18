@@ -24,11 +24,31 @@ Both install paths end with `n5-fangov setup` ([Setup](03-setup.md)).
 
 ## From a GitHub release
 
-> While the repository is private (until 0.4.0), download the assets with the signed-in GitHub
-> CLI instead of the public URLs: `gh release download <tag> --dir dist --pattern "n5-fangov-*"`.
-
 No Go toolchain needed. The release carries the static `linux/amd64` binary and its
-sha256; the units, scripts and templates come from the repository at the same tag:
+sha256; the units, scripts and templates come from the repository at the same tag.
+
+> **While the repository is private (until 0.4.0)** the public URLs in the block below
+> answer 404, and the host has no signed-in GitHub CLI — a hypervisor does not get one.
+> Fetch everything on any machine with a signed-in `gh` and copy it to the host:
+>
+> ```
+> # on the signed-in client; VER without the leading v
+> VER=X.Y.Z
+> gh release download v$VER -R SirRenix/n5-fangov -D dist          # binary, .sha256, .deb
+> gh release download v$VER -R SirRenix/n5-fangov -A tar.gz -O src.tar.gz   # source of the tag
+> scp -r src.tar.gz dist root@192.0.2.20:/root/
+>
+> # on the host, as root
+> mkdir n5-fangov && tar xzf src.tar.gz -C n5-fangov --strip-components=1
+> mv dist n5-fangov/ && cd n5-fangov
+> mv dist/n5-fangov-$VER-linux-amd64 dist/n5-fangov && mv dist/n5-fangov-$VER-linux-amd64.sha256 dist/n5-fangov.sha256
+> ```
+>
+> A client that can reach the private repository over git may use
+> `git clone --branch v$VER --depth 1` instead of the tarball. Then continue at the
+> `sha256sum` line of the block below (the `.deb` is for the [package path](#the-debian-package)).
+
+The public path:
 
 ```
 # as root; VER = the tag you want without the leading v, see the releases page
@@ -56,18 +76,80 @@ n5-fangov setup
 
 ## The Debian package
 
-`make deb` builds `dist/n5-fangov_<version>_amd64.deb`; `apt install ./dist/n5-fangov_<version>_amd64.deb`
-installs the same files as `install.sh` (unit under `/lib/systemd/system/`). The postinst
-does what the installer does, including stopping `n5-fand`; a package update restarts a
-running daemon ([Updates](09-updates.md#package-update)). Then `n5-fangov setup`.
+The `.deb` is a **release asset** — `n5-fangov_<debver>_amd64.deb`, where `<debver>`
+is the dpkg form of the tag (`0.3.1-rc2` → asset `n5-fangov_0.3.1.rc2_amd64.deb`, dpkg
+version `0.3.1~rc2`). Download it like the binary (public URL, or the private-phase
+copy above); `make deb` only matters when you build your own from a checkout, it lands
+in `dist/` too.
+
+```
+apt install ./dist/n5-fangov_0.3.1.rc2_amd64.deb
+```
+
+It installs the same files as `install.sh` (units under `/lib/systemd/system/`). The
+postinst does what the installer does, including stopping `n5-fand`, and ends with one
+line — on a fresh box:
+
+```
+n5-fangov: installed and enabled. Next: n5-fangov setup
+```
+
+and when `/etc/n5-fangov/config.toml` already exists:
+
+```
+n5-fangov: installed and enabled. Next: n5-fangov check && systemctl start n5-fangov
+```
+
+followed by the apt hook's line, which runs after every dpkg run from now on
+([kernel-update gate](02-kernel-driver.md#the-kernel-update-gate)):
+
+```
+n5-fangov: fan driver module present for 1 kernel(s): 7.0.14-17-pve
+```
+
+When the file lies under `/root`, apt prints `Notice: Download is performed unsandboxed
+as root as file '/root/…' couldn't be accessed by user '_apt'` first — harmless, apt
+cannot read `/root` as `_apt` and reads it as root instead. A package update restarts a
+running daemon ([Updates](09-updates.md#package-update)); `dpkg -V n5-fangov` checks the
+installed files against the package's md5sums (carried from 0.3.1-rc2). Then
+`n5-fangov setup`.
+
+**Switching from the installer to the package.** The installer's units live in
+`/etc/systemd/system/`, the package's in `/lib/systemd/system/` — and systemd prefers
+the `/etc` copy, so a leftover installer unit shadows every package update. From
+0.3.1-rc2 the package's postinst removes the installer's copies when they are identical
+to the packaged units and warns when they differ. On older versions remove them by
+hand:
+
+```
+rm /etc/systemd/system/n5-fangov.service /etc/systemd/system/n5-fangov-onfailure.service && systemctl daemon-reload
+```
 
 ## What the installer does
 
 `deploy/install.sh` looks for the binary at `dist/n5-fangov` (or `./n5-fangov`), refuses
 to run without one, and puts the binary, the units, the apt hook, the log directory, the
-config example and (on PVE) the notification template pair in place; then it enables the
-unit. It writes **no** config and starts nothing — that is `setup`. An existing
-`/etc/n5-fangov/config.toml` is left untouched.
+config example (`/usr/share/doc/n5-fangov/config.example.toml`) and (on PVE) the
+notification template pair in place; then it enables the unit. It writes **no** config
+and starts nothing — that is `setup`. An existing `/etc/n5-fangov/config.toml` is left
+untouched. What it prints on a fresh box (the first line is the sha256 check of the
+binary):
+
+```
+n5-fangov: OK
+--- predecessor n5-fand ---
+  n5-fand files stay installed; remove with n5pro-ec/deploy/uninstall.sh when n5-fangov is proven.
+--- files ---
+  /etc/n5-fangov/config.toml absent: n5-fangov setup writes it (reference: /usr/share/doc/n5-fangov/config.example.toml)
+  PVE notification template installed (alerts -> Proxmox notifications, template 'n5-fangov')
+--- apt hook (kernel gate) ---
+  /etc/apt/apt.conf.d/90n5-fangov: 'n5-fangov check --after-update' runs after every dpkg run
+--- systemd ---
+  enabled (not started)
+
+Installed n5-fangov 0.3.1-rc2. Log file: /var/log/n5-fangov/n5-fangov.log (rotating; journal unchanged).
+run: n5-fangov setup
+```
 
 N5 Pro: the kernel module must be loaded before `setup`; `setup` refuses without a
 detected profile.

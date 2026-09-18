@@ -91,6 +91,17 @@ sensors                                 # lm-sensors: the EC's fans and temperat
 n5-fangov detect                        # after the n5-fangov install: profile n5pro detected
 ```
 
+The device's number under `/sys/class/hwmon/` (`hwmonN`) is **not stable across
+boots** — `hwmon14` on one boot, `hwmon10` on the next, depending on the order the
+drivers register. Find the device by name and never hard-code the number:
+
+```
+grep -l minisforum_n5_it5571 /sys/class/hwmon/*/name
+```
+
+n5-fangov does the same at every start (`detect`, `setup`, `status` print the path it
+found this time).
+
 `n5-fangov check` reports `dkms` for the running kernel at every daemon start
 (`ExecStartPre`).
 
@@ -110,7 +121,16 @@ Two gates catch this before it happens:
    install minisforum-n5-it5571/<ver> -k X` on the apt output plus a `kernel` alert
    (30 min cooldown). Older kernels that are merely still installed (apt keeps two)
    get an `info only` line and no alert. The apt run never fails because of it.
-   Non-N5-Pro boxes: no-op.
+   Non-N5-Pro boxes: no-op. The good case is one line at the end of every apt run:
+
+   ```
+   n5-fangov: fan driver module present for 2 kernel(s): 7.0.12-1-pve 7.0.14-17-pve
+   ```
+
+   To see the hook work without waiting for a kernel: `n5-fangov check --after-update`
+   by hand (exit 0 when every bootable kernel has its module), or reinstall any small
+   package that is already installed — `apt install --reinstall lm-sensors` — and read
+   the line at the end of the apt output. A kernel reinstall is not needed.
 2. `ExecStartPre=n5-fangov check` reports `dkms` for the running kernel at every start;
    without the module there is no hwmon device, the start fails loudly and the
    onfailure alert names it.

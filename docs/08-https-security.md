@@ -62,15 +62,26 @@ go away takes three steps:
 1. **Download** — *Download .crt* (PEM: Firefox, macOS, Linux) or *Download .cer* (DER:
    Windows, Android). Both are the certificate only, never the key; like the rest of the
    panel they need a signed-in session (`n5-fangov cert export` writes the same file from
-   the shell).
-2. **Trust** — the panel's *How to trust this certificate* lists the recipes:
-   Windows: double-click the .cer → Local Machine → Trusted Root Certification
-   Authorities; macOS: Keychain Access → System → Always Trust; Firefox: Settings →
-   Certificates → Authorities → Import; Android: Settings → Security → Install a
-   certificate → CA certificate. Linux CLI: copy the .crt to
-   `/usr/local/share/ca-certificates/` and run `update-ca-certificates`.
+   the shell). So the first visit goes through the browser's warning page once —
+   *Advanced → proceed* (the wording differs per browser) —, then sign in, then
+   download.
+2. **Trust** — the panel's *How to trust this certificate* lists the recipes.
+   - Windows: double-click the `.cer` → *Install Certificate…* → *Local Machine* → on
+     the store page **do not** leave the default *Automatically select the certificate
+     store based on the type of certificate* (it lands in the wrong store and the
+     warning stays) — choose *Place all certificates in the following store* →
+     *Browse…* → *Trusted Root Certification Authorities* → *Next* → *Finish*. Then
+     close every browser window and reopen; an open browser keeps its old view of the
+     store.
+   - Firefox keeps its own store on every OS: Settings → Certificates → Authorities →
+     Import (the `.crt`), tick *Trust this CA to identify websites*.
+   - macOS: Keychain Access → System → import → Always Trust.
+   - Android: Settings → Security → Install a certificate → CA certificate.
+   - Linux CLI: copy the `.crt` to `/usr/local/share/ca-certificates/` and run
+     `update-ca-certificates`.
 3. **Reload** — the connection is now verified; the fingerprint in the panel is the one
-   to compare against the browser's certificate viewer.
+   to compare against the browser's certificate viewer. Still a warning after the
+   Windows import: [Troubleshooting](10-troubleshooting.md#symptoms).
 
 The certificate is marked as a CA (browser stores accept a self-signed anchor only in
 that form) but carries **name constraints** limited to exactly its own names and
@@ -216,7 +227,7 @@ session is for browsers.
 
 An API token replaces the admin password in anything that is not a browser: Home
 Assistant, monitoring, scripts, a local LLM agent. It is sent as
-`Authorization: Bearer n5t_…` on every request ([usage and curl examples](12-api.md#authentication)).
+`Authorization: Bearer n5t_...` on every request ([usage and curl examples](12-api.md#authentication)).
 Tokens exist only with `auth = "basic"`; with `auth = "none"` everyone is signed in
 and a Bearer header is ignored.
 
