@@ -42,7 +42,7 @@ signed in. With `auth = "basic"` there are three ways:
 |---|---|---|
 | Browser session | cookie `n5fangov_session` + header `X-N5-Fangov-Csrf: 1` on writes | the dashboard |
 | Basic auth | `Authorization: Basic …` (`curl -u admin`) + `X-N5-Fangov-Csrf: 1` on writes | one-off shell commands with the admin password |
-| **API token** | `Authorization: Bearer n5t_…` — **no CSRF header** | scripts, Home Assistant, monitoring, agents |
+| **API token** | `Authorization: Bearer n5t_...` — **no CSRF header** | scripts, Home Assistant, monitoring, agents |
 
 An API token is the intended way for anything that runs unattended: it has a scope,
 an expiry and can be revoked alone, and it never carries the admin password. Create
@@ -51,17 +51,24 @@ one in the dashboard (settings gear → *Account…* → *API tokens*) or with
 shown once. Storage, expiry, revocation, rate limit and what a token can never do:
 [API tokens](08-https-security.md#api-tokens).
 
+In the examples `n5t_...` stands for the whole secret as `token create` printed it
+(`n5t_` plus the random part); a placeholder's angle brackets or dots are never part of
+the header — `Authorization: Bearer <token>` sent literally is a 401.
+`GET /api/session` with the token answers `"via": "bearer"` and the token's scope, the
+quickest proof that the header arrived intact.
+
 ```
 # read: the full snapshot (anonymous callers get the reduced one)
-curl -H "Authorization: Bearer n5t_…" https://n5host:8010/api/state
+curl -H "Authorization: Bearer n5t_..." https://n5host:8010/api/state
+curl -H "Authorization: Bearer n5t_..." https://n5host:8010/api/session     # {"authenticated":true,"via":"bearer","scope":"read",…}
 
 # control: manual override and back to the curve — no CSRF header for a token
-curl -X PUT -H "Authorization: Bearer n5t_…" -H "Content-Type: application/json" \
+curl -X PUT -H "Authorization: Bearer n5t_..." -H "Content-Type: application/json" \
      -d '{"duty":180}' https://n5host:8010/api/override/hdd
-curl -X DELETE -H "Authorization: Bearer n5t_…" https://n5host:8010/api/override/hdd
+curl -X DELETE -H "Authorization: Bearer n5t_..." https://n5host:8010/api/override/hdd
 
 # control: apply a preset
-curl -X POST -H "Authorization: Bearer n5t_…" https://n5host:8010/api/presets/n5pro-quiet/apply
+curl -X POST -H "Authorization: Bearer n5t_..." https://n5host:8010/api/presets/n5pro-quiet/apply
 
 # the same with Basic auth needs the CSRF header
 curl -u admin -X POST -H "X-N5-Fangov-Csrf: 1" https://n5host:8010/api/presets/n5pro-quiet/apply
@@ -189,12 +196,12 @@ this way every 30 s. Points are kept across restarts in
 ([Dashboard: Overview](04-dashboard.md#overview)).
 
 `GET /api/history.csv?minutes=N` (scope `read`) is the same as an attachment
-`n5-fangov-history-<host>-<ts>.csv`: header `ts,time,<ch>_temp,<ch>_duty,<ch>_rpm,…`
+`n5-fangov-history-<host>-<YYYYMMDD-HHMMSS>.csv` (host local time): header `ts,time,<ch>_temp,<ch>_duty,<ch>_rpm,…`
 followed by one column per watched sensor id (channels in daemon order, then the ids
 sorted); `time` is RFC 3339 in the host's local time, an absent value is an empty cell.
 
 ```
-curl -H "Authorization: Bearer n5t_…" -o week.csv "https://n5host:8010/api/history.csv?minutes=10080"
+curl -H "Authorization: Bearer n5t_..." -o week.csv "https://n5host:8010/api/history.csv?minutes=10080"
 ```
 
 ## Home Assistant
@@ -203,7 +210,7 @@ Two files hold the complete recipe with documentation values:
 [`openapi/home-assistant-rest.yaml`](openapi/home-assistant-rest.yaml) (sensors and the
 preset command) and [`openapi/home-assistant-automation.yaml`](openapi/home-assistant-automation.yaml)
 (automations). Put the token into `secrets.yaml` as
-`n5_fangov_token: "Bearer n5t_…"` — a `control` token when the preset command is used;
+`n5_fangov_token: "Bearer n5t_..."` — a `control` token when the preset command is used;
 the sensors alone need `read` or no token at all, because the reduced `/api/state`
 already carries temperature, RPM and mode per channel.
 

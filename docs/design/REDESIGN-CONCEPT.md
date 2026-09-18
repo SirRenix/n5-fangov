@@ -122,6 +122,23 @@ accordion (phone): **Display** (unit, interval, theme) · **Account & sessions**
 4. Acceptance: every task of the click-path table in `docs/DESIGN-AUDIT.md` §4 in the
    same or fewer clicks; no protected data on the anonymous pages; JS budget documented.
 
+## Findings from the 0.3.1 release gate (2026-09-18)
+
+UX items the manual gate test surfaced; the 0.3.1 documentation describes the current
+behaviour, the fix belongs to 0.4.0:
+
+- **Preset editor.** Compose a set's values before saving. Today *Save current as…*
+  stores the curves the daemon runs, so the new preset is the active one at once; other
+  values take the detour Curves → Apply → Save.
+- **Editable Schedules card.** Today the card is read-only and `[[schedule]]` is edited
+  in the config file only.
+- **Explicit manual toggle per channel** on the Manual tab. The slider starts at the
+  duty the curve is writing and *Set* is the only switch into `MANUAL`; testers expect
+  an on/off control next to the slider.
+- **Certificate-trust walkthrough with screenshots** of the English Windows wizard: the
+  wizard's default store choice (*Automatically select…*) is the step that fails
+  silently, and text alone did not prevent it.
+
 ## Open decisions for the operator
 
 - Sidebar always visible on desktop, or collapsed by default (icon rail)?

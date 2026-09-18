@@ -86,15 +86,39 @@ has both as buttons ([Settings gear](04-dashboard.md#settings-gear)).
 
 ## Uninstall
 
+`deploy/uninstall.sh` runs from the repository checkout — the same directory the
+install ran from:
+
 ```
 ./deploy/uninstall.sh            # stops and removes the unit, binary, apt hook, PVE template, state (tokens, history)
 ./deploy/uninstall.sh --purge    # additionally /etc/n5-fangov (config, presets, certificate) and /var/log/n5-fangov
 ```
 
-or `apt remove n5-fangov` / `apt purge n5-fangov` for the package. `ExecStopPost=failsafe`
+When the **package** is installed (`dpkg -s n5-fangov` says so), use `apt remove
+n5-fangov` / `apt purge n5-fangov` instead — `uninstall.sh` would remove the files but
+dpkg would still list the package as installed. `ExecStopPost=failsafe`
 leaves the fans in the profile's safe state (N5 Pro: CPU/SSD back to EC automatic, HDD at
 the fixed stop duty until the next boot). The kernel module is not touched — it belongs
 to the DKMS package, see [Kernel driver: Remove](02-kernel-driver.md#remove).
+
+What `./deploy/uninstall.sh --purge` prints on the N5 Pro:
+
+```
+--- stop (ExecStopPost runs the failsafe) ---
+--- explicit failsafe with the config still present ---
+failsafe: cpu: pwm1 stop=auto ok
+failsafe: ssd: pwm2 stop=auto ok
+failsafe: hdd: pwm3 stop=140 ok
+failsafe: safe state set on n5pro
+--- files ---
+  --purge: /etc/n5-fangov and /var/log/n5-fangov removed
+
+Done. Fans are in the configured safe state; on the N5 Pro the HDD channel
+returns to full EC control only after a cold boot.
+```
+
+Verify: `systemctl status n5-fangov` → `Unit n5-fangov.service could not be found.`;
+after `--purge` also `ls /etc/n5-fangov` → `No such file or directory`.
 
 Next: [Kernel driver](02-kernel-driver.md) · [Troubleshooting](10-troubleshooting.md) ·
 [Install](01-install.md)
