@@ -29,7 +29,7 @@ and to 0.4.0 (the public one).
 | 3 | Install page, **release path**: source of the tag and binary + sha256 on the host (private phase: copied from a signed-in client, public phase: clone + curl), verify, `./deploy/install.sh` | installer output matches the page; `n5-fangov version` prints the release | ☐ |
 | 4 | Install page, **package path** (second run): the `.deb` release asset (private phase: copied from the signed-in client), `apt install ./n5-fangov_<debver>_amd64.deb` | same result; `dpkg -s n5-fangov` ok; the postinst line and the apt-hook line match the page | ☐ |
 | 5 | Setup page: `n5-fangov setup` interactively (`lan`, new user + password) | config written, unit started, `n5-fangov check` all `[ok]` | ☐ |
-| 6 | Dashboard page: open `https://<host>:8010`, trust the certificate per the HTTPS page (Settings → Certificate → *Download*, *How to trust*), sign in; **Fans**: apply a built-in preset from the Presets row, switch *Manual override* on for one channel, *Set* another duty, switch it off; *Save current as…* → a user preset from *the daemon (running curves)*; **Schedules**: add a window with that preset, *Save*, check the status card, remove it, *Save*; **Alerts**: *Send test alert*; **Settings**: *Export settings*, *Create token…* and *Revoke* it; on a phone or a narrow window: bottom bar, *More*, the Fans channel selector | every step as described by the Dashboard page alone; the preset badge, the mode badge and the status card follow each action; test alert arrives by mail | ☐ |
+| 6 | Dashboard page: open `https://<host>:8010`, trust the certificate per the HTTPS page (Settings → Certificate → *Download*, *How to trust*), sign in; **Fans**: apply a built-in preset from the Presets row, switch *Manual override* on for one channel, *Set* another duty, switch it off; *New preset…* → a user preset from *the daemon (running curves)*; **Schedules**: add a window with that preset, *Save*, check the status card, remove it, *Save*; **Alerts**: *Send test alert*; **Settings**: *Export settings*, *Create token…* and *Revoke* it; on a phone or a narrow window: bottom bar, *More*, the Fans channel selector | every step as described by the Dashboard page alone; the preset badge, the mode badge and the status card follow each action; test alert arrives by mail | ☐ |
 | 7 | Kernel driver page: `apt install --reinstall` of any small installed package (e.g. `lm-sensors`) — the hook runs after every dpkg run, a kernel reinstall is not needed | the hook line `n5-fangov: fan driver module present for N kernel(s): …` visible in the apt output ([the kernel-update gate](02-kernel-driver.md#the-kernel-update-gate)) | ☐ |
 | 8 | Reboot the host | daemon active after boot, DKMS module loaded, curves in effect (the pending reboot proof) | ☐ |
 | 9 | Troubleshooting page: provoke one listed symptom (e.g. stop the module → `check` fails) and follow the page | the page's fix works | ☐ |
@@ -64,3 +64,10 @@ outputs, the certificate recipe too short, the kernel gate exercised by the wron
 command, a placeholder copied with its angle brackets); they were fixed in 0.3.1-rc2 and rc3 and re-verified; 0.3.1 was tagged from rc3.
 Rows 3, 4, 6 (certificate recipe) and 10 are re-run on rc2 before the tag drops the
 suffix.
+
+## Result 2026-09-18/19, v0.4.0-rc1
+
+Rows 1–7, 9 and 10 passed; row 8 (reboot) skipped — nothing in the boot chain changed
+since 0.3.1, whose reboot proof stands. Findings G1–G11 (documentation, dashboard polish,
+one preset data-format defect) are fixed in 0.4.0-rc2 (CHANGELOG); rows 3, 6 and 9 are
+re-run on rc2 before the tag drops the suffix.

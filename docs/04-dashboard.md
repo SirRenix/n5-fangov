@@ -40,13 +40,15 @@ every visitor counts as signed in; *Sign in*, *Sign out* and the user name are n
 
 ## The shell
 
-**Sidebar** (left, 220 px): brand, then the pages in five groups — *Monitor* (Overview,
-System), *Control* (Fans, Schedules), *Operate* (Alerts, Log), *Settings* (Settings),
-*Info* (About). The current page is marked (`aria-current="page"`, accent bar). *Collapse*
-in the footer switches to the 56 px **icon rail** (icons with the page name as tooltip)
-and back; the same choice is *Navigation* in Settings → Display, stored in this browser.
-Between 700 and 1099 px the rail is forced (the sidebar would leave the header no room);
-the stored choice applies from 1100 px. The footer shows the daemon's version.
+**Sidebar** (left, 220 px): the brand row — logo, name and, at its right edge, the
+**collapse toggle** (`‹` / `›`, *Collapse sidebar* / *Expand sidebar*) —, then the pages
+in five groups — *Monitor* (Overview, System), *Control* (Fans, Schedules), *Operate*
+(Alerts, Log), *Settings* (Settings), *Info* (About). The current page is marked
+(`aria-current="page"`, accent bar). The toggle switches to the 56 px **icon rail**
+(icons with the page name as tooltip; the toggle sits under the logo) and back; the same
+choice is *Navigation* in Settings → Display, stored in this browser. Between 700 and
+1099 px the rail is forced and the toggle hidden (the sidebar would leave the header no
+room); the stored choice applies from 1100 px. The footer shows the daemon's version.
 
 ![Sidebar collapsed to the icon rail](screenshots/05-sidebar-rail.png)
 
@@ -102,7 +104,11 @@ values at a time; the legend names come from the sensor catalogue.
 Signed in, three cards follow:
 
 - **Sensors** — every readable temperature (`GET /api/sensors`) grouped CPU / SSD · NVMe
-  / HDD / GPU / NIC / EC · board / other; a `disk:<dev>` row per disk with a hwmon, sorted
+  / HDD / GPU / NIC / EC · board / other, each group a collapsible block whose heading
+  reads `EC · board · 7 · max 35.4 °C` (name, count, the live maximum of the group).
+  A group starts open when it holds a channel's sensor (the parts of a composite id
+  included) or a charted one, closed otherwise; a group you open or close stays that
+  way in this browser. Inside: a `disk:<dev>` row per disk with a hwmon, sorted
   into SSD · NVMe or HDD by what the kernel reports; description, id, live value and the
   *chart* toggle (`aria-pressed`). *chart* adds or removes the id in `[dashboard] sensors`
   (`PUT /api/dashboard`, at most 8 — the hint counts `n/8`, further toggles are disabled
@@ -256,24 +262,26 @@ Warnings the daemon reports outside the channel tables are listed in the same no
 ### Presets
 
 The **Presets** row lists the built-in N5 Pro sets and the files in
-`/etc/n5-fangov/presets/`: a chip per preset with the active dot (● = the daemon runs
-exactly these values, compared per pwm the way *Apply* merges), ★ *recommended*, the
-name, a *built-in* badge, the description, *Apply* (`active` and disabled while it is
-active), an icon button *Details* (built-in, opens the editor read-only) or *Edit* (user
-preset) and *Delete* (user preset, with confirmation).
+`/etc/n5-fangov/presets/`. The line under the heading states the two directions: *Apply
+writes a preset into the daemon · New preset… saves a set without applying it*. A chip
+per preset with the active dot (● = the daemon runs exactly these values, compared per
+pwm the way *Apply* merges), ★ *recommended*, the name, a *built-in* badge, the
+description, *Apply* (`active` and disabled while it is active), an icon button
+*Details* (built-in, opens the editor read-only) or *Edit* (user preset) and *Delete*
+(user preset, with confirmation).
 
 - *Apply* asks first (`The curves change immediately`; unsaved curve edits are discarded)
   and merges the preset into the config file by pwm — channels the preset does not name
   stay — and reloads; 202 shows a restart notice in the row. The values of the three
   built-in sets, the file format and the merge rule: [Presets](06-configuration.md#presets).
-- *Save current as…* opens the **preset editor** dialog. *Start from* chooses the values
-  it is filled with: *the editor (unsaved values)*, *the daemon (running curves)* or any
-  preset. Then the name (`a-z 0-9 _ -`, at most 64 characters; a built-in name is
-  refused) and, per channel, critical / stop / hysteresis / min on and an editable point
-  table with *add point* and remove — validated with the curve editor's rules. *Save
-  preset* stores exactly the values shown (`PUT /api/presets/{name}` with the composed
-  channels, [API](12-api.md#endpoints)); **nothing is applied** to the daemon. A name that
-  exists asks before it is overwritten.
+- *New preset…* opens the **preset editor** dialog. *Start from* chooses the values it
+  is filled with: *the daemon (running curves)* — the default —, *the editor (unsaved
+  values)* or any preset. Then the name (`a-z 0-9 _ -`, at most 64 characters; a
+  built-in name is refused) and, per channel, critical / stop / hysteresis / min on and
+  an editable point table with *add point* and remove — validated with the curve
+  editor's rules. *Save preset* stores exactly the values shown (`PUT
+  /api/presets/{name}` with the composed channels, [API](12-api.md#endpoints)); **nothing
+  is applied** to the daemon. A name that exists asks before it is overwritten.
 - *Edit* opens the same dialog for a user preset with *Start from* fixed; changing the
   name renames the file (saved under the old name first, then `POST …/rename`). *Details*
   of a built-in is the read-only form with *Close*. Escape, the backdrop and *Cancel* ask
@@ -315,13 +323,18 @@ and writes `PUT /api/config?strict=1` — the same splice the Fans page uses for
 (202 with its notice only when something else in the file needs one); warnings are
 listed. Editing the file by hand writes the same tables ([Schedules](06-configuration.md#schedules)).
 
-The **Status** card: the active entry (`n5pro-balanced (fallback)` or the window;
-`none (outside every window)` without a fallback), the next switch (absolute, `in …`
-and the preset; `no preset (no fallback)` when leaving the last window applies nothing;
-`none within 8 days`), the last switch with the time and `ok` — or `failed: <reason>`,
-which also appears as a warning notice — and the timezone the host's clock uses. The
-card refreshes every 60 s while the page is open; a dirty editor is never rebuilt by the
-refresh. Without a scheduler in this daemon the card reads `unavailable (501)`.
+The **Status** card: **now** — the daemon's clock as `HH:MM:SS` in the host's zone,
+followed by that zone (`14:03:22 · CEST +02:00`), ticking every second so a window can
+be compared against the clock the scheduler uses; the time is derived from the `ts` of
+the state snapshot (browser time plus the measured offset), the zone from
+`GET /api/schedules`, and it reads `browser time` until the first snapshot has arrived
+—, the active entry (`n5pro-balanced (fallback)` or the window; `none (outside every
+window)` without a fallback), the next switch (absolute, `in …` and the preset; `no
+preset (no fallback)` when leaving the last window applies nothing; `none within 8
+days`), the last switch with the time and `ok` — or `failed: <reason>`, which also
+appears as a warning notice. The card refreshes every 60 s while the page is open; a
+dirty editor is never rebuilt by the refresh. Without a scheduler in this daemon the
+card reads `unavailable (501)`.
 
 ![Schedules with a failed last switch: preset missing flagged in the row, warning notice, error in the status](screenshots/13-schedules-last-switch-failed.png)
 

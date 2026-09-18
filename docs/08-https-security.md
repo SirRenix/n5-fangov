@@ -64,7 +64,7 @@ warning go away takes three steps:
    section they need a signed-in session (`n5-fangov cert export` writes the same file from
    the shell). So the first visit goes through the browser's warning page once —
    *Advanced → proceed* (the wording differs per browser) —, then sign in, then
-   download.
+   download. The file is `n5-fangov-<host>.cer` / `.crt`.
 2. **Trust** — the section's *How to trust this certificate* lists the recipes.
    - Windows: double-click the `.cer` → *Install Certificate…* → *Local Machine* → on
      the store page **do not** leave the default *Automatically select the certificate
@@ -72,7 +72,7 @@ warning go away takes three steps:
      warning stays) — choose *Place all certificates in the following store* →
      *Browse…* → *Trusted Root Certification Authorities* → *Next* → *Finish*. Then
      close every browser window and reopen; an open browser keeps its old view of the
-     store.
+     store. With pictures: [Windows walkthrough](#windows-walkthrough).
    - Firefox keeps its own store on every OS: Settings → Certificates → Authorities →
      Import (the `.crt`), tick *Trust this CA to identify websites*.
    - macOS: Keychain Access → System → import → Always Trust.
@@ -81,11 +81,88 @@ warning go away takes three steps:
      `update-ca-certificates`.
 3. **Reload** — the connection is now verified; the fingerprint in the section is the one
    to compare against the browser's certificate viewer. Still a warning after the
-   Windows import: [Troubleshooting](10-troubleshooting.md#symptoms).
+   import: [Troubleshooting](10-troubleshooting.md#symptoms).
+
+**What the store entry is called.** The automatic certificate is issued to the **host**,
+not to "n5-fangov": subject and issuer are `CN=<host name>, O=n5-fangov` — the CN is the
+first DNS name of the SAN list in alphabetical order, normally the host name (`n5host`
+on the reference host; an `allowed_hosts` entry that sorts earlier, such as
+`fans.example.test`, would take its place). The *subject* row of the section shows the
+exact value. That is the name to look for in a store: Windows lists it under *Issued To*
+/ *Issued By*, Firefox under the organisation `n5-fangov` with the host name as the
+entry, Keychain Access and Android under the host name.
+
+**A new certificate with the same name.** After `uninstall.sh --purge` and a fresh
+install, after *Regenerate…* with *generate a new key* (or `cert regen --new-key`) and
+after an upload, a **different** certificate carries the same name. A store holds the old
+one and the browser keeps warning, because the fingerprint no longer matches. Remove the
+old entry first, then import the new file:
+
+- Windows: `certlm.msc` → *Trusted Root Certification Authorities* → *Certificates* →
+  the entry named like the host → *Delete*; then the import as above and a full browser
+  restart.
+- Firefox: Settings → Privacy & Security → Certificates → View Certificates →
+  *Authorities* → the host's entry → *Delete or Distrust…*; then import.
+- macOS: Keychain Access → keychain *System* → the host's entry → delete; then import.
+- Android: Settings → Security → Encryption & credentials → *Trusted credentials* →
+  *User* → the entry → *Remove*; then install.
+- Linux: `rm /usr/local/share/ca-certificates/<file>.crt && update-ca-certificates`;
+  then copy the new file and run it again.
+
+*Regenerate…* without the new-key option keeps the key: the reissued certificate has a
+new serial but the same public key, and every store that trusts the old one stays
+happy — that is the normal way to add a name.
 
 The certificate is marked as a CA (browser stores accept a self-signed anchor only in
 that form) but carries **name constraints** limited to exactly its own names and
 `pathlen 0`: even with the key, nothing signed by it is valid for any other host.
+
+### Windows walkthrough
+
+The eight dialogs of the import on Windows 11, taken 2026-09-18 on a German system; the
+English labels are given with each step and the layout is the same on an English
+Windows. Host names in the pictures are documentation values (`n5host`).
+
+![The downloaded .cer opened: the certificate is not trusted yet; the button "Zertifikat installieren…" (Install Certificate…)](screenshots/cert-windows-01-dialog.png)
+
+1. Open the downloaded `.cer`. The dialog says the CA root certificate is not trusted —
+   expected. Click *Zertifikat installieren…* (*Install Certificate…*).
+
+![Certificate Import Wizard, store location: "Lokaler Computer" selected (Local Machine)](screenshots/cert-windows-02-wizard.png)
+
+2. Store location: *Lokaler Computer* (*Local Machine*), not *Aktueller Benutzer*
+   (*Current User*) — an elevation prompt follows. *Weiter* (*Next*).
+
+![Certificate store page: "Alle Zertifikate in folgendem Speicher speichern" selected (Place all certificates in the following store)](screenshots/cert-windows-03-store-page.png)
+
+3. Certificate store: choose *Alle Zertifikate in folgendem Speicher speichern* (*Place
+   all certificates in the following store*). The preselected *Zertifikatspeicher
+   automatisch auswählen* (*Automatically select the certificate store based on the type
+   of certificate*) puts the file into the wrong store and the warning stays.
+
+![Browse dialog listing the stores — pick "Vertrauenswürdige Stammzertifizierungsstellen" (Trusted Root Certification Authorities)](screenshots/cert-windows-04-browse.png)
+
+4. *Durchsuchen…* (*Browse…*) → *Vertrauenswürdige Stammzertifizierungsstellen*
+   (*Trusted Root Certification Authorities*) → *OK*.
+
+![Store page with the chosen store shown in the field](screenshots/cert-windows-05-store-chosen.png)
+
+5. The field now names that store. *Weiter* (*Next*).
+
+![Completing the wizard: summary with the chosen store](screenshots/cert-windows-06-finish.png)
+
+6. The summary lists the store; *Fertig stellen* (*Finish*).
+
+![Message "Der Importvorgang war erfolgreich" (The import was successful)](screenshots/cert-windows-07-imported.png)
+
+7. *Der Importvorgang war erfolgreich* (*The import was successful*). Close **every**
+   browser window — a running browser keeps its old view of the store.
+
+![Chrome after the restart: the lock icon reads "Verbindung ist sicher" (Connection is secure)](screenshots/cert-windows-08-chrome-secure.png)
+
+8. Open the dashboard again: Chrome shows *Verbindung ist sicher* (*Connection is
+   secure*). Firefox does not use this store — import the `.crt` in its own Certificate
+   Manager (the Firefox line of the trust recipe above).
 
 ## Modes and actions
 

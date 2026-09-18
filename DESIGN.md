@@ -196,7 +196,10 @@ config **text** in place (`config.ReplaceChannels`: every `[[channel]]` block fr
 header to its last key line is removed, `MarshalChannels` goes where the first one was or
 at the end; comments, `[[schedule]]`, `[alert]`, `password_hash` and every other byte
 stay) and falls back to a full `Marshal` only when the spliced text does not parse (an
-inline `channel = [{…}]`). Built-in N5 Pro sets (listed for the `n5pro` profile
+inline `channel = [{…}]`). `Marshal` and `MarshalChannels` write a fixed `stop` as a TOML
+integer (`stop = 140`, `numericStop` — the form of the built-in presets, the example
+config and the dashboard); only `"auto"` stays quoted; the parser accepts a quoted number
+too (`TestMarshalStopNumeric`). Built-in N5 Pro sets (listed for the `n5pro` profile
 only; `PUT` on a built-in name → 409, apply on another profile → 404; a user file with a
 built-in name is shadowed and logged):
 
@@ -769,11 +772,14 @@ sensors and the preset body, and checks curves, stop and min_on with the daemon'
   Monitor: `overview`, `system`; Control: `fans`, `schedules`; Operate: `alerts`, `log`;
   Settings: `settings`; Info: `about` — with their sprite icon; `overview` and `about`
   are anonymous, every other section and nav entry carries `data-auth` / is filtered by
-  `visible()`. The sidebar is 220 px, group captions in 11 px caps (`ul` labelled by
-  the caption), every entry a `button` in Tab order with `aria-current="page"` and an
-  accent bar; *Collapse* in the footer toggles the 56 px icon rail (`S.nav`, also the
-  *Navigation* select in Settings → Display). 700–1099 px force the rail (`RAIL_MQ`);
-  the stored preference applies from 1100 px. Below 700 px the sidebar is `display:none`
+  `visible()`. The sidebar is 220 px: brand row (logo, name, right-aligned icon button
+  `.tog` `chev-l` / `chev-r`, `aria-label` *Collapse sidebar* / *Expand sidebar*,
+  `aria-expanded`; in the rail it sits under the logo), group captions in 11 px caps
+  (`ul` labelled by the caption), every entry a `button` in Tab order with
+  `aria-current="page"` and an accent bar, the footer with the version only. The toggle
+  switches the 56 px icon rail (`S.nav`, also the *Navigation* select in Settings →
+  Display). 700–1099 px force the rail (`RAIL_MQ`) and hide the toggle; the stored
+  preference applies from 1100 px. Below 700 px the sidebar is `display:none`
   and `#bnav` is a fixed bottom bar with Overview · Fans · Alerts · Settings · *More*
   (`BOTTOM`; the rest in the `<dialog class="sheet">` *More* with the group as
   `aria-hidden` tag; anonymous: Overview · More → About); `main` gets `--bottom-h` as
@@ -816,7 +822,11 @@ sensors and the preset body, and checks curves, stop and min_on with the daemon'
   (`#extra-card`, hidden until `dash` is non-empty; legend entries with a remove `×`
   → `PUT /api/dashboard`; legend names from the catalogue description); three columns
   from 1500 px. Signed in: Sensors card (catalogue grouped CPU / SSD·NVMe / HDD / GPU /
-  NIC / EC·board / other by `kind`, id prefix and hwmon name; description, id, live
+  NIC / EC·board / other by `kind`, id prefix and hwmon name; one `<details class="sg">`
+  per group, summary `name · count · max N °C` (the live maximum, updated per poll),
+  open by default when the group holds a channel sensor — `parts()` of every `cfg`
+  channel — or a charted id (`dash`), a summary click stores the state in `S.sensors`
+  (`localStorage`, group name → boolean); rows: description, id, live
   value, *chart* toggle with `aria-pressed`, disabled at `dashboard_sensors_max` with a
   reason; empty state names the Log page), System glance (`data-go="system"`), Recent
   alerts (`data-go="alerts"`; `not delivered: …`). Empty states name the next step.
@@ -871,9 +881,11 @@ sensors and the preset body, and checks curves, stop and min_on with the daemon'
   starts with "Recommended" or name `n5pro-balanced`), name, `built-in` badge,
   description, *Apply* (confirm; `active` and disabled while active; `POST …/apply`,
   202 → `#ps-notice`), icon button *Details* (built-in → editor read-only) / *Edit*
-  (user preset), *Delete* (user preset, confirm). *Save current as…* opens the **preset
-  editor** `<dialog id="preset-ed">`: *Start from* (`editor` = `edState`, `daemon` =
-  `chList()`, `p:<name>`; fixed when editing), name (client rule `LIM.name`, built-in
+  (user preset), *Delete* (user preset, confirm); the hint under the heading reads *Apply
+  writes a preset into the daemon · New preset… saves a set without applying it*.
+  *New preset…* (icon plus) opens the **preset editor** `<dialog id="preset-ed">`: *Start
+  from* (`daemon` = `chList()` — the default —, `editor` = `edState`, `p:<name>`; fixed
+  when editing), name (client rule `LIM.name`, built-in
   names refused), one `peChannel` block per channel (critical / stop / hysteresis /
   min_on, editable point table with `%`, remove, *add point*), Save = `PUT
   /api/presets/{name}` with the composed channels (nothing applied) — under the old
@@ -897,7 +909,11 @@ sensors and the preset body, and checks curves, stop and min_on with the daemon'
   server's errors (`TestScheduleEditorKeepsOtherTables`; the strip regexps are run in Go
   against sample TOML). Status card: active entry, next switch (`<time>` absolute +
   `in …` + preset, `no preset (no fallback)`, `none within 8 days`), last switch with
-  `ok` or its error in `--crit` (also as a warn notice), timezone; polled every 60 s
+  `ok` or its error in `--crit` (also as a warn notice); first row **now** = the daemon's
+  local clock `HH:MM:SS · <timezone>` (`scTick`, every second while current: browser
+  time + `clkOff`, the largest `state.ts − Date.now()` seen — the snapshot `ts` is up
+  to one cycle old —, shifted by the offset parsed from `timezone` `"CEST +02:00"`;
+  `browser time` before the first snapshot); polled every 60 s
   while current, a dirty editor is never rebuilt. 501 → `unavailable (501)`; no entries
   → the empty state names the next step. Editor and status side by side from 1400 px;
   below 700 px every entry is a stacked block.
@@ -940,7 +956,8 @@ sensors and the preset body, and checks curves, stop and min_on with the daemon'
   new key* (confirm), *Back to auto* (confirm); the certificate buttons enabled only
   where they apply). Entering the page re-reads account, sessions, tokens, certificate
   and the alert status. Display values persist in `localStorage` key `n5-fangov` as one
-  object `{unit, interval, theme, range, nav}`, whitelisted per key.
+  object `{unit, interval, theme, range, nav, sensors}`, whitelisted per key (`sensors`:
+  Overview sensor groups the user toggled, group name → boolean).
 - **About** (public): name, version, `beta` badge, description, licence, repository,
   author, releases link, *built with* (signed in only; the page is re-read on every
   sign-in / sign-out), credits, the mock hint (mock mode only, lists every flag). The
@@ -997,7 +1014,8 @@ and screen-reader behaviour, the backend packages (the only backend change is th
 optional body of `PUT /api/presets/{name}`, section 9).
 
 - **Operator decisions (on the prototype screenshots, 2026-09-18):** sidebar, expanded by
-  default, collapsible to the icon rail — no top-bar variant; sparklines on the tiles:
+  default, collapsible to the icon rail — no top-bar variant; the toggle in the brand row
+  (rc1 gate G4, not in the footer); sparklines on the tiles:
   yes; Fans stacked on desktop, a channel selector below 700 px (a breakpoint, not a
   setting); Compatibility folded into About (`#about/compat`) — eight sidebar entries.
 - **Page model:** Monitor / Control / Operate / Settings / Info; Curves, Manual and
@@ -1010,10 +1028,11 @@ optional body of `PUT /api/presets/{name}`, section 9).
 - **Override switch (gate finding):** switching to Manual holds the duty the channel
   runs at that moment (raised to the HDD minimum), *Set* changes it, Auto is the
   `DELETE`; the client keeps its flag through one daemon cycle because the snapshot lags.
-- **Preset editor (gate finding):** *Save current as…* composes values (*Start from*
-  editor / daemon / preset) and saves without applying — `PUT /api/presets/{name}` with
-  a JSON body, validated with the config's channel rules against the running channel
-  set.
+- **Preset editor (gate finding):** *New preset…* composes values (*Start from*
+  daemon — the default since rc2 —, editor or preset) and saves without applying — `PUT
+  /api/presets/{name}` with a JSON body, validated with the config's channel rules against
+  the running channel set. The hint under the Presets heading names both directions
+  (Apply writes into the daemon, New preset… saves without applying; rc1 gate G6).
 - **Budgets:** `app.js` ≤ 128 KiB, `mock.js` ≤ 48 KiB, `app.css` ≤ 48 KiB
   (`web_test.go`); `index.html` has none. Do not raise a limit to make a change fit.
 - **Icons:** one inline SVG sprite at the top of `index.html` (`<svg hidden><symbol

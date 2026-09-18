@@ -245,3 +245,37 @@ func TestMarshalPostProcessingKeys(t *testing.T) {
 		t.Errorf("preset round trip: %v %v\n%+v", err, warns, chans)
 	}
 }
+
+// TestMarshalStopNumeric: a fixed stop duty is written as a TOML integer
+// (stop = 140, the form of the built-in presets and the dashboard), "auto"
+// stays a quoted string; both forms and a quoted number parse back to the
+// same channels (gate 0.4.0-rc1, G10).
+func TestMarshalStopNumeric(t *testing.T) {
+	withChannels := func(chans []Channel) Config {
+		cfg := Default()
+		cfg.Channels = chans
+		return cfg
+	}
+	chans := []Channel{
+		{Name: "cpu", PWM: 1, Sensor: "k10temp", Curve: [][2]int{{45, 85}, {80, 255}}, Critical: 88, Stop: "auto"},
+		{Name: "hdd", PWM: 3, Sensor: "drivetemp:max", Curve: [][2]int{{36, 105}, {46, 255}}, Critical: 56, Stop: "140"},
+	}
+	for _, raw := range []string{string(MarshalChannels(chans)), string(Marshal(withChannels(chans)))} {
+		if !strings.Contains(raw, "stop = 140\n") || strings.Contains(raw, "\"140\"") {
+			t.Errorf("fixed stop must be an integer:\n%s", raw)
+		}
+		if !strings.Contains(raw, "stop = \"auto\"\n") {
+			t.Errorf("auto must stay quoted:\n%s", raw)
+		}
+		back, warns, err := ParseChannels([]byte(raw))
+		if err != nil || len(warns) != 0 || len(back) != 2 || back[1].Stop != "140" || back[0].Stop != "auto" {
+			t.Errorf("round trip: %v %v\n%+v", err, warns, back)
+		}
+	}
+	// the quoted form of older preset files keeps parsing without a warning
+	quoted := strings.Replace(string(MarshalChannels(chans)), "stop = 140", "stop = \"140\"", 1)
+	back, warns, err := ParseChannels([]byte(quoted))
+	if err != nil || len(warns) != 0 || len(back) != 2 || back[1].Stop != "140" {
+		t.Errorf("quoted number: %v %v\n%+v", err, warns, back)
+	}
+}

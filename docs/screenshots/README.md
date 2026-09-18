@@ -24,16 +24,16 @@ user would.
 |---|---|---|---|
 | `01-overview-anonymous.png` | Overview, anonymous | `?mock=1` | tiles + charts only; full page |
 | `02-login-dialog.png` | Sign-in dialog | `?mock=1` → *Sign in* | *Remember me* |
-| `03-overview-signed-in.png` | Overview, signed in | `?mock=1&user=1` | full page: tiles with 2 h sparklines, three charts (Extra sensors as the third), Sensors grouped by kind, System glance, Recent alerts |
+| `03-overview-signed-in.png` | Overview, signed in | `?mock=1&user=1` | full page: tiles with 2 h sparklines, three charts (Extra sensors as the third), Sensors in collapsible groups (name · count · live max; channel and charted groups open), System glance, Recent alerts |
 | `04-header.png` | Header crop | `?mock=1&user=1` | title, status chip, uptime, version + pre-release badge, live, user, *Sign out* (1280×60) |
-| `05-sidebar-rail.png` | Sidebar collapsed | *Collapse* in the sidebar footer | 56 px icon rail, state in `localStorage` (`nav`) |
+| `05-sidebar-rail.png` | Sidebar collapsed | the toggle in the brand row | 56 px icon rail with the toggle under the logo, state in `localStorage` (`nav`) |
 | `06-system.png` | System | `#system` | Host / Machine / CPU / Fan controller, memory modules, GPU · NPU, Network, Storage; full page |
-| `07-fans.png` | Fans | `#fans` | one card per channel: curve editor left, *Live & override* right, presets row, sticky action bar; full page |
+| `07-fans.png` | Fans | `#fans` | one card per channel: curve editor left, *Live & override* right, presets row with its Apply · New preset… hint, sticky action bar; full page |
 | `08-fans-validation-error.png` | Fans, validation error | critical cleared, stop `300` → *Apply* | red notice, nothing sent |
 | `09-fans-restart-required.png` | Fans, restart required | `&restart=1`, critical +1 → *Apply* (the mock answers 202) | restart notice, stays after the editor reload until *Revert* |
 | `10-fans-manual-switch.png` | Fans, Manual switch on | hdd channel: *Manual override* switch → on, slider dragged below the minimum | `role="switch"`; the slider stops at the minimum 60, the hint explains why (HDD-like channel) |
-| `11-preset-editor.png` | Preset editor dialog | *Save current as…* | *Start from* (the editor, the daemon, a preset), name, per-channel fields and point tables, prefilled from the editor state; no description field |
-| `12-schedules.png` | Schedules | `#schedules` | editable rows (preset, from / to, days, fallback), ACTIVE, *Add entry*, status block; full page |
+| `11-preset-editor.png` | Preset editor dialog | *New preset…* | *Start from* (the daemon — default —, the editor, a preset), name, per-channel fields and point tables, prefilled from the running curves; no description field |
+| `12-schedules.png` | Schedules | `#schedules` | editable rows (preset, from / to, days, fallback), ACTIVE, *Add entry*, status block with the daemon clock (*now*); full page |
 | `13-schedules-last-switch-failed.png` | Schedules, failed last switch | `&schedfail=1` | warn notice, error in the status block |
 | `14-alerts.png` | Alerts | `#alerts` | effective transport, kinds with last delivery, recent alerts, *Send test alert*; full page |
 | `15-alerts-test-toast.png` | Test-alert toast | *Send test alert* | crop of the lower right corner (640×240) |
@@ -59,7 +59,26 @@ The 0.3.1 set (tabs and dialogs of the old dashboard) is gone; this is the 0.4.0
 embedded by [Dashboard](../04-dashboard.md), the [README](../../README.md) and the
 [API page](../12-api.md) (28).
 
-Not reproducible from the mock and therefore not included: the browser's own
-certificate warning and the OS trust dialogs ([HTTPS](../08-https-security.md#the-certificate),
-three steps) and the PVE notification matcher ([Alerts](../07-alerts.md#the-pve-side))
-— take those on a real box when needed.
+## Static assets (not from the mock)
+
+Taken on real systems, not touched by `shots.mjs`; host names in them are documentation
+values (`n5host`), nothing else identifies the host. The Windows set comes from a German
+Windows 11 (2026-09-18); the layout is the same on an English Windows, the captions in
+[HTTPS → Windows walkthrough](../08-https-security.md#windows-walkthrough) give both labels.
+
+| File | Shows |
+|---|---|
+| `cert-windows-01-dialog.png` | the downloaded `.cer` opened: "not trusted", the *Zertifikat installieren…* (*Install Certificate…*) button |
+| `cert-windows-02-wizard.png` | Certificate Import Wizard, store location *Lokaler Computer* (*Local Machine*) |
+| `cert-windows-03-store-page.png` | store page with *Alle Zertifikate in folgendem Speicher speichern* (*Place all certificates in the following store*) chosen — not the automatic default |
+| `cert-windows-04-browse.png` | *Durchsuchen…* (*Browse…*): *Vertrauenswürdige Stammzertifizierungsstellen* (*Trusted Root Certification Authorities*) |
+| `cert-windows-05-store-chosen.png` | the store page with that store in the field |
+| `cert-windows-06-finish.png` | the wizard's summary before *Fertig stellen* (*Finish*) |
+| `cert-windows-07-imported.png` | *Der Importvorgang war erfolgreich* (*The import was successful*) |
+| `cert-windows-08-chrome-secure.png` | Chrome after a full restart: *Verbindung ist sicher* (*Connection is secure*) |
+| `28-home-assistant-tiles.png` | Home Assistant System view with the n5-fangov tiles (see the table above) |
+
+Not reproducible from the mock and still not included: the browser's own certificate
+warning page (step 1 of [The certificate](../08-https-security.md#the-certificate)),
+the macOS, Firefox and Android trust dialogs and the PVE notification matcher
+([Alerts](../07-alerts.md#the-pve-side)) — take those on a real box when needed.

@@ -55,9 +55,9 @@ const ddmm = ts => { const d = new Date(ts * 1000); return `${String(d.getDate()
 const RANGES = { '2h': { label: '2 h', minutes: 120, windowS: 7200, gridS: 1800, maxPoints: 0, poll: 30000, since: true, fmt: hm },
 	'24h': { label: '24 h', minutes: 1440, windowS: 86400, gridS: 4 * 3600, maxPoints: 1500, poll: 60000, fmt: ts => new Date(ts * 1000).toLocaleDateString('en', { weekday: 'short' }) + ' ' + hm(ts) },
 	'7d': { label: '7 d', minutes: 10080, windowS: 7 * 86400, gridS: 86400, maxPoints: 2100, poll: 60000, fmt: ddmm } };
-// settings (whitelisted values; anything else falls back to the default); nav = sidebar expanded or icon rail
-const S = { unit: 'C', interval: 5, theme: 'system', range: '2h', nav: 'side' }, S_OK = { unit: ['C', 'F'], interval: [5, 10, 30], theme: ['system', 'dark', 'light'], range: Object.keys(RANGES), nav: ['side', 'rail'] };
-try { const j = JSON.parse(localStorage.getItem('n5-fangov') || '{}'); for (const k in S_OK) if (S_OK[k].includes(j[k])) S[k] = j[k]; } catch (e) {}
+// settings (whitelisted values; anything else falls back to the default); nav = sidebar expanded or icon rail; sensors = Overview sensor groups the user opened / closed
+const S = { unit: 'C', interval: 5, theme: 'system', range: '2h', nav: 'side', sensors: {} }, S_OK = { unit: ['C', 'F'], interval: [5, 10, 30], theme: ['system', 'dark', 'light'], range: Object.keys(RANGES), nav: ['side', 'rail'] };
+try { const j = JSON.parse(localStorage.getItem('n5-fangov') || '{}'); for (const k in S_OK) if (S_OK[k].includes(j[k])) S[k] = j[k]; for (const g in j.sensors || {}) if (typeof j.sensors[g] === 'boolean') S.sensors[g] = j.sensors[g]; } catch (e) {}
 const R = () => RANGES[S.range];
 const saveS = () => { try { localStorage.setItem('n5-fangov', JSON.stringify(S)); } catch (e) {} };
 const tC = v => S.unit === 'F' ? v * 9 / 5 + 32 : v;
@@ -303,15 +303,16 @@ const dirtyDot = () => h('i', { class: 'dirty', hidden: !edDirty, title: 'unsave
 const RAIL_MQ = matchMedia(`(max-width:${UI.bp.lg - .02}px)`); RAIL_MQ.addEventListener('change', () => buildNav());
 function buildNav() {
 	const nav = clear($('#nav')), forced = RAIL_MQ.matches, rail = forced || S.nav === 'rail'; $('#shell').classList.toggle('rail', rail);
-	nav.append(h('div', { class: 'brand-row' }, h('span', { class: 'logo' }, ico('fan')), h('span', { class: 'brand' }, 'n5-fangov')));
+	// the collapse toggle sits in the brand row (hidden while the rail is forced); the footer carries only the version
+	const tg = rail ? 'Expand sidebar' : 'Collapse sidebar';
+	nav.append(h('div', { class: 'brand-row' }, h('span', { class: 'logo' }, ico('fan')), h('span', { class: 'brand' }, 'n5-fangov'),
+		h('button', { class: 'btn icon link tog', hidden: forced, title: tg, 'aria-label': tg, 'aria-expanded': String(!rail), onclick: () => { S.nav = rail ? 'side' : 'rail'; saveS(); $('#s-nav').value = S.nav; buildNav(); $('#nav .tog').focus(); } }, ico(rail ? 'chev-r' : 'chev-l'))));
 	let lastG = null;
 	for (const p of visible()) {
 		if (p.g !== lastG) { const gid = 'grp-' + p.g.toLowerCase(); if (lastG) nav.append(h('div', { class: 'grp-sep' })); nav.append(h('div', { class: 'grp', id: gid }, p.g), h('ul', { 'aria-labelledby': gid })); lastG = p.g; }
 		nav.lastChild.append(h('li', null, navBtn(p, p.id === 'fans' ? Object.assign(dirtyDot(), { id: 'nav-dirty' }) : null)));
 	}
-	nav.append(h('div', { class: 'foot' }, h('ul', null, h('li', { hidden: forced }, h('button', { title: rail ? 'Expand the navigation' : 'Collapse the navigation', 'aria-label': rail ? 'Expand the navigation' : 'Collapse the navigation',
-		onclick: () => { S.nav = rail ? 'side' : 'rail'; saveS(); $('#s-nav').value = S.nav; buildNav(); $('#nav .foot button').focus(); } }, ico(rail ? 'chev-r' : 'chev-l'), h('span', { class: 'lbl' }, 'Collapse')))),
-		h('span', { class: 'vtxt', id: 'nav-ver' }, version ? 'v' + version.replace(/^v/, '') : '')));
+	nav.append(h('div', { class: 'foot' }, h('span', { class: 'vtxt', id: 'nav-ver' }, version ? 'v' + version.replace(/^v/, '') : '')));
 	// phone: bottom bar + More sheet
 	const b = clear($('#bnav')), vis = visible(), main = vis.filter(p => BOTTOM.includes(p.id)), rest = vis.filter(p => !BOTTOM.includes(p.id));
 	for (const p of main) b.append(navBtn(p, p.id === 'fans' ? dirtyDot() : null));
@@ -506,26 +507,32 @@ async function loadAlerts() { if (!signedIn()) return;
 const GROUPS = [['CPU', /^(k10temp|coretemp)/], ['SSD · NVMe', /^nvme/], ['HDD', /^drivetemp/], ['GPU', /^(amdgpu|nouveau|i915|radeon)/], ['NIC', /^(nic|eth|mlx|igc|ixgbe|r8169|atlantic)/], ['EC · board', /^(ec$|minisforum|acpitz|spd5118)/]];
 const groupOf = s => { if (s.kind === 'ssd') return 'SSD · NVMe'; if (s.kind === 'hdd') return 'HDD';
 	const id = s.id, k = id.startsWith('hwmon:') ? id.slice(6) : id.split(':')[0], g = GROUPS.find(x => x[1].test(k)); return g ? g[0] : 'other'; };
-const SN = { key: null, rows: {} };
+const SN = { key: null, rows: {}, grp: {} };
 const concrete = () => sensors.filter(s => !s.id.includes('<')); // id patterns (with <) are not selectable
 const snDesc = id => { const s = sensors.find(x => x.id === id); return s && s.description ? s.description.replace(/\s*\(now [^)]*\)\s*$/, '') : id; }; // catalogue description for legends and rows, the id as fallback
+// one <details> per group (summary: name · count · live max); open by default when the group holds a channel sensor (composite parts included) or a
+// charted one, a group the user toggles keeps its state in S.sensors (localStorage)
 function renderSensors() {
 	const host = $('#sensors'), sensors = concrete(), key = sensors.map(s => s.id).join(','), max = LIM.dashboard_sensors_max;
 	$('#sn-hint').textContent = `chart = record in the history (${dash.length}/${max})`;
-	if (key !== SN.key) { SN.key = key; SN.rows = {}; clear(host); const by = {};
+	if (key !== SN.key) { SN.key = key; SN.rows = {}; SN.grp = {}; clear(host); const by = {}, chS = chList().flatMap(c => parts(c.sensor));
 		for (const s of sensors) (by[groupOf(s)] = by[groupOf(s)] || []).push(s);
-		for (const g of [...GROUPS.map(x => x[0]), 'other']) { if (!by[g]) continue; host.append(h('div', { class: 'grp-h' }, g));
+		for (const g of [...GROUPS.map(x => x[0]), 'other']) { if (!by[g]) continue; const mx = SN.grp[g] = h('span', { class: 'gm' }), open = typeof S.sensors[g] === 'boolean' ? S.sensors[g] : by[g].some(s => chS.includes(s.id) || dash.includes(s.id));
+			const det = h('details', { class: 'sg', open }, h('summary', { onclick: () => { S.sensors[g] = !det.open; saveS(); } }, g, ' · ', by[g].length, ' · ', mx)); host.append(det);
 			for (const s of by[g]) { const r = SN.rows[s.id] = { v: h('span', { class: 'val' }), b: h('button', { class: 'btn sm', 'aria-label': 'chart ' + s.id }, ico('chart'), 'chart') };
 				r.b.addEventListener('click', () => { const off = dash.includes(s.id); setDash(off ? dash.filter(x => x !== s.id) : dash.concat(s.id), n => off ? `${s.id} removed from the chart (${n}/${max})` : `${s.id} added to the chart (${n}/${max})`); });
-				host.append(h('div', { class: 'sn' }, h('span', null, h('span', { class: 'd' }, snDesc(s.id)), h('span', { class: 'id mono' }, s.id)), r.v, r.b)); } }
+				det.append(h('div', { class: 'sn' }, h('span', null, h('span', { class: 'd' }, snDesc(s.id)), h('span', { class: 'id mono' }, s.id)), r.v, r.b)); } }
 		if (!sensors.length) host.append(h('div', { class: 'empty' }, 'no readable sensors — the Log page shows why the catalogue is empty')); }
-	for (const s of sensors) { const r = SN.rows[s.id], on = dash.includes(s.id), v = snap && snap.watched && snap.watched[s.id] !== undefined ? snap.watched[s.id] : s.temp;
+	const gmax = {};
+	for (const s of sensors) { const r = SN.rows[s.id], on = dash.includes(s.id), v = snap && snap.watched && snap.watched[s.id] !== undefined ? snap.watched[s.id] : s.temp, g = groupOf(s);
+		if (v > -900) gmax[g] = Math.max(v, gmax[g] === undefined ? -Infinity : gmax[g]);
 		r.v.textContent = v === undefined || v === null ? '—' : fmtT(v) + ' ' + unit(); r.b.classList.toggle('on', on); r.b.setAttribute('aria-pressed', String(on)); r.b.disabled = !on && dash.length >= max;
 		r.b.title = r.b.disabled ? `at most ${max} sensors — remove one from the chart first` : on ? 'remove from the chart' : 'add to the chart'; }
+	for (const g in SN.grp) SN.grp[g].textContent = gmax[g] === undefined ? 'max —' : `max ${fmtT(gmax[g])} ${unit()}`;
 }
 async function pollSensors(force) { if (!signedIn() || !force && cur !== 'overview') return;
 	try { const first = !sensors.length; sensors = (await api('/api/sensors')).body || []; renderSensors(); fillSensorSelects(); if (first && sensors.length) renderCharts(); } catch (e) {} } // first catalogue: the extra-chart legend switches from ids to descriptions
-async function loadDash() { try { dash = (await api('/api/dashboard')).body.sensors || []; renderSensors(); renderCharts(); } catch (e) {} }
+async function loadDash() { try { const was = dash.join(); dash = (await api('/api/dashboard')).body.sensors || []; if (dash.join() !== was) SN.key = null; renderSensors(); renderCharts(); } catch (e) {} } // a changed watch list re-evaluates the groups' open-by-default rule (R01)
 async function setDash(ids, msg) { const r = await act(() => api('/api/dashboard', { method: 'PUT', json: { sensors: ids } }), r => msg((r.body.sensors || ids).length)); if (!r) return;
 	dash = r.body.sensors || ids; const w = r.body.warnings || []; if (w.length) toast(w.join('\n'), 'warn'); renderSensors(); renderCharts(); resetHistory(); loadConfig(); } // [dashboard] changed in the file: cfgRaw follows
 function renderCharts() {
@@ -810,7 +817,7 @@ async function loadPresets() {
 		for (const k in PD) delete PD[k]; // every detail is re-read (CLI, second browser, import)
 		await Promise.all(psList.map(p => psGet(p.name).catch(() => null)));
 		const host_ = chList(), cur = chKey(host_); clear(host); presetBadges();
-		if (!psList.length) host.append(h('div', { class: 'empty-cta' }, 'No presets yet — Save current as… stores the editor values as the first one.'));
+		if (!psList.length) host.append(h('div', { class: 'empty-cta' }, 'No presets yet — New preset… saves the running curves as the first one.'));
 		for (const p of psList) { const d = PD[p.name], on = !!d && chKey(applied(d.channels, host_)) === cur;
 			host.append(h('div', { class: 'pchip' + (on ? ' active' : '') }, h('i', { class: 'dot', role: 'img', 'aria-label': on ? 'active — the daemon runs these values' : 'not active', title: on ? 'active — the daemon runs these values' : '' }),
 				recommended(p) ? h('span', { class: 'star', role: 'img', 'aria-label': 'recommended', title: 'recommended' }, ico('star')) : null,
@@ -822,7 +829,7 @@ async function loadPresets() {
 	} catch (e) { clear(host).append(h('p', { class: 'empty' }, 'presets: ' + e.message)); }
 }
 on('#ps-new', 'click', () => openPresetEditor(null));
-// preset editor dialog: "Start from" (the editor's unsaved values, the daemon's running curves or any preset), name, one block per channel with the
+// preset editor dialog (New preset…): "Start from" (the daemon's running curves by default, the editor's unsaved values or any preset), name, one block per channel with the
 // curve table; Save = PUT /api/presets/{name} with the composed channels (nothing is applied); built-in presets open read-only
 const ped = $('#preset-ed'), peNotice = notice('#pe-notice');
 // unsaved edits (peDirty) ask before the dialog goes: Cancel, Escape (keydown, before the dialog's own cancel) and the backdrop share peClose
@@ -837,7 +844,7 @@ function openPresetEditor(name) {
 	$('#pe-title').textContent = name ? (ro ? `Preset ${name}` : `Edit preset ${name}`) : 'New preset';
 	const srcs = [['editor', 'the editor (unsaved values)'], ['daemon', 'the daemon (running curves)'], ...psList.map(p => ['p:' + p.name, `preset ${p.name}`])];
 	const src = h('select', { 'aria-label': 'start from', disabled: !!name, onchange: () => fill(src.value) });
-	for (const [v, t] of srcs) src.append(h('option', { value: v, selected: v === (name ? 'p:' + name : 'editor') }, t));
+	for (const [v, t] of srcs) src.append(h('option', { value: v, selected: v === (name ? 'p:' + name : 'daemon') }, t));
 	const nm = h('input', { type: 'text', value: name || '', placeholder: 'summer', maxlength: 64, readonly: ro, autocapitalize: 'off', spellcheck: 'false', 'aria-describedby': 'pe-hint', oninput: () => { peDirty = true; } });
 	const chBox = h('div', { class: 'pe-chs', oninput: () => { peDirty = true; }, onclick: ev => { if (ev.target.closest('button')) peDirty = true; } }), noticeEl = h('div', { class: 'notice err', id: 'pe-notice', role: 'alert', hidden: true });
 	body.append(h('div', { class: 'src' }, 'Start from ', src, h('span', { class: 'hint sm' }, 'Saving stores the values below — nothing is applied to the daemon.')),
@@ -902,9 +909,9 @@ const scDays = e => { const all = h('span', { class: 'all' }, 'every day'), sync
 	sync(); return h('div', { class: 'days', role: 'group', 'aria-label': 'days' }, bt, all); };
 function scBuild(focus) { // focus: [row, selector] after a structural change
 	const tb = clear($('#sc-tbl tbody')), es = scState || [], hasFb = es.some(e => e.fallback), empty = t => tb.append(h('tr', null, h('td', { colspan: 5, class: 'empty' }, t))), add = $('#sc-add');
-	add.disabled = !scStat || !scNames.length; add.title = scStat && !scNames.length ? 'create a preset first (Fans page → Save current as…)' : '';
+	add.disabled = !scStat || !scNames.length; add.title = scStat && !scNames.length ? 'create a preset first (Fans page → New preset…)' : '';
 	if (!scStat) return empty('No scheduler in this daemon — [[schedule]] tables are not applied.');
-	if (!es.length) empty(scNames.length ? 'No schedule — the daemon keeps the curves it has. Add an entry to switch presets by time of day.' : 'No schedule — and no presets to switch between yet: create one on the Fans page first (Save current as…).');
+	if (!es.length) empty(scNames.length ? 'No schedule — the daemon keeps the curves it has. Add an entry to switch presets by time of day.' : 'No schedule — and no presets to switch between yet: create one on the Fans page first (New preset…).');
 	es.forEach((e, i) => { const known = () => !e.preset || scNames.includes(e.preset), miss = h('span', { class: 'miss', hidden: known() }, 'preset missing'); // a fresh row without a choice is not "missing"
 		const sel = h('select', { 'aria-label': `entry ${i + 1} preset`, onchange: () => { e.preset = sel.value; miss.hidden = known(); scSetDirty(1); } },
 			!e.preset ? h('option', { value: '', selected: true }, '— choose —') : known() ? null : h('option', { value: e.preset, selected: true }, `${e.preset} (missing)`), scNames.map(n => h('option', { value: n, selected: n === e.preset }, n)));
@@ -916,10 +923,16 @@ function scBuild(focus) { // focus: [row, selector] after a structural change
 			h('td', { class: 'rowact' }, h('button', { class: 'btn icon link', 'aria-label': `remove entry ${i + 1}`, onclick: () => { scState.splice(i, 1); scSetDirty(1); scBuild([Math.min(i, scState.length - 1), '.rowact button']); } }, ico('trash'))))); });
 	if (focus) { const r = tb.rows[focus[0]]; ((r && r.querySelector(focus[1])) || $('#sc-add')).focus(); }
 }
+// the daemon's clock: /api/state carries the snapshot's unix ts (up to one cycle old), so the largest ts − browser-now seen is the skew; the offset of the
+// host zone comes from the schedules' timezone ("CEST +02:00"); ticks every second while the page is current, "browser time" before the first snapshot
+let clkOff = null;
+const scTick = () => { const el = $('#sc-now'); if (!el || cur !== 'schedules') return; const tz = scStat && scStat.timezone || '', m = /([+-])(\d\d):(\d\d)$/.exec(tz), s = Date.now() / 1000 + (clkOff || 0);
+	el.textContent = (m ? new Date((s + (m[1] === '-' ? -1 : 1) * (m[2] * 3600 + m[3] * 60)) * 1000).toISOString().slice(11, 19) : new Date(s * 1000).toTimeString().slice(0, 8)) + ' · ' + (clkOff === null ? 'browser time' : tz || '—'); };
 function renderScStatus() { const s = scStat; if (!s) return; const es = s.entries || [], a = es[s.active], n = s.next, l = s.last;
-	kv($('#sc-kv'), [['active', a ? a.fallback ? `${a.preset} (fallback)` : `${a.preset} ${a.from}–${a.to}${a.days && a.days.length ? ' · ' + a.days.join(' ') : ''}` : es.length ? 'none (outside every window)' : 'none'],
+	kv($('#sc-kv'), [['now', h('dd', { id: 'sc-now', title: 'the daemon\'s local time — windows are compared against this clock' })],
+		['active', a ? a.fallback ? `${a.preset} (fallback)` : `${a.preset} ${a.from}–${a.to}${a.days && a.days.length ? ' · ' + a.days.join(' ') : ''}` : es.length ? 'none (outside every window)' : 'none'],
 		['next switch', n ? h('dd', null, h('time', { datetime: new Date(n.ts * 1000).toISOString() }, abs(n.ts)), ` (${inRel(n.ts)}) → ${n.preset || 'no preset (no fallback)'}`) : es.length ? 'none within 8 days' : '—'],
-		['last switch', l ? h('dd', null, `${l.preset} · `, tm(l.ts), l.ok ? ' · ok' : h('span', { class: 't-crit' }, ` — failed: ${l.error || 'unknown error'}`)) : 'none yet'], ['timezone', s.timezone || '—']]);
+		['last switch', l ? h('dd', null, `${l.preset} · `, tm(l.ts), l.ok ? ' · ok' : h('span', { class: 't-crit' }, ` — failed: ${l.error || 'unknown error'}`)) : 'none yet']]); scTick();
 	scNotice(l && !l.ok ? `Last switch failed: ${l.error || 'unknown error'} — the previous curves stay; retried at the next transition.` : '', ''); }
 async function loadSchedules() { if (!signedIn()) return; // the 60 s poll never rebuilds a dirty editor
 	try { const [s, ps] = await Promise.all([api('/api/schedules'), api('/api/presets').catch(() => ({ body: [] }))]);
@@ -1040,7 +1053,7 @@ const resetHistory = () => { hist = []; lastTs = 0; histGen++; loadHistory(); };
 let timers = [], polling = false, repoll = false;
 async function poll() { // a call mid-poll queues one more round
 	if (polling) { repoll = true; return; } polling = true;
-	try { const r = await api('/api/state'), first = !snap; snap = r.body; renderHeader(); renderCards(); renderLive(); renderSystem();
+	try { const r = await api('/api/state'), first = !snap; snap = r.body; if (snap.ts > 0) { const o = snap.ts - Date.now() / 1000; if (clkOff === null || o > clkOff || o < clkOff - 60) clkOff = o; } renderHeader(); renderCards(); renderLive(); renderSystem();
 		if (cur === 'fans') drawEds(); if (first) renderCharts(); } // the history may precede the first snapshot
 	catch (e) {}
 	await pollSensors();
@@ -1055,7 +1068,7 @@ function schedule() {
 		setInterval(() => { if (cur === 'overview' || cur === 'alerts') loadAlerts(); }, T.alerts),
 		setInterval(() => { if (cur === 'schedules') loadSchedules(); }, T.schedules),
 		setInterval(() => { if (cur === 'overview' || cur === 'system') loadSystem(); }, T.system), // live parts: memory, load, link state
-		setInterval(() => { if (cur === 'log') loadLog(); }, T.log)];
+		setInterval(() => { if (cur === 'log') loadLog(); }, T.log), setInterval(scTick, 1000)];
 }
 document.addEventListener('visibilitychange', schedule);
 

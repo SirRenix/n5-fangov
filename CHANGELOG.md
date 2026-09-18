@@ -26,11 +26,81 @@ drove the 0.3.1 work is `docs/AUDIT.md` (code) and `docs/DESIGN-AUDIT.md`
   `pwm4` write while `pwm4_enable = 2` (EBUSY); after `enable = 1`, duty 100 and
   `enable = 2` again the EC left 100 in place for 90 s — pwm4 behaves like pwm3. Whether
   `auto` on pwm4 should be forced to a fixed stop like pwm3 is an open operator decision.
-- Certificate-trust walkthrough with screenshots of the English Windows wizard (release-gate
-  finding 2026-09-18; the text recipe is in place, the images are not).
+- Certificate-trust walkthrough with screenshots of an **English** Windows wizard — rc2
+  carries the German dialogs with both labels in the captions; swap the images when an
+  English Windows is at hand.
 
 **Not planned**: MQTT/discovery (REST + token is enough and smaller), a German UI
 (audience is GitHub), multi-host management, a frontend framework.
+
+## [0.4.0-rc2] — 2026-09-19
+
+The release-gate findings of 0.4.0-rc1, run by the operator on the reference host on
+2026-09-18/19 following the documentation alone (`docs/RELEASE-GATE.md`): rows 1–7, 9
+and 10 passed; row 8 (reboot) was skipped — nothing in the boot chain (unit, DKMS gate,
+failsafe, kernel pin) changed since 0.3.1, whose reboot proof stands. Every finding was
+documentation or dashboard polish; the one data-format finding (G10) is below. Rows 3
+(installer output), 6 (dashboard: sidebar toggle, presets row, sensors card, schedules
+clock, certificate walkthrough) and 9 (troubleshooting rows) are re-run on rc2 before
+the tag drops the suffix.
+
+### Added
+
+- **Certificate walkthrough** (gate G3): `docs/08-https-security.md` → *Windows
+  walkthrough* — the eight dialogs of the import as screenshots
+  (`docs/screenshots/cert-windows-01…08`, German Windows 11, English labels in every
+  caption, host names anonymised), listed as static assets in the screenshots README.
+- **Schedules status card: `now`** (G11) — the daemon's clock `HH:MM:SS · <timezone>`
+  ticking every second, so a window can be compared against the clock the scheduler
+  uses; derived from the `ts` of `/api/state` (browser time plus the measured offset)
+  and the zone of `GET /api/schedules`, `browser time` before the first snapshot. The
+  separate timezone row is folded into it. The mock's `timezone` now has the daemon's
+  form (`CEST +02:00`).
+- **Overview → Sensors as collapsible groups** (G7): one `<details>` per group with the
+  summary `EC · board · 7 · max 35.4 °C` (name, count, live maximum); a group opens by
+  default when it holds a channel's sensor (composite parts included) or a charted id,
+  a group the operator toggles keeps its state in `localStorage` (`n5-fangov.sensors`).
+- Troubleshooting rows for a certificate that stays untrusted although the store holds
+  an entry named like the host (an old certificate under the same name after `--purge`,
+  a new key or an upload) and for "cannot find the certificate in the store" (G2).
+
+### Changed
+
+- **Sidebar toggle in the brand row** (G4): the collapse/expand button sits at the
+  right edge of the brand row (icon `chev-l` / `chev-r`, *Collapse sidebar* / *Expand
+  sidebar*, `aria-expanded`); in the icon rail it stands under the logo; the footer
+  keeps only the version. Between 700 and 1099 px the forced rail hides it as before.
+- **Presets row** (G6): *Save current as…* is **New preset…** (icon plus); the preset
+  editor's *Start from* defaults to *the daemon (running curves)*; the hint under the
+  heading reads *Apply writes a preset into the daemon · New preset… saves a set
+  without applying it*. Empty states and the Schedules hint name the new label.
+- `install.sh` closing hint (G1) names the 0.4.0 pages (Overview anonymous; Fans with
+  curves, override switch and presets, Schedules, Alerts, Log, Settings) instead of the
+  Alerts and Presets tabs.
+- HTTPS page (G2): the automatic certificate is issued to the **host** (`CN=<host
+  name>, O=n5-fangov`, `n5host` on the reference host) — that is the store entry's name,
+  not "n5-fangov"; a section *A new certificate with the same name* with the per-OS
+  removal of the old entry (Windows `certlm.msc`, Firefox Authorities, macOS Keychain
+  *System*, Android *Trusted credentials → User*, Linux `ca-certificates`); the in-app
+  *How to trust* text carries the same two facts.
+- Dashboard, DESIGN §3/§11/§11a, configuration page, release-gate row 6 and the
+  screenshot README follow; `shots.mjs` clicks the new toggle (05) and *New preset…*
+  (11); the 27 mock screenshots are regenerated.
+
+### Fixed
+
+- **Presets wrote `stop = "140"`** (G10) while the example config, the built-in presets
+  and the dashboard write `stop = 140`: `config.Marshal` and `MarshalChannels` write a
+  fixed stop duty as a TOML integer, only `"auto"` stays quoted (`numericStop`); the
+  parser keeps accepting both (`TestMarshalStopNumeric`, the existing quoted-number
+  cases in `TestStopBounds`). Both preset save paths (*New preset…* with the composed
+  channels, the empty-body `PUT` with the running tables) and the config writer go
+  through these two functions; a settings import stores preset text as exported.
+- Manual override (G8, re-checked against the mock with `&lag=1`): after *Set* the
+  number field and the slider keep the value the operator set while the daemon's
+  snapshot still reports the previous target, and follow the snapshot once it agrees;
+  the rpm in the card follows with that poll. No change was needed; the check is
+  recorded here.
 
 ## [0.4.0-rc1] — 2026-09-18
 

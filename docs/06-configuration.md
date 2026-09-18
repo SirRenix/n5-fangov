@@ -170,7 +170,7 @@ should follow the hottest of a mixed group is a composite (`["nvme:max", "disk:s
 
 `/etc/n5-fangov/presets/<name>.toml` holds only `[[channel]]` tables — every channel
 key including `hysteresis` and `min_on` (a preset written by an earlier release lacks them:
-the defaults apply). *Save current as…* on the Fans page writes one from the preset editor
+the defaults apply; a fixed `stop` is written as a number, `stop = 140`, and a quoted `"140"` is read the same). *New preset…* on the Fans page writes one from the preset editor
 (any values, nothing applied), *Apply* merges it into the config file and reloads,
 *Delete* removes a user preset ([Presets](04-dashboard.md#presets)). Three N5 Pro sets are **built in** (embedded
 in the binary, listed and applicable for the `n5pro` profile only — on another profile

@@ -133,7 +133,8 @@
   <div class="seg chsel" id="ch-sel" role="group" aria-label="Channel" hidden></div>
   <div class="fan-cards" id="fan-cards"></div>
   <div class="card presets-card">
-    <div class="card-h"><h2>Presets</h2><span class="hint sm">a preset is a full set of channel values · the badge on a channel names the preset its values match</span><div class="actions"><button class="btn" id="ps-new" type="button"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg>Save current as…</button></div></div>
+    <div class="card-h"><h2>Presets</h2><div class="actions"><button class="btn" id="ps-new" type="button"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg>New preset…</button></div></div>
+    <p class="hint sm">Apply writes a preset into the daemon · New preset… saves a set without applying it</p>
     <div class="notice" id="ps-notice" hidden></div>
     <div class="preset-row" id="preset-row"></div>
   </div>
@@ -279,7 +280,7 @@
               <li><b>Firefox:</b> Settings → Privacy &amp; Security → Certificates → View Certificates → <i>Authorities</i> → Import the <b>.crt</b> → tick <i>Trust this CA to identify websites</i>.</li>
               <li><b>Android:</b> download <b>.cer</b> → Settings → Security → Encryption &amp; credentials → Install a certificate → <i>CA certificate</i> → pick the file.</li>
             </ol>
-            <p class="hint sm">The certificate is self-signed with name constraints for exactly its own names: trusting it cannot vouch for any other host. Linux CLI: copy the .crt to <code>/usr/local/share/ca-certificates/</code> and run <code>update-ca-certificates</code>.</p>
+            <p class="hint sm">The certificate is self-signed with name constraints for exactly its own names: trusting it cannot vouch for any other host. Linux CLI: copy the .crt to <code>/usr/local/share/ca-certificates/</code> and run <code>update-ca-certificates</code>. The store entry is named after the host (the <i>subject</i> above), not n5-fangov; after a new key, an upload or a reinstall delete the old entry of that name first — the browser keeps warning while it is there.</p>
           </details>
         </div>
       </section>

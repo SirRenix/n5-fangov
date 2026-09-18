@@ -113,8 +113,8 @@ State (sessions, alert history): /var/lib/n5-fangov (created by systemd at the f
 
 $NEXT
 
-Dashboard (after setup + start): the Overview is visible without signing in; everything
-else — curves, presets, alerts, certificate, account — needs the login from setup.
-Alerts tab: transport, PVE template, test alert. Presets tab: built-in n5pro-quiet /
-n5pro-balanced (recommended) / n5pro-cool.
+Dashboard (after setup + start): the Overview is visible without signing in; the login
+from setup opens the other pages — System, Fans (curves, override switch, presets: built-in
+n5pro-quiet / n5pro-balanced (recommended) / n5pro-cool), Schedules, Alerts (test alert),
+Log, Settings (certificate, account, API tokens, alert transport, PVE template, backup), About.
 EOF

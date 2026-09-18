@@ -4,9 +4,6 @@
 // curves|manual|presets → fans and compat → about. Page shots are full-page captures: the viewport
 // grows to the document height so the 100vh sidebar spans the whole image (docs/design/proto/shots.mjs);
 // dialogs, the header and toasts are viewport clips.
-// NOTE: the Fans (07–11, 24) and Schedules (12–13) steps were written before those pages existed,
-// against the ids of DESIGN §11a and the prototype (#fan-cards, #ch-sel, #preset-ed, #ps-new, #sc-tbl,
-// #sc-add, role="switch") — fix the selectors after the merge if they differ.
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -81,8 +78,8 @@ try {
 	await nav('?mock=1&user=1'); await shot('03-overview-signed-in.png');
 	// 04 header crop: title, status chip, uptime, version + pre-release badge, live, user, Sign out
 	await shot('04-header.png', { clip: { x: 0, y: 0, width: 1280, height: 60 } });
-	// 05 sidebar collapsed to the icon rail (Collapse in the sidebar footer; state persists in localStorage)
-	await click('#nav .foot button'); await sleep(400); await shot('05-sidebar-rail.png', { view: true }); await setLS(LS);
+	// 05 sidebar collapsed to the icon rail (the toggle in the brand row; state persists in localStorage)
+	await click('#nav .tog'); await sleep(400); await shot('05-sidebar-rail.png', { view: true }); await setLS(LS);
 	// 06 system page (full inventory tables)
 	await nav('?mock=1&user=1#system'); await shot('06-system.png');
 	// 07 fans page (full): channel cards with curve editor + Live & override, presets row, action bar
@@ -101,7 +98,7 @@ try {
 	await evalJS(`(()=>{const card=[...document.querySelectorAll('#fan-cards .fan')].find(c=>/hdd/.test(c.textContent)); const sw=card.querySelector('[role=switch]'); if(sw.getAttribute('aria-checked')!=='true') sw.click(); return 1;})()`); await sleep(600); await hideToasts();
 	await evalJS(`(()=>{const card=[...document.querySelectorAll('#fan-cards .fan')].find(c=>/hdd/.test(c.textContent)); const r=card.querySelector('input[type=range]'); r.value=40; r.dispatchEvent(new Event('input',{bubbles:true})); return 1;})()`);
 	await evalJS(`document.querySelectorAll('#fan-cards .fan')[2]?.scrollIntoView(); 1`); await shot('10-fans-manual-switch.png', { view: true });
-	// 11 preset editor dialog (Save current as…), prefilled from the editor state
+	// 11 preset editor dialog (New preset…), prefilled from the daemon's running curves
 	await nav('?mock=1&user=1#fans'); await click('#ps-new'); await sleep(400); await input('#preset-ed input[type=text]', 'summer'); await shot('11-preset-editor.png', { view: true });
 	// 12 schedules page: editable rows, Add entry, status block
 	await nav('?mock=1&user=1#schedules'); await shot('12-schedules.png');

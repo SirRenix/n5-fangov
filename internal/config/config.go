@@ -502,7 +502,7 @@ func Marshal(cfg Config) []byte {
 	enc := toml.NewEncoder(&buf)
 	// Encode never fails for this plain struct.
 	_ = enc.Encode(cfg)
-	return buf.Bytes()
+	return numericStop(buf.Bytes())
 }
 
 // MarshalChannels encodes only [[channel]] tables (preset file format).
@@ -511,8 +511,17 @@ func MarshalChannels(chans []Channel) []byte {
 	_ = toml.NewEncoder(&buf).Encode(struct {
 		Channels []Channel `toml:"channel"`
 	}{chans})
-	return buf.Bytes()
+	return numericStop(buf.Bytes())
 }
+
+// quotedStop matches a stop key whose value the encoder quoted although it
+// is a duty ("140"); Channel.Stop is a string for the sake of "auto".
+var quotedStop = regexp.MustCompile(`(?m)^([ \t]*stop[ \t]*=[ \t]*)"(\d+)"[ \t]*$`)
+
+// numericStop writes a fixed stop duty as a TOML integer (stop = 140), the
+// form the built-in presets, the example config and the dashboard use; only
+// "auto" stays quoted. The parser accepts both (stop).
+func numericStop(raw []byte) []byte { return quotedStop.ReplaceAll(raw, []byte("$1$2")) }
 
 // ---- parser -------------------------------------------------------------
 

@@ -4,7 +4,7 @@
 // Names and addresses are documentation values (n5host, 192.0.2.x, n5.lan, example.test).
 'use strict';
 window.n5mock = (() => {
-	const Q = new URLSearchParams(location.search), t0 = Date.now() / 1000, MV = '0.4.0-rc1', PRE = MV.split('-')[1] || '';
+	const Q = new URLSearchParams(location.search), t0 = Date.now() / 1000, MV = '0.4.0-rc2', PRE = MV.split('-')[1] || '';
 	const interp = (curve, t) => { if (!curve.length) return 0; if (t <= curve[0][0]) return curve[0][1];
 		for (let i = 1; i < curve.length; i++) if (t <= curve[i][0]) { const [t0, d0] = curve[i - 1], [t1, d1] = curve[i]; return t1 === t0 ? d1 : d0 + (d1 - d0) * (t - t0) / (t1 - t0); }
 		return curve[curve.length - 1][1]; };
@@ -132,7 +132,10 @@ window.n5mock = (() => {
 		return fail('method not allowed', 405);
 	};
 	// schedules (DESIGN 6b): active = first window containing the local time, else the fallback; next = next window edge
-	const DAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'], hm = s => { const [hh, mm] = s.split(':'); return +hh * 60 + +mm; };
+	// timezone like the daemon's zoneLabel: abbreviation + offset ("CEST +02:00"), so the Schedules clock can show the host's local time
+	const zoneLabel = () => { const d = new Date(), o = -d.getTimezoneOffset(), a = Math.abs(o), n = (Intl.DateTimeFormat('en-GB', { timeZoneName: 'short' }).formatToParts(d).find(p => p.type === 'timeZoneName') || {}).value || 'UTC';
+		return `${n} ${o < 0 ? '-' : '+'}${String(a / 60 | 0).padStart(2, '0')}:${String(a % 60).padStart(2, '0')}`; };
+	const DAYS =['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'], hm = s => { const [hh, mm] = s.split(':'); return +hh * 60 + +mm; };
 	const inWin = (e, d) => { if (!e.from) return false; const t = d.getHours() * 60 + d.getMinutes(), f = hm(e.from), to = hm(e.to), day = to < f && t < to ? new Date(d.getTime() - 864e5) : d;
 		return (to < f ? t >= f || t < to : t >= f && t < to) && (!e.days.length || e.days.includes(DAYS[day.getDay()])); };
 	const activeIdx = d => { const i = cfg.schedule.findIndex(e => inWin(e, d)); return i >= 0 ? i : cfg.schedule.findIndex(e => !e.from); };
@@ -140,7 +143,7 @@ window.n5mock = (() => {
 		for (let m = 1; m <= 8 * 1440 && !next; m++) { const d = new Date(now.getTime() + m * 60000); d.setSeconds(0, 0); const i = activeIdx(d); if (i !== cur) next = { ts: Math.floor(d / 1000), preset: i >= 0 ? cfg.schedule[i].preset : '' }; }
 		const bad = !!Q.get('schedfail');
 		return { entries: cfg.schedule.map((e, i) => Object.assign({}, e, { fallback: !e.from, active: i === cur })), active: cur, next,
-			last: { ts: Math.floor(t0 - 3600), preset: bad ? 'night' : 'n5pro-balanced', ok: !bad, error: bad ? 'preset "night" not found' : '' }, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Local' }; };
+			last: { ts: Math.floor(t0 - 3600), preset: bad ? 'night' : 'n5pro-balanced', ok: !bad, error: bad ? 'preset "night" not found' : '' }, timezone: zoneLabel() }; };
 	// system inventory (generic names, documentation MACs); disk temp_c live from the same hwmon disk:<dev> reads, null without one
 	const G = 1 << 30, sysMock = now => ({ host: { hostname: 'n5host', os: 'Debian GNU/Linux 13 (trixie)', kernel: '7.0.12-1-pve', uptime_s: 435723, load1: +(.6 + .3 * Math.sin(now / 300)).toFixed(2), load5: .7, load15: .66 },
 		machine: { vendor: 'Example Vendor', product: 'N5-class mini server', board: 'EXB-01', board_vendor: 'Example Boards Ltd', bios_version: '1.05', bios_date: '03/31/2026' },
@@ -183,7 +186,8 @@ window.n5mock = (() => {
 				// like the daemon: an override replaces the target and the mode, stall and critical win on top; &lag=1 reports the previous
 				// override state for two more polls (the daemon's snapshot follows a PUT/DELETE only with the next cycle)
 				channels: cfg.channel.map(c => { const n = c.name, st = n === 'hdd' && stall, lg = ovLag[n], ov = lg && lg.left-- > 0 ? lg.ov : overrides[n]; if (lg && lg.left <= 0) delete ovLag[n];
-					const ch = { name: n, pwm: c.pwm, sensor: c.sensor, temp: pt.temp[n], duty: ov === undefined ? pt.duty[n] : ov, target: ov === undefined ? n === 'cpu' ? pt.duty.cpu + 22 : pt.duty[n] : ov, rpm: st ? 0 : pt.rpm[n],
+					const cd = Math.round(interp(c.curve, pt.temp[n])), duty = ov === undefined ? cd : ov; // curve duty while the lagged state says auto; rpm follows the (lagged) duty, as on the daemon
+					const ch = { name: n, pwm: c.pwm, sensor: c.sensor, temp: pt.temp[n], duty, target: ov === undefined ? n === 'cpu' ? cd + 22 : cd : ov, rpm: st ? 0 : rpmOf(n, duty),
 					mode: st ? 'stall' : ov !== undefined ? 'manual' : 'auto' };
 					// hysteresis: the held reading lags the raw one; min_on: a running hold now and then
 					if (c.hysteresis) { const held = Math.round(pt.temp[n]) - 1; if (Math.abs(held - pt.temp[n]) >= .1) ch.held_temp = held; }
