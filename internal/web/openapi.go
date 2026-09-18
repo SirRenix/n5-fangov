@@ -52,6 +52,7 @@ type bodySpec struct {
 	ContentType string
 	Schema      string
 	Description string
+	Optional    bool // the endpoint also accepts an empty body
 }
 
 // paramSpec is one query parameter.
@@ -160,7 +161,9 @@ func (s *Server) routeTable() []route {
 			Summary: "Restore a settings bundle (everything validated before anything is written)", Body: jsonBody("", "the bundle as exported"),
 			Responses: map[int]string{200: "restored and reloaded", 202: "restored, restart required", 400: "import rejected", 413: "body too large", 500: "import failed (write)", 501: "no bundle"}},
 		{Method: "PUT", Path: "/api/presets/{name}", Handler: s.savePreset, Class: classProtected, Scope: scopeAdmin,
-			Summary: "Save the current channel tables as a preset", Responses: map[int]string{200: "saved", 400: "invalid name", 409: "built-in name", 500: "not written", 501: "no preset store"}},
+			Summary: "Save a preset: the running channel tables (empty body) or the composed channels of the body (nothing is applied)",
+			Body: &bodySpec{ContentType: "application/json", Schema: "PresetSave", Description: "optional: the channels to store; empty = the running [[channel]] tables", Optional: true},
+			Responses: map[int]string{200: "saved", 400: "invalid name, or the body fails the channel rules / names other channels than the running config (errors[])", 409: "built-in name", 413: "body too large", 500: "not written", 501: "no preset store"}},
 		{Method: "POST", Path: "/api/presets/{name}/rename", Handler: s.renamePreset, Class: classProtected, Scope: scopeAdmin,
 			Summary: "Rename a user preset", Body: jsonBody("PresetRename", "the new name"),
 			Responses: map[int]string{200: "renamed", 400: "invalid name", 404: "unknown preset", 409: "built-in or target exists", 501: "no preset store"}},
@@ -277,7 +280,7 @@ func buildOpenAPI(version string, table []route) ([]byte, error) {
 				schema = map[string]any{"type": "string"}
 			}
 			op["requestBody"] = map[string]any{
-				"required":    true,
+				"required":    !r.Body.Optional,
 				"description": r.Body.Description,
 				"content":     map[string]any{r.Body.ContentType: map[string]any{"schema": schema}},
 			}
@@ -500,6 +503,13 @@ func openAPISchemas() map[string]any {
 			"user":     str(""),
 			"password": str(""),
 			"remember": boolean("30-day session instead of 12 h"),
+		}),
+		"PresetSave": object("PUT /api/presets/{name} body: the channels to store, validated like [[channel]] tables", []string{"channels"}, map[string]any{
+			"channels": arrayOf(object("one channel", []string{"name", "pwm", "sensor", "curve", "critical"}, map[string]any{
+				"name": str(channelName.String()), "pwm": integer("1.."), "sensor": str("sensor id, several joined by ,"),
+				"curve": arrayOf(arrayOf(integer("[temp_c, duty]"))), "critical": integer("above the last point"), "stop": str("auto or 60..255"),
+				"hysteresis": integer("0..10"), "min_on": str("duration, 0s = off"),
+			})),
 		}),
 		"PresetRename":    object("POST /api/presets/{name}/rename body", []string{"name"}, map[string]any{"name": str("new name")}),
 		"TLSRegenerate":   object("POST /api/tls/regenerate body", nil, map[string]any{"keep_key": boolean("keep the private key (default true)")}),

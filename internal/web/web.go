@@ -1307,28 +1307,6 @@ func (s *Server) applyPreset(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "applied": name})
 }
 
-func (s *Server) savePreset(w http.ResponseWriter, r *http.Request) {
-	if s.deps.Presets == nil {
-		writeError(w, http.StatusNotImplemented, "no preset store")
-		return
-	}
-	name := r.PathValue("name")
-	if !presetName.MatchString(name) {
-		writeError(w, http.StatusBadRequest, "invalid preset name")
-		return
-	}
-	if err := s.deps.Presets.Save(name); err != nil {
-		if errors.Is(err, ErrPresetBuiltin) {
-			// The contract says 409 for a built-in name, like delete.
-			writeError(w, http.StatusConflict, "save preset: "+err.Error())
-			return
-		}
-		writeError(w, storeStatus(err), "save preset: "+err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "saved": name})
-}
-
 // logSource names where the lines come from: "file" or "journal".
 func (s *Server) logSource() string {
 	if s.logs.Path() == "" {

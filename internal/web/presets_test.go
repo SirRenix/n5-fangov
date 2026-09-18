@@ -131,3 +131,67 @@ func TestApplyPresetReloadFailed500(t *testing.T) {
 		t.Error("isReloadError classification")
 	}
 }
+
+// TestPresetSaveBody: PUT /api/presets/{name} with a JSON body stores the
+// composed channels (the preset editor) — validated with the config's
+// channel rules (400 {error, errors[]}), the channel set must be the
+// running config's, a built-in name is 409, an empty body keeps saving the
+// running tables.
+func TestPresetSaveBody(t *testing.T) {
+	e := newEnv(t, AuthConfig{})
+	e.presets.list = append(e.presets.list, Preset{Name: "n5pro-balanced", Builtin: true, Channels: []string{"cpu"}})
+	good := `{"channels":[{"name":"cpu","pwm":1,"sensor":"k10temp","curve":[[40,80],[75,255]],"critical":85,"stop":"auto","hysteresis":2,"min_on":"1m0s"}]}`
+	r := e.do(t, "PUT", "/api/presets/summer", good, csrf)
+	wantCode(t, r, 200)
+	if !strings.Contains(r.body, `"saved":"summer"`) {
+		t.Errorf("save = %s", r.body)
+	}
+	got := e.presets.chans["summer"]
+	if len(got) != 1 || got[0].Name != "cpu" || got[0].Critical != 85 || got[0].Hysteresis != 2 || got[0].MinOn.String() != "1m0s" || len(got[0].Curve) != 2 || got[0].Curve[1][1] != 255 {
+		t.Errorf("saved channels = %+v", got)
+	}
+	if len(e.presets.saved) != 0 {
+		t.Errorf("Save (running tables) called with a body: %v", e.presets.saved)
+	}
+	// a bad curve: duty falls → 400 with the parser's message in errors[]
+	r = e.do(t, "PUT", "/api/presets/summer", `{"channels":[{"name":"cpu","pwm":1,"sensor":"k10temp","curve":[[40,200],[75,100]],"critical":85,"stop":"auto"}]}`, csrf)
+	wantCode(t, r, 400)
+	var m struct {
+		Error  string   `json:"error"`
+		Errors []string `json:"errors"`
+	}
+	decode(t, r.body, &m)
+	if m.Error != "preset rejected" || len(m.Errors) != 1 || !strings.Contains(m.Errors[0], "channel.cpu.curve") {
+		t.Errorf("bad curve = %s", r.body)
+	}
+	// critical below the last point, stop below 60, hysteresis above 10: every warning is an error
+	r = e.do(t, "PUT", "/api/presets/summer", `{"channels":[{"name":"cpu","pwm":1,"sensor":"k10temp","curve":[[40,80],[75,255]],"critical":70,"stop":"20","hysteresis":11}]}`, csrf)
+	wantCode(t, r, 400)
+	decode(t, r.body, &m)
+	if len(m.Errors) != 3 {
+		t.Errorf("three rule errors expected, got %v", m.Errors)
+	}
+	// min_on that is not a duration, and a channel set other than the running config's
+	for _, tc := range []struct{ body, want string }{
+		{`{"channels":[{"name":"cpu","pwm":1,"sensor":"k10temp","curve":[[40,80],[75,255]],"critical":85,"min_on":"soon"}]}`, "not a duration"},
+		{`{"channels":[{"name":"hdd","pwm":3,"sensor":"drivetemp:max","curve":[[36,105],[46,255]],"critical":56}]}`, "do not match the running config"},
+		{`{"channels":[]}`, "none given"},
+	} {
+		r = e.do(t, "PUT", "/api/presets/summer", tc.body, csrf)
+		wantCode(t, r, 400)
+		decode(t, r.body, &m)
+		if len(m.Errors) != 1 || !strings.Contains(m.Errors[0], tc.want) {
+			t.Errorf("%s: errors = %v, want %q", tc.body, m.Errors, tc.want)
+		}
+	}
+	wantError(t, e.do(t, "PUT", "/api/presets/summer", `{"channels":[{"name":"cpu"}],"description":"x"}`, csrf), 400, "invalid JSON body")
+	wantError(t, e.do(t, "PUT", "/api/presets/n5pro-balanced", good, csrf), 409, "built-in")
+	// the empty body path is unchanged
+	wantCode(t, e.do(t, "PUT", "/api/presets/night", "", csrf), 200)
+	if len(e.presets.saved) != 1 || e.presets.saved[0] != "night" {
+		t.Errorf("saved = %v", e.presets.saved)
+	}
+	if !strings.Contains(e.logLines(), `web: preset "summer" saved by`) {
+		t.Errorf("log = %q", e.logLines())
+	}
+}

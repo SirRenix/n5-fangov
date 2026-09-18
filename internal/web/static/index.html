@@ -129,23 +129,16 @@
 </section>
 
 <section id="p-fans" class="pg" data-auth hidden>
-  <div class="bar cv-bar">
-    <p class="hint" id="cv-hint">Drag points or edit the table. 2–8 points, temperatures ascending, duty never falling. Applying rewrites the <code>[[channel]]</code> tables and keeps <code>[daemon]</code>/<code>[web]</code>.</p>
-    <span class="dirty-t" id="cv-dirty" hidden><i class="dirty"></i>unsaved changes</span>
-    <div class="actions"><button class="btn" id="cv-revert">Revert</button><button class="btn primary" id="cv-apply">Apply to daemon <span class="badge dirty-b" id="cv-badge" hidden>unsaved</span></button></div>
-  </div>
-  <p class="gloss"><b>duty</b> is the PWM value 0–255 the daemon writes (100 % = 255). Each cycle a channel moves from its current duty towards the curve's target in <code>step_up</code>/<code>step_down</code> steps (slew, shown as “current → target” on the Overview). <b>critical</b> forces 100 % at once whatever the curve says; a <b>stall</b> (fan reports 0 rpm) kicks the channel up until it spins. <b>stop</b> is the duty left on the channel when the daemon stops: <code>auto</code> hands it back to the driver, a number keeps a fixed duty. Curves are stored and edited in °C regardless of the display unit.</p>
+  <p class="gloss"><b>duty</b> is the PWM value 0–255 the daemon writes (100 % = 255). Each cycle a channel moves from its current duty towards the curve's target in <code>step_up</code>/<code>step_down</code> steps (slew, shown as “current → target” on the Overview). <b>critical</b> forces 100 % at once whatever the curve says; a <b>stall</b> (fan reports 0 rpm) kicks the channel up until it spins. <b>stop</b> is the duty left on the channel when the daemon stops: <code>auto</code> hands it back to the driver, a number keeps a fixed duty. Curves are stored and edited in °C regardless of the display unit. Drag points or edit the table: <span id="cv-hint">2–8</span> points, temperatures ascending, duty never falling. <em>Apply to daemon</em> rewrites the <code>[[channel]]</code> tables and keeps everything else.</p>
   <div class="notice" id="cv-notice" role="alert" hidden></div>
-  <div class="editors" id="editors"></div>
-  <h2 class="sec-h">Manual</h2>
-  <p class="hint">Manual duty holds until “Back to auto”. Critical-temperature and stall guards still apply and override any manual value.</p>
-  <div class="cards" id="manual"></div>
-  <h2 class="sec-h">Presets</h2>
-  <div class="bar">
-    <form class="inline" id="ps-save" novalidate><label>Save current as <input id="ps-name" placeholder="name" maxlength="64" autocapitalize="off" spellcheck="false" aria-describedby="ps-hint" required></label><button class="btn primary" type="submit">Save</button><span class="hint sm" id="ps-hint">a–z, 0–9, _ and -, at most 64 characters · current = the curves the daemon runs now (apply the editor first)</span></form>
+  <div class="seg chsel" id="ch-sel" role="group" aria-label="Channel" hidden></div>
+  <div class="fan-cards" id="fan-cards"></div>
+  <div class="card presets-card">
+    <div class="card-h"><h2>Presets</h2><span class="hint sm">a preset is a full set of channel values · the badge on a channel names the preset its values match</span><div class="actions"><button class="btn" id="ps-new" type="button"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg>Save current as…</button></div></div>
+    <div class="notice" id="ps-notice" hidden></div>
+    <div class="preset-row" id="preset-row"></div>
   </div>
-  <div class="notice" id="ps-notice" hidden></div>
-  <div class="list" id="presets"></div>
+  <div class="actbar" id="actbar"><span class="dirty-t" id="cv-dirty" hidden><i class="dirty"></i>unsaved changes</span><span class="hint sm" id="cv-clean">no unsaved changes</span><div class="actions"><button class="btn" id="cv-revert" type="button">Revert</button><button class="btn primary" id="cv-apply" type="button">Apply to daemon</button></div></div>
 </section>
 
 <section id="p-schedules" class="pg" data-auth hidden>

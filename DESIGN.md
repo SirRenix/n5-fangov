@@ -178,7 +178,11 @@ scheduler (cmd) from every reload.
 Presets: name `^[a-z0-9_-]{1,64}$`. A preset file holds `[[channel]]` tables with every
 channel key; `hysteresis` and `min_on` are written only when set (`Marshal` omits them at
 their defaults, like the dashboard does), so a preset written before 0.3.1 simply reads as
-the defaults. The parser flags a channel table that carries either key
+the defaults. A user preset is written either from the running tables (`PUT /api/presets/{name}`
+with an empty body, `config.SavePreset` of the file's channels) or from a composed channel list
+(the same call with a JSON body — the dashboard's preset editor; `dirPresetStore.SaveChannels`
+after the web layer validated the list with the config rules, see section 9). User preset
+files carry no description. The parser flags a channel table that carries either key
 (`Channel.PostSet`, `toml:"-"`; `Clone` copies it, `Marshal` ignores it). **Apply merges
 by pwm:** a channel of the preset replaces the config channel with the same `pwm` (the
 config channel's `name` is kept when the preset uses another name for that pwm; its
@@ -625,7 +629,7 @@ registered pattern appears in the document and vice versa; `TestOpenAPIShape`: v
 summaries, responses, scope values.
 
 `Deps` members and the 501 rule: `Service` (control), `Config` (`ConfigStore`), `Validate`
-(`config.Parse`), `Presets` (`PresetStore` + optional `PresetDetailer`, `PresetRenamer`),
+(`config.Parse`), `Presets` (`PresetStore` + optional `PresetDetailer`, `PresetRenamer`, `PresetChannelSaver`),
 `Log LogStore`, `Bundle`, `Profiles`, `Sensors`, `Version`, `Auth AuthConfig`,
 `AllowedHosts`, `TLS`, `TLSMgr`, `TLSHosts`, `Logf`, `SessionFile`, `TokenFile`,
 `Account`, `Alerts`, `Dashboard`, `Schedules` (`ScheduleStatus func() any`; nil → 501),
@@ -666,7 +670,7 @@ counts as signed in, `via: "none"`):
 | `GET /api/presets` | protected | — | `[{name, channels[names], builtin, description}]` |
 | `GET /api/presets/{name}` | protected | — | `{name, builtin, description, channels[{name,pwm,sensor,curve,critical,stop,hysteresis,min_on}]}`; 404 |
 | `POST /api/presets/{name}/apply` | protected | — | 200 `{ok, applied}` / 202 `{restart_required}`; 404 unknown or built-in of another profile |
-| `PUT /api/presets/{name}` | protected | empty | saves the current `[[channel]]` tables; 200 `{ok, saved}`; 409 built-in |
+| `PUT /api/presets/{name}` | protected | empty, or JSON `{channels[{name,pwm,sensor,curve,critical,stop?,hysteresis?,min_on?}]}` ≤ 256 KiB | empty body: saves the current `[[channel]]` tables; JSON body (`PresetChannelSaver`, else 501): stores the composed channels **without applying** — rendered as `[[channel]]` TOML and parsed with the config rules, every warning the parser would substitute a default for is an error, and the channel names must be the running config's (a preset is applied to this host); 200 `{ok, saved}`; 400 `{error, errors[]}`; 409 built-in; 413 |
 | `POST /api/presets/{name}/rename` | protected | `{name}` | 200 `{ok, name}`; 409 built-in or target exists; 404 |
 | `DELETE /api/presets/{name}` | protected | — | 200; 409 built-in; 404 |
 | `GET /api/sensors` | protected | — | `[{id, description, temp?, kind?}]` (catalogue with live readings; `kind` `ssd`/`hdd` for `disk:*`, section 5) |
@@ -800,10 +804,11 @@ sensors.
   browser's `beforeunload` prompt covers a page close.
 - **Manual:** slider + *Set* / *Back to auto* per channel; HDD-like channels show the
   minimum-60 hint and refuse lower values client-side.
-- **Presets:** cards with built-in/recommended badges and description, *Apply*, *Details*
-  (channel tables via `GET /api/presets/{name}`, now with hysteresis/min_on columns),
-  *Rename*, *Delete* (user presets), *Save current as…* (client-side name rule, built-in
-  names refused); **Schedules card** (read-only, `GET /api/schedules`): one row per entry
+- **Presets:** until 0.4.0 a card list; now the Presets row of the Fans page (section 11a):
+  chips with built-in/recommended badges and description, *Apply*, *Details / Edit* (the
+  preset editor dialog, read-only for a built-in), *Delete* (user presets), *Save current
+  as…* (client-side name rule, built-in names refused; the editor composes the channels and
+  saves them with `PUT /api/presets/{name}` + JSON body, nothing is applied); **Schedules card** (read-only, `GET /api/schedules`): one row per entry
   (preset, window or *fallback*, days, ACTIVE badge), next switch, last switch with its
   error as a warn notice, timezone, hint that the list is edited in the config
   (`[[schedule]]`, docs link); polled every 60 s while the tab is current.
@@ -907,14 +912,19 @@ name of the preset whose channel values match (`chKey`) as a badge. Left: the cu
 editor of the Curves tab (fields sensor / critical / stop / hysteresis / min_on, canvas,
 point table). Right, *Live & override*: now-temperature → duty target, an explicit
 **Auto / Manual switch** (`role="switch"`, gate finding: switching to Manual holds the
-duty the curve is writing, the slider + number field and *Set* then change it; switching
-back to Auto is the `DELETE /api/override/{name}`), the HDD minimum hint. Below the
-cards a **Presets row** of chips (active ●, recommended ★, built-in badge, user presets
-with *Details / Rename / Delete* in a chip menu) and *Apply*; *Save current as…* opens
-the **preset editor** dialog (name, description, per-channel curve table + critical /
-stop / hysteresis / min_on, prefilled from the editor state or from an existing preset;
-*Save* = `PUT /api/presets/{name}` with the composed channels — the editor's values, not
-the daemon's — nothing is applied). Sticky action bar with the dirty indicator, *Revert*,
+duty the channel runs at that moment — `PUT /api/override/{name}` with the snapshot duty,
+raised to the HDD minimum where it applies —, the slider + number field and *Set* then
+change it; switching back to Auto is the `DELETE /api/override/{name}`; the slider block
+is dimmed while the switch is off), the HDD minimum hint. The live block refreshes with
+every state poll without rebuilding the editor. Below the cards a **Presets row** of
+chips (active ●, recommended ★, built-in badge, description, *Apply* with confirm,
+icon buttons *Details* (built-in, read-only) / *Edit* (user preset) and *Delete*; rename
+happens in the editor's name field → `POST …/rename` before the save); *Save current as…*
+opens the **preset editor** dialog (*Start from*: the editor's unsaved values, the
+daemon's running curves or any preset; name; per-channel critical / stop / hysteresis /
+min_on and an editable point table, 2..8 points, validated with the curve editor's rules;
+no description — user preset files carry none; *Save* = `PUT /api/presets/{name}` with the
+composed channels — the editor's values, not the daemon's — nothing is applied). Sticky action bar with the dirty indicator, *Revert*,
 *Apply to daemon* (unchanged semantics, `PUT /api/config?strict=1`, `[[channel]]` splice).
 Decided 2026-09-18: all channels stacked on desktop; below 700 px a channel selector
 (segmented control above the card) shows one channel at a time — a breakpoint, not a setting.

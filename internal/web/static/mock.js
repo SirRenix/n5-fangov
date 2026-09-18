@@ -198,7 +198,10 @@ window.n5mock = (() => {
 			overrides[n] = opt.json.duty; return ok({ ok: true }); }
 		if (p === '/api/presets') return ok(Object.entries(presets).map(([name, v]) => ({ name, channels: v.ch.map(c => c.name), builtin: !!v.builtin, description: v.description })));
 		if (p.startsWith('/api/presets/')) { const n = p.split('/')[3], b = presets[n] && presets[n].builtin, sub = p.split('/')[4];
-			if (m === 'PUT') { if (b) return fail('built-in preset', 409); presets[n] = { ch: cfg.channel }; return ok({ ok: true }); }
+			if (m === 'PUT') { if (b) return fail('built-in preset', 409); const chs = opt.json && opt.json.channels; // a JSON body = the composed channels (preset editor), validated like the config; empty = the running tables
+				if (chs) { const errs = check(chs.map(c => Object.assign({ stop: 'auto', hysteresis: 0, min_on: '0s' }, c))); if (errs.length) return fail('preset rejected', 400, { errors: errs });
+					if (chs.map(c => c.name).sort().join() !== cfg.channel.map(c => c.name).sort().join()) return fail('preset rejected', 400, { errors: ['channel: names do not match the running config'] }); }
+				presets[n] = { ch: (chs || cfg.channel).map(c => Object.assign({}, c)) }; return ok({ ok: true, saved: n }); }
 			if (m === 'DELETE') { if (b) return fail('built-in preset', 409); if (!presets[n]) return fail('no such preset', 404); delete presets[n]; return ok({ ok: true }); }
 			if (m === 'GET') { if (!presets[n]) return fail('unknown preset ' + n, 404); return ok({ name: n, builtin: !!b, description: presets[n].description, channels: presets[n].ch }); }
 			if (sub === 'rename') { const nn = opt.json.name; if (b || (presets[nn] && presets[nn].builtin)) return fail('built-in preset', 409); if (presets[nn]) return fail('preset exists', 409); presets[nn] = presets[n]; delete presets[n]; return ok({ ok: true, name: nn }); }

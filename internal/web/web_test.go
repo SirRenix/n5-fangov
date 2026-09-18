@@ -156,6 +156,7 @@ type fakePresets struct {
 	list     []Preset
 	applied  []string
 	saved    []string
+	chans    map[string][]config.Channel // SaveChannels bodies by name
 	applyErr error
 	saveErr  error
 }
@@ -173,6 +174,21 @@ func (p *fakePresets) Save(name string) error {
 		return p.saveErr
 	}
 	p.saved = append(p.saved, name)
+	return nil
+}
+func (p *fakePresets) SaveChannels(name string, chans []config.Channel) error {
+	if p.saveErr != nil {
+		return p.saveErr
+	}
+	for _, b := range p.list {
+		if b.Name == name && b.Builtin {
+			return fmt.Errorf("preset %q: %w", name, ErrPresetBuiltin)
+		}
+	}
+	if p.chans == nil {
+		p.chans = map[string][]config.Channel{}
+	}
+	p.chans[name] = chans
 	return nil
 }
 
@@ -1877,5 +1893,45 @@ func TestStoreErrorsAre500(t *testing.T) {
 	wantCode(t, e.do(t, "POST", "/api/presets/x/apply", "", csrf), 500)
 	if !isStoreError(&fs.PathError{Err: syscall.EROFS}) || isStoreError(errors.New("no")) || !isStoreError(fmt.Errorf("x: %w", ErrStore)) {
 		t.Error("isStoreError classification")
+	}
+}
+
+// TestFansPageMarkup (DESIGN 11a): the Fans page carries the channel cards,
+// the phone channel selector, the preset editor dialog and the sticky action
+// bar; the override is an ARIA switch; the old Manual / Presets panels are gone.
+func TestFansPageMarkup(t *testing.T) {
+	html, err := staticFS.ReadFile("static/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js, err := staticFS.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`id="fan-cards"`, `id="ch-sel"`, `id="preset-ed"`, `id="actbar"`, `id="ps-new"`, `id="preset-row"`, `id="cv-apply"`, `id="cv-revert"`} {
+		if !strings.Contains(string(html), want) {
+			t.Errorf("index.html lacks %s", want)
+		}
+	}
+	for _, gone := range []string{`id="manual"`, `id="ps-save"`, `id="editors"`, `id="presets"`} {
+		if strings.Contains(string(html), gone) {
+			t.Errorf("index.html still carries %s", gone)
+		}
+	}
+	src := string(js)
+	if !strings.Contains(src, `role: 'switch'`) && !strings.Contains(src, `role="switch"`) {
+		t.Errorf("app.js: the Auto / Manual control must be a role=switch")
+	}
+	for _, want := range []string{"'aria-checked'", "/api/override/", "json: { channels: chans }", "validateChannel", "#ch-sel", "matchMedia"} {
+		if !strings.Contains(src, want) {
+			t.Errorf("app.js lacks %q", want)
+		}
+	}
+	if strings.Contains(src, "renderManual") {
+		t.Errorf("app.js still carries the Manual tab code path")
+	}
+	mock, _ := staticFS.ReadFile("static/mock.js")
+	if !strings.Contains(string(mock), "opt.json.channels") {
+		t.Errorf("mock.js: PUT /api/presets/{name} must store the JSON body's channels")
 	}
 }
