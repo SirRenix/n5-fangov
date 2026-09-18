@@ -473,7 +473,10 @@ else log; `pve`/`mail` without their tool degrade in the same order; `webhook` i
 chosen by `auto` and degrades to `log` (with the effective name `log`) only when its URL
 is empty. Delivery is bounded (30 s + wait delay). The PVE template pair exists twice —
 `deploy/pve-notification/` (installer) and `internal/alert/templates/` (daemon/CLI) — and
-`make verify-deploy` checks they are identical.
+`make verify-deploy` checks they are identical. **Alert texts are ASCII** (kind, title,
+message, the `Title` header): the PVE mail path delivers the body without a charset and a
+mail client renders `—` as `â€”` (seen 2026-09-18); `TestAlertTextsASCII` pins every text
+the daemon or CLI composes.
 
 `Webhook` (effective name `webhook`): one `POST` per alert to `webhook_url` with
 `http.Client{Timeout: Timeout}` (system CA pool, no insecure option; redirects not
@@ -645,7 +648,7 @@ counts as signed in, `via: "none"`):
 | `POST /api/logout` | public, CSRF | — | 204; cookie cleared, session revoked; 403 for a token caller |
 | `GET /api/state` | filtered | — | snapshot (section 6) |
 | `GET /api/history?minutes=120&since=TS` | filtered | `minutes` 1..10080 (default 120); tier by span (section 6a) | `[{ts, temp{}, duty{}, rpm{}, extra{}}]`, only `ts > since` |
-| `GET /api/history.csv?minutes=N` | protected, `read` | `minutes` as above | text/csv attachment `n5-fangov-history-<host>-<ts>.csv`: header `ts,time,<ch>_temp,<ch>_duty,<ch>_rpm,…,<extra id>…` (channels in daemon order, then extra ids sorted), `time` RFC 3339 local, empty cell = absent |
+| `GET /api/history.csv?minutes=N` | protected, `read` | `minutes` as above | text/csv attachment `n5-fangov-history-<host>-<ts>.csv` (`<ts>` = `YYYYMMDD-HHMMSS` in the host's **local** time, the same clock as the `time` column): header `ts,time,<ch>_temp,<ch>_duty,<ch>_rpm,…,<extra id>…` (channels in daemon order, then extra ids sorted), `time` RFC 3339 local, empty cell = absent |
 | `GET /api/tokens` | protected, session only | — | `{tokens[{id, name, scope, created, expires (null = never), last_used, last_ip, expired}]}`; 403 for a token caller |
 | `POST /api/tokens` | protected, session only, CSRF | `{name, scope: read\|control\|admin, ttl_days: 0..3650}` (scope default `read`, ttl default 90, 0 = never) ≤ 4 KiB | 201 `{ok, token, id, name, scope, expires, warning?}` (`warning` = "token never expires" for 0); 400 rule; 409 `auth is none`, name taken or 50 tokens; 403 token caller (list and revoke work with `auth = "none"`, create does not) |
 | `DELETE /api/tokens/{id}` | protected, session only, CSRF | `{id}` = 8 hex | 200 `{ok, revoked}`; 404 |
@@ -812,7 +815,8 @@ sensors.
   version, description, licence, repository, author, credits, releases link (the mock hint
   appears in mock mode only).
 - **Dialogs** (`<dialog>`, focus trap, Escape): Login (user, password, *Remember me*,
-  inline error), Account (*Change password…*, *Change user…*, *Sign out other sessions*,
+  inline error, the recovery hint *Forgot the password? On the host, as root:
+  `n5-fangov passwd`* — root on the box is the only recovery path, by design), Account (*Change password…*, *Change user…*, *Sign out other sessions*,
   sessions table with THIS SESSION, **API tokens** section: table name · scope · created ·
   expires · last used · last address · *Revoke* (confirm), *Create token…* form (name,
   scope select with one-line explanations, expiry select `30 d · 90 d · 1 y · never`),
@@ -887,8 +891,15 @@ writable, `/etc/pve/notification-templates/default/`), the apt hook
 (`/etc/apt/apt.conf.d/90n5-fangov`), `daemon-reload`, enable; writes no config and starts
 nothing. `uninstall.sh [--purge]`: disable, failsafe, remove units/binary/hook/templates/
 `/run` and `/var/lib` state; `--purge` also `/etc/n5-fangov` and `/var/log/n5-fangov`. The
-`.deb` (`make deb`, no debhelper, no conffile) does the same through `postinst`/`prerm`/
-`postrm`; `deploy/debian/copyright` (DEP-5) names GPL-2.0 and the MIT text of toml.
+`.deb` (`make deb`, no debhelper, no conffile, `DEBIAN/md5sums` for `dpkg -V`) does the
+same through `postinst`/`prerm`/`postrm`; `deploy/debian/copyright` (DEP-5) names GPL-2.0
+and the MIT text of toml. **Switching from `install.sh` to the package** (release-gate
+finding 2026-09-18): `install.sh` puts the units under `/etc/systemd/system/`, the package
+under `/lib/systemd/system/`; the `/etc` copy would shadow every later package update and
+survives `apt remove`. `postinst` therefore removes `/etc/systemd/system/n5-fangov.service`
+and `n5-fangov-onfailure.service` when they are byte-identical to the package's units (and
+says so), and only warns — naming the file — when they differ (an operator's edit is never
+deleted; a drop-in under `n5-fangov.service.d/` is untouched either way).
 
 apt hook: `DPkg::Post-Invoke { "if [ -x /usr/bin/n5-fangov ]; then /usr/bin/n5-fangov check
 --after-update || true; fi"; };` — the gate requires `updates/dkms/minisforum_n5_it5571.ko`
@@ -903,7 +914,12 @@ Versioning: `internal/version.Version` is the only literal; `make` overrides it 
 describe` (`-X`). Debian version: leading `v` stripped, `-alpha|-beta|-rc` → `~` (sorts
 before the release), every other `-` → `+` (`X.Y.Z~beta.1+3+gabcdef`). `make release`
 (clean tag, gh CLI) uploads the static binary and its sha256; `-` in the version marks a
-pre-release.
+pre-release. **One release, one binary:** the release workflow builds `dist/n5-fangov` once
+with `Version=<tag without v>` and packages that file (`make deb-only`, which does not
+depend on `build`); the `.deb`'s binary is asserted byte-identical to the uploaded asset
+(sha256) before the release is created. The version literal never carries a leading `v` —
+`n5-fangov version`, `/api/version`, the `User-Agent` and the alert texts print `0.3.1-rc2`;
+the dashboard adds the `v` for display.
 
 ## 13. Testing
 
