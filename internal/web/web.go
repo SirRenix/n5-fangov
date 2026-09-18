@@ -1369,7 +1369,7 @@ func (s *Server) exportLog(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotImplemented, "no log source")
 		return
 	}
-	name := fmt.Sprintf("n5-fangov-%s-%s.log", hostLabel(), time.Now().UTC().Format("20060102-150405"))
+	name := fmt.Sprintf("n5-fangov-%s-%s.log", hostLabel(), time.Now().Local().Format("20060102-150405"))
 	attachment(w, "text/plain; charset=utf-8", name)
 	w.WriteHeader(http.StatusOK)
 	if err := s.logs.Export(w); err != nil {
@@ -1416,7 +1416,7 @@ func (s *Server) exportConfig(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "export settings: "+err.Error())
 		return
 	}
-	name := "n5-fangov-settings-" + time.Now().UTC().Format("20060102-150405") + ".json"
+	name := "n5-fangov-settings-" + time.Now().Local().Format("20060102-150405") + ".json"
 	attachment(w, "application/json; charset=utf-8", name)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(out)

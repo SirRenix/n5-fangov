@@ -103,20 +103,25 @@ re-run on rc2 before `0.3.1`.
   after "install.sh, then .deb" the `/etc` copy took precedence for every later package
   update and stayed behind on `apt remove`. The postinst now removes a copy that is
   byte-identical to the packaged unit (and re-links the enable symlink); a differing copy
-  is named in a warning and kept.
+  is named in a warning and kept. A running daemon is restarted on every package install
+  over a running deployment, not only on an upgrade, so the packaged binary takes over.
+  `install.sh` and `uninstall.sh` refuse on a host where the package is installed (apt
+  maintains it; the installer would overwrite package-owned files).
 - **Alert texts reached mail clients with mojibake** (`â€”` for the em dash via the PVE
   notification path, which carries no charset). Every sink now delivers ASCII
   (`alert.ASCII`: dashes, ellipsis, degree sign, quotes, umlauts mapped; anything else
   `?`); the test alert, the kernel-gate line and the schedule window use plain dashes.
 - **CSV export file name was stamped in UTC** while its `time` column is local time
-  (`…-000837.csv` for an 02:08 export). Now local time.
+  (`…-000837.csv` for an 02:08 export). Now local time, as are the log export and the
+  settings bundle names.
 - Login dialog: the recovery hint *Forgot the password? On the host, as root:
   `n5-fangov passwd`* — root on the box is the only recovery path, by design; the
   troubleshooting page has the matching row.
 
 ### Changed
 
-- `make deb` = `build` + `deb-only`; the package carries `DEBIAN/md5sums` (`dpkg -V` works).
+- `make deb` = `build`, then `deb-only`; the package carries `DEBIAN/md5sums` (`dpkg -V` works).
+- Sensor error texts use `mdegC` instead of `m°C`; the tls start alert uses a plain dash.
 
 ### Documentation (release-gate findings)
 

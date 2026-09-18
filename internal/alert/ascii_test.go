@@ -7,11 +7,11 @@ import (
 
 func TestASCII(t *testing.T) {
 	cases := map[string]string{
-		"plain":                          "plain",
-		"a — b – c … 45 °C":              "a - b - c ... 45 degC",
-		"“quoted” ‘single’ x → y · z":     "\"quoted\" 'single' x -> y | z",
-		"Lüfter ÄÖÜ ß":                    "Luefter AeOeUe ss",
-		"snow ☃ man":                      "snow ? man",
+		"plain":                       "plain",
+		"a — b – c … 45 °C":           "a - b - c ... 45 degC",
+		"“quoted” ‘single’ x → y · z": "\"quoted\" 'single' x -> y | z",
+		"Lüfter ÄÖÜ ß":                "Luefter AeOeUe ss",
+		"snow ☃ man":                  "snow ? man",
 	}
 	for in, want := range cases {
 		if got := ASCII(in); got != want {

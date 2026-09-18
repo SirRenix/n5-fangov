@@ -62,8 +62,11 @@ case "$1" in
         else
             systemctl enable n5-fangov.service || true
         fi
-        if [ -n "$2" ] && systemctl is-active --quiet n5-fangov.service 2>/dev/null; then
-            echo "n5-fangov: upgrade from $2, restarting the daemon"
+        # A running daemon still executes the previous binary (dpkg replaced the
+        # file on disk): restart it on a package upgrade and equally on the first
+        # package install over a running install.sh deployment.
+        if systemctl is-active --quiet n5-fangov.service 2>/dev/null; then
+            echo "n5-fangov: daemon is running (${2:-installer deployment}), restarting it so the new binary takes over"
             systemctl restart n5-fangov.service || true
         elif [ -f /etc/n5-fangov/config.toml ]; then
             echo "n5-fangov: installed and enabled. Next: n5-fangov check && systemctl start n5-fangov"

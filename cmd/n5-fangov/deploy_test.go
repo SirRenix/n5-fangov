@@ -279,7 +279,7 @@ func TestDeployPackagePinsGateFindings(t *testing.T) {
 		}
 	}
 	mk := read("Makefile")
-	for _, want := range []string{"deb: build deb-only", "deb-only:", "DEBIAN/md5sums"} {
+	for _, want := range []string{"deb: build\n\t$(MAKE) deb-only", "deb-only:", "DEBIAN/md5sums", "test -s DEBIAN/md5sums"} {
 		if !strings.Contains(mk, want) {
 			t.Errorf("Makefile: missing %q", want)
 		}

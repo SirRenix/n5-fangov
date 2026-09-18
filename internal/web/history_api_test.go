@@ -55,6 +55,10 @@ func TestHistoryCSV(t *testing.T) {
 		{TS: 1789500000, Temp: map[string]float64{"cpu": 36.0}, Duty: map[string]int{"cpu": 85, "hdd": 140}, RPM: map[string]int{"cpu": 2000, "hdd": 900}},
 	}
 	e.svc.mu.Unlock()
+	// CI runs in UTC, where Local == UTC would hide a regression to .UTC()
+	oldLocal := time.Local
+	time.Local = time.FixedZone("gate", 2*3600)
+	t.Cleanup(func() { time.Local = oldLocal })
 	r := e.do(t, "GET", "/api/history.csv?minutes=1440", "", nil)
 	name := wantAttachment(t, r, "text/csv", `^n5-fangov-history-[A-Za-z0-9.-]+-\d{8}-\d{6}\.csv$`)
 	// the stamp is local time, the clock of the time column (DESIGN §9); an export

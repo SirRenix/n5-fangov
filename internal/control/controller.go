@@ -571,7 +571,7 @@ func (c *Controller) readSensors(cs *cycleState) {
 		case err != nil:
 			ch.sensorErr = "read: " + err.Error()
 		case !sensor.Plausible(v):
-			ch.sensorErr = fmt.Sprintf("implausible %d m°C", v)
+			ch.sensorErr = fmt.Sprintf("implausible %d mdegC", v)
 		default:
 			ch.temp, ch.tempOK = v, true
 		}
@@ -596,7 +596,7 @@ func (c *Controller) readSensors(cs *cycleState) {
 			chans[0].tempOK = false
 			// The text names the threshold, not the running duration, so the
 			// line is logged once per frozen episode, not once per cycle.
-			chans[0].sensorErr = fmt.Sprintf("unchanged for %s or longer (%d m°C) -> frozen?", time.Duration(d.StaleCycles)*d.Interval, raw)
+			chans[0].sensorErr = fmt.Sprintf("unchanged for %s or longer (%d mdegC) -> frozen?", time.Duration(d.StaleCycles)*d.Interval, raw)
 			c.logOnce("stale", "sensor %s (%s): %s", chans[0].cfg.Sensor, chans[0].cfg.Name, chans[0].sensorErr)
 		} else {
 			c.logClear("stale")

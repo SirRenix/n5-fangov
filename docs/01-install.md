@@ -34,11 +34,12 @@ sha256; the units, scripts and templates come from the repository at the same ta
 > ```
 > # on the signed-in client; VER without the leading v
 > VER=X.Y.Z
-> gh release download v$VER -R SirRenix/n5-fangov -D dist          # binary, .sha256, .deb
-> gh release download v$VER -R SirRenix/n5-fangov -A tar.gz -O src.tar.gz   # source of the tag
+> gh release download v$VER -R SirRenix/n5-fangov -D dist --clobber          # binary, .sha256, .deb
+> gh release download v$VER -R SirRenix/n5-fangov -A tar.gz -O src.tar.gz --clobber   # source of the tag
 > scp -r src.tar.gz dist root@192.0.2.20:/root/
 >
-> # on the host, as root
+> # on the host, as root (a new shell: set VER again)
+> VER=X.Y.Z
 > mkdir n5-fangov && tar xzf src.tar.gz -C n5-fangov --strip-components=1
 > mv dist n5-fangov/ && cd n5-fangov
 > mv dist/n5-fangov-$VER-linux-amd64 dist/n5-fangov && mv dist/n5-fangov-$VER-linux-amd64.sha256 dist/n5-fangov.sha256
@@ -118,7 +119,9 @@ installed files against the package's md5sums (carried from 0.3.1-rc2). Then
 `/etc/systemd/system/`, the package's in `/lib/systemd/system/` — and systemd prefers
 the `/etc` copy, so a leftover installer unit shadows every package update. From
 0.3.1-rc2 the package's postinst removes the installer's copies when they are identical
-to the packaged units and warns when they differ. On older versions remove them by
+to the packaged units, warns when they differ, and restarts a running daemon so the
+packaged binary takes over; from then on `install.sh` and `uninstall.sh` refuse to run
+on a package-installed host (apt maintains it). On older versions remove the copies by
 hand:
 
 ```

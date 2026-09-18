@@ -475,8 +475,10 @@ is empty. Delivery is bounded (30 s + wait delay). The PVE template pair exists 
 `deploy/pve-notification/` (installer) and `internal/alert/templates/` (daemon/CLI) — and
 `make verify-deploy` checks they are identical. **Alert texts are ASCII** (kind, title,
 message, the `Title` header): the PVE mail path delivers the body without a charset and a
-mail client renders `—` as `â€”` (seen 2026-09-18); `TestAlertTextsASCII` pins every text
-the daemon or CLI composes.
+mail client renders `—` as `â€”` (seen 2026-09-18). `alert.ASCII` is applied at the sink
+boundary (PVE, Mail, Webhook, Log — `TestAlertTextsASCII`), so whatever a caller composes
+is delivered ASCII; the Ring (dashboard, `/api/alerts`) keeps the composed text, and the
+literals the daemon composes are kept ASCII anyway (no `—`, `°` in alert-bearing strings).
 
 `Webhook` (effective name `webhook`): one `POST` per alert to `webhook_url` with
 `http.Client{Timeout: Timeout}` (system CA pool, no insecure option; redirects not
@@ -648,7 +650,7 @@ counts as signed in, `via: "none"`):
 | `POST /api/logout` | public, CSRF | — | 204; cookie cleared, session revoked; 403 for a token caller |
 | `GET /api/state` | filtered | — | snapshot (section 6) |
 | `GET /api/history?minutes=120&since=TS` | filtered | `minutes` 1..10080 (default 120); tier by span (section 6a) | `[{ts, temp{}, duty{}, rpm{}, extra{}}]`, only `ts > since` |
-| `GET /api/history.csv?minutes=N` | protected, `read` | `minutes` as above | text/csv attachment `n5-fangov-history-<host>-<ts>.csv` (`<ts>` = `YYYYMMDD-HHMMSS` in the host's **local** time, the same clock as the `time` column): header `ts,time,<ch>_temp,<ch>_duty,<ch>_rpm,…,<extra id>…` (channels in daemon order, then extra ids sorted), `time` RFC 3339 local, empty cell = absent |
+| `GET /api/history.csv?minutes=N` | protected, `read` | `minutes` as above | text/csv attachment `n5-fangov-history-<host>-<ts>.csv` (`<ts>` = `YYYYMMDD-HHMMSS` in the host's **local** time, the same clock as the `time` column; the log export and the settings bundle names use the same stamp): header `ts,time,<ch>_temp,<ch>_duty,<ch>_rpm,…,<extra id>…` (channels in daemon order, then extra ids sorted), `time` RFC 3339 local, empty cell = absent |
 | `GET /api/tokens` | protected, session only | — | `{tokens[{id, name, scope, created, expires (null = never), last_used, last_ip, expired}]}`; 403 for a token caller |
 | `POST /api/tokens` | protected, session only, CSRF | `{name, scope: read\|control\|admin, ttl_days: 0..3650}` (scope default `read`, ttl default 90, 0 = never) ≤ 4 KiB | 201 `{ok, token, id, name, scope, expires, warning?}` (`warning` = "token never expires" for 0); 400 rule; 409 `auth is none`, name taken or 50 tokens; 403 token caller (list and revoke work with `auth = "none"`, create does not) |
 | `DELETE /api/tokens/{id}` | protected, session only, CSRF | `{id}` = 8 hex | 200 `{ok, revoked}`; 404 |
@@ -882,7 +884,8 @@ the running config); **the bundle carries the webhook URL** as it stands in the 
 (with the receiver's key): it is a setting the bundle exists to move between hosts, and the
 placeholder mechanism is the password's — treat the file like the config.
 
-Install (`deploy/install.sh`, needs `dist/n5-fangov` or `./n5-fangov`): stops and disables
+Install (`deploy/install.sh`, needs `dist/n5-fangov` or `./n5-fangov`; refuses on a host where the
+package is installed, as does `uninstall.sh` — apt maintains those): stops and disables
 `n5-fand.service`, installs binary, onfailure script (`/usr/libexec/n5-fangov/`), both
 units (`/etc/systemd/system/`), `/etc/n5-fangov/{,presets}`, the log directory, the config
 example and the deploy README (`/usr/share/doc/n5-fangov/`), the PVE templates
@@ -898,7 +901,7 @@ finding 2026-09-18): `install.sh` puts the units under `/etc/systemd/system/`, t
 under `/lib/systemd/system/`; the `/etc` copy would shadow every later package update and
 survives `apt remove`. `postinst` therefore removes `/etc/systemd/system/n5-fangov.service`
 and `n5-fangov-onfailure.service` when they are byte-identical to the package's units (and
-says so), and only warns — naming the file — when they differ (an operator's edit is never
+says so), restarts a running daemon so the packaged binary takes over, and only warns — naming the file — when they differ (an operator's edit is never
 deleted; a drop-in under `n5-fangov.service.d/` is untouched either way).
 
 apt hook: `DPkg::Post-Invoke { "if [ -x /usr/bin/n5-fangov ]; then /usr/bin/n5-fangov check

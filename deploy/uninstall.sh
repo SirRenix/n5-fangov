@@ -5,6 +5,11 @@
 # state before the binary goes away. Run as root.
 set -u
 [[ $EUID -eq 0 ]] || { echo "run as root"; exit 1; }
+# The package is removed by apt; this script would delete its files while dpkg
+# still lists it as installed.
+if dpkg-query -W -f '${Status}' n5-fangov 2>/dev/null | grep -q 'install ok installed'; then
+    echo "n5-fangov is installed as a package (dpkg): use apt remove n5-fangov (or apt purge n5-fangov)"; exit 1
+fi
 PURGE=0
 [[ "${1:-}" == "--purge" ]] && PURGE=1
 

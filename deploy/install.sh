@@ -14,6 +14,12 @@ APT_HOOK=/etc/apt/apt.conf.d/90n5-fangov
 LOG_DIR=/var/log/n5-fangov
 
 [[ $EUID -eq 0 ]] || { echo "run as root"; exit 1; }
+# A package-installed host is maintained by apt: the installer would overwrite
+# package-owned files (dpkg -V then fails) and re-create the unit copies the
+# postinst removes. Update with apt install ./n5-fangov_<ver>_amd64.deb instead.
+if dpkg-query -W -f '${Status}' n5-fangov 2>/dev/null | grep -q 'install ok installed'; then
+    echo "n5-fangov is installed as a package (dpkg): update it with apt install ./n5-fangov_<version>_amd64.deb, or apt remove n5-fangov first"; exit 1
+fi
 
 BIN=""
 for c in "$ROOT/dist/n5-fangov" "$ROOT/n5-fangov"; do
