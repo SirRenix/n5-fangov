@@ -37,7 +37,9 @@ The server enforces this, the UI only mirrors it — the full table is in
 Brand, profile title and the *verified on hardware* badge on the left; on the right the
 daemon status chip (`ok`, `sensor-error`, `write-error`, `dry-run`), uptime, the version
 with a `beta` badge on pre-releases, the lock (transport and certificate), `live`/`paused`
-(paused while the tab is hidden), the signed-in user, *Sign in* or *Sign out*, and the
+(paused while the tab is hidden; the green dot pulses unless the browser reports
+*prefers-reduced-motion* — Windows: *Accessibility → Visual effects → Animation effects*
+off, or the energy-saver mode; it turns red after two failed polls), the signed-in user, *Sign in* or *Sign out*, and the
 settings gear. Below it the tab bar — what a tab needs and cannot get answers `401` on
 the server, so the tabs that need a login are hidden until you have one.
 
