@@ -66,8 +66,9 @@ Index of all pages: [docs/README.md](docs/README.md).
 
 ## Status
 
-Pre-release: `n5-fangov version` prints the build and the dashboard shows a `beta`
-badge until a release tag drops the suffix. Changes per version: [CHANGELOG.md](CHANGELOG.md).
+Current release: **0.3.1** (2026-09-18), verified through the release gate on the reference
+host; a pre-release build shows its suffix in `n5-fangov version` and as a badge in the
+dashboard. Changes per version: [CHANGELOG.md](CHANGELOG.md).
 Validation data, the measurement scripts and the Bash predecessor `n5-fand` live in
 [`minisforum-n5pro-fan-proxmox`](https://github.com/SirRenix/minisforum-n5pro-fan-proxmox);
 the EC driver is [`ltdstudio/minisforum-n5-it5571`](https://github.com/ltdstudio/minisforum-n5-it5571).

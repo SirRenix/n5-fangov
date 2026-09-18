@@ -95,7 +95,7 @@ install ran from:
 ```
 
 When the **package** is installed (`dpkg -s n5-fangov` says so), use `apt remove
-n5-fangov` / `apt purge n5-fangov` instead — from 0.3.1-rc2 `uninstall.sh` refuses on such
+n5-fangov` / `apt purge n5-fangov` instead — since 0.3.1 `uninstall.sh` refuses on such
 a host (it would remove the files while dpkg still lists the package as installed). `ExecStopPost=failsafe`
 leaves the fans in the profile's safe state (N5 Pro: CPU/SSD back to EC automatic, HDD at
 the fixed stop duty until the next boot). The kernel module is not touched — it belongs

@@ -78,13 +78,14 @@ n5-fangov setup
 ## The Debian package
 
 The `.deb` is a **release asset** — `n5-fangov_<debver>_amd64.deb`, where `<debver>`
-is the dpkg form of the tag (`0.3.1-rc2` → asset `n5-fangov_0.3.1.rc2_amd64.deb`, dpkg
-version `0.3.1~rc2`). Download it like the binary (public URL, or the private-phase
-copy above); `make deb` only matters when you build your own from a checkout, it lands
-in `dist/` too.
+is the dpkg form of the tag (`0.3.1` → `n5-fangov_0.3.1_amd64.deb`; a pre-release
+`0.3.2-rc1` → `n5-fangov_0.3.2.rc1_amd64.deb`, dpkg version `0.3.2~rc1` — GitHub
+replaces the `~` in asset names). Download it like the binary (public URL, or the
+private-phase copy above); `make deb` only matters when you build your own from a
+checkout, it lands in `dist/` too.
 
 ```
-apt install ./dist/n5-fangov_0.3.1.rc2_amd64.deb
+apt install ./dist/n5-fangov_0.3.1_amd64.deb
 ```
 
 It installs the same files as `install.sh` (units under `/lib/systemd/system/`). The
@@ -112,13 +113,13 @@ When the file lies under `/root`, apt prints `Notice: Download is performed unsa
 as root as file '/root/…' couldn't be accessed by user '_apt'` first — harmless, apt
 cannot read `/root` as `_apt` and reads it as root instead. A package update restarts a
 running daemon ([Updates](09-updates.md#package-update)); `dpkg -V n5-fangov` checks the
-installed files against the package's md5sums (carried from 0.3.1-rc2). Then
+installed files against the package's md5sums (carried since 0.3.1). Then
 `n5-fangov setup`.
 
 **Switching from the installer to the package.** The installer's units live in
 `/etc/systemd/system/`, the package's in `/lib/systemd/system/` — and systemd prefers
 the `/etc` copy, so a leftover installer unit shadows every package update. From
-0.3.1-rc2 the package's postinst removes the installer's copies when they are identical
+0.3.1 the package's postinst removes the installer's copies when they are identical
 to the packaged units, warns when they differ, and restarts a running daemon so the
 packaged binary takes over; from then on `install.sh` and `uninstall.sh` refuse to run
 on a package-installed host (apt maintains it). On older versions remove the copies by
@@ -150,7 +151,7 @@ n5-fangov: OK
 --- systemd ---
   enabled (not started)
 
-Installed n5-fangov 0.3.1-rc2. Log file: /var/log/n5-fangov/n5-fangov.log (rotating; journal unchanged).
+Installed n5-fangov 0.3.1. Log file: /var/log/n5-fangov/n5-fangov.log (rotating; journal unchanged).
 run: n5-fangov setup
 ```
 

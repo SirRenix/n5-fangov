@@ -26,7 +26,7 @@ drove the *Unreleased* work is `docs/AUDIT.md` (code) and `docs/DESIGN-AUDIT.md`
 ### Still open from the 0.3.x plan (decided 2026-09-16)
 
 Points 1–4 of the plan (interface, regulation add-ons, dashboard, maintenance debt) shipped
-in 0.3.1-rc1 below. Open:
+in 0.3.1 below. Open:
 
 - Repository public after the history rewrite; upstream issues (driver validation data,
   ProxFansX compatibility note); DKMS `.deb` in the sibling repository with the header
@@ -35,7 +35,7 @@ in 0.3.1-rc1 below. Open:
   the release-gate test of 0.3.1-rc1: module loaded from `modules-load.d` at boot, daemon
   READY 40 s later, curves in effect, history reloaded from `history.json`, no alerts.
 - ~~`setup` writes the profile defaults, which match no built-in preset~~ — decided and
-  done in 0.3.1-rc3: `setup` writes `n5pro-balanced` (gate finding 5b).
+  done in 0.3.1: `setup` writes `n5pro-balanced` (gate finding 5b).
 - pwm4 `stop = "auto"` stays as it is (keeps the last written duty, documented in DESIGN §6
   and the configuration page); re-measured only if a use case for pwm4 comes up (operator
   decision 2026-09-18).
@@ -78,94 +78,21 @@ Applies to every 0.3.x release and to 0.4.0. Preconditions: docs split, reposito
 merged, history rewritten (all done). While the repository is private the release assets
 are downloaded with `gh release download <tag>` on a signed-in client and copied to the
 host with `scp` (the host has no `gh`, gate finding 2026-09-18); the public curl path is
-re-run once at 0.4.0. First run 2026-09-18 on 0.3.1-rc1: passed, findings in 0.3.1-rc2.
+re-run once at 0.4.0. First run 2026-09-18 on 0.3.1-rc1: passed, findings fixed in 0.3.1.
 
 **Not planned**: MQTT/discovery (REST + token is enough and smaller), a German UI
 (audience is GitHub), multi-host management, a frontend framework.
 
-## [0.3.1-rc3] — 2026-09-18
+## [0.3.1] — 2026-09-18
 
-### Changed
-
-- **`setup` writes the recommended preset.** On the N5 Pro `config.N5ProChannels()` — the
-  set `setup` writes and `SanitizeChannels` adds for a missing channel — is now the built-in
-  preset `n5pro-balanced`, parsed from the embedded TOML (one source, pinned by
-  `TestN5ProChannelsAreBalanced`). Before, it was a separate literal set (the n5-fand values
-  of 2026-09-14: `hdd [[36,105],[46,255]] critical 56`) that matched none of the three
-  presets, so a fresh setup ran the HDD fan at 76 % at 42 °C until someone applied a preset
-  (release-gate finding 5b; operator decision 2026-09-18). Existing configs are untouched.
-
-## [0.3.1-rc2] — 2026-09-18
-
-The release-gate run of 0.3.1-rc1 (operator, on the reference host, documentation only —
-`docs/RELEASE-GATE.md`) passed all ten rows functionally, including the reboot proof, and
-produced the findings below. rc2 fixes them; rows 3, 4, 6 (certificate recipe) and 10 are
-re-run on rc2 before `0.3.1`.
-
-### Fixed
-
-- **The `.deb` shipped a different binary than the release asset.** The workflow called
-  `make deb VERSION=<tag>` — with the leading `v` — and `deb` rebuilt, so the package's
-  binary printed `v0.3.1-rc1` in `n5-fangov version`, the webhook `User-Agent` and every
-  alert text. The workflow now packages the file it built (`make deb-only`), asserts the
-  sha256 of the `.deb`'s binary equals the uploaded asset, checks for `md5sums` and refuses
-  a version literal with a prefix; `internal/version` strips a leading `v` at init as a
-  second guard. Contract: DESIGN §12 "One release, one binary".
-- **Installer unit copies survived `apt remove` and shadowed the package.** `install.sh`
-  puts the units under `/etc/systemd/system/`, the package under `/lib/systemd/system/`;
-  after "install.sh, then .deb" the `/etc` copy took precedence for every later package
-  update and stayed behind on `apt remove`. The postinst now removes a copy that is
-  byte-identical to the packaged unit (and re-links the enable symlink); a differing copy
-  is named in a warning and kept. A running daemon is restarted on every package install
-  over a running deployment, not only on an upgrade, so the packaged binary takes over.
-  `install.sh` and `uninstall.sh` refuse on a host where the package is installed (apt
-  maintains it; the installer would overwrite package-owned files).
-- **Alert texts reached mail clients with mojibake** (`â€”` for the em dash via the PVE
-  notification path, which carries no charset). Every sink now delivers ASCII
-  (`alert.ASCII`: dashes, ellipsis, degree sign, quotes, umlauts mapped; anything else
-  `?`); the test alert, the kernel-gate line and the schedule window use plain dashes.
-- **CSV export file name was stamped in UTC** while its `time` column is local time
-  (`…-000837.csv` for an 02:08 export). Now local time, as are the log export and the
-  settings bundle names.
-- Login dialog: the recovery hint *Forgot the password? On the host, as root:
-  `n5-fangov passwd`* — root on the box is the only recovery path, by design; the
-  troubleshooting page has the matching row.
-
-### Changed
-
-- `make deb` = `build`, then `deb-only`; the package carries `DEBIAN/md5sums` (`dpkg -V` works).
-- Sensor error texts use `mdegC` instead of `m°C`; the tls start alert uses a plain dash.
-
-### Documentation (release-gate findings)
-
-- Private-phase download without `gh` on the host: assets and source tarball fetched on a
-  signed-in client and copied with `scp`; the two renames the sha256 line needs
-  (install page, release-gate preconditions).
-- Reference outputs on the pages the gate walks through: `uninstall.sh --purge`, the
-  installer, the `.deb` postinst lines (fresh / config present) and the apt-hook line,
-  the `setup` dialog, `check` and `status`, the test alert as delivered, the webhook JSON
-  and headers as received.
-- `.deb` is a release asset (no `make deb` needed); switching from the installer to the
-  package; `uninstall.sh` runs from the checkout, `apt remove` for the package;
-  `scope (local|lan)` in the dialog, `HOST:PORT` as `--listen`; the hwmon number is not
-  stable across boots (find the device by name); the good line of the kernel-gate hook
-  and how to exercise it with any package reinstall; row 1 of the troubleshooting table
-  ends with the start; Windows certificate import: choose the store explicitly (the
-  wizard's default *Automatically select* puts it in the wrong store), close the browser;
-  the first visit goes through the warning page, then sign in, then download; token
-  placeholder without brackets; CSV file name; Manual and Presets behaviour with the
-  0.4.0 items (preset editor, editable schedules, manual toggle) recorded in
-  `docs/design/REDESIGN-CONCEPT.md`; release-gate checklist row 7 uses a small package
-  reinstall instead of the kernel.
-
-## [0.3.1-rc1] — 2026-09-17
-
-The 0.3.x feature set in one release candidate (0.3.0-rc1 was never released — the gate
-test runs on this one): API tokens, OpenAPI, webhook alerts, curve post-processing,
-composite and per-disk sensors, pwm4, schedules, tiered history with CSV, the dashboard
-for all of it, the maintenance debt from the audit, and the findings of the three review
-rounds that followed the merge. Verified in the Docker builder (`go vet`, `go test`,
-`-race`); the live verification on the reference host is recorded in the release notes.
+The 0.3.x feature set as a release: API tokens, OpenAPI, webhook alerts, curve
+post-processing, composite and per-disk sensors, pwm4, schedules, tiered history with CSV,
+the dashboard for all of it, the maintenance debt from the audit, and the findings of the
+review rounds and of the release gate. **Release gate** (`docs/RELEASE-GATE.md`, operator on
+the reference host, documentation only): all ten rows passed on 0.3.1-rc1 on 2026-09-18
+(including the reboot proof), the documentation and packaging findings were fixed in rc2
+(rows 3, 4, 6 and 10 re-run) and rc3 (row 5 re-run); 0.3.1 is rc3 without the suffix.
+Verified in the Docker builder (`go vet`, `go test`, `-race`).
 
 ### Added
 
@@ -340,6 +267,17 @@ rounds that followed the merge. Verified in the Docker builder (`go vet`, `go te
   the rest of `/sys` (sensors, DMI, disk temperatures) is read-only. To be verified on the
   reference host with the next install test (release gate).
 
+- `make deb` = `build`, then `deb-only`; the package carries `DEBIAN/md5sums` (`dpkg -V` works).
+- Sensor error texts use `mdegC` instead of `m°C`; the tls start alert uses a plain dash.
+
+- **`setup` writes the recommended preset.** On the N5 Pro `config.N5ProChannels()` — the
+  set `setup` writes and `SanitizeChannels` adds for a missing channel — is now the built-in
+  preset `n5pro-balanced`, parsed from the embedded TOML (one source, pinned by
+  `TestN5ProChannelsAreBalanced`). Before, it was a separate literal set (the n5-fand values
+  of 2026-09-14: `hdd [[36,105],[46,255]] critical 56`) that matched none of the three
+  presets, so a fresh setup ran the HDD fan at 76 % at 42 °C until someone applied a preset
+  (release-gate finding 5b; operator decision 2026-09-18). Existing configs are untouched.
+
 ### Fixed
 
 - `GET`/`PUT /api/alerts` handed the full webhook URL — with the receiver's key in its
@@ -424,6 +362,55 @@ rounds that followed the merge. Verified in the Docker builder (`go vet`, `go te
   not set, the scheduler applies the active entry once after every start, `days` on the
   fallback is ignored with a warning (configuration); mock flags listed completely
   (development).
+
+- **The `.deb` shipped a different binary than the release asset.** The workflow called
+  `make deb VERSION=<tag>` — with the leading `v` — and `deb` rebuilt, so the package's
+  binary printed `v0.3.1-rc1` in `n5-fangov version`, the webhook `User-Agent` and every
+  alert text. The workflow now packages the file it built (`make deb-only`), asserts the
+  sha256 of the `.deb`'s binary equals the uploaded asset, checks for `md5sums` and refuses
+  a version literal with a prefix; `internal/version` strips a leading `v` at init as a
+  second guard. Contract: DESIGN §12 "One release, one binary".
+- **Installer unit copies survived `apt remove` and shadowed the package.** `install.sh`
+  puts the units under `/etc/systemd/system/`, the package under `/lib/systemd/system/`;
+  after "install.sh, then .deb" the `/etc` copy took precedence for every later package
+  update and stayed behind on `apt remove`. The postinst now removes a copy that is
+  byte-identical to the packaged unit (and re-links the enable symlink); a differing copy
+  is named in a warning and kept. A running daemon is restarted on every package install
+  over a running deployment, not only on an upgrade, so the packaged binary takes over.
+  `install.sh` and `uninstall.sh` refuse on a host where the package is installed (apt
+  maintains it; the installer would overwrite package-owned files).
+- **Alert texts reached mail clients with mojibake** (`â€”` for the em dash via the PVE
+  notification path, which carries no charset). Every sink now delivers ASCII
+  (`alert.ASCII`: dashes, ellipsis, degree sign, quotes, umlauts mapped; anything else
+  `?`); the test alert, the kernel-gate line and the schedule window use plain dashes.
+- **CSV export file name was stamped in UTC** while its `time` column is local time
+  (`…-000837.csv` for an 02:08 export). Now local time, as are the log export and the
+  settings bundle names.
+- Login dialog: the recovery hint *Forgot the password? On the host, as root:
+  `n5-fangov passwd`* — root on the box is the only recovery path, by design; the
+  troubleshooting page has the matching row.
+
+### Documentation (release-gate findings)
+
+- Private-phase download without `gh` on the host: assets and source tarball fetched on a
+  signed-in client and copied with `scp`; the two renames the sha256 line needs
+  (install page, release-gate preconditions).
+- Reference outputs on the pages the gate walks through: `uninstall.sh --purge`, the
+  installer, the `.deb` postinst lines (fresh / config present) and the apt-hook line,
+  the `setup` dialog, `check` and `status`, the test alert as delivered, the webhook JSON
+  and headers as received.
+- `.deb` is a release asset (no `make deb` needed); switching from the installer to the
+  package; `uninstall.sh` runs from the checkout, `apt remove` for the package;
+  `scope (local|lan)` in the dialog, `HOST:PORT` as `--listen`; the hwmon number is not
+  stable across boots (find the device by name); the good line of the kernel-gate hook
+  and how to exercise it with any package reinstall; row 1 of the troubleshooting table
+  ends with the start; Windows certificate import: choose the store explicitly (the
+  wizard's default *Automatically select* puts it in the wrong store), close the browser;
+  the first visit goes through the warning page, then sign in, then download; token
+  placeholder without brackets; CSV file name; Manual and Presets behaviour with the
+  0.4.0 items (preset editor, editable schedules, manual toggle) recorded in
+  `docs/design/REDESIGN-CONCEPT.md`; release-gate checklist row 7 uses a small package
+  reinstall instead of the kernel.
 
 ## [0.3.0-rc1] — 2026-09-16
 

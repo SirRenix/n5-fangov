@@ -119,7 +119,7 @@ defaults + warning + `err == nil`; unreadable → defaults + warning + `err` wra
 `[web]` header and dotted `web.key = …` layouts handled; an inline table `web = {…}` is
 refused). `Default()` has **no channels**; `N5ProChannels()` is the built-in preset `n5pro-balanced`
 (the recommended set, parsed from the embedded TOML — one source), written by `setup` and
-added by `control.SanitizeChannels` on the N5 Pro when the file lacks them (until 0.3.1-rc2
+added by `control.SanitizeChannels` on the N5 Pro when the file lacks them (until 0.3.1
 a separate literal set that matched no preset; release-gate finding 5b).
 
 | Key | Range / values | Default | Applies |
@@ -923,7 +923,7 @@ pre-release. **One release, one binary:** the release workflow builds `dist/n5-f
 with `Version=<tag without v>` and packages that file (`make deb-only`, which does not
 depend on `build`); the `.deb`'s binary is asserted byte-identical to the uploaded asset
 (sha256) before the release is created. The version literal never carries a leading `v` —
-`n5-fangov version`, `/api/version`, the `User-Agent` and the alert texts print `0.3.1-rc3`;
+`n5-fangov version`, `/api/version`, the `User-Agent` and the alert texts print `0.3.1`;
 the dashboard adds the `v` for display.
 
 ## 13. Testing

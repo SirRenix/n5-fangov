@@ -52,7 +52,7 @@ written: /etc/n5-fangov/config.toml
 ```
 
 The channel lines are the built-in preset `n5pro-balanced` (the recommended set), and that
-is what `setup` writes (from 0.3.1-rc3; before, a separate default set that matched no
+is what `setup` writes (since 0.3.1; before, a separate default set that matched no
 preset). `n5pro-quiet` and `n5pro-cool` are applied from the
 [Presets tab](04-dashboard.md#presets); the values of all three are in
 [Presets](06-configuration.md#presets). The hwmon number (`hwmon10` here) is not stable

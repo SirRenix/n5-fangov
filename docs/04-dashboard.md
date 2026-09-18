@@ -70,7 +70,7 @@ polls every 30 s; 24 h and 7 d show one-minute and five-minute means and reload 
 history survives restarts (`/var/lib/n5-fangov/history.json`, saved every 10 minutes
 and at stop — a crash can lose up to 10 minutes). Signed in, *CSV* downloads the
 selected range as `n5-fangov-history-<host>-<YYYYMMDD-HHMMSS>.csv`, the timestamp in
-the host's local time (from 0.3.1-rc2)
+the host's local time (since 0.3.1)
 ([History and CSV](12-api.md#history-and-csv)).
 
 ![Overview with the 24 h range: averaged charts, range selector, CSV button](screenshots/27-overview-24h.png)

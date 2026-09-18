@@ -91,11 +91,11 @@ as the message and takes the title from the header. `webhook_format = "text"` se
 and any receiver that wants a plain line.
 
 A test alert as a receiver sees it (`Send test alert`, format `json`), headers
-`User-Agent: n5-fangov/0.3.1-rc2`, `X-N5-Fangov-Kind: test`,
+`User-Agent: n5-fangov/0.3.1`, `X-N5-Fangov-Kind: test`,
 `Title: n5-fangov test on n5host`, body:
 
 ```json
-{"type":"n5-fangov","kind":"test","severity":"warning","hostname":"n5host","title":"n5-fangov test on n5host","message":"test alert from n5-fangov 0.3.1-rc2 on n5host at 2026-09-18 02:04:34 - delivery works if you can read this.","ts":1789689874}
+{"type":"n5-fangov","kind":"test","severity":"warning","hostname":"n5host","title":"n5-fangov test on n5host","message":"test alert from n5-fangov 0.3.1 on n5host at 2026-09-18 02:04:34 - delivery works if you can read this.","ts":1789689874}
 ```
 
 To try the transport without a real receiver, any HTTP listener on the LAN that answers
@@ -181,10 +181,10 @@ Actions:
   PVE notification, webhook `message`):
 
   ```
-  test alert from n5-fangov 0.3.1-rc2 on n5host at 2026-09-18 02:01:54 - delivery works if you can read this.
+  test alert from n5-fangov 0.3.1 on n5host at 2026-09-18 02:01:54 - delivery works if you can read this.
   ```
 
-  Alert texts are plain ASCII from 0.3.1-rc2 — the em dash used before was mangled by
+  Alert texts are plain ASCII since 0.3.1 — the em dash used before was mangled by
   mail clients.
 - **Install / Update template** — see below.
 

@@ -59,6 +59,6 @@ release. Otherwise: fix the documentation or the code, new `-rc`, repeat the fai
 All 10 rows passed functionally, including the reboot proof in row 8. Every deviation
 was a documentation finding (no page for the private download path, no reference
 outputs, the certificate recipe too short, the kernel gate exercised by the wrong
-command, a placeholder copied with its angle brackets); they are fixed in 0.3.1-rc2.
+command, a placeholder copied with its angle brackets); they were fixed in 0.3.1-rc2 and rc3 and re-verified; 0.3.1 was tagged from rc3.
 Rows 3, 4, 6 (certificate recipe) and 10 are re-run on rc2 before the tag drops the
 suffix.
