@@ -29,7 +29,8 @@ const UI = Object.freeze({
 	timing: { toast: 5000, toastErr: 12000, toastLong: 15000, toastNotice: 8000, alerts: 60000, system: 30000, log: 10000, schedules: 60000, blobRevoke: 30000, subLock: 1000 },
 	toastMax: 3,
 	chart: { yMargin: .15, yRound: 5, minSpanTemp: 15, minSpanRpm: 1000, minSpan: 10, pad: { l: 40, r: 58, t: 8, b: 22 },
-		lineW: 2, fillAlpha: .08, dotR: 4.5, dotStroke: 2, labelH: 13, labelGap: 6, tipGap: 12, dash: { hover: [3, 3], crit: [4, 3], now: [2, 3] } },
+		lineW: 2, fillAlpha: .08, dotR: 4.5, dotStroke: 2, labelH: 13, labelGap: 6, tipGap: 12, dash: { hover: [3, 3], crit: [4, 3], now: [2, 3] },
+		sparkPad: 2, sparkW: 1.5, sparkFill: .12, sparkDot: 2.5 },
 	curve: { pad: { l: 34, r: 12, t: 10, b: 22 }, xMin: 100, xPad: 10, xStep: 20, yStep: 51, hitR: 14, hitRTouch: 22, addStep: 5, addDefault: 40, fillAlpha: .1, labelGap: 8, keyT: 1, keyD: 5, keyShift: 5 },
 	limits: { min_hdd_override: 60, critical_min: 30, critical_max: 150, curve_points_min: 2, curve_points_max: 8, dashboard_sensors_max: 8, password_min: 8, password_max: 128, hysteresis_max: 10, min_on_max_s: 3600,
 		temp: [-20, 120], duty: 255, name: /^[a-z0-9_-]{1,64}$/, user: /^[A-Za-z0-9_.-]{1,32}$/, token: /^[A-Za-z0-9][A-Za-z0-9 ._-]{0,31}$/, importBytes: 1 << 20, pemBytes: 65536, logLines: 200 },
@@ -156,7 +157,7 @@ function chart(wrap, series, opt) {
 		const fg2 = cssVar('--fg2'), fg3 = cssVar('--fg3'), line = cssVar('--line');
 		const pad = C.pad, pw = W - pad.l - pad.r, ph = H - pad.t - pad.b;
 		const all = series.flatMap(s => s.data);
-		if (!all.length) { ctx.fillStyle = fg3; ctx.font = UI.font('--fs-12'); ctx.fillText('no history', pad.l, H / 2); return; }
+		if (!all.length) { ctx.fillStyle = fg3; ctx.font = UI.font('--fs-12'); ctx.fillText('no history — points arrive with every daemon cycle', pad.l, H / 2); return; }
 		const now = Date.now() / 1000, rg = R(), x0 = Math.min(now - rg.windowS, all[0][0]), x1 = now;
 		let yMin = opt.yMin, yMax = opt.yMax;
 		if (yMin === undefined || yMax === undefined) {
@@ -224,7 +225,7 @@ const dot = (ctx, x, y, col) => { ctx.beginPath(); ctx.arc(x, y, C.dotR, 0, 7); 
 const nearest = (data, t) => { if (!data.length) return null; let lo = 0, hi = data.length - 1;
 	while (hi - lo > 1) { const m = (lo + hi) >> 1; data[m][0] < t ? lo = m : hi = m; }
 	return Math.abs(data[lo][0] - t) < Math.abs(data[hi][0] - t) ? data[lo] : data[hi]; };
-const redrawAll = () => { for (const w of charts) w._st && w._st.draw(); drawEds(); };
+const redrawAll = () => { for (const w of charts) w._st && w._st.draw(); drawSparks(); drawEds(); };
 
 // state
 let snap = null, cfg = null, cfgRaw = '', profiles = [], sensors = [], version = '', tls = null, dash = [], alerts = null, builtinNames = [];
@@ -363,7 +364,23 @@ on('#h-signout', 'click', async () => { if (edDirty && !await ask('Sign out', 'U
 	sess = anon(sess.mode); toast('Signed out', 'ok'); applyAuth(); $('#h-signin').focus(); });
 
 // overview
-const cards = {};
+// tiles (§11a): one .tile per channel, built once and updated in place; the sparkline is the last 2 h of `hist` in the channel's series colour
+const cards = {}, SPARK_S = RANGES['2h'].windowS;
+function spark(cv, data, color) {
+	const dpr = window.devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight; if (!W || !H) return;
+	cv.width = W * dpr; cv.height = H * dpr; const ctx = cv.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+	if (data.length < 2) return;
+	let lo = Infinity, hi = -Infinity; for (const [, v] of data) { if (v < lo) lo = v; if (v > hi) hi = v; } lo -= 1; hi += 1;
+	const t1 = Date.now() / 1000, t0 = t1 - SPARK_S, col = cssVar(color), P = C.sparkPad;
+	const X = t => P + (t - t0) / SPARK_S * (W - 2 * P), Y = v => P + (1 - (v - lo) / (hi - lo)) * (H - 2 * P);
+	ctx.beginPath(); data.forEach(([t, v], i) => i ? ctx.lineTo(X(t), Y(v)) : ctx.moveTo(X(t), Y(v)));
+	ctx.strokeStyle = col; ctx.lineWidth = C.sparkW; ctx.lineJoin = 'round'; ctx.stroke();
+	const last = data[data.length - 1]; ctx.lineTo(X(last[0]), H); ctx.lineTo(X(data[0][0]), H); ctx.closePath(); ctx.globalAlpha = C.sparkFill; ctx.fillStyle = col; ctx.fill(); ctx.globalAlpha = 1;
+	ctx.beginPath(); ctx.arc(X(last[0]), Y(last[1]), C.sparkDot, 0, 7); ctx.fillStyle = col; ctx.fill();
+}
+const sparkData = n => { const cut = Date.now() / 1000 - SPARK_S; return hist.filter(p => p.ts >= cut && p.temp && p.temp[n] > -900).map(p => [p.ts, tC(p.temp[n])]); };
+const drawSpark = k => spark(k.cv, sparkData(k.name), k.color);
+const drawSparks = () => { for (const n in cards) drawSpark(cards[n]); };
 function renderCards() {
 	const host = $('#cards');
 	const names = snap.channels.map(c => c.name);
@@ -371,20 +388,22 @@ function renderCards() {
 	snap.channels.forEach((c, i) => {
 		let k = cards[c.name];
 		if (!k) {
-			k = cards[c.name] = { el: h('div', { class: 'card ch' }) };
-			k.mode = h('span', { class: 'mode' }); k.dot = h('i', { class: 'dot' }); k.hold = h('span', { class: 'badge hold', title: TIP.hold, hidden: true });
+			k = cards[c.name] = { el: h('div', { class: 'card tile' }), name: c.name, cv: h('canvas') };
+			k.mode = h('span', { class: 'mode' }); k.hold = h('span', { class: 'badge hold', title: TIP.hold, hidden: true });
 			k.temp = h('div', { class: 'temp' }); k.duty = h('span', { class: 'v' }); k.bar = h('i'); k.tgt = h('b', { hidden: true }); k.rpm = h('span', { class: 'v' });
-			k.el.append(h('div', { class: 'top' }, chanHead(c, k.dot), h('span', { class: 'badges' }, k.hold, k.mode)), k.temp,
+			k.el.append(h('div', { class: 'top' }, chanHead(c), h('span', { class: 'badges' }, k.hold, k.mode)), k.temp,
+				h('div', { class: 'spark', title: 'temperature, last 2 h' }, k.cv, h('span', { class: 'rng' }, '2 h')),
 				h('div', { class: 'row' }, h('span', { class: 'k', title: TIP.duty }, 'duty'), h('div', { class: 'bar-h' }, k.bar, k.tgt), k.duty),
-				h('div', { class: 'row' }, h('span', { class: 'k' }, 'fan'), h('span'), k.rpm));
+				h('div', { class: 'row' }, h('span', { class: 'k' }, 'rpm'), h('span'), k.rpm));
 			host.append(k.el);
+			new ResizeObserver(() => drawSpark(k)).observe(k.cv);
 		}
-		k.dot.style.background = `var(${seriesColor(i)})`;
+		k.color = seriesColor(i);
 		const crit = critOf(c.name);
 		modeBadge(k.mode, c.mode);
 		k.temp.className = 'temp ' + tempClass(c.temp, crit);
 		const held = c.held_temp !== undefined && c.held_temp !== null && c.held_temp !== c.temp;
-		clear(k.temp).append(fmtT(c.temp), h('small', { title: crit ? TIP.critical : null }, unit() + (crit ? ` · crit ${fmtT(crit, 0)}` : '')));
+		clear(k.temp).append(fmtT(c.temp), h('small', { title: crit ? `${TIP.critical}: ${fmtT(crit, 0)} ${unit()}` : null }, unit()));
 		if (held) k.temp.append(h('small', { class: 'held', title: TIP.held }, `held ${fmtT(c.held_temp)}`));
 		const left = c.hold_until > 0 ? Math.max(0, Math.round(c.hold_until - Date.now() / 1000)) : -1; k.hold.hidden = left < 0;
 		if (left >= 0) k.hold.textContent = 'hold ' + (left >= 60 ? `${Math.ceil(left / 60)} min` : `${left} s`);
@@ -392,7 +411,8 @@ function renderCards() {
 		const slewing = c.target !== undefined && c.target !== c.duty && c.mode !== 'stall';
 		k.tgt.hidden = !slewing; k.tgt.style.left = `calc(${pct(c.target)}% - 1px)`;
 		clear(k.duty).append(`${pct(c.duty)} % `, h('span', { class: 'tg', title: slewing ? TIP.slew : TIP.duty }, `(${c.duty}${slewing ? ' → ' + c.target : ''})`));
-		k.rpm.textContent = c.rpm < 0 ? 'no tach' : c.rpm.toLocaleString('en') + ' rpm';
+		clear(k.rpm).append(c.rpm < 0 ? 'no tach' : c.rpm === 0 ? h('span', { class: 't-crit' }, '0 rpm') : c.rpm.toLocaleString('en') + ' rpm');
+		drawSpark(k);
 	});
 }
 // system inventory: Overview card (at a glance) + System page (full tables)
@@ -415,7 +435,7 @@ function renderSystem() {
 			['network', s.nics.map(n => `${n.name} ${n.state}${n.speed_mbit > 0 ? ' ' + fmtMb(n.speed_mbit) : ''}`).join(' · ') || 'no physical NIC'],
 			['storage', diskSum(s.storage.disks)], ['os', `${na(s.host.os)} · ${na(s.host.kernel)}`],
 			['fan control', `${snap.profile || '?'}${pr.title ? ' — ' + pr.title : ''} · ${na(snap.hwmon_path || fc.hwmon)}` + (fc.module ? ` · ${fc.module} ${fc.module_version}` : '')]);
-	} else rows.push(['profile', `${snap.profile || '?'}${pr.title ? ' — ' + pr.title : ''}`], ['hwmon', na(snap.hwmon_path)], ['inventory', 'not available — see the System tab']);
+	} else rows.push(['profile', `${snap.profile || '?'}${pr.title ? ' — ' + pr.title : ''}`], ['hwmon', na(snap.hwmon_path)], ['inventory', 'not available — see the System page']);
 	rows.push(['daemon', `${version ? 'v' + version.replace(/^v/, '') : '—'} · interval ${na(d.interval)} · ${lg.file || 'journal only'}`]);
 	if (s && s.errors.length) rows.push(['notes', s.errors.map(errText).join('; ')]);
 	kv($('#sys'), rows);
@@ -451,7 +471,7 @@ const alertList = (el, recent, empty) => { clear(el); if (!recent.length) el.app
 	for (const a of recent) el.append(h('li', null, h('span', { class: 'k ' + a.kind }, a.kind), h('span', { class: 'msg' }, a.msg || '', a.error ? h('span', { class: 'de' }, 'not delivered: ' + a.error) : null), tm(a.ts))); };
 const alNotice = notice('#al-notice');
 async function loadAlerts() { if (!signedIn()) return;
-	try { alerts = (await api('/api/alerts')).body; alertList($('#alerts'), alerts.recent || []); alNotice(''); if (cur === 'alerts' || cur === 'settings') renderAlertsTab(); }
+	try { alerts = (await api('/api/alerts')).body; alertList($('#alerts'), alerts.recent || [], 'no alerts — Send test alert on the Alerts page checks the transport'); alNotice(''); if (cur === 'alerts' || cur === 'settings') renderAlertsTab(); }
 	catch (e) { if (e.status === 401) return; alerts = null; alertList($('#alerts'), [], 'alerts: unavailable'); alertList($('#al-recent'), []); alNotice('alerts: ' + e.message); } }
 // sensors card, grouped by `kind` first (disk:* → SSD·NVMe or HDD), then id prefix / hwmon chip
 const GROUPS = [['CPU', /^(k10temp|coretemp)/], ['SSD · NVMe', /^nvme/], ['HDD', /^drivetemp/], ['GPU', /^(amdgpu|nouveau|i915|radeon)/], ['NIC', /^(nic|eth|mlx|igc|ixgbe|r8169|atlantic)/], ['EC · board', /^(ec$|minisforum|acpitz|spd5118)/]];
@@ -459,23 +479,23 @@ const groupOf = s => { if (s.kind === 'ssd') return 'SSD · NVMe'; if (s.kind ==
 	const id = s.id, k = id.startsWith('hwmon:') ? id.slice(6) : id.split(':')[0], g = GROUPS.find(x => x[1].test(k)); return g ? g[0] : 'other'; };
 const SN = { key: null, rows: {} };
 const concrete = () => sensors.filter(s => !s.id.includes('<')); // id patterns (with <) are not selectable
+const snDesc = id => { const s = sensors.find(x => x.id === id); return s && s.description ? s.description.replace(/\s*\(now [^)]*\)\s*$/, '') : id; }; // catalogue description for legends and rows, the id as fallback
 function renderSensors() {
 	const host = $('#sensors'), sensors = concrete(), key = sensors.map(s => s.id).join(','), max = LIM.dashboard_sensors_max;
 	$('#sn-hint').textContent = `chart = record in the history (${dash.length}/${max})`;
 	if (key !== SN.key) { SN.key = key; SN.rows = {}; clear(host); const by = {};
 		for (const s of sensors) (by[groupOf(s)] = by[groupOf(s)] || []).push(s);
-		for (const g of [...GROUPS.map(x => x[0]), 'other']) { if (!by[g]) continue; const box = h('div', { class: 'sg' }, h('h3', null, g));
-			for (const s of by[g]) { const r = SN.rows[s.id] = { v: h('b', { class: 'v' }), b: h('button', { class: 'btn sm' }, 'chart') };
+		for (const g of [...GROUPS.map(x => x[0]), 'other']) { if (!by[g]) continue; host.append(h('div', { class: 'grp-h' }, g));
+			for (const s of by[g]) { const r = SN.rows[s.id] = { v: h('span', { class: 'val' }), b: h('button', { class: 'btn sm', 'aria-label': 'chart ' + s.id }, ico('chart'), 'chart') };
 				r.b.addEventListener('click', () => { const off = dash.includes(s.id); setDash(off ? dash.filter(x => x !== s.id) : dash.concat(s.id), n => off ? `${s.id} removed from the chart (${n}/${max})` : `${s.id} added to the chart (${n}/${max})`); });
-				box.append(h('div', { class: 'sn' }, h('span', { class: 'id mono' }, s.id), h('span', { class: 'd' }, (s.description || '').replace(/\s*\(now [^)]*\)\s*$/, '')), r.v, r.b)); }
-			host.append(box); }
-		if (!sensors.length) host.append(h('span', { class: 'empty' }, 'no readable sensors')); }
+				host.append(h('div', { class: 'sn' }, h('span', null, h('span', { class: 'd' }, snDesc(s.id)), h('span', { class: 'id mono' }, s.id)), r.v, r.b)); } }
+		if (!sensors.length) host.append(h('div', { class: 'empty' }, 'no readable sensors — the Log page shows why the catalogue is empty')); }
 	for (const s of sensors) { const r = SN.rows[s.id], on = dash.includes(s.id), v = snap && snap.watched && snap.watched[s.id] !== undefined ? snap.watched[s.id] : s.temp;
 		r.v.textContent = v === undefined || v === null ? '—' : fmtT(v) + ' ' + unit(); r.b.classList.toggle('on', on); r.b.setAttribute('aria-pressed', String(on)); r.b.disabled = !on && dash.length >= max;
-		r.b.title = r.b.disabled ? `at most ${max} sensors` : ''; }
+		r.b.title = r.b.disabled ? `at most ${max} sensors — remove one from the chart first` : on ? 'remove from the chart' : 'add to the chart'; }
 }
 async function pollSensors(force) { if (!signedIn() || !force && cur !== 'overview') return;
-	try { sensors = (await api('/api/sensors')).body || []; renderSensors(); fillSensorSelects(); } catch (e) {} }
+	try { const first = !sensors.length; sensors = (await api('/api/sensors')).body || []; renderSensors(); fillSensorSelects(); if (first && sensors.length) renderCharts(); } catch (e) {} } // first catalogue: the extra-chart legend switches from ids to descriptions
 async function loadDash() { try { dash = (await api('/api/dashboard')).body.sensors || []; renderSensors(); renderCharts(); } catch (e) {} }
 async function setDash(ids, msg) { const r = await act(() => api('/api/dashboard', { method: 'PUT', json: { sensors: ids } }), r => msg((r.body.sensors || ids).length)); if (!r) return;
 	dash = r.body.sensors || ids; const w = r.body.warnings || []; if (w.length) toast(w.join('\n'), 'warn'); renderSensors(); renderCharts(); resetHistory(); }
@@ -484,7 +504,7 @@ function renderCharts() {
 	const names = snap.channels.map(c => c.name);
 	const mk = (key, f) => names.map((n, i) => ({ name: n, color: seriesColor(i), data: hist.filter(p => p[key] && p[key][n] > -900).map(p => [p.ts, f ? f(p[key][n]) : p[key][n]]) }));
 	const legend = (el, ss, rm) => { clear(el); for (const s of ss) { const i = h('i'); i.style.background = `var(${s.color})`;
-		el.append(h('span', null, i, s.name, rm ? h('button', { class: 'x', 'aria-label': 'remove ' + s.name, title: 'remove from the chart', onclick: () => rm(s.name) }, ico('close')) : null)); } };
+		el.append(h('span', { title: s.id || null }, i, s.name, rm ? h('button', { class: 'x', 'aria-label': 'remove ' + (s.id || s.name), title: 'remove from the chart', onclick: () => rm(s.id || s.name) }, ico('close')) : null)); } };
 	const tf = { fmt: (v, ax) => v.toFixed(ax ? 0 : 1) + (ax ? '' : ' ' + unit()), minSpan: C.minSpanTemp };
 	const ts = mk('temp', tC), last = ' · last ' + R().label; legend($('#lg-temp'), ts);
 	$('#ch-temp-title').textContent = 'Temperature' + last; $('#ch-extra-title').textContent = 'Extra sensors' + last;
@@ -494,7 +514,7 @@ function renderCharts() {
 	chart($('#ch-fan'), fs, fanMetric === 'rpm' ? { fmt: (v, ax) => ax ? String(Math.round(v)) : Math.round(v) + ' rpm', yMin: 0, minSpan: C.minSpanRpm } : { fmt: (v, ax) => ax ? String(Math.round(v)) : `${Math.round(v)} (${pct(v)} %)`, yMin: 0, yMax: LIM.duty });
 	// extra sensors chart, only while something is watched
 	const on = signedIn() && dash.length > 0; $('#extra-card').hidden = !on; if (!on) return;
-	const es = dash.map((id, i) => ({ name: id, color: seriesColor(names.length + i), data: hist.filter(p => p.extra && p.extra[id] > -900).map(p => [p.ts, tC(p.extra[id])]) }));
+	const es = dash.map((id, i) => ({ id, name: snDesc(id), color: seriesColor(names.length + i), data: hist.filter(p => p.extra && p.extra[id] > -900).map(p => [p.ts, tC(p.extra[id])]) }));
 	legend($('#lg-extra'), es, id => setDash(dash.filter(x => x !== id), n => `${id} removed from the chart (${n}/${LIM.dashboard_sensors_max})`)); chart($('#ch-extra'), es, tf);
 }
 const segOn = (sel, b) => $$(sel).forEach(x => { x.classList.toggle('on', x === b); x.setAttribute('aria-pressed', x === b); });
@@ -846,7 +866,7 @@ async function loadHistory() {
 		if (!inc) hist = [];
 		if (pts.length) { hist = hist.concat(pts); lastTs = hist[hist.length - 1].ts; }
 		const cut = Date.now() / 1000 - rg.windowS, cap = maxPts(rg); while (hist.length && (hist[0].ts < cut || hist.length > cap)) hist.shift();
-		renderCharts();
+		renderCharts(); drawSparks();
 	} catch (e) {}
 }
 const resetHistory = () => { hist = []; lastTs = 0; histGen++; loadHistory(); };

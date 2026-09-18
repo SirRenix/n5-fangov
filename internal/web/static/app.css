@@ -181,22 +181,25 @@ input[type=checkbox]{accent-color:var(--info)}
 .card{background:var(--bg2);border:var(--bw) solid var(--line);border-radius:var(--r-lg);padding:var(--card-pad);box-shadow:var(--shadow-1);min-width:0}
 .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(300px,100%),1fr));gap:var(--gap);margin-bottom:var(--gap)}
 .grid3{display:grid;grid-template-columns:1fr;gap:var(--gap)}
-.ch{display:grid;grid-template-rows:auto auto auto auto;gap:var(--sp-2);min-height:196px}
-.ch .top{display:flex;justify-content:space-between;align-items:center;gap:var(--sp-2);min-height:var(--hit-min)}
+.tile{display:grid;gap:var(--sp-2);min-height:196px}
+.tile .top{display:flex;justify-content:space-between;align-items:center;gap:var(--sp-2);min-height:var(--hit-min)}
 .name{font-weight:var(--fw-semibold);font-size:var(--fs-15)}
 .dot{display:inline-block;width:var(--dot);height:var(--dot);border-radius:var(--r-full);margin-right:var(--sp-15)}
 .sub{color:var(--fg3);font-size:var(--fs-12);margin-left:var(--sp-15)}
-.ch .temp{font-size:var(--fs-40);font-weight:var(--fw-semibold);line-height:var(--lh-display);letter-spacing:var(--ls-display);height:44px;display:flex;align-items:baseline;gap:var(--sp-15)}
-.ch .temp small{font-size:var(--fs-15);font-weight:var(--fw-medium);color:var(--fg2)}
-.ch .temp.na{color:var(--fg3)}
-.ch .temp .held{color:var(--fg3);font-size:var(--fs-12);font-weight:var(--fw-medium);margin-left:auto;white-space:nowrap}
-.ch .badges{display:inline-flex;gap:var(--sp-15);align-items:center;flex:none}
+.tile .temp{font-size:var(--fs-32);font-weight:var(--fw-bold);line-height:var(--lh-display);letter-spacing:var(--ls-display);display:flex;align-items:baseline;gap:var(--sp-15)}
+.tile .temp small{font-size:var(--fs-14);font-weight:var(--fw-medium);color:var(--fg2)}
+.tile .temp.na{color:var(--fg3)}
+.tile .temp .held{color:var(--fg3);font-size:var(--fs-12);font-weight:var(--fw-medium);margin-left:auto;white-space:nowrap}
+.tile .badges{display:inline-flex;gap:var(--sp-15);align-items:center;flex:none}
+.tile .spark{height:var(--spark-h);position:relative}
+.tile .spark canvas{display:block;width:100%;height:100%}
+.tile .spark .rng{position:absolute;right:0;top:calc(-1*var(--sp-05));font-size:var(--fs-11);color:var(--fg3)}
 .badge.hold{color:var(--man);border-color:color-mix(in srgb,var(--man) var(--tint-border),transparent);background:color-mix(in srgb,var(--man) var(--tint-bg),transparent);font-variant-numeric:tabular-nums}
 .t-ok{color:var(--ok)}.t-warm{color:var(--warn)}.t-hot{color:var(--hot)}.t-crit{color:var(--crit)}
-.ch .row{display:grid;grid-template-columns:var(--w-rowlabel) 1fr auto;align-items:center;gap:var(--sp-2);font-size:var(--fs-13);height:20px}
-.ch .row .k{color:var(--fg3);font-size:var(--fs-12)}
-.ch .row .v{text-align:right;min-width:var(--w-value);white-space:nowrap}
-.ch .row .v .tg{color:var(--fg3);font-size:var(--fs-12)}
+.tile .row{display:grid;grid-template-columns:var(--w-rowlabel) 1fr auto;align-items:center;gap:var(--sp-2);font-size:var(--fs-13);height:20px}
+.tile .row .k{color:var(--fg3);font-size:var(--fs-12)}
+.tile .row .v{text-align:right;min-width:var(--w-value);white-space:nowrap}
+.tile .row .v .tg{color:var(--fg3);font-size:var(--fs-12)}
 .bar-h{height:var(--bar-h);background:var(--bg3);border-radius:var(--r-sm);overflow:hidden;position:relative}
 .bar-h i{display:block;height:100%;background:var(--man);border-radius:var(--r-sm);transition:width var(--dur-bar)}
 .bar-h i.crit{background:var(--crit)}
@@ -421,21 +424,22 @@ input[type=checkbox]{accent-color:var(--info)}
   .bnav button[aria-current=page]::before{content:"";position:absolute;top:0;left:20%;right:20%;height:var(--bw-accent);background:var(--info);border-radius:0 0 var(--r-xs) var(--r-xs)}
   .bnav button .dirty{position:absolute;right:20%;top:var(--sp-1);margin:0}
   .subnav{overflow-x:auto;flex-wrap:nowrap;padding-bottom:var(--sp-05)}
+  .tile{min-height:0}
 }
 
 /* overview: signed-in cards */
 .grid3.ov .card-h{margin-bottom:var(--sp-2)}
 @media (min-width:700px){.grid3.ov{grid-template-columns:1.35fr 1fr;grid-template-rows:auto 1fr}.grid3.ov .sensors{grid-row:span 2}}
 @media (min-width:900px){.grid3.ov{grid-template-columns:1.2fr 1fr 1fr;grid-template-rows:auto}.grid3.ov .sensors{grid-row:auto}}
-.sg h3{font-size:var(--fs-11);font-weight:var(--fw-semibold);color:var(--fg3);text-transform:uppercase;letter-spacing:var(--ls-caps);margin:var(--sp-25) 0 var(--sp-05)}
-.sg:first-child h3{margin-top:0}
-.sn{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:0 var(--sp-25);align-items:center;padding:var(--sp-1) 0;border-bottom:var(--bw) solid var(--line);font-size:var(--fs-13)}
-.sg:last-child .sn:last-child{border-bottom:0}
-.sn .id{font-size:var(--fs-12);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.sn .d{grid-column:1;color:var(--fg3);font-size:var(--fs-12);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.sn .v{grid-column:2;grid-row:1/3;white-space:nowrap;font-weight:var(--fw-semibold)}
-.sn .btn{grid-column:3;grid-row:1/3}
+.sensors .grp-h{font-size:var(--fs-11);font-weight:var(--fw-semibold);color:var(--fg3);text-transform:uppercase;letter-spacing:var(--ls-caps);margin:var(--sp-2) 0 var(--sp-1)}
+.sensors .grp-h:first-child{margin-top:0}
+.sensors .sn{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:var(--sp-2);font-size:var(--fs-13);padding:3px 0;border-bottom:var(--bw) solid var(--line)}
+.sensors .sn:last-child{border-bottom:0}
+.sensors .sn .d,.sensors .sn .id{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sensors .sn .id{color:var(--fg2);font-size:var(--fs-12)}
+.sensors .sn .val{font-variant-numeric:tabular-nums;color:var(--fg)}
 .btn.on{background:color-mix(in srgb,var(--info) var(--tint-active),var(--bg3));border-color:var(--info)}
+.sensors .sn .btn.on{color:var(--info)}
 .legend.rm span{gap:var(--sp-1)}
 .legend .x{background:none;border:0;color:var(--fg3);cursor:pointer;padding:0;min-width:var(--hit-min);min-height:var(--hit-min);border-radius:var(--r-sm);display:inline-grid;place-items:center}
 .legend .x:hover{color:var(--crit);background:var(--bg3)}

@@ -1389,9 +1389,11 @@ func TestStaticIndex(t *testing.T) {
 	// UI assumptions the server honours: since-polling, {"lines"} log wrapper,
 	// "channel" key, "<unchanged>" hash placeholder passes through untouched,
 	// v0.2 endpoints (log export/clear, settings export/import, tls flag),
-	// 0.3.1 endpoints (history tiers + CSV, tokens, schedules, webhook alerts).
+	// 0.3.1 endpoints (history tiers + CSV, tokens, schedules, webhook alerts),
+	// 0.4.0 Overview (DESIGN 11a): channel tiles with a sparkline, the Sensors card grouped by kind.
 	for _, want := range []string{"since=", "b.lines", "cfg.channel", "warnings", "/api/log/export", "/api/config/export", "/api/config/import", "b.source", ".tls", "/api/tls/regenerate", "/api/tls/upload", "/api/tls/reset", "/api/tls/cert.", "force_required", "c.warnings", "c.fallback", "Math.ceil((new Date(iso)", "/api/system",
-		"/api/history.csv?minutes=", "/api/tokens", "/api/schedules", "webhook_url", "webhook_format", "held_temp", "hold_until", "hysteresis", "min_on", "temp_c", "window.n5mock"} {
+		"/api/history.csv?minutes=", "/api/tokens", "/api/schedules", "webhook_url", "webhook_format", "held_temp", "hold_until", "hysteresis", "min_on", "temp_c", "window.n5mock",
+		"class: 'card tile'", "function spark(", "class: 'spark'", "s.kind === 'hdd'", "/api/dashboard"} {
 		if !strings.Contains(r.body, want) {
 			t.Errorf("app.js lacks %q", want)
 		}
