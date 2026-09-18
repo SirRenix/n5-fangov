@@ -359,7 +359,7 @@ func cmdCheckAfterUpdate(cfgPath, dir string) int {
 
 // kernelMissingLine is the line printed per bootable kernel without the module.
 func kernelMissingLine(kernel, ver string) string {
-	return fmt.Sprintf("kernel %s: fan driver module missing — run: dkms install %s/%s -k %s", kernel, dkmsPackage, ver, kernel)
+	return fmt.Sprintf("kernel %s: fan driver module missing - run: dkms install %s/%s -k %s", kernel, dkmsPackage, ver, kernel)
 }
 
 // kernelMissingInfo is the line for an installed kernel the box does not

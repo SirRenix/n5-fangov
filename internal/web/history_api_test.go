@@ -56,7 +56,15 @@ func TestHistoryCSV(t *testing.T) {
 	}
 	e.svc.mu.Unlock()
 	r := e.do(t, "GET", "/api/history.csv?minutes=1440", "", nil)
-	wantAttachment(t, r, "text/csv", `^n5-fangov-history-[A-Za-z0-9.-]+-\d{8}-\d{6}\.csv$`)
+	name := wantAttachment(t, r, "text/csv", `^n5-fangov-history-[A-Za-z0-9.-]+-\d{8}-\d{6}\.csv$`)
+	// the stamp is local time, the clock of the time column (DESIGN §9); an export
+	// at 02:08 CEST was once named 000837 (release-gate finding 2026-09-18)
+	stamp := name[len(name)-len("20060102-150405.csv") : len(name)-len(".csv")]
+	if ts, err := time.ParseInLocation("20060102-150405", stamp, time.Local); err != nil {
+		t.Errorf("filename stamp %q: %v", stamp, err)
+	} else if d := time.Since(ts); d < -2*time.Minute || d > 2*time.Minute {
+		t.Errorf("filename stamp %q is %s from local now (UTC instead of local?)", stamp, d)
+	}
 	lines := strings.Split(strings.TrimRight(r.body, "\n"), "\n")
 	if len(lines) != 3 {
 		t.Fatalf("csv lines: %q", lines)

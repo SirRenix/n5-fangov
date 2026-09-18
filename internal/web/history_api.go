@@ -69,7 +69,9 @@ func (s *Server) historyCSV(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	sort.Strings(extras)
-	name := fmt.Sprintf("n5-fangov-history-%s-%s.csv", hostLabel(), time.Now().UTC().Format("20060102-150405"))
+	// Local time, the same clock as the time column (DESIGN §9): a 02:08 export is
+	// named 020800, not the UTC 000800.
+	name := fmt.Sprintf("n5-fangov-history-%s-%s.csv", hostLabel(), time.Now().Local().Format("20060102-150405"))
 	attachment(w, "text/csv; charset=utf-8", name)
 	w.WriteHeader(http.StatusOK)
 	if err := history.CSV(w, pts, channels, extras); err != nil {

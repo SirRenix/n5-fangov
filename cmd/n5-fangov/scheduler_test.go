@@ -82,7 +82,7 @@ func TestSchedulerTransitions(t *testing.T) {
 	if len(st.alerts) != 0 {
 		t.Errorf("alerts: %v", st.alerts)
 	}
-	if !strings.Contains(strings.Join(st.logs, "\n"), `schedule: preset "night" applied (22:00–07:00)`) {
+	if !strings.Contains(strings.Join(st.logs, "\n"), `schedule: preset "night" applied (22:00-07:00)`) {
 		t.Errorf("log lines: %v", st.logs)
 	}
 	if !strings.Contains(strings.Join(st.logs, "\n"), `schedule: preset "balanced" applied (fallback)`) {

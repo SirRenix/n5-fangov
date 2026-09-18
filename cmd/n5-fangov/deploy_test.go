@@ -252,3 +252,45 @@ func TestDeployShellSyntax(t *testing.T) {
 		}
 	}
 }
+
+// TestDeployPackagePinsGateFindings pins the release-gate contract of DESIGN
+// §12 (2026-09-18): the postinst removes install.sh's identical unit copies
+// under /etc/systemd/system (and re-links the enable symlink), the package
+// carries md5sums, and the release workflow packages the built binary
+// without rebuilding it (deb-only) and asserts it equals the uploaded asset.
+func TestDeployPackagePinsGateFindings(t *testing.T) {
+	read := func(rel string) string {
+		b, err := os.ReadFile(filepath.Join(deployDir, "..", rel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	post := read("deploy/debian/postinst")
+	for _, want := range []string{
+		`for u in n5-fangov.service n5-fangov-onfailure.service; do`,
+		`cmp -s "/etc/systemd/system/$u" "/lib/systemd/system/$u"`,
+		`rm -f "/etc/systemd/system/$u"`,
+		`systemctl reenable n5-fangov.service`,
+		`differs from the packaged unit`,
+	} {
+		if !strings.Contains(post, want) {
+			t.Errorf("postinst: missing %q", want)
+		}
+	}
+	mk := read("Makefile")
+	for _, want := range []string{"deb: build deb-only", "deb-only:", "DEBIAN/md5sums"} {
+		if !strings.Contains(mk, want) {
+			t.Errorf("Makefile: missing %q", want)
+		}
+	}
+	wf := read(".github/workflows/release.yml")
+	for _, want := range []string{`make deb-only VERSION="$VER"`, `differs from the release asset`, `md5sums missing`, `version literal carries a prefix`} {
+		if !strings.Contains(wf, want) {
+			t.Errorf("release.yml: missing %q", want)
+		}
+	}
+	if strings.Contains(wf, `make deb VERSION="$VERSION"`) {
+		t.Error("release.yml still rebuilds the binary for the .deb with the tag as version")
+	}
+}

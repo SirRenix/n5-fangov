@@ -194,7 +194,7 @@ func (m *alertManager) Test() (string, error) {
 	}
 	defer m.testMu.Unlock()
 	host, _ := os.Hostname()
-	msg := fmt.Sprintf("test alert from n5-fangov %s on %s at %s — delivery works if you can read this.",
+	msg := fmt.Sprintf("test alert from n5-fangov %s on %s at %s - delivery works if you can read this.",
 		version.Version, host, time.Now().Format("2006-01-02 15:04:05"))
 	ctx, cancel := context.WithTimeout(context.Background(), m.testLimit)
 	defer cancel()

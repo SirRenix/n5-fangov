@@ -133,7 +133,7 @@ func (s *scheduler) evaluate() {
 	}
 	window := "fallback"
 	if !entry.Fallback {
-		window = entry.From + "–" + entry.To
+		window = entry.From + "-" + entry.To
 	}
 	sw := scheduleSwitch{TS: now.Unix(), Preset: entry.Preset, OK: true}
 	if s.apply == nil {

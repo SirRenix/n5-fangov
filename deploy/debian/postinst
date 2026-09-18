@@ -38,8 +38,30 @@ case "$1" in
             cp /usr/share/n5-fangov/apt-90n5-fangov.conf "$APT_HOOK"
             chmod 0644 "$APT_HOOK"
         fi
+        # install.sh puts the units under /etc/systemd/system, where they would
+        # shadow the packaged ones on every later update and survive apt remove.
+        # An identical copy is the installer's and goes; a differing one is the
+        # operator's and stays (named, so it can be looked at). Drop-ins under
+        # n5-fangov.service.d/ are never touched.
+        relink=0
+        for u in n5-fangov.service n5-fangov-onfailure.service; do
+            if [ -f "/etc/systemd/system/$u" ]; then
+                if cmp -s "/etc/systemd/system/$u" "/lib/systemd/system/$u"; then
+                    rm -f "/etc/systemd/system/$u"
+                    relink=1
+                    echo "n5-fangov: removed /etc/systemd/system/$u (installer copy, identical to the packaged unit)"
+                else
+                    echo "n5-fangov: WARNING /etc/systemd/system/$u differs from the packaged unit and shadows it; compare with systemctl cat $u and remove it if it is not yours"
+                fi
+            fi
+        done
         systemctl daemon-reload || true
-        systemctl enable n5-fangov.service || true
+        if [ "$relink" = 1 ]; then
+            # the installer's enable symlink pointed at the removed copy
+            systemctl reenable n5-fangov.service || true
+        else
+            systemctl enable n5-fangov.service || true
+        fi
         if [ -n "$2" ] && systemctl is-active --quiet n5-fangov.service 2>/dev/null; then
             echo "n5-fangov: upgrade from $2, restarting the daemon"
             systemctl restart n5-fangov.service || true

@@ -1,6 +1,9 @@
 package version
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // Prerelease is the text after the first "-" of Version, with a leading
 // "v" (git describe) stripped; a release build yields "".
@@ -30,5 +33,13 @@ func TestPrerelease(t *testing.T) {
 	Version = old
 	if old == "" || old[0] == 'v' {
 		t.Errorf("default Version %q must be bare (no v prefix)", old)
+	}
+}
+
+// A leading "v" never survives init: the workflow once handed the tag name to
+// -X and the .deb printed "v0.3.1-rc1" (release-gate finding 2026-09-18).
+func TestVersionHasNoVPrefix(t *testing.T) {
+	if strings.HasPrefix(Version, "v") {
+		t.Fatalf("Version %q carries a v prefix", Version)
 	}
 }

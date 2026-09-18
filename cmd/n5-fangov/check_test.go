@@ -250,7 +250,7 @@ func TestScanKernelModules(t *testing.T) {
 		t.Errorf("missing: %v", missing)
 	}
 	line := kernelMissingLine("6.17.4-1-pve", "0.2.0")
-	if line != "kernel 6.17.4-1-pve: fan driver module missing — run: dkms install minisforum-n5-it5571/0.2.0 -k 6.17.4-1-pve" {
+	if line != "kernel 6.17.4-1-pve: fan driver module missing - run: dkms install minisforum-n5-it5571/0.2.0 -k 6.17.4-1-pve" {
 		t.Errorf("line: %s", line)
 	}
 	if _, _, err := scanKernelModules(filepath.Join(root, "nope"), dkmsKernelObject); err == nil {

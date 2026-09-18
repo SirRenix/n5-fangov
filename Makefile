@@ -28,7 +28,7 @@ export CGO_ENABLED = 0
 export GOOS        = linux
 export GOARCH      = $(ARCH)
 
-.PHONY: build check test-race verify-deploy deb release hooks secrets clean version
+.PHONY: build check test-race verify-deploy deb deb-only release hooks secrets clean version
 
 build:
 	mkdir -p $(DIST)
@@ -67,7 +67,12 @@ verify-deploy:
 version:
 	@echo $(VERSION) '(deb: $(DEBVER))'
 
-deb: build
+# deb builds first; deb-only packages the binary that is already in dist/ (the release
+# workflow uses it so the .deb carries the very same file that is uploaded as the asset).
+deb: build deb-only
+
+deb-only:
+	@test -x $(DIST)/n5-fangov || { echo "deb-only: $(DIST)/n5-fangov missing (make build first)"; exit 1; }
 	rm -rf $(PKGDIR)
 	install -d -m 0755 $(PKGDIR)/DEBIAN \
 	    $(PKGDIR)/usr/bin \
@@ -91,6 +96,7 @@ deb: build
 	sed -e 's/@VERSION@/$(DEBVER)/' -e 's/^Architecture: .*/Architecture: $(ARCH)/' \
 	    deploy/debian/control.in > $(PKGDIR)/DEBIAN/control
 	install -m 0755 deploy/debian/postinst deploy/debian/prerm deploy/debian/postrm $(PKGDIR)/DEBIAN/
+	cd $(PKGDIR) && find . -type f -not -path "./DEBIAN/*" | sed 's|^\./||' | LC_ALL=C sort | xargs md5sum > DEBIAN/md5sums && chmod 0644 DEBIAN/md5sums
 	dpkg-deb --build --root-owner-group $(PKGDIR) $(DEB)
 	@echo built $(DEB)
 

@@ -49,10 +49,20 @@ jobs:
           cp "dist/n5-fangov-$VER-linux-amd64" dist/n5-fangov
           "dist/n5-fangov" version
           (cd dist && sha256sum "n5-fangov-$VER-linux-amd64" > "n5-fangov-$VER-linux-amd64.sha256")
+      # One release, one binary: package the file built above (deb-only never rebuilds)
+      # and prove that the .deb carries exactly the uploaded asset.
       - name: deb
         env:
-          VERSION: ${{ steps.v.outputs.tag }}
-        run: make deb VERSION="$VERSION" && ls -la dist/*.deb
+          VER: ${{ steps.v.outputs.version }}
+        run: |
+          make deb-only VERSION="$VER" && ls -la dist/*.deb
+          mkdir -p /tmp/debchk && dpkg-deb -x dist/*.deb /tmp/debchk
+          asset=$(sha256sum "dist/n5-fangov-$VER-linux-amd64" | cut -d' ' -f1)
+          indeb=$(sha256sum /tmp/debchk/usr/bin/n5-fangov | cut -d' ' -f1)
+          [ "$asset" = "$indeb" ] || { echo "::error::.deb binary ($indeb) differs from the release asset ($asset)"; exit 1; }
+          dpkg-deb -I dist/*.deb | grep -E '^ (Package|Version):'
+          dpkg-deb --ctrl-tarfile dist/*.deb | tar -tf - | grep -q './md5sums' || { echo "::error::md5sums missing"; exit 1; }
+          case "$(/tmp/debchk/usr/bin/n5-fangov version)" in "n5-fangov $VER") ;; *) echo "::error::version literal carries a prefix: $(/tmp/debchk/usr/bin/n5-fangov version)"; exit 1;; esac
       - name: release notes
         env:
           VER: ${{ steps.v.outputs.version }}

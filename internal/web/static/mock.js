@@ -4,7 +4,7 @@
 // Names and addresses are documentation values (n5host, 192.0.2.x, n5.lan, example.test).
 'use strict';
 window.n5mock = (() => {
-	const Q = new URLSearchParams(location.search), t0 = Date.now() / 1000, MV = '0.3.1-rc1', PRE = 'rc1';
+	const Q = new URLSearchParams(location.search), t0 = Date.now() / 1000, MV = '0.3.1-rc2', PRE = 'rc1';
 	const interp = (curve, t) => { if (!curve.length) return 0; if (t <= curve[0][0]) return curve[0][1];
 		for (let i = 1; i < curve.length; i++) if (t <= curve[i][0]) { const [t0, d0] = curve[i - 1], [t1, d1] = curve[i]; return t1 === t0 ? d1 : d0 + (d1 - d0) * (t - t0) / (t1 - t0); }
 		return curve[curve.length - 1][1]; };

@@ -87,6 +87,7 @@ type webhookPayload struct {
 // success; anything else, or a transport error, is "webhook: …" with
 // the URL redacted.
 func (w *Webhook) SendCtx(ctx context.Context, kind, msg string) error {
+	kind, msg = ASCII(kind), ASCII(msg)
 	w.Logger.Printf("ALERT[%s]: %s", kind, msg)
 	client := w.Client
 	if client == nil {
