@@ -15,7 +15,7 @@
   /* typography */
   --font-sans:system-ui,-apple-system,"Segoe UI",Roboto,Ubuntu,sans-serif;
   --font-mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-  --fs-11:11px;--fs-12:12px;--fs-13:13px;--fs-14:14px;--fs-15:15px;--fs-16:16px;--fs-18:18px;--fs-20:20px;--fs-28:28px;--fs-32:32px;--fs-40:40px;
+  --fs-11:11px;--fs-12:12px;--fs-13:13px;--fs-14:14px;--fs-15:15px;--fs-16:16px;--fs-18:18px;--fs-20:20px;--fs-28:28px;--fs-32:32px;
   --lh-display:1.05;--lh-tight:1.3;--lh-body:1.45;--lh-loose:1.5;
   --fw-medium:500;--fw-semibold:600;--fw-bold:700;
   --ls-caps:.04em;--ls-brand:.02em;--ls-display:-.02em;
@@ -34,7 +34,7 @@
   /* sizes */
   --dot:8px;--swatch-w:14px;--swatch-h:2px;--bar-h:8px;--marker-w:2px;--marker-h:12px;
   --chart-h:220px;--curve-h:200px;--spark-h:28px;--log-h:min(70vh,640px);
-  --content-max:1500px;--editor-min:460px;
+  --content-max:1500px;
   --toast-w:min(360px,calc(100vw - 2*var(--sp-4)));
   --dlg-w:min(640px,calc(100vw - 2*var(--sp-4)));--dlg-w-narrow:min(380px,calc(100vw - 2*var(--sp-4)));--dlg-max-h:calc(100vh - 2*var(--sp-4));
   --w-num:5.5em;--w-num-sm:4.5em;--w-text:12em;--w-select:170px;--w-rowlabel:52px;--w-value:88px;
@@ -45,18 +45,18 @@
   --ic:16px;--ic-stroke:1.75;--ic-sm:12px;--ic-md:18px;--ic-lg:20px;--logo:28px;
   color-scheme:dark;
 }
-/* light: fg3 5.6 on white, ok 5.4, warn 5.9, crit 6.0, man 6.2, s1-s8 ≥ 4.6; badges on their 12 % tint ≥ 4.6 */
+/* light: fg3 5.6 on white, ok 5.4, warn 5.9, crit 6.0, man 6.2, info 6.3 (4.7 on its 12 % tint over bg3, 4.5 on 22 % over white), s1-s8 ≥ 4.6; badges on their 12 % tint ≥ 4.6 */
 :root[data-theme=light]{
   --bg:#f4f5f7;--bg2:#ffffff;--bg3:#eef0f3;--line:#dde1e7;--line2:#c8cdd6;--line-strong:#7c8594;
   --fg:#12161c;--fg2:#4a5462;--fg3:#5f6875;
-  --ok:#0b7a44;--warn:#8a5a0f;--hot:#c2410c;--crit:#c41c1c;--stall:#7c3aed;--man:#1a64bd;--info:#1d6fd1;
+  --ok:#0b7a44;--warn:#8a5a0f;--hot:#c2410c;--crit:#c41c1c;--stall:#7c3aed;--man:#1a64bd;--info:#1a5fb4;
   --s1:#2470cc;--s2:#c4501f;--s3:#0d8259;--s4:#9c6700;--s5:#c2477f;--s6:#4a3aa7;--s7:#c53030;--s8:#008300;
   --shadow-1:0 1px 2px rgba(0,0,0,.08);--shadow-2:0 8px 24px rgba(0,0,0,.12);--shadow-3:0 16px 48px rgba(0,0,0,.18);color-scheme:light;
 }
 @media (prefers-color-scheme:light){:root[data-theme=system]{
   --bg:#f4f5f7;--bg2:#ffffff;--bg3:#eef0f3;--line:#dde1e7;--line2:#c8cdd6;--line-strong:#7c8594;
   --fg:#12161c;--fg2:#4a5462;--fg3:#5f6875;
-  --ok:#0b7a44;--warn:#8a5a0f;--hot:#c2410c;--crit:#c41c1c;--stall:#7c3aed;--man:#1a64bd;--info:#1d6fd1;
+  --ok:#0b7a44;--warn:#8a5a0f;--hot:#c2410c;--crit:#c41c1c;--stall:#7c3aed;--man:#1a64bd;--info:#1a5fb4;
   --s1:#2470cc;--s2:#c4501f;--s3:#0d8259;--s4:#9c6700;--s5:#c2477f;--s6:#4a3aa7;--s7:#c53030;--s8:#008300;
   --shadow-1:0 1px 2px rgba(0,0,0,.08);--shadow-2:0 8px 24px rgba(0,0,0,.12);--shadow-3:0 16px 48px rgba(0,0,0,.18);color-scheme:light;
 }}
@@ -68,7 +68,10 @@ h3{font-size:var(--fs-13);font-weight:var(--fw-semibold);color:var(--fg2);margin
 code,pre,.mono{font-family:var(--font-mono)}
 button,input,select,textarea{font:inherit;color:inherit}
 :focus-visible{outline:none;box-shadow:var(--focus)}
-.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+.sr{position:absolute;left:0;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)} /* left:0 — at its static position inside a wide table the box would widen the phone's layout viewport */
+/* skip link: the first Tab stop, visible only while focused; main / the page h1 / a settings section take programmatic focus without a ring */
+.skip:focus{position:fixed;top:var(--sp-2);left:var(--sp-2);width:auto;height:auto;clip:auto;z-index:var(--z-toast);background:var(--bg2);color:var(--fg);padding:var(--sp-2) var(--sp-3);border:var(--bw) solid var(--info);border-radius:var(--r-md)}
+main:focus-visible,.st:focus-visible{box-shadow:none}
 [hidden]{display:none!important}
 /* icons: one inline sprite in index.html, <svg class="ic"><use href="#i-…"/></svg>, currentColor */
 .ic{width:var(--ic);height:var(--ic);fill:none;stroke:currentColor;stroke-width:var(--ic-stroke);stroke-linecap:round;stroke-linejoin:round;flex:none;vertical-align:-3px}
@@ -111,7 +114,7 @@ main{padding:var(--sp-5);max-width:var(--content-max);margin:0 auto;width:100%}
 .prof{color:var(--fg2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:40vw}
 .meta{color:var(--fg2);font-size:var(--fs-12);white-space:nowrap}
 .badge{font-size:var(--fs-11);font-weight:var(--fw-semibold);padding:var(--sp-05) var(--sp-2);border-radius:var(--r-pill);border:var(--bw) solid;white-space:nowrap}
-.badge.ok,.badge.rec{color:var(--ok);border-color:color-mix(in srgb,var(--ok) var(--tint-border),transparent);background:color-mix(in srgb,var(--ok) var(--tint-bg),transparent)}
+.badge.ok{color:var(--ok);border-color:color-mix(in srgb,var(--ok) var(--tint-border),transparent);background:color-mix(in srgb,var(--ok) var(--tint-bg),transparent)}
 .badge.warn{color:var(--warn);border-color:color-mix(in srgb,var(--warn) var(--tint-border),transparent);background:color-mix(in srgb,var(--warn) var(--tint-bg),transparent)}
 .chip{display:inline-flex;align-items:center;gap:var(--sp-15);font-size:var(--fs-12);font-weight:var(--fw-semibold);padding:3px var(--sp-25);border-radius:var(--r-pill);background:var(--bg3);border:var(--bw) solid var(--line2);white-space:nowrap}
 .chip::before{content:"";width:var(--dot);height:var(--dot);border-radius:var(--r-full);background:var(--fg3)}
@@ -123,7 +126,7 @@ main{padding:var(--sp-5);max-width:var(--content-max);margin:0 auto;width:100%}
 /* certificate warning chip: fallback, expiry < 30 d, expired, plain HTTP off loopback (click → Settings → Certificate) */
 .chip.warn{color:var(--warn);cursor:pointer;border-color:color-mix(in srgb,var(--warn) var(--tint-border),transparent)}
 .chip.warn::before{display:none}
-.chip.warn:hover{background:color-mix(in srgb,var(--warn) var(--tint-bg),var(--bg3))}
+.chip.warn:hover{background:color-mix(in srgb,var(--warn) var(--tint-row),var(--bg3))} /* 6 %: the warn text keeps 4.8:1 in light (12 % gave 4.4) */
 .live{display:inline-flex;align-items:center;gap:var(--sp-15);font-size:var(--fs-12);color:var(--fg2)}
 .live i{width:var(--dot);height:var(--dot);border-radius:var(--r-full);background:var(--ok)}
 .live.paused i{background:var(--fg3)}
@@ -142,7 +145,7 @@ main{padding:var(--sp-5);max-width:var(--content-max);margin:0 auto;width:100%}
 .btn{display:inline-flex;align-items:center;gap:var(--sp-15);background:var(--bg3);border:var(--bw) solid var(--line2);border-radius:var(--r-md);padding:var(--sp-15) var(--sp-3);cursor:pointer;line-height:var(--lh-tight);white-space:nowrap}
 .btn:hover{border-color:var(--fg3)}
 .btn.primary{background:var(--info);border-color:var(--info);color:var(--bg)} /* dark: #0f1115 on #5aa9ff = 7.6:1 (white was 2.5:1, AUDIT hoch 5); the literal is pinned by TestPrimaryButtonContrast */
-:root[data-theme=light] .btn.primary{color:#fff} /* light: white on #1d6fd1 = 5.0:1 */
+:root[data-theme=light] .btn.primary{color:#fff} /* light: white on #1a5fb4 = 6.3:1 */
 @media (prefers-color-scheme:light){:root[data-theme=system] .btn.primary{color:#fff}}
 .btn.danger{color:var(--crit)}
 .btn.icon{padding:var(--sp-1);min-width:var(--hit-min);min-height:var(--hit-min);justify-content:center}
@@ -168,14 +171,11 @@ input[type=checkbox]{accent-color:var(--info)}
 .inline label{display:flex;gap:var(--sp-2);align-items:center;font-size:var(--fs-13);color:var(--fg2)}
 .notice{background:color-mix(in srgb,var(--warn) 14%,var(--bg2));border:var(--bw) solid var(--warn);border-radius:var(--r-lg);padding:var(--sp-2) var(--sp-3);font-size:var(--fs-13);margin-bottom:var(--sp-3);white-space:pre-wrap}
 .notice.err{background:color-mix(in srgb,var(--crit) 14%,var(--bg2));border-color:var(--crit)}
-.field-err{color:var(--crit);font-size:var(--fs-12)}
-[aria-invalid=true]{border-color:var(--crit)}
 
-/* unsaved-edits marker: on the Fans nav entry (#nav-dirty), in the curves bar (#cv-dirty) and on the Apply button (#cv-badge) */
+/* unsaved-edits marker: on the Fans nav entry (#nav-dirty), the channel selector and in the action bars (#cv-dirty, #sc-dirty) */
 .dirty{display:inline-block;width:var(--dot);height:var(--dot);border-radius:var(--r-full);background:var(--warn);margin-left:var(--sp-15);vertical-align:middle}
 .dirty-t{display:inline-flex;align-items:center;gap:var(--sp-15);color:var(--warn);font-size:var(--fs-13)}
 .dirty-t .dirty{margin:0}
-.badge.dirty-b{color:inherit;border-color:currentColor;background:none;margin-left:var(--sp-1)}
 
 /* cards */
 .card{background:var(--bg2);border:var(--bw) solid var(--line);border-radius:var(--r-lg);padding:var(--card-pad);box-shadow:var(--shadow-1);min-width:0}
@@ -277,7 +277,7 @@ input[type=checkbox]{accent-color:var(--info)}
 .fan .now .d small{font-size:var(--fs-12);color:var(--fg2);font-weight:var(--fw-medium)}
 .fan .tgt{display:flex;align-items:center;gap:var(--sp-15);flex-wrap:wrap;color:var(--fg3);font-size:var(--fs-12)}
 .switch{display:inline-flex;align-items:center;gap:var(--sp-2);background:none;border:0;padding:var(--sp-1) 0;cursor:pointer;color:var(--fg2);font-size:var(--fs-13);min-height:var(--hit-min);font-family:inherit;text-align:left}
-.switch .track{width:var(--sw-w);height:var(--sw-h);border-radius:var(--r-pill);background:var(--line2);position:relative;transition:background var(--dur-fast);flex:none}
+.switch .track{width:var(--sw-w);height:var(--sw-h);border-radius:var(--r-pill);background:var(--line-strong);position:relative;transition:background var(--dur-fast);flex:none} /* off: 3.3:1 on the card (line2 was 1.5) */
 .switch .track::after{content:"";position:absolute;top:var(--sp-05);left:var(--sp-05);width:var(--sw-knob);height:var(--sw-knob);border-radius:var(--r-full);background:var(--fg);transition:transform var(--dur-fast)}
 .switch[aria-checked=true] .track{background:var(--man)}
 .switch[aria-checked=true] .track::after{transform:translateX(var(--sw-knob));background:var(--bg)}
@@ -320,8 +320,8 @@ input[type=checkbox]{accent-color:var(--info)}
 .preset-row{display:flex;flex-wrap:wrap;gap:var(--sp-2)}
 .pchip{display:inline-flex;align-items:center;gap:var(--sp-15);border:var(--bw) solid var(--line2);border-radius:var(--r-lg);background:var(--bg3);padding:var(--sp-15) var(--sp-2) var(--sp-15) var(--sp-25);font-size:var(--fs-13);position:relative;max-width:100%;flex-wrap:wrap}
 .pchip.active{border-color:color-mix(in srgb,var(--ok) var(--tint-border),transparent);background:color-mix(in srgb,var(--ok) var(--tint-bg),transparent)}
-.pchip .dot{margin:0;background:var(--line2)}
-.pchip.active .dot{background:var(--ok)}
+.pchip .dot{margin:0;border:var(--bw) solid var(--fg3)} /* not active: a ring (5.2:1), active: filled */
+.pchip.active .dot{background:var(--ok);border-color:var(--ok)}
 .pchip .star{color:var(--warn)}
 .pchip .pn{font-weight:var(--fw-semibold)}
 .pchip .pd{color:var(--fg2);font-size:var(--fs-12);max-width:var(--pd-max);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -382,8 +382,9 @@ input[type=checkbox]{accent-color:var(--info)}
 .sc-tbl td.fb{color:var(--fg3);font-size:var(--fs-12)}
 .sc-tbl .rowact{text-align:right}
 .days{display:inline-flex;gap:var(--sp-05);flex-wrap:nowrap}
-.days button{width:calc(var(--hit-min) + var(--sp-15));min-height:var(--hit-min);border:var(--bw) solid var(--line2);background:var(--bg);color:var(--fg3);border-radius:var(--r-sm);font-size:var(--fs-11);font-weight:var(--fw-semibold);cursor:pointer;padding:0}
-.days button[aria-pressed=true]{background:var(--nav-active);color:var(--info);border-color:color-mix(in srgb,var(--info) var(--tint-border),transparent)}
+.days button{width:calc(var(--hit-min) + var(--sp-15));min-height:var(--hit-min);border:var(--bw) solid var(--line-strong);background:var(--bg);color:var(--fg3);border-radius:var(--r-sm);font-size:var(--fs-11);font-weight:var(--fw-semibold);cursor:pointer;padding:0}
+/* pressed: the solid --info border carries the state at ≥ 3:1 (a tint alone cannot), the 22 % tint and the text colour follow */
+.days button[aria-pressed=true]{background:color-mix(in srgb,var(--info) var(--tint-active),transparent);color:var(--info);border-color:var(--info)}
 .days .all{color:var(--fg2);font-size:var(--fs-12);align-self:center;margin-left:var(--sp-1);white-space:nowrap}
 /* phone: one entry = a stacked block (preset · remove / from · to / days) instead of a sideways-scrolling row */
 @media (max-width:699.98px){
@@ -398,8 +399,8 @@ input[type=checkbox]{accent-color:var(--info)}
   .sc-tbl td.empty{grid-column:1/-1}
 }
 
-/* toasts: two live regions (polite, assertive for errors) in one stack */
-.toasts{position:fixed;right:var(--sp-4);bottom:var(--sp-4);display:grid;gap:var(--sp-2);z-index:var(--z-toast);max-width:var(--toast-w)}
+/* toasts: two live regions (polite, assertive for errors) in one stack, lifted above the sticky action bar (--actbar-h, measured by app.js) */
+.toasts{position:fixed;right:var(--sp-4);bottom:calc(var(--actbar-h,0px) + var(--sp-4));display:grid;gap:var(--sp-2);z-index:var(--z-toast);max-width:var(--toast-w)}
 .toasts div[aria-live]{display:grid;gap:var(--sp-2)}
 .toasts div[aria-live]:empty{display:none}
 .toast{background:var(--bg3);border:var(--bw) solid var(--line2);border-left:var(--bw-toast) solid var(--info);border-radius:var(--r-md);padding:var(--sp-2) var(--sp-8) var(--sp-2) var(--sp-3);font-size:var(--fs-13);box-shadow:var(--shadow-2);position:relative;overflow-wrap:anywhere;white-space:pre-wrap}
@@ -426,7 +427,6 @@ input[type=checkbox]{accent-color:var(--info)}
 #login-f .act,#cf-body .act{justify-content:flex-end}
 #cf-text{margin:0;white-space:pre-wrap}
 .act{display:flex;flex-wrap:wrap;gap:var(--sp-2);align-items:center}
-.pe-body{display:grid;gap:var(--sp-3)}
 
 /* settings page: sub-navigation (sticky left ≥ md, chips on top below) + one card per section */
 .settings{display:grid;grid-template-columns:1fr;gap:var(--gap);align-items:start}
@@ -500,9 +500,11 @@ input[type=checkbox]{accent-color:var(--info)}
   .bnav button .dirty{position:absolute;right:20%;top:var(--sp-1);margin:0}
   .actbar{bottom:var(--bottom-h);margin:0 calc(-1*var(--page-pad-xs)) calc(-1*var(--sp-3))}
   .fan .fh,.fan .ed,.fan .live{padding-left:var(--sp-3);padding-right:var(--sp-3)}
-  .subnav{overflow-x:auto;flex-wrap:nowrap;padding-bottom:var(--sp-05)}
   .tile{min-height:0}
 }
+/* 700–999 px: the header keeps one row without uptime and version (the rail is forced below 1100 px by app.js); below 900 px the certificate chip is icon-only and the profile title shorter */
+@media (max-width:999.98px){.ph .uptime,.ph .ver{display:none}}
+@media (max-width:899.98px){#h-cert-t{display:none}.prof{max-width:25vw}}
 
 /* overview: signed-in cards */
 .grid3.ov .card-h{margin-bottom:var(--sp-2)}
@@ -516,7 +518,7 @@ input[type=checkbox]{accent-color:var(--info)}
 .sensors .sn .id{color:var(--fg2);font-size:var(--fs-12)}
 .sensors .sn .val{font-variant-numeric:tabular-nums;color:var(--fg)}
 .btn.on{background:color-mix(in srgb,var(--info) var(--tint-active),var(--bg3));border-color:var(--info)}
-.sensors .sn .btn.on{color:var(--info)}
+.sensors .sn .btn.on{color:var(--fg)} /* --info text on the 22 % tint is 4.0:1 in light; tint + border carry the state */
 .legend.rm span{gap:var(--sp-1)}
 .legend .x{background:none;border:0;color:var(--fg3);cursor:pointer;padding:0;min-width:var(--hit-min);min-height:var(--hit-min);border-radius:var(--r-sm);display:inline-grid;place-items:center}
 .legend .x:hover{color:var(--crit);background:var(--bg3)}

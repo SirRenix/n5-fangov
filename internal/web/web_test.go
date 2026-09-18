@@ -1518,7 +1518,7 @@ func TestNavHasPages(t *testing.T) {
 		t.Fatal(err)
 	}
 	src := string(js)
-	secs := regexp.MustCompile(`<section id="p-([a-z]+)" class="pg"`).FindAllStringSubmatch(string(html), -1)
+	secs := regexp.MustCompile(`<section id="p-([a-z]+)" class="pg[" ]`).FindAllStringSubmatch(string(html), -1)
 	if len(secs) < 5 {
 		t.Fatalf("found only %d page sections in index.html", len(secs))
 	}
@@ -1575,15 +1575,74 @@ func TestNavHasPages(t *testing.T) {
 	}
 }
 
+// jsRegex extracts the regexp literal bound to `name` in app.js (`NAME = /…/`)
+// and compiles it with Go's RE2 engine; the header regexps use only syntax
+// both engines share (\[ \s \w character classes, an optional group).
+func jsRegex(t *testing.T, src, name string) *regexp.Regexp {
+	t.Helper()
+	i := strings.Index(src, name+" = /")
+	if i < 0 {
+		t.Fatalf("app.js: regexp %s not found", name)
+	}
+	rest := src[i+len(name)+4:]
+	end := -1
+	for j := 0; j < len(rest); j++ {
+		if rest[j] == '\\' {
+			j++
+			continue
+		}
+		if rest[j] == '/' {
+			end = j
+			break
+		}
+	}
+	if end < 0 {
+		t.Fatalf("app.js: regexp %s is not terminated", name)
+	}
+	re, err := regexp.Compile(rest[:end])
+	if err != nil {
+		t.Fatalf("app.js: regexp %s = /%s/ does not compile as RE2: %v", name, rest[:end], err)
+	}
+	return re
+}
+
+// stripTables is the Go port of stripChannels / stripSchedules in app.js:
+// a line matching `hdr` starts a skipped block, any TOML table header
+// (`any`) ends it, everything outside the blocks is kept. The port runs the
+// client's own regexps, so the test exercises what carries the logic.
+func stripTables(raw string, hdr, tbl *regexp.Regexp) string {
+	var out []string
+	skip := false
+	for _, ln := range strings.Split(raw, "\n") {
+		tr := strings.TrimSpace(ln)
+		if hdr.MatchString(tr) {
+			skip = true
+			continue
+		}
+		if tbl.MatchString(tr) {
+			skip = false
+		}
+		if !skip {
+			out = append(out, ln)
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
+// the sample config the splice tests run on: a [[schedule]] table between two
+// channels, a comment that names both headers, a quoted section key, a
+// multi-line curve array and CRLF line ends
+const spliceSample = "[daemon]\ninterval = \"10s\" # [[channel]] tables follow\n\n[[channel]]\nname = \"cpu\"\ncurve = [\n  [45, 85],\n  [80, 255],\n]\n\n[[ schedule ]] # night\npreset = \"quiet\"\n\n[[channel]]\r\nname = \"hdd\"\r\nstop = 87\r\n\n[web.\"tls\"]\nmode = \"auto\"\n\n[[schedules]]\nx = 1\n"
+
 // TestCurveEditorKeepsOtherTables: the curve editor rewrites the config
 // file as "everything but the [[channel]] tables" + its own channel tables
 // (stripChannels in app.js). The skip of a channel table must end at the
 // next table header of any kind — [section] and [[other]] alike — or the
 // [[schedule]] tables that follow a channel table are silently dropped by
-// the next Apply (the daemon then runs without schedules). The test pins the
-// header regexp the client uses and the mock flag that drives a 202 through
-// the same path; the behaviour itself is checked against the mock in the
-// browser (docs/screenshots/shots.mjs step 09).
+// the next Apply (the daemon then runs without schedules). The header
+// regexps are taken from app.js and run here (jsRegex / stripTables); the
+// mock flag that drives a 202 through the same path is pinned, the browser
+// behaviour is checked in docs/screenshots/shots.mjs step 09.
 func TestCurveEditorKeepsOtherTables(t *testing.T) {
 	js, err := staticFS.ReadFile("static/app.js")
 	if err != nil {
@@ -1595,18 +1654,43 @@ func TestCurveEditorKeepsOtherTables(t *testing.T) {
 		t.Fatal("stripChannels not found in app.js")
 	}
 	fn := src[i:]
-	if j := strings.Index(fn, "const fromCfg"); j > 0 {
+	if j := strings.Index(fn, "const chCopy"); j > 0 {
 		fn = fn[:j]
-	}
-	// the header test ends the skip on "[[" as well: an optional second bracket
-	if !strings.Contains(src, `const TOML_HDR = /^\[\[?`) {
-		t.Errorf("app.js: TOML_HDR must accept [section] and [[array-table]] headers alike")
-	}
-	if strings.Contains(fn, `/^\[[^\[]/`) {
-		t.Errorf("app.js: stripChannels still ends a channel block at [section] headers only, [[schedule]] tables after a channel would be dropped")
 	}
 	if !strings.Contains(fn, "TOML_HDR.test(") || !strings.Contains(fn, "CH_HDR.test(") {
 		t.Errorf("app.js: stripChannels must use TOML_HDR / CH_HDR: %.200s", fn)
+	}
+	tomlHdr, chHdr := jsRegex(t, src, "TOML_HDR"), jsRegex(t, src, "CH_HDR")
+	for _, ln := range []string{"[web]", "[web] # c", "[[schedule]]", "[[ schedule ]] # x", `["web"]`, `[web."tls"]`, "[[channel]]", "[daemon]"} {
+		if !tomlHdr.MatchString(ln) {
+			t.Errorf("TOML_HDR does not match the header %q", ln)
+		}
+	}
+	for _, ln := range []string{"[45, 85],", "curve = [[45, 85], [80, 255]]", "[45, 85]", "[[45, 85]]", "x = [1]", "# [[channel]]", ""} {
+		if tomlHdr.MatchString(ln) {
+			t.Errorf("TOML_HDR matches the non-header %q", ln)
+		}
+	}
+	for _, ln := range []string{"[[channel]]", "[[ channel ]]", "[[channel]] # x"} {
+		if !chHdr.MatchString(ln) {
+			t.Errorf("CH_HDR does not match %q", ln)
+		}
+	}
+	for _, ln := range []string{"[[channels]]", "[channel]", "[[schedule]]", "name = \"channel\""} {
+		if chHdr.MatchString(ln) {
+			t.Errorf("CH_HDR matches %q", ln)
+		}
+	}
+	got := stripTables(spliceSample, chHdr, tomlHdr)
+	for _, keep := range []string{"[daemon]", "interval = \"10s\" # [[channel]] tables follow", "[[ schedule ]] # night", "preset = \"quiet\"", "[web.\"tls\"]", "mode = \"auto\"", "[[schedules]]", "x = 1"} {
+		if !strings.Contains(got, keep) {
+			t.Errorf("stripChannels dropped %q:\n%s", keep, got)
+		}
+	}
+	for _, gone := range []string{"[[channel]]\n", "[[channel]]\r", "name = \"cpu\"", "[45, 85]", "[80, 255]", "name = \"hdd\"", "stop = 87"} {
+		if strings.Contains(got, gone) {
+			t.Errorf("stripChannels kept %q:\n%s", gone, got)
+		}
 	}
 	mock, _ := staticFS.ReadFile("static/mock.js")
 	if !strings.Contains(string(mock), "Q.get('restart') === '1'") || !strings.Contains(string(mock), "parseSchedules(") {
@@ -1637,14 +1721,33 @@ func TestScheduleEditorKeepsOtherTables(t *testing.T) {
 	if j := strings.Index(fn, "const tomlSchedule"); j > 0 {
 		fn = fn[:j]
 	}
-	if !strings.Contains(src, `const SC_HDR = /^\[\[\s*schedule\s*\]\]/`) {
-		t.Errorf("app.js: SC_HDR must match the [[schedule]] header")
-	}
 	if !strings.Contains(fn, "TOML_HDR.test(") || !strings.Contains(fn, "SC_HDR.test(") {
 		t.Errorf("app.js: stripSchedules must use TOML_HDR / SC_HDR: %.200s", fn)
 	}
 	if strings.Contains(fn, "CH_HDR.test(") {
 		t.Errorf("app.js: stripSchedules must not drop [[channel]] tables")
+	}
+	tomlHdr, scHdr := jsRegex(t, src, "TOML_HDR"), jsRegex(t, src, "SC_HDR")
+	for _, ln := range []string{"[[schedule]]", "[[ schedule ]]", "[[schedule]] # night"} {
+		if !scHdr.MatchString(ln) {
+			t.Errorf("SC_HDR does not match %q", ln)
+		}
+	}
+	for _, ln := range []string{"[[schedules]]", "[schedule]", "[[channel]]", "preset = \"schedule\"", "# [[schedule]]"} {
+		if scHdr.MatchString(ln) {
+			t.Errorf("SC_HDR matches %q", ln)
+		}
+	}
+	got := stripTables(spliceSample, scHdr, tomlHdr)
+	for _, keep := range []string{"[daemon]", "[[channel]]\nname = \"cpu\"", "[45, 85],", "[80, 255],", "[[channel]]\r\nname = \"hdd\"", "stop = 87", "[web.\"tls\"]", "[[schedules]]\nx = 1"} {
+		if !strings.Contains(got, keep) {
+			t.Errorf("stripSchedules dropped %q:\n%s", keep, got)
+		}
+	}
+	for _, gone := range []string{"[[ schedule ]]", "preset = \"quiet\""} {
+		if strings.Contains(got, gone) {
+			t.Errorf("stripSchedules kept %q:\n%s", gone, got)
+		}
 	}
 	for _, want := range []string{"stripSchedules(cfgRaw) + scState.map(tomlSchedule)", `preset = "${e.preset}"`, `from = "${e.from}"\nto = "${e.to}"`, "days = [", `'aria-pressed'`, "'#sc-save'", "'#sc-err'"} {
 		if !strings.Contains(src, want) {

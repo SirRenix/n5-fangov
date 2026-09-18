@@ -6,8 +6,10 @@
 <meta name="color-scheme" content="dark light">
 <title>n5-fangov</title>
 <link rel="stylesheet" href="app.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%235aa9ff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='2'/%3E%3Cpath d='M12 10c0-4 2-7 5-7 1 3-1 6-5 7zM14 12c4 0 7 2 7 5-3 1-6-1-7-5zM12 14c0 4-2 7-5 7-1-3 1-6 5-7zM10 12c-4 0-7-2-7-5 3-1 6 1 7 5z'/%3E%3C/svg%3E">
 </head>
 <body>
+<a class="sr skip" id="skip" href="#main">Skip to content</a>
 <svg hidden xmlns="http://www.w3.org/2000/svg">
   <symbol id="i-gauge" viewBox="0 0 24 24"><path d="M4 15a8 8 0 1 1 16 0"/><path d="M12 15l4-5"/><path d="M3 20h18"/></symbol>
   <symbol id="i-chip" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/></symbol>
@@ -16,10 +18,7 @@
   <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 16v-5a6 6 0 0 1 12 0v5l2 2H4z"/><path d="M10 20a2 2 0 0 0 4 0"/></symbol>
   <symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3.5 6h.01M3.5 12h.01M3.5 18h.01"/></symbol>
   <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.2 2.2M16.2 16.2l2.2 2.2M5.6 18.4l2.2-2.2M16.2 7.8l2.2-2.2"/></symbol>
-  <symbol id="i-checklist" viewBox="0 0 24 24"><path d="M3.5 6l1.5 1.5L8 5M3.5 12l1.5 1.5L8 11M3.5 18l1.5 1.5L8 17M11 6h10M11 12h10M11 18h10"/></symbol>
   <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></symbol>
-  <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></symbol>
-  <symbol id="i-unlock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 7.5-2"/></symbol>
   <symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 3l10 18H2z"/><path d="M12 10v4M12 17.5h.01"/></symbol>
   <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
   <symbol id="i-external" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9"/><path d="M19 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5"/></symbol>
@@ -30,17 +29,14 @@
   <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a1 1 0 0 1 1-1h10"/></symbol>
   <symbol id="i-chev-l" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></symbol>
   <symbol id="i-chev-r" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></symbol>
-  <symbol id="i-chev-d" viewBox="0 0 24 24"><path d="M5 9l7 7 7-7"/></symbol>
   <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></symbol>
   <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></symbol>
   <symbol id="i-sign-in" viewBox="0 0 24 24"><path d="M10 17l5-5-5-5M15 12H3"/><path d="M13 3h6a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-6"/></symbol>
   <symbol id="i-sign-out" viewBox="0 0 24 24"><path d="M16 17l5-5-5-5M21 12H9"/><path d="M11 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h6"/></symbol>
-  <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4l13 8-13 8z"/></symbol>
   <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12l5 5L20 7"/></symbol>
   <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12M6 11l6 6 6-6M4 21h16"/></symbol>
   <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5"/></symbol>
   <symbol id="i-star" viewBox="0 0 24 24"><path d="M12 3l2.8 5.7 6.2.9-4.5 4.4 1.1 6.2L12 17.3 6.4 20.2l1.1-6.2L3 9.6l6.2-.9z"/></symbol>
-  <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
 </svg>
 
 <div class="shell" id="shell">
@@ -48,23 +44,23 @@
   <div class="page">
     <header class="ph" id="ph">
       <div class="ph-l">
-        <h1 class="title" id="ph-title">Overview</h1>
+        <h1 class="title" id="ph-title" tabindex="-1">Overview</h1>
         <span class="prof mx" id="h-profile">—</span>
       </div>
       <div class="ph-r">
         <span class="chip" id="h-status" role="status">…</span>
         <span class="meta uptime mx" title="daemon uptime">up —</span>
         <span class="meta ver mx"><span class="version">v —</span><span class="badge beta" hidden>beta</span></span>
-        <button class="chip warn mx" id="h-cert" type="button" hidden><svg class="ic" aria-hidden="true"><use href="#i-warn"/></svg><span id="h-cert-t">certificate</span></button>
+        <button class="chip warn" id="h-cert" type="button" aria-label="certificate" hidden><svg class="ic" aria-hidden="true"><use href="#i-warn"/></svg><span class="mx" id="h-cert-t">certificate</span></button>
         <span class="live" id="h-live" aria-live="polite"><i></i><span class="mx">live</span></span>
         <span class="meta user" id="h-user" title="signed in as" hidden><svg class="ic" aria-hidden="true"><use href="#i-user"/></svg><span id="h-user-n"></span></span>
-        <button class="btn sm" id="h-signin" type="button" aria-haspopup="dialog" aria-controls="login" hidden><svg class="ic" aria-hidden="true"><use href="#i-sign-in"/></svg><span class="mx">Sign in</span></button>
-        <button class="btn sm" id="h-signout" type="button" hidden><svg class="ic" aria-hidden="true"><use href="#i-sign-out"/></svg><span class="mx">Sign out</span></button>
+        <button class="btn sm" id="h-signin" type="button" aria-label="Sign in" aria-haspopup="dialog" aria-controls="login" hidden><svg class="ic" aria-hidden="true"><use href="#i-sign-in"/></svg><span class="mx">Sign in</span></button>
+        <button class="btn sm" id="h-signout" type="button" aria-label="Sign out" hidden><svg class="ic" aria-hidden="true"><use href="#i-sign-out"/></svg><span class="mx">Sign out</span></button>
       </div>
     </header>
     <div class="banner" id="banner" role="alert" hidden>Connection to the daemon lost — retrying. Fans keep running on the daemon side.</div>
     <div class="banner warn" id="g-notice" role="status" hidden></div>
-    <main id="main">
+    <main id="main" tabindex="-1">
 
 <section id="p-overview" class="pg">
   <div class="cards" id="cards"></div>
@@ -114,17 +110,17 @@
     <div class="card"><h2>Fan controller</h2><dl class="kv" id="sy-fan"></dl></div>
   </div>
   <div class="card sy"><h2>Memory</h2><dl class="kv" id="sy-mem"></dl>
-    <div class="tbl-wrap"><table class="tbl sm" id="sy-dimms"><thead><tr><th>Slot</th><th>Bank</th><th>Size</th><th>Type</th><th>Speed</th><th>ECC</th><th>Manufacturer</th><th>Part number</th></tr></thead><tbody></tbody></table></div>
+    <div class="tbl-wrap"><table class="tbl sm" id="sy-dimms"><thead><tr><th scope="col">Slot</th><th scope="col">Bank</th><th scope="col">Size</th><th scope="col">Type</th><th scope="col">Speed</th><th scope="col">ECC</th><th scope="col">Manufacturer</th><th scope="col">Part number</th></tr></thead><tbody></tbody></table></div>
   </div>
   <div class="card sy"><h2>GPU · NPU</h2>
-    <div class="tbl-wrap"><table class="tbl sm" id="sy-acc"><thead><tr><th>Kind</th><th>Name</th><th>Vendor</th><th>PCI</th><th>Driver</th><th>Driver version</th><th>Device</th></tr></thead><tbody></tbody></table></div>
+    <div class="tbl-wrap"><table class="tbl sm" id="sy-acc"><thead><tr><th scope="col">Kind</th><th scope="col">Name</th><th scope="col">Vendor</th><th scope="col">PCI</th><th scope="col">Driver</th><th scope="col">Driver version</th><th scope="col">Device</th></tr></thead><tbody></tbody></table></div>
   </div>
   <div class="card sy"><h2>Network</h2>
-    <div class="tbl-wrap"><table class="tbl sm" id="sy-nics"><thead><tr><th>Interface</th><th>State</th><th>Speed</th><th>Duplex</th><th>Model</th><th>Driver</th><th>MAC</th><th>MTU</th><th>PCI</th></tr></thead><tbody></tbody></table></div>
+    <div class="tbl-wrap"><table class="tbl sm" id="sy-nics"><thead><tr><th scope="col">Interface</th><th scope="col">State</th><th scope="col">Speed</th><th scope="col">Duplex</th><th scope="col">Model</th><th scope="col">Driver</th><th scope="col">MAC</th><th scope="col">MTU</th><th scope="col">PCI</th></tr></thead><tbody></tbody></table></div>
   </div>
   <div class="card sy"><h2>Storage</h2>
-    <div class="tbl-wrap"><table class="tbl sm" id="sy-ctl"><thead><tr><th>Controller</th><th>Name</th><th>Driver</th><th>PCI</th></tr></thead><tbody></tbody></table></div>
-    <div class="tbl-wrap"><table class="tbl sm" id="sy-disks"><thead><tr><th>Disk</th><th>Size</th><th>Type</th><th>Transport</th><th>Model</th><th>Temp</th></tr></thead><tbody></tbody></table></div>
+    <div class="tbl-wrap"><table class="tbl sm" id="sy-ctl"><thead><tr><th scope="col">Controller</th><th scope="col">Name</th><th scope="col">Driver</th><th scope="col">PCI</th></tr></thead><tbody></tbody></table></div>
+    <div class="tbl-wrap"><table class="tbl sm" id="sy-disks"><thead><tr><th scope="col">Disk</th><th scope="col">Size</th><th scope="col">Type</th><th scope="col">Transport</th><th scope="col">Model</th><th scope="col">Temp</th></tr></thead><tbody></tbody></table></div>
   </div>
 </section>
 
@@ -146,7 +142,7 @@
     <div class="card sc sc-ed">
       <div class="card-h"><h2>Schedule</h2><span class="hint sm">preset switches by time of day — transitions only; a manual apply inside a window is respected</span></div>
       <div class="notice" id="sc-err" role="alert" hidden></div>
-      <div class="tbl-wrap"><table class="tbl sc-tbl" id="sc-tbl"><thead><tr><th>Preset</th><th>From</th><th>To</th><th>Days</th><th><span class="sr">Actions</span></th></tr></thead><tbody></tbody></table></div>
+      <div class="tbl-wrap"><table class="tbl sc-tbl" id="sc-tbl"><thead><tr><th scope="col">Preset</th><th scope="col">From</th><th scope="col">To</th><th scope="col">Days</th><th scope="col"><span class="sr">Actions</span></th></tr></thead><tbody></tbody></table></div>
       <div class="act">
         <button class="btn" id="sc-add" type="button"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg>Add entry</button>
         <span class="hint sm">an entry without a window is the fallback outside every window; <code>to</code> before <code>from</code> crosses midnight</span>
@@ -168,7 +164,7 @@
     </div>
     <div class="card"><h2>Recent alerts</h2><ul class="alerts" id="al-recent"></ul></div>
   </div>
-  <div class="card tbl-wrap"><table class="tbl" id="al-kinds"><thead><tr><th>Kind</th><th>Description</th><th>Last sent</th></tr></thead><tbody></tbody></table></div>
+  <div class="card tbl-wrap"><table class="tbl" id="al-kinds"><thead><tr><th scope="col">Kind</th><th scope="col">Description</th><th scope="col">Last sent</th></tr></thead><tbody></tbody></table></div>
 </section>
 
 <section id="p-log" class="pg" data-auth hidden>
@@ -193,7 +189,7 @@
           <label>Theme <select id="s-theme"><option value="system">system</option><option value="dark">dark</option><option value="light">light</option></select></label>
           <label>Navigation <select id="s-nav"><option value="side">sidebar</option><option value="rail">icon rail</option></select></label>
         </div>
-        <p class="hint sm">Stored in this browser only.</p>
+        <p class="hint sm">Stored in this browser only. Below 1100 px the navigation is always the icon rail.</p>
       </section>
       <section class="card st" id="st-account" aria-labelledby="st-account-h"><h2 id="st-account-h">Account &amp; sessions</h2>
         <div id="ac-body">
@@ -206,6 +202,7 @@
           </div>
           <form class="sub" id="ac-pw-f" hidden novalidate>
             <p class="hint" id="ac-pw-hint">8–128 characters. Every other session is signed out; this one stays.</p>
+            <input type="text" class="ac-un" autocomplete="username" aria-hidden="true" tabindex="-1" readonly hidden>
             <label>Current password <input type="password" id="ac-cur" autocomplete="current-password" required></label>
             <label>New password <input type="password" id="ac-new" autocomplete="new-password" minlength="8" maxlength="128" required></label>
             <label>Confirm <input type="password" id="ac-new2" autocomplete="new-password" required></label>
@@ -213,19 +210,20 @@
           </form>
           <form class="sub" id="ac-us-f" hidden novalidate>
             <p class="hint">Letters, digits, <code>_ . -</code>, 1–32 characters. Every other session is signed out.</p>
+            <input type="text" class="ac-un" autocomplete="username" aria-hidden="true" tabindex="-1" readonly hidden>
             <label>Current password <input type="password" id="ac-ucur" autocomplete="current-password" required></label>
             <label>New user name <input id="ac-uname" autocomplete="off" autocapitalize="off" spellcheck="false" pattern="[A-Za-z0-9_.\-]{1,32}" maxlength="32" required></label>
             <div class="act"><button class="btn primary" type="submit">Change user</button><button class="btn" type="button" data-cancel>Cancel</button></div>
           </form>
           <div class="notice" id="ac-notice" role="alert" hidden></div>
           <h3>Sessions</h3>
-          <div class="tbl-wrap"><table class="tbl sm" id="ac-sessions"><thead><tr><th>ID</th><th>Created</th><th>Last seen</th><th>Expires</th><th>IP</th></tr></thead><tbody></tbody></table></div>
+          <div class="tbl-wrap"><table class="tbl sm" id="ac-sessions"><thead><tr><th scope="col">ID</th><th scope="col">Created</th><th scope="col">Last seen</th><th scope="col">Expires</th><th scope="col">IP</th></tr></thead><tbody></tbody></table></div>
         </div>
       </section>
       <section class="card st" id="st-tokens" aria-labelledby="st-tokens-h" hidden><h2 id="st-tokens-h">API tokens</h2>
         <div id="ac-tokens">
           <p class="hint sm">For scripts, Home Assistant and agents: <code>Authorization: Bearer n5t_…</code> instead of the password. A token never manages tokens or the account; a password change leaves tokens valid — revoke them here.</p>
-          <div class="tbl-wrap"><table class="tbl sm" id="ac-tok"><thead><tr><th>Name</th><th>Scope</th><th>Created</th><th>Expires</th><th>Last used</th><th>Last address</th><th></th></tr></thead><tbody></tbody></table></div>
+          <div class="tbl-wrap"><table class="tbl sm" id="ac-tok"><thead><tr><th scope="col">Name</th><th scope="col">Scope</th><th scope="col">Created</th><th scope="col">Expires</th><th scope="col">Last used</th><th scope="col">Last address</th><th scope="col"><span class="sr">Actions</span></th></tr></thead><tbody></tbody></table></div>
           <div class="act"><button class="btn" id="ac-tk" type="button"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg>Create token…</button></div>
           <form class="sub" id="ac-tk-f" hidden novalidate>
             <label>Name <input id="ac-tk-name" maxlength="32" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="home-assistant" required></label>
@@ -334,11 +332,11 @@
       <dt id="ab-go-t">built with</dt><dd id="ab-go">—</dd>
       <dt>credits</dt><dd><ul class="credits" id="ab-credits"></ul></dd>
     </dl>
-    <p class="hint sm" id="ab-mock" hidden>Dashboard mock: <code>?mock=1</code> (<code>&amp;user=1</code> signed in, <code>&amp;auth=none</code> auth off, <code>&amp;tab=</code>, <code>&amp;tls=off|file|soon|fallback</code>, <code>&amp;syserr=1</code>, <code>&amp;reject=1</code> strict 400, <code>&amp;restart=1</code> PUT answers 202, <code>&amp;expire=1</code> session dies after 15 s, <code>&amp;schedfail=1</code> last schedule switch failed, <code>&amp;pwm4=1</code> fourth channel without tach). The mock is a separate script that the production page never requests.</p>
+    <p class="hint sm" id="ab-mock" hidden>Dashboard mock: <code>?mock=1</code> (<code>&amp;user=1</code> signed in, <code>&amp;auth=none</code> auth off, <code>&amp;tab=</code>, <code>&amp;tls=off|file|soon|fallback</code>, <code>&amp;syserr=1</code>, <code>&amp;reject=1</code> strict 400, <code>&amp;restart=1</code> PUT answers 202, <code>&amp;expire=1</code> session dies after 15 s, <code>&amp;schedfail=1</code> last schedule switch failed, <code>&amp;pwm4=1</code> fourth channel without tach, <code>&amp;down=1</code> state / history / sensors unreachable from 2 s after the boot — the connection banner). The mock is a separate script that the production page never requests.</p>
   </div>
   <div class="card compat" id="compat" data-auth hidden>
     <div class="card-h"><h2>Compatibility</h2><span class="hint sm">hardware profiles this build knows; the daemon runs the one marked ACTIVE</span></div>
-    <div class="tbl-wrap"><table class="tbl" id="profiles"><thead><tr><th>Profile</th><th>Title</th><th>Status</th><th>Notes</th></tr></thead><tbody></tbody></table></div>
+    <div class="tbl-wrap"><table class="tbl" id="profiles"><thead><tr><th scope="col">Profile</th><th scope="col">Title</th><th scope="col">Status</th><th scope="col">Notes</th></tr></thead><tbody></tbody></table></div>
   </div>
 </section>
 
