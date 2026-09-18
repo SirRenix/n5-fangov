@@ -269,10 +269,10 @@ function renderHeader() {
 const ph = $('#ph'); new ResizeObserver(() => document.documentElement.style.setProperty('--hdr-h', ph.offsetHeight + 'px')).observe(ph);
 // daemon limits → hints, field bounds, slider minimums
 const applyLimits = () => { const L = LIM;
-	$('#cv-hint').firstChild.textContent = `Drag points or edit the table. ${L.curve_points_min}–${L.curve_points_max} points, temperatures ascending, duty never falling. Applying rewrites the `;
+	$('#cv-hint').textContent = `${L.curve_points_min}–${L.curve_points_max}`;
 	$('#ac-pw-hint').firstChild.textContent = `${L.password_min}–${L.password_max} characters. Every other session is signed out; this one stays.`;
 	const pw = $('#ac-new'); pw.minLength = L.password_min; pw.maxLength = L.password_max;
-	for (const k in MN) { const m = MN[k]; m.min = minDuty(m.c); m.range.min = m.num.min = m.min; } if (snap) renderSensors(); };
+	for (const k in ED) { const { lv, c } = ED[k]; lv.min = minDuty(c); lv.range.min = lv.num.min = lv.min; lv.show(+lv.range.value, 1); } if (snap) renderSensors(); };
 
 // pages: the nav (sidebar / icon rail / phone bottom bar + More sheet) is built from PAGES; hash routing #<page>[/<section>]
 const PAGES = [
@@ -317,7 +317,7 @@ function go(id, sec) {
 	if (changed) window.scrollTo(0, 0);
 	// every page needs an entry (TestNavHasPages); a missing one would throw after the section switch
 	(({ overview: () => { renderCharts(); pollSensors(); loadAlerts(); }, system: () => { renderSystemTab(); loadSystem(); },
-		fans: () => { if (!edState && cfg) loadEditor(); if (snap) renderManual(); pollSensors(1); drawEds(); loadPresets(); },
+		fans: () => { if (!edState && cfg) loadEditor(); renderLive(); pollSensors(1); drawEds(); loadPresets(); },
 		schedules: loadSchedules, alerts: () => { alDirty = false; renderAlertsTab(); loadAlerts(); }, log: loadLog,
 		settings: () => { alDirty = false; renderAlertsTab(); renderSettings(); }, about: () => { renderProfiles(); } })[id] || (() => {}))();
 	if (sec) { const el = $('#' + sec); if (el) el.scrollIntoView({ block: 'start' }); if (cur === 'settings') markSub(sec, true); }
@@ -339,7 +339,7 @@ async function applyAuth() {
 	for (const el of $$('[data-auth]:not(.pg)')) el.hidden = !on;
 	for (const [id, show] of [['#h-signin', !on && basic], ['#h-signout', on && basic], ['#h-user', on && basic]]) $(id).hidden = !show;
 	$('#h-user-n').textContent = sess.user || ''; buildNav();
-	if (!on) { cert = null; cfg = null; edState = null; dirty(false); alerts = null; sysinfo = null; dash = []; profiles = []; SN.key = null; for (const id of ['#editors', '#presets', '#log', '#sc-tbl tbody', '#sc-kv', '#ac-tok tbody']) clear($(id));
+	if (!on) { cert = null; cfg = null; edState = null; dirty(false); alerts = null; sysinfo = null; dash = []; profiles = []; SN.key = null; for (const k in ED) delete ED[k]; for (const id of ['#fan-cards', '#ch-sel', '#preset-row', '#log', '#sc-tbl tbody', '#sc-kv', '#ac-tok tbody']) clear($(id));
 		route(); // a page that needs auth falls back to the Overview
 		secState(); renderCharts(); loadAbout(); return; }
 	hist = []; lastTs = 0; // history is re-read with the extra series
@@ -505,16 +505,21 @@ $$('#rg-seg button').forEach(b => b.addEventListener('click', () => { if (b.data
 setRange(S.range);
 on('#ov-csv', 'click', () => act(() => download('/api/history.csv?minutes=' + R().minutes, 'n5-fangov-history.csv'), n => `History exported as ${n}`));
 
-// curves — edited in °C whatever the display unit; edState = working copy, edDirty = unsaved
+// Fans page (§11a): one card per channel — the curve editor (edited in °C whatever the display unit; edState = working copy,
+// edDirty = unsaved) on the left, "Live & override" on the right; below 700 px the channel selector shows one card at a time
 const ED = {}, drawEds = () => { for (const k in ED) ED[k].draw(); }; let edState = null, edStash = null, edDirty = false;
 const cvNotice = notice('#cv-notice'), K = UI.curve;
-const dirty = v => { edDirty = !!v; $('#cv-dirty').hidden = !v; $('#cv-badge').hidden = !v; for (const d of $$('#nav-dirty, #bnav .dirty')) d.hidden = !v; };
+const chDirty = name => { const e = ED[name], o = chList().find(x => x.name === name); return !!(e && o) && chKey([e.c]) !== chKey([o]); };
+const dirty = v => { edDirty = !!v; $('#cv-dirty').hidden = !v; $('#cv-clean').hidden = !!v; for (const d of $$('#nav-dirty, #bnav .dirty')) d.hidden = !v;
+	for (const b of $$('#ch-sel button')) b.lastChild.hidden = !v || !chDirty(b.dataset.ch); };
 addEventListener('beforeunload', ev => { if (edDirty) ev.preventDefault(); });
 // Go durations ("1m0s") ↔ seconds; min_on is kept in the daemon's canonical form, the select lists the common values
 const durS = s => { const m = /^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+(?:\.\d+)?)s)?$/.exec(s || ''); return m && m[0] ? (+m[1] || 0) * 3600 + (+m[2] || 0) * 60 + (+m[3] || 0) : 0; };
 const MIN_ON = [['0s', 'off'], ['30s', '30 s'], ['1m0s', '1 min'], ['2m0s', '2 min'], ['5m0s', '5 min'], ['10m0s', '10 min'], ['30m0s', '30 min'], ['1h0m0s', '1 h']];
 const normDur = s => { const t = durS(s), o = MIN_ON.find(x => durS(x[0]) === t); return o ? o[0] : t ? `${t / 3600 | 0}h${t % 3600 / 60 | 0}m${t % 60}s`.replace(/^0h/, '').replace(/^0m/, '') : '0s'; };
 const parts = s => String(s || '').split(',').map(x => x.trim()).filter(Boolean);
+const minOnSel = (c, onchange) => { const mo = h('select', { title: TIP.minOn, onchange: () => { c.min_on = mo.value; onchange(); } });
+	for (const [v, t] of MIN_ON.filter(x => durS(x[0]) <= LIM.min_on_max_s).concat(MIN_ON.some(x => x[0] === c.min_on) ? [] : [[c.min_on, fmtDur(c.min_on)]])) mo.append(h('option', { value: v, selected: v === c.min_on }, t)); return mo; };
 // [[channel]] tables: sensor as an array for a composite, hysteresis / min_on omitted at their defaults
 const tomlChannel = c => { const ps = parts(c.sensor);
 	return `[[channel]]\nname = "${c.name}"\npwm = ${c.pwm}\nsensor = ${ps.length > 1 ? `[${ps.map(x => `"${x}"`).join(', ')}]` : `"${ps[0] || ''}"`}\ncurve = [${c.curve.map(p => `[${p[0]}, ${p[1]}]`).join(', ')}]\ncritical = ${c.critical}\nstop = ${c.stop === 'auto' || c.stop === '' || c.stop === undefined ? '"auto"' : c.stop}\n`
@@ -527,29 +532,38 @@ const stripChannels = raw => { const out = []; let skip = false;
 		if (CH_HDR.test(t)) { skip = true; continue; }
 		if (TOML_HDR.test(t)) skip = false;
 		if (!skip) out.push(ln); } return out.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd() + '\n\n'; };
-const fromCfg = () => chList().map(c => ({ name: c.name, pwm: c.pwm, sensor: parts(c.sensor).join(','), curve: (c.curve || []).map(p => [+p[0], +p[1]]), critical: +c.critical, stop: c.stop === undefined || c.stop === 'auto' ? 'auto' : String(c.stop),
-	hysteresis: +c.hysteresis || 0, min_on: normDur(c.min_on) }));
+// a channel as the editors hold it (copied: the preset editor and the stash never share arrays with the config or a preset detail)
+const chCopy = c => ({ name: c.name, pwm: +c.pwm, sensor: parts(c.sensor).join(','), curve: (c.curve || []).map(p => [+p[0], +p[1]]), critical: +c.critical, stop: c.stop === undefined || c.stop === 'auto' || c.stop === '' ? 'auto' : String(c.stop),
+	hysteresis: +c.hysteresis || 0, min_on: normDur(c.min_on) });
+const fromCfg = () => chList().map(chCopy);
 function loadEditor(keepNotice) { edState = fromCfg(); dirty(false); buildEditors(keepNotice); }
+// the channel selector below 700 px: one card at a time, the selected channel keeps across rebuilds; a resize across the breakpoint switches modes
+const SEL = { mq: matchMedia(`(max-width:${UI.bp.sm - .02}px)`), ch: null };
+const selMode = () => { const on = SEL.mq.matches, sel = $('#ch-sel'); sel.hidden = !on;
+	if (on && !(SEL.ch in ED)) SEL.ch = Object.keys(ED)[0] || null;
+	for (const k in ED) ED[k].card.hidden = on && k !== SEL.ch;
+	for (const b of $$('#ch-sel button')) { const cur = on && b.dataset.ch === SEL.ch; b.classList.toggle('on', cur); b.setAttribute('aria-pressed', cur); }
+	drawEds(); };
+SEL.mq.addEventListener('change', selMode);
 function buildEditors(keepNotice) { // keepNotice: the 202 / warnings notice of an apply survives the reload of the editors (cleared by Revert, page switch, next apply)
-	const host = clear($('#editors')); for (const k in ED) delete ED[k];
+	const host = clear($('#fan-cards')), sel = clear($('#ch-sel')); for (const k in ED) delete ED[k];
 	if (!keepNotice) cvNotice('');
 	edState.forEach((c, i) => {
-		const ed = ED[c.name] = { c, i }, L = LIM;
+		const ed = ED[c.name] = { c, i }, L = LIM, dt = () => dirty(1);
 		const cv = h('canvas', { role: 'img', 'aria-label': `curve ${c.name}` });
-		const sel = h('select', { title: TIP.sensor, onchange: () => { c.sensor = sel.value; dirty(1); } });
-		const crit = h('input', { type: 'number', min: L.critical_min, max: L.critical_max, value: c.critical, title: TIP.critical, oninput: () => { c.critical = +crit.value; dirty(1); ed.draw(); } });
-		const stop = h('input', { type: 'text', value: c.stop, placeholder: 'auto', title: TIP.stop, oninput: () => { c.stop = stop.value.trim(); dirty(1); } });
-		const hyst = h('input', { type: 'number', min: 0, max: L.hysteresis_max, step: 1, value: c.hysteresis, title: TIP.hyst, oninput: () => { c.hysteresis = +hyst.value; dirty(1); } });
-		const mo = h('select', { title: TIP.minOn, onchange: () => { c.min_on = mo.value; dirty(1); } });
-		for (const [v, t] of MIN_ON.filter(x => durS(x[0]) <= L.min_on_max_s).concat(MIN_ON.some(x => x[0] === c.min_on) ? [] : [[c.min_on, fmtDur(c.min_on)]])) mo.append(h('option', { value: v, selected: v === c.min_on }, t));
+		const sl = h('select', { title: TIP.sensor, 'aria-label': `${c.name} sensor`, onchange: () => { c.sensor = sl.value; dt(); } });
+		const crit = h('input', { type: 'number', min: L.critical_min, max: L.critical_max, value: c.critical, title: TIP.critical, oninput: () => { c.critical = +crit.value; dt(); ed.draw(); } });
+		const stop = h('input', { type: 'text', value: c.stop, placeholder: 'auto', title: TIP.stop, oninput: () => { c.stop = stop.value.trim(); dt(); } });
+		const hyst = h('input', { type: 'number', min: 0, max: L.hysteresis_max, step: 1, value: c.hysteresis, title: TIP.hyst, oninput: () => { c.hysteresis = +hyst.value; dt(); } });
+		const mo = minOnSel(c, dt);
 		const tbody = h('tbody'), ptsEl = h('div', { class: 'ptl' });
 		const ref = REF[c.name] && snap && snap.profile === 'n5pro' ? h('p', { class: 'ref' }, 'Duty → RPM (measured): ', ...REF[c.name].flatMap(([d, r], j) => [j ? ' · ' : '', h('b', null, `${d}→${r}`)])) : null;
-		ed.sel = sel; ed.cv = cv; ed.tbody = tbody; ed.ptsEl = ptsEl;
+		ed.sel = sl; ed.cv = cv; ed.tbody = tbody; ed.ptsEl = ptsEl;
 		const fillTable = () => {
 			clear(tbody); c.curve.forEach((p, j) => tbody.append(h('tr', null,
-				h('td', null, h('input', { type: 'number', min: L.temp[0], max: L.temp[1], value: p[0], 'aria-label': `point ${j + 1} temp`, oninput: ev => { p[0] = +ev.target.value; dirty(1); ed.draw(); } })),
-				h('td', null, h('input', { type: 'number', min: 0, max: L.duty, value: p[1], 'aria-label': `point ${j + 1} duty`, oninput: ev => { p[1] = clamp(+ev.target.value, 0, L.duty); dirty(1); ed.draw(); } })),
-				h('td', null, h('button', { class: 'btn sm', disabled: c.curve.length <= L.curve_points_min, title: c.curve.length <= L.curve_points_min ? `at least ${L.curve_points_min} points` : null, onclick: () => { c.curve.splice(j, 1); dirty(1); fillTable(); ed.draw(); } }, 'remove')))));
+				h('td', null, h('input', { type: 'number', min: L.temp[0], max: L.temp[1], value: p[0], 'aria-label': `point ${j + 1} temp`, oninput: ev => { p[0] = +ev.target.value; dt(); ed.draw(); } })),
+				h('td', null, h('input', { type: 'number', min: 0, max: L.duty, value: p[1], 'aria-label': `point ${j + 1} duty`, oninput: ev => { p[1] = clamp(+ev.target.value, 0, L.duty); dt(); ed.draw(); } })),
+				h('td', null, h('button', { class: 'btn sm', disabled: c.curve.length <= L.curve_points_min, title: c.curve.length <= L.curve_points_min ? `at least ${L.curve_points_min} points` : null, onclick: () => { c.curve.splice(j, 1); dt(); fillTable(); ed.draw(); } }, 'remove')))));
 			addBtn.disabled = c.curve.length >= L.curve_points_max; addBtn.title = addBtn.disabled ? `at most ${L.curve_points_max} points` : '';
 		};
 		// re-sort once focus leaves the table (a rebuild mid-click swallows the click)
@@ -560,26 +574,65 @@ function buildEditors(keepNotice) { // keepNotice: the 202 / warnings notice of 
 		const addRow = h('div', { class: 'addp' }, h('label', null, '°C', at), h('label', { title: TIP.duty }, 'duty', ad),
 			h('button', { class: 'btn sm primary', onclick: () => { const t = +at.value, d = clamp(Math.round(+ad.value), 0, L.duty); if (at.value === '') return at.focus();
 				if (c.curve.some(p => p[0] === t)) return toast(`${c.name}: a point at ${t} °C exists`, 'warn');
-				const np = [t, d]; c.curve.push(np); c.curve.sort((a, b) => a[0] - b[0]); addRow.hidden = true; dirty(1); fillTable(); ed.draw(); tbody.rows[c.curve.indexOf(np)].cells[0].firstChild.focus(); } }, 'Add'),
+				const np = [t, d]; c.curve.push(np); c.curve.sort((a, b) => a[0] - b[0]); addRow.hidden = true; dt(); fillTable(); ed.draw(); tbody.rows[c.curve.indexOf(np)].cells[0].firstChild.focus(); } }, 'Add'),
 			h('button', { class: 'btn sm', onclick: () => { addRow.hidden = true; addBtn.focus(); } }, 'Cancel'));
 		addRow.hidden = true;
-		const addBtn = h('button', { class: 'btn sm', onclick: () => { const s = c.curve.slice().sort((a, b) => a[0] - b[0]); let bi = 1, bw = -1;
-			for (let k = 1; k < s.length; k++) if (s[k][0] - s[k - 1][0] > bw) { bw = s[k][0] - s[k - 1][0]; bi = k; }
-			const t = s.length > 1 ? Math.round((s[bi - 1][0] + s[bi][0]) / 2) : (s[0] ? s[0][0] : K.addDefault) + K.addStep;
-			at.value = t; ad.value = Math.round(interp(s, t)); addRow.hidden = false; at.focus(); at.select(); } }, '+ add point');
-		host.append(h('div', { class: 'card ed' },
-			h('div', { class: 'top' }, chanHead(c)),
-			h('div', { class: 'fields' }, h('label', null, 'sensor', sel), h('label', { title: TIP.critical }, 'critical °C', crit), h('label', { title: TIP.stop }, 'stop', stop),
-				h('label', { title: TIP.hyst }, 'hysteresis °C', hyst), h('label', { title: TIP.minOn }, 'min on', mo)),
-			h('div', { class: 'cvs' }, cv, ptsEl),
-			h('div', { class: 'pts' }, h('table', null, h('thead', null, h('tr', null, h('th', null, '°C'), h('th', { title: TIP.duty }, 'duty'), h('th'))), tbody), h('div', { class: 'addc' }, addBtn, addRow)),
-			ref));
+		const addBtn = h('button', { class: 'btn sm', onclick: () => { const [t, d] = gapPoint(c.curve); at.value = t; ad.value = d; addRow.hidden = false; at.focus(); at.select(); } }, '+ add point');
+		// live & override: the values refresh with every state poll (renderLive), the switch is the override
+		const lv = ed.lv = { temp: h('span', { class: 't' }), duty: h('span', { class: 'd' }), rpm: h('span', { class: 'hint sm' }), tgt: h('span'), mode: h('span', { class: 'mode' }), hmode: h('span', { class: 'mode' }),
+			pre: h('span', { class: 'badge preset', hidden: true }), warn: h('p', { class: 'warn' }), min: minDuty(c) };
+		lv.range = h('input', { type: 'range', min: lv.min, max: L.duty, value: 0, 'aria-label': `${c.name} manual duty`, oninput: () => { lv.dirty = 1; lv.show(+lv.range.value); } });
+		lv.num = h('input', { type: 'number', min: lv.min, max: L.duty, value: 0, 'aria-label': `${c.name} manual duty value`, title: TIP.duty, oninput: () => { lv.dirty = 1; lv.show(clamp(+lv.num.value || 0, 0, L.duty), 1); } });
+		lv.set = h('button', { class: 'btn primary sm', onclick: async () => { const v = +lv.range.value; lv.dirty = 0;
+			await act(() => api('/api/override/' + c.name, { method: 'PUT', json: { duty: v } }), `${c.name}: manual ${v} (${pct(v)} %)`); poll(); } }, 'Set');
+		lv.pctEl = h('span', { class: 'hint sm' });
+		lv.show = (v, keep) => { lv.range.value = v; if (!keep) lv.num.value = v; lv.pctEl.textContent = `${pct(v)} %`;
+			const low = lv.min > 0 && v < lv.min; lv.set.disabled = low;
+			lv.warn.textContent = lv.min ? `HDD-like channel: minimum ${lv.min} (the EC stops regulating it; lower values are refused)` : 'Critical-temperature and stall guards still apply and override any manual value.'; lv.warn.classList.toggle('on', low); };
+		// the switch: Manual holds the duty the channel runs now (PUT /api/override with the snapshot duty), Auto is the DELETE
+		lv.sw = h('button', { class: 'switch', role: 'switch', 'aria-checked': 'false', 'aria-label': `${c.name}: manual override`, onclick: async () => {
+			const on = lv.sw.getAttribute('aria-checked') !== 'true', live = snap && snap.channels.find(x => x.name === c.name) || {}; lv.sw.disabled = true;
+			const d = Math.max(lv.min, +live.duty || 0);
+			const r = on ? await act(() => api('/api/override/' + c.name, { method: 'PUT', json: { duty: d } }), `${c.name}: manual — holding ${d} (${pct(d)} %)`)
+				: await act(() => api('/api/override/' + c.name, { method: 'DELETE' }), `${c.name}: back to auto`);
+			lv.sw.disabled = false; if (r) { lv.dirty = 0; lv.state(on ? 'manual' : 'auto'); if (on) lv.show(d); } poll(); } },
+			h('span', { class: 'track', 'aria-hidden': 'true' }), h('span', null, h('b', null, 'Manual'), ' override'));
+		lv.state = m => { const on = m === 'manual'; lv.sw.setAttribute('aria-checked', on); lv.box.dataset.off = !on; modeBadge(lv.mode, m); modeBadge(lv.hmode, m); };
+		lv.box = h('div', { class: 'live', 'data-off': 'true' }, h('h3', null, 'Live & override'),
+			h('div', { class: 'now' }, lv.temp, h('span', { class: 'arrow', 'aria-hidden': 'true' }, '→'), lv.duty, lv.rpm),
+			h('div', { class: 'tgt' }, lv.tgt, lv.mode), lv.sw,
+			h('div', { class: 'man' }, h('div', { class: 'rg' }, lv.range, lv.num, lv.pctEl), h('div', { class: 'actions' }, lv.set)), lv.warn);
+		lv.show(0);
+		ed.card = h('div', { class: 'card fan' },
+			h('div', { class: 'fh' }, h('span', { class: 'name' }, c.name), h('span', { class: 'sub' }, `pwm${c.pwm} · ${c.sensor || '?'}`), h('span', { class: 'badges' }, lv.pre, lv.hmode)),
+			h('div', { class: 'ed' },
+				h('div', { class: 'fields' }, h('label', null, 'sensor', sl), h('label', { title: TIP.critical }, 'critical °C', crit), h('label', { title: TIP.stop }, 'stop', stop),
+					h('label', { title: TIP.hyst }, 'hysteresis °C', hyst), h('label', { title: TIP.minOn }, 'min on', mo)),
+				h('div', { class: 'cvs' }, cv, ptsEl),
+				h('div', { class: 'pts' }, h('table', null, h('thead', null, h('tr', null, h('th', null, '°C'), h('th', { title: TIP.duty }, 'duty'), h('th'))), tbody), h('div', { class: 'addc' }, addBtn, addRow)),
+				ref),
+			lv.box);
+		host.append(ed.card);
+		sel.append(h('button', { 'data-ch': c.name, 'aria-pressed': 'false', onclick: () => { SEL.ch = c.name; selMode(); } }, c.name, h('span', { class: 'sub' }, `pwm${c.pwm}`), dirtyDot()));
 		fillTable();
 		ed.draw = () => drawCurve(ed);
 		bindCurveDrag(ed);
 		new ResizeObserver(ed.draw).observe(cv.parentNode);
 	});
-	fillSensorSelects();
+	fillSensorSelects(); selMode(); if (snap) renderLive(); presetBadges(); dirty(edDirty);
+}
+// a new point: the middle of the widest gap, duty interpolated (shared by the curve editor and the preset editor)
+const gapPoint = curve => { const s = curve.slice().sort((a, b) => a[0] - b[0]); let bi = 1, bw = -1;
+	for (let k = 1; k < s.length; k++) if (s[k][0] - s[k - 1][0] > bw) { bw = s[k][0] - s[k - 1][0]; bi = k; }
+	const t = s.length > 1 ? Math.round((s[bi - 1][0] + s[bi][0]) / 2) : (s[0] ? s[0][0] : K.addDefault) + K.addStep; return [t, Math.round(interp(s, t))]; };
+// live block: every poll (no editor rebuild); the slider follows the running duty until the operator touches it
+function renderLive() { if (!snap) return;
+	for (const c of snap.channels) { const ed = ED[c.name]; if (!ed) continue; const { lv } = ed, crit = critOf(c.name);
+		lv.temp.className = 't ' + tempClass(c.temp, crit); clear(lv.temp).append(fmtT(c.temp), h('small', null, ' ' + unit()));
+		clear(lv.duty).append(String(c.duty), h('small', null, ` duty · ${pct(c.duty)} %`)); lv.rpm.textContent = c.rpm < 0 ? 'no tach' : `${c.rpm.toLocaleString('en')} rpm`;
+		lv.tgt.textContent = `curve target ${c.target !== undefined ? c.target : '—'} · mode`;
+		if (!lv.sw.disabled) lv.state(c.mode);
+		if (c.mode !== 'manual' && !lv.dirty) lv.show(c.duty); }
 }
 function fillSensorSelects() {
 	// a composite id "a,b" is one option (never dropped by the editor); the catalogue's single ids follow
@@ -640,21 +693,20 @@ function bindCurveDrag(ed) {
 		const row = ed.tbody.rows[drag]; if (row) { row.cells[0].firstChild.value = c.curve[drag][0]; row.cells[1].firstChild.value = c.curve[drag][1]; } ed.draw(); });
 	const up = () => { drag = -1; }; cv.addEventListener('pointerup', up); cv.addEventListener('pointercancel', up);
 }
-// the daemon's rules (rule 8 would otherwise replace the curve by its default)
-const validateCurves = () => { const errs = [], L = LIM;
-	for (const c of edState) { const n = c.curve.length, nm = c.name;
-		if (n < L.curve_points_min || n > L.curve_points_max) errs.push(`${nm}: ${n} points (need ${L.curve_points_min}..${L.curve_points_max})`);
-		c.curve.forEach((p, i) => { const q = `${nm} point ${i + 1}`;
-			if (!Number.isFinite(p[0]) || p[0] < L.temp[0] || p[0] > L.temp[1]) errs.push(`${q}: temp ${p[0]} outside ${L.temp[0]}..${L.temp[1]} °C`);
-			if (!Number.isFinite(p[1]) || p[1] < 0 || p[1] > L.duty) errs.push(`${q}: duty ${p[1]} outside 0..${L.duty}`);
-			if (i && p[0] <= c.curve[i - 1][0]) errs.push(`${q}: temp ${p[0]} °C not above point ${i} (${c.curve[i - 1][0]} °C)`);
-			if (i && p[1] < c.curve[i - 1][1]) errs.push(`${q}: duty ${p[1]} below point ${i} (${c.curve[i - 1][1]}) — duty must not fall`); });
-		const last = n ? c.curve[n - 1][0] : 0, cmin = Math.max(L.critical_min, last + 1);
-		if (!(c.critical >= cmin && c.critical <= L.critical_max)) errs.push(`${nm}: critical ${c.critical || '—'} must be ${cmin}..${L.critical_max} °C (above the last point)`);
-		if (c.stop !== 'auto' && !(/^\d+$/.test(c.stop) && +c.stop >= L.min_hdd_override && +c.stop <= L.duty)) errs.push(`${nm}: stop must be "auto" or a fixed duty ${L.min_hdd_override}..${L.duty}`);
-		if (!(Number.isInteger(c.hysteresis) && c.hysteresis >= 0 && c.hysteresis <= L.hysteresis_max)) errs.push(`${nm}: hysteresis must be 0..${L.hysteresis_max} °C`);
-		if (durS(c.min_on) > L.min_on_max_s) errs.push(`${nm}: min_on above ${fmtDur(normDur(L.min_on_max_s + 's'))}`); }
-	return errs; };
+// the daemon's rules (rule 8 would otherwise replace the curve by its default); one channel at a time, shared with the preset editor
+const validateChannel = (c, errs) => { const L = LIM, n = c.curve.length, nm = c.name;
+	if (n < L.curve_points_min || n > L.curve_points_max) errs.push(`${nm}: ${n} points (need ${L.curve_points_min}..${L.curve_points_max})`);
+	c.curve.forEach((p, i) => { const q = `${nm} point ${i + 1}`;
+		if (!Number.isFinite(p[0]) || p[0] < L.temp[0] || p[0] > L.temp[1]) errs.push(`${q}: temp ${p[0]} outside ${L.temp[0]}..${L.temp[1]} °C`);
+		if (!Number.isFinite(p[1]) || p[1] < 0 || p[1] > L.duty) errs.push(`${q}: duty ${p[1]} outside 0..${L.duty}`);
+		if (i && p[0] <= c.curve[i - 1][0]) errs.push(`${q}: temp ${p[0]} °C not above point ${i} (${c.curve[i - 1][0]} °C)`);
+		if (i && p[1] < c.curve[i - 1][1]) errs.push(`${q}: duty ${p[1]} below point ${i} (${c.curve[i - 1][1]}) — duty must not fall`); });
+	const last = n ? c.curve[n - 1][0] : 0, cmin = Math.max(L.critical_min, last + 1);
+	if (!(c.critical >= cmin && c.critical <= L.critical_max)) errs.push(`${nm}: critical ${c.critical || '—'} must be ${cmin}..${L.critical_max} °C (above the last point)`);
+	if (c.stop !== 'auto' && !(/^\d+$/.test(c.stop) && +c.stop >= L.min_hdd_override && +c.stop <= L.duty)) errs.push(`${nm}: stop must be "auto" or a fixed duty ${L.min_hdd_override}..${L.duty}`);
+	if (!(Number.isInteger(c.hysteresis) && c.hysteresis >= 0 && c.hysteresis <= L.hysteresis_max)) errs.push(`${nm}: hysteresis must be 0..${L.hysteresis_max} °C`);
+	if (durS(c.min_on) > L.min_on_max_s) errs.push(`${nm}: min_on above ${fmtDur(normDur(L.min_on_max_s + 's'))}`); return errs; };
+const validateCurves = (chs = edState) => { const errs = []; for (const c of chs) validateChannel(c, errs); return errs; };
 on('#cv-apply', 'click', async () => {
 	for (const k in ED) ED[k].sort(); const errs = validateCurves();
 	if (errs.length) return cvNotice('Not applied — fix these first:\n' + errs.join('\n'), 'err');
@@ -662,83 +714,85 @@ on('#cv-apply', 'click', async () => {
 	try { const r = await api('/api/config?strict=1', { method: 'PUT', body, headers: { 'Content-Type': 'application/toml' } });
 		const warn = r.body && Array.isArray(r.body.warnings) && r.body.warnings.length ? 'Config warnings outside the channel tables:\n' + r.body.warnings.join('\n') : '';
 		cvNotice((r.status === 202 ? 'Written — restart required (channel set or profile changed): systemctl restart n5-fangov\n' : '') + warn, '');
-		toast(r.status === 202 ? 'Curves written — restart required' : warn ? 'Applied with warnings' : 'Curves applied', r.status === 202 || warn ? 'warn' : 'ok'); await loadConfig(); loadEditor(true);
+		toast(r.status === 202 ? 'Curves written — restart required' : warn ? 'Applied with warnings' : 'Curves applied', r.status === 202 || warn ? 'warn' : 'ok'); await loadConfig(); loadEditor(true); loadPresets();
 	} catch (e) { cvNotice(e.message, 'err'); } // notice is role=alert: no toast on top
 });
 on('#cv-revert', 'click', () => { loadEditor(); toast('Reverted', ''); });
 
-// manual: slider + number field coupled; HDD-like channels never below min_hdd_override
-const MN = {};
-function renderManual() {
-	const host = $('#manual');
-	for (const c of snap.channels) {
-		let m = MN[c.name];
-		if (!m) {
-			const cc = chList().find(x => x.name === c.name) || c;
-			m = MN[c.name] = { c: cc, min: minDuty(cc) }; m.val = h('div', { class: 'val' }); m.mode = h('span', { class: 'mode' }); m.warn = h('div', { class: 'warn' });
-			m.range = h('input', { type: 'range', min: m.min, max: LIM.duty, value: c.duty, id: 'rg-' + c.name, oninput: () => { m.dirty = 1; m.show(+m.range.value); } });
-			m.num = h('input', { type: 'number', min: m.min, max: LIM.duty, value: c.duty, 'aria-label': `${c.name} duty value`, title: TIP.duty, oninput: () => { m.dirty = 1; m.show(clamp(+m.num.value || 0, 0, LIM.duty), 1); } });
-			m.show = (v, keep) => { clear(m.val).append(pct(v) + ' %', h('small', null, `${v}/${LIM.duty}`)); m.range.value = v; if (!keep) m.num.value = v;
-				m.warn.textContent = m.min ? `HDD-like channel: minimum ${m.min} (the EC stops regulating it; lower values are refused)` : ''; m.warn.classList.toggle('on', m.min > 0 && v < m.min); m.set.disabled = v < m.min; };
-			m.set = h('button', { class: 'btn primary', onclick: async () => { const v = +m.range.value; m.dirty = 0;
-				await act(() => api('/api/override/' + c.name, { method: 'PUT', json: { duty: v } }), `${c.name}: manual ${v} (${pct(v)} %)`); poll(); } }, 'Set');
-			m.auto = h('button', { class: 'btn', onclick: async () => { m.dirty = 0; await act(() => api('/api/override/' + c.name, { method: 'DELETE' }), `${c.name}: back to auto`); poll(); } }, 'Back to auto');
-			m.cur = h('span', { class: 'hint' });
-			host.append(h('div', { class: 'card mn' }, h('div', { class: 'top' }, chanHead(c), m.mode),
-				m.val, h('div', { class: 'rg' }, h('label', { for: 'rg-' + c.name, class: 'sr' }, `${c.name} duty`), m.range, m.num), m.warn, h('div', { class: 'act' }, m.set, m.auto, m.cur)));
-			m.show(c.duty);
-		}
-		modeBadge(m.mode, c.mode);
-		m.cur.textContent = `current ${c.duty} · ${c.rpm < 0 ? 'no tach' : c.rpm + ' rpm'}`;
-		if (c.mode !== 'manual' && !m.dirty) m.show(c.duty);
-	}
-}
-
-// presets (built-ins: badge, no save-over, no delete); active = channels equal the daemon config
-const chanSummary = chs => (chs || []).map(c => c.name || c).join(' · ');
+// presets: chips under the channel cards (built-ins: badge, no save-over, no delete); active = every channel equals the daemon config,
+// the badge on a channel names the first preset whose channel matches (chKey); details are cached per name (PD)
 const chKey = chs => JSON.stringify((chs || []).map(c => [c.name, +c.pwm, parts(c.sensor).join(','), (c.curve || []).map(p => [+p[0], +p[1]]), +c.critical, c.stop === undefined || c.stop === 'auto' ? 'auto' : String(c.stop), +c.hysteresis || 0, durS(c.min_on)]).sort());
-const psNotice = notice('#ps-notice'), psGet = p => api('/api/presets/' + encodeURIComponent(p.name)).then(r => r.body);
-// preset details: channel tables loaded on demand (GET /api/presets/{name})
-const presetDetail = async (p, box, btn) => {
-	if (!box.hidden) { box.hidden = true; btn.textContent = 'Details'; return; }
-	try { const d = await psGet(p); clear(box);
-		for (const c of d.channels || []) box.append(h('div', { class: 'pc' }, h('b', null, c.name), h('span', null, `pwm${c.pwm} · ${c.sensor}`),
-			h('span', { class: 'pts' }, ...(c.curve || []).map(([t, dty]) => h('span', null, `${fmtT(t, 0)}${unit()} → ${dty} (${pct(dty)} %)`))),
-			h('span', null, `crit ${fmtT(c.critical, 0)}${unit()} · stop ${c.stop}`), h('span', null, `hysteresis ${+c.hysteresis || 0} °C · min on ${durS(c.min_on) ? fmtDur(normDur(c.min_on)) : 'off'}`)));
-		box.hidden = false; btn.textContent = 'Hide';
-	} catch (e) { toast(e.message, 'err'); }
-};
+const psNotice = notice('#ps-notice'), PD = {}, psGet = name => PD[name] ? Promise.resolve(PD[name]) : api('/api/presets/' + encodeURIComponent(name)).then(r => (PD[name] = r.body));
+let psList = [];
+const recommended = p => /^recommended/i.test(p.description || '') || p.name === 'n5pro-balanced';
+const presetOf = c => { const k = chKey([c]); for (const p of psList) { const d = PD[p.name], pc = d && (d.channels || []).find(x => x.name === c.name); if (pc && chKey([pc]) === k) return p.name; } return null; };
+const presetBadges = () => { for (const c of chList()) { const ed = ED[c.name]; if (!ed) continue; const n = presetOf(c), b = ed.lv.pre;
+	clear(b); b.hidden = false; if (n) { b.className = 'badge preset'; b.title = 'the preset these values match'; b.append(ico('check'), n); } else { b.className = 'badge builtin'; b.title = 'no preset matches these values'; b.append('custom'); } } };
 const nameOk = n => LIM.name.test(n) ? builtinNames.includes(n) ? `${n} is a built-in preset — pick another name` : '' : 'Name: a-z, 0-9, _ and -, at most 64 characters';
-const presetRename = async (p, nn) => { const n = nn.trim(), bad = nameOk(n); if (bad) return toast(bad, 'err'); if (n === p.name) return;
-	if (await act(() => api(`/api/presets/${encodeURIComponent(p.name)}/rename`, { method: 'POST', json: { name: n } }), `Preset ${p.name} renamed to ${n}`)) loadPresets(); };
+const applyPreset = async p => { if (!await ask('Apply preset', `Apply preset ${p.name}? The curves change immediately.` + (edDirty ? '\nUnsaved curve edits are discarded.' : ''), { ok: 'Apply' })) return;
+	let r; try { r = await api(`/api/presets/${encodeURIComponent(p.name)}/apply`, { method: 'POST' }); } catch (e) { return toast(e.message, 'err'); }
+	const rs = r.status === 202; psNotice(rs ? 'Preset written — restart required: systemctl restart n5-fangov' : '');
+	toast(rs ? `Preset ${p.name} written — restart required` : `Preset ${p.name} applied`, rs ? 'warn' : 'ok'); await loadConfig(); loadEditor(); loadPresets(); };
 async function loadPresets() {
-	const host = $('#presets'); try {
-		const list = (await api('/api/presets')).body || [], cur = chKey(chList()); clear(host);
-		builtinNames = list.filter(p => p.builtin).map(p => p.name);
-		if (!list.length) host.append(h('p', { class: 'empty' }, 'No presets yet.'));
-		for (const p of list) { const box = h('div', { class: 'pd', hidden: true }), det = h('button', { class: 'btn', onclick: () => presetDetail(p, box, det) }, 'Details');
-			const name = h('span', { class: 'name' }, p.name, p.builtin ? h('span', { class: 'badge builtin' }, 'built-in') : null, /^recommended/i.test(p.description || '') || p.name === 'n5pro-balanced' ? h('span', { class: 'badge rec' }, 'recommended') : null);
-			psGet(p).then(d => { if (chKey(d.channels) === cur) name.append(h('span', { class: 'badge ok', title: 'the daemon runs these curves' }, 'active')); }).catch(() => {});
-			const ri = h('input', { value: p.name, 'aria-label': 'new preset name', maxlength: 64, autocapitalize: 'off', spellcheck: 'false' });
-			const rn = h('form', { class: 'inline rn', hidden: true, novalidate: true, onsubmit: ev => { ev.preventDefault(); presetRename(p, ri.value); } },
-				h('label', null, 'Rename to ', ri), h('button', { class: 'btn sm primary', type: 'submit' }, 'Save'), h('button', { class: 'btn sm', onclick: () => { rn.hidden = true; } }, 'Cancel'));
-			host.append(h('div', { class: 'card ps' }, name,
-			h('span', { class: 'sum' }, p.description ? h('span', { class: 'desc' }, p.description) : null, chanSummary(p.channels)),
-			det,
-			h('button', { class: 'btn', onclick: async () => { if (!await ask('Apply preset', `Apply preset ${p.name}? The curves change immediately.` + (edDirty ? '\nUnsaved curve edits are discarded.' : ''), { ok: 'Apply' })) return;
-				let r; try { r = await api(`/api/presets/${encodeURIComponent(p.name)}/apply`, { method: 'POST' }); } catch (e) { return toast(e.message, 'err'); }
-				const rs = r.status === 202; psNotice(rs ? 'Preset written — restart required: systemctl restart n5-fangov' : '');
-				toast(rs ? `Preset ${p.name} written — restart required` : `Preset ${p.name} applied`, rs ? 'warn' : 'ok'); await loadConfig(); loadEditor(); loadPresets(); } }, 'Apply'),
-			p.builtin ? null : h('button', { class: 'btn', onclick: () => { rn.hidden = !rn.hidden; if (!rn.hidden) { ri.focus(); ri.select(); } } }, 'Rename'),
-			p.builtin ? null : h('button', { class: 'btn danger', onclick: async () => { if (!await ask('Delete preset', `Delete preset ${p.name}?`, { ok: 'Delete', danger: true })) return;
-				if (await act(() => api('/api/presets/' + encodeURIComponent(p.name), { method: 'DELETE' }), `Preset ${p.name} deleted`)) loadPresets(); } }, 'Delete'),
-			rn, box)); }
+	const host = $('#preset-row'); try {
+		psList = (await api('/api/presets')).body || []; builtinNames = psList.filter(p => p.builtin).map(p => p.name);
+		for (const k in PD) if (!psList.some(p => p.name === k)) delete PD[k];
+		await Promise.all(psList.map(p => psGet(p.name).catch(() => null)));
+		const cur = chKey(chList()); clear(host); presetBadges();
+		if (!psList.length) host.append(h('div', { class: 'empty-cta' }, 'No presets yet — Save current as… stores the editor values as the first one.'));
+		for (const p of psList) { const d = PD[p.name], on = !!d && chKey(d.channels) === cur;
+			host.append(h('div', { class: 'pchip' + (on ? ' active' : '') }, h('i', { class: 'dot', role: 'img', 'aria-label': on ? 'active — the daemon runs these values' : 'not active', title: on ? 'active — the daemon runs these values' : '' }),
+				recommended(p) ? h('span', { class: 'star', role: 'img', 'aria-label': 'recommended', title: 'recommended' }, ico('star')) : null,
+				h('span', { class: 'pn' }, p.name), p.builtin ? h('span', { class: 'badge builtin' }, 'built-in') : null, p.description ? h('span', { class: 'pd', title: p.description }, p.description) : null,
+				h('button', { class: 'btn sm', disabled: on, title: on ? 'already active' : `apply ${p.name}`, onclick: () => applyPreset(p) }, on ? 'active' : 'Apply'),
+				h('button', { class: 'btn icon link', 'aria-label': `${p.name}: ${p.builtin ? 'details' : 'edit'}`, title: p.builtin ? 'Details' : 'Edit', onclick: () => openPresetEditor(p.name) }, ico(p.builtin ? 'external' : 'edit')),
+				p.builtin ? null : h('button', { class: 'btn icon link danger', 'aria-label': `${p.name}: delete`, title: 'Delete', onclick: async () => { if (!await ask('Delete preset', `Delete preset ${p.name}?`, { ok: 'Delete', danger: true })) return;
+					if (await act(() => api('/api/presets/' + encodeURIComponent(p.name), { method: 'DELETE' }), `Preset ${p.name} deleted`)) loadPresets(); } }, ico('trash')))); }
 	} catch (e) { clear(host).append(h('p', { class: 'empty' }, 'presets: ' + e.message)); }
 }
-const PS_HINT = $('#ps-hint').textContent;
-on('#ps-save', 'submit', async ev => { ev.preventDefault(); const inp = $('#ps-name'), hint = $('#ps-hint'), n = inp.value.trim(), bad = nameOk(n);
-	hint.classList.toggle('field-err', !!bad); inp.setAttribute('aria-invalid', String(!!bad)); hint.textContent = bad || PS_HINT; if (bad) return inp.focus();
-	if (await act(() => api('/api/presets/' + encodeURIComponent(n), { method: 'PUT' }), `Saved current curves as ${n}`)) { inp.value = ''; loadPresets(); } });
+on('#ps-new', 'click', () => openPresetEditor(null));
+// preset editor dialog: "Start from" (the editor's unsaved values, the daemon's running curves or any preset), name, one block per channel with the
+// curve table; Save = PUT /api/presets/{name} with the composed channels (nothing is applied); built-in presets open read-only
+const ped = $('#preset-ed'), peNotice = notice('#pe-notice');
+function openPresetEditor(name) {
+	const body = clear($('#pe-body')), d = name ? PD[name] : null, ro = !!(d && d.builtin), pe = { chans: [] };
+	$('#pe-title').textContent = name ? (ro ? `Preset ${name}` : `Edit preset ${name}`) : 'New preset';
+	const srcs = [['editor', 'the editor (unsaved values)'], ['daemon', 'the daemon (running curves)'], ...psList.map(p => ['p:' + p.name, `preset ${p.name}`])];
+	const src = h('select', { 'aria-label': 'start from', disabled: !!name, onchange: () => fill(src.value) });
+	for (const [v, t] of srcs) src.append(h('option', { value: v, selected: v === (name ? 'p:' + name : 'editor') }, t));
+	const nm = h('input', { type: 'text', value: name || '', placeholder: 'summer', maxlength: 64, readonly: ro, autocapitalize: 'off', spellcheck: 'false', 'aria-describedby': 'pe-hint' });
+	const chBox = h('div', { class: 'pe-chs' }), noticeEl = h('div', { class: 'notice err', id: 'pe-notice', role: 'alert', hidden: true });
+	body.append(h('div', { class: 'src' }, 'Start from ', src, h('span', { class: 'hint sm' }, 'Saving stores the values below — nothing is applied to the daemon.')),
+		h('div', { class: 'frow' }, h('label', null, 'Name ', nm), h('span', { class: 'hint sm', id: 'pe-hint' }, ro ? 'built-in presets are read-only' : 'a–z, 0–9, _ and -, at most 64 characters')),
+		chBox, noticeEl,
+		h('div', { class: 'act' }, h('button', { class: 'btn', onclick: () => ped.close() }, ro ? 'Close' : 'Cancel'), ro ? null : h('button', { class: 'btn primary', onclick: save }, name ? 'Save changes' : 'Save preset')));
+	const fill = v => { const from = v === 'editor' ? edState || fromCfg() : v === 'daemon' ? chList() : (PD[v.slice(2)] || {}).channels || [];
+		pe.chans = from.map(chCopy); clear(chBox); peNotice(''); for (const c of pe.chans) chBox.append(peChannel(c, ro)); };
+	async function save() { const n = nm.value.trim(), bad = nameOk(n); const errs = bad ? [bad] : validateCurves(pe.chans);
+		if (errs.length) { peNotice('Not saved — fix these first:\n' + errs.join('\n'), 'err'); if (bad) nm.focus(); return; }
+		const chans = pe.chans.map(c => ({ name: c.name, pwm: c.pwm, sensor: c.sensor, curve: c.curve, critical: c.critical, stop: c.stop, hysteresis: c.hysteresis, min_on: c.min_on }));
+		try { if (name && n !== name) await api(`/api/presets/${encodeURIComponent(name)}/rename`, { method: 'POST', json: { name: n } });
+			await api('/api/presets/' + encodeURIComponent(n), { method: 'PUT', json: { channels: chans } }); delete PD[n]; if (name) delete PD[name];
+		} catch (e) { return peNotice(e.message, 'err'); }
+		ped.close(); toast(name ? (n !== name ? `Preset ${name} renamed to ${n} and saved` : `Preset ${n} saved`) : `Preset ${n} saved`, 'ok'); loadPresets(); }
+	fill(src.value); ped.showModal(); (ro ? $('.act .btn', body) : nm).focus();
+}
+// one channel block of the preset editor: fields + an editable point table (same rules as the curve editor)
+const peChannel = (c, ro) => { const L = LIM, tbody = h('tbody');
+	const fillTable = () => { clear(tbody); c.curve.forEach((p, j) => tbody.append(h('tr', null,
+		h('td', null, h('input', { type: 'number', min: L.temp[0], max: L.temp[1], value: p[0], readonly: ro, 'aria-label': `${c.name} point ${j + 1} temp`, oninput: ev => { p[0] = +ev.target.value; } })),
+		h('td', null, h('input', { type: 'number', min: 0, max: L.duty, value: p[1], readonly: ro, 'aria-label': `${c.name} point ${j + 1} duty`, oninput: ev => { p[1] = clamp(+ev.target.value, 0, L.duty); ev.target.closest('tr').cells[2].textContent = `${pct(p[1])} %`; } })),
+		h('td', { class: 'hint sm' }, `${pct(p[1])} %`),
+		h('td', null, ro ? null : h('button', { class: 'btn sm link', disabled: c.curve.length <= L.curve_points_min, 'aria-label': `${c.name}: remove point ${j + 1}`, title: 'remove point', onclick: () => { c.curve.splice(j, 1); fillTable(); } }, ico('trash'))))));
+		add.disabled = ro || c.curve.length >= L.curve_points_max; };
+	const add = h('button', { class: 'btn sm', onclick: () => { c.curve.push(gapPoint(c.curve)); c.curve.sort((a, b) => a[0] - b[0]); fillTable(); tbody.rows[tbody.rows.length - 1].cells[0].firstChild.focus(); } }, ico('plus'), 'add point');
+	tbody.addEventListener('focusout', ev => { if (!tbody.contains(ev.relatedTarget)) { const before = c.curve.slice(); c.curve.sort((a, b) => a[0] - b[0]); if (before.some((x, k) => x !== c.curve[k])) fillTable(); } });
+	const inp = (key, attrs) => h('input', Object.assign({ value: c[key], readonly: ro, oninput: ev => { c[key] = attrs.type === 'number' ? +ev.target.value : ev.target.value.trim(); } }, attrs));
+	fillTable();
+	return h('div', { class: 'pe-ch' }, h('div', { class: 'fh' }, h('span', { class: 'name' }, c.name), h('span', { class: 'subt' }, `pwm${c.pwm} · ${c.sensor}`)),
+		h('div', { class: 'fields' }, h('label', { title: TIP.critical }, 'critical °C', inp('critical', { type: 'number', min: L.critical_min, max: L.critical_max })), h('label', { title: TIP.stop }, 'stop', inp('stop', { type: 'text', placeholder: 'auto' })),
+			h('label', { title: TIP.hyst }, 'hysteresis °C', inp('hysteresis', { type: 'number', min: 0, max: L.hysteresis_max, step: 1 })), h('label', { title: TIP.minOn }, 'min on', Object.assign(minOnSel(c, () => {}), { disabled: ro }))),
+		h('div', { class: 'ptl2' }, h('table', null, h('thead', null, h('tr', null, h('th', null, '°C'), h('th', { title: TIP.duty }, 'duty'), h('th'), h('th'))), tbody), ro ? null : add)); };
 
 // schedules card (read-only; the list is edited in the config file): 501 → "unavailable" like the alerts card
 const scNotice = notice('#sc-notice'), inRel = ts => { const s = Math.max(0, ts - Date.now() / 1000 | 0); return 'in ' + (s < 3600 ? `${s / 60 | 0} min` : s < 86400 ? `${s / 3600 | 0} h ${s % 3600 / 60 | 0} min` : `${s / 86400 | 0} d ${s % 86400 / 3600 | 0} h`); };
@@ -853,7 +907,7 @@ const resetHistory = () => { hist = []; lastTs = 0; histGen++; loadHistory(); };
 let timers = [], polling = false, repoll = false;
 async function poll() { // a call mid-poll queues one more round
 	if (polling) { repoll = true; return; } polling = true;
-	try { const r = await api('/api/state'); snap = r.body; renderHeader(); renderCards(); renderManual(); renderSystem();
+	try { const r = await api('/api/state'); snap = r.body; renderHeader(); renderCards(); renderLive(); renderSystem();
 		if (cur === 'fans') drawEds(); }
 	catch (e) {}
 	await pollSensors();

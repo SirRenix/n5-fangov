@@ -1,11 +1,20 @@
 // presets_api.go holds the per-preset endpoints (/api/presets/{name}: detail,
-// delete, rename); list, apply and save are in web.go.
+// delete, rename, save); list and apply are in web.go.
 package web
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/SirRenix/n5-fangov/internal/config"
 )
 
 // deletePreset removes a user preset: ErrPresetBuiltin → 409, missing →
@@ -112,4 +121,138 @@ func (s *Server) renamePreset(w http.ResponseWriter, r *http.Request) {
 	}
 	s.logf("web: preset %q renamed to %q by %s", old, b.Name, remoteIP(r))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "name": b.Name})
+}
+
+// savePreset: PUT /api/presets/{name}. An empty body saves the running
+// [[channel]] tables (PresetStore.Save). A JSON body {channels:[…]} saves
+// the composed channels instead (the preset editor's values — nothing is
+// applied): the body is rendered as [[channel]] TOML and parsed with the
+// config's own channel rules; any warning the parser would substitute a
+// default for is a 400 {error, errors[]} here, like PUT /api/config?strict=1.
+// The channel names must be the running config's (a preset is applied
+// to this host). A built-in name is 409.
+func (s *Server) savePreset(w http.ResponseWriter, r *http.Request) {
+	if s.deps.Presets == nil {
+		writeError(w, http.StatusNotImplemented, "no preset store")
+		return
+	}
+	name := r.PathValue("name")
+	if !presetName.MatchString(name) {
+		writeError(w, http.StatusBadRequest, "invalid preset name")
+		return
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBody))
+	if err != nil {
+		if isTooLarge(err) {
+			writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("body exceeds %d bytes", maxBody))
+			return
+		}
+		writeError(w, http.StatusBadRequest, "unreadable body: "+err.Error())
+		return
+	}
+	if len(bytes.TrimSpace(body)) == 0 {
+		err = s.deps.Presets.Save(name)
+	} else {
+		cs, ok := s.deps.Presets.(PresetChannelSaver)
+		if !ok {
+			writeError(w, http.StatusNotImplemented, "preset store cannot save composed channels")
+			return
+		}
+		var b struct {
+			Channels []PresetChannel `json:"channels"`
+		}
+		dec := json.NewDecoder(bytes.NewReader(body))
+		dec.DisallowUnknownFields()
+		if derr := dec.Decode(&b); derr != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON body: "+derr.Error())
+			return
+		}
+		chans, errs := s.presetChannels(b.Channels)
+		if len(errs) > 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "preset rejected", "errors": errs})
+			return
+		}
+		err = cs.SaveChannels(name, chans)
+	}
+	if err != nil {
+		if errors.Is(err, ErrPresetBuiltin) {
+			// The contract says 409 for a built-in name, like delete.
+			writeError(w, http.StatusConflict, "save preset: "+err.Error())
+			return
+		}
+		writeError(w, storeStatus(err), "save preset: "+err.Error())
+		return
+	}
+	s.logf("web: preset %q saved by %s", name, remoteIP(r))
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "saved": name})
+}
+
+// presetChannels validates a composed channel list with the config
+// parser (config.MarshalChannels → config.ParseChannels: every warning is
+// an error here, a channel the parser drops is one too) and checks the
+// channel set against the running config. It returns the parsed channels
+// or the list of errors.
+func (s *Server) presetChannels(in []PresetChannel) ([]config.Channel, []string) {
+	var errs []string
+	if len(in) == 0 {
+		return nil, []string{"channels: none given"}
+	}
+	chans := make([]config.Channel, 0, len(in))
+	for i, c := range in {
+		pre := fmt.Sprintf("channel[%d]", i)
+		if channelName.MatchString(c.Name) {
+			pre = "channel." + c.Name
+		}
+		ch := config.Channel{Name: c.Name, PWM: c.PWM, Sensor: c.Sensor, Curve: c.Curve, Critical: c.Critical, Stop: c.Stop, Hysteresis: c.Hysteresis}
+		if ch.Stop == "" {
+			ch.Stop = "auto"
+		}
+		if strings.TrimSpace(c.MinOn) != "" {
+			d, err := time.ParseDuration(strings.TrimSpace(c.MinOn))
+			if err != nil || d < 0 {
+				errs = append(errs, pre+".min_on: "+fmt.Sprintf("%q is not a duration", c.MinOn))
+				continue
+			}
+			ch.MinOn = d
+		}
+		chans = append(chans, ch)
+	}
+	if len(errs) > 0 {
+		return nil, errs
+	}
+	parsed, warns, err := config.ParseChannels(config.MarshalChannels(chans))
+	if err != nil {
+		return nil, []string{"channel: " + err.Error()}
+	}
+	for _, w := range warns {
+		errs = append(errs, w.String())
+	}
+	if len(parsed) != len(chans) && len(errs) == 0 {
+		errs = append(errs, fmt.Sprintf("channel: %d of %d channels usable", len(parsed), len(chans)))
+	}
+	if len(errs) > 0 {
+		return nil, errs
+	}
+	if s.deps.Config != nil {
+		raw, rerr := s.deps.Config.Raw()
+		if rerr == nil {
+			if cfg, _, perr := config.Parse(raw); perr == nil && len(cfg.Channels) > 0 {
+				want, have := channelNameSet(cfg.Channels), channelNameSet(parsed)
+				if !slices.Equal(want, have) {
+					return nil, []string{fmt.Sprintf("channel: names %v do not match the running config %v", have, want)}
+				}
+			}
+		}
+	}
+	return parsed, nil
+}
+
+// channelNameSet lists the channel names sorted (set comparison).
+func channelNameSet(chans []config.Channel) []string {
+	out := make([]string, 0, len(chans))
+	for _, c := range chans {
+		out = append(out, c.Name)
+	}
+	slices.Sort(out)
+	return out
 }

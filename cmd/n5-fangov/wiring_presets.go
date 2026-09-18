@@ -1,6 +1,6 @@
 // wiring_presets.go holds the preset store behind /api/presets: user files
 // under /etc/n5-fangov/presets plus the built-in presets embedded for the
-// active profile (list, apply, save, delete, detail, rename).
+// active profile (list, apply, save, save channels, delete, detail, rename).
 package main
 
 import (
@@ -236,6 +236,23 @@ func (s dirPresetStore) Save(name string) error {
 		return errors.New("current config has no channels to save")
 	}
 	return config.SavePreset(s.dir, name, cfg.Channels)
+}
+
+// SaveChannels stores composed channel tables as preset name
+// (web.PresetChannelSaver): the preset editor's values, validated by the
+// web layer with the config rules. A built-in name is refused (409).
+func (s dirPresetStore) SaveChannels(name string, chans []config.Channel) error {
+	if isBuiltinPreset(name) {
+		return fmt.Errorf("preset %q: %w", name, errPresetBuiltin())
+	}
+	if len(chans) == 0 {
+		return errors.New("no channels to save")
+	}
+	if err := config.SavePreset(s.dir, name, chans); err != nil {
+		return err
+	}
+	log.Printf("preset %s saved to %s (%d channels from the editor)", name, s.dir, len(chans))
+	return nil
 }
 
 // Delete removes a user preset file (web.PresetDeleter). A built-in name

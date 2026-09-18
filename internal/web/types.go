@@ -3,9 +3,13 @@ package web
 // Contract types of the store-backed endpoints (DESIGN.md "Web and API"):
 // the shared vocabulary between internal/web (which serves them) and cmd
 // (which implements the stores) — sessions, account, alerts, dashboard,
-// about, preset detail/delete/rename.
+// about, preset detail/delete/rename/save.
 
-import "time"
+import (
+	"time"
+
+	"github.com/SirRenix/n5-fangov/internal/config"
+)
 
 // Session is one signed-in browser session (cookie). ID is the first 8 hex
 // characters of sha256(token); the token itself never leaves the store.
@@ -180,4 +184,12 @@ type PresetDetailer interface {
 // fs.ErrNotExist → 404, fs.ErrExist (target taken) → 409.
 type PresetRenamer interface {
 	Rename(oldName, newName string) error
+}
+
+// PresetChannelSaver is optionally implemented by a PresetStore: PUT
+// /api/presets/{name} with a JSON body stores the composed channels — the
+// web layer has validated them with the config's channel rules and checked
+// the channel set against the running config. ErrPresetBuiltin → 409.
+type PresetChannelSaver interface {
+	SaveChannels(name string, chans []config.Channel) error
 }
