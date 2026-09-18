@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>n5-fangov · 0.4.0 prototype</title>
+<!-- Prototype of the 0.4.0 shell (DESIGN.md §11a). Runs against the mock only:
+     proto.html?mock=1[&user=1][&nav=side|rail|top][&spark=0][&fans=stack|tabs][&compat=page|about]
+     [&page=<id>][&theme=dark|light][&tls=…][&dlg=login|preset|more] — see README.md here. -->
+<link rel="stylesheet" href="../../../internal/web/static/app.css">
+<link rel="stylesheet" href="proto.css">
+</head>
+<body>
+<svg hidden xmlns="http://www.w3.org/2000/svg">
+  <symbol id="i-gauge" viewBox="0 0 24 24"><path d="M4 15a8 8 0 1 1 16 0"/><path d="M12 15l4-5"/><path d="M3 20h18"/></symbol>
+  <symbol id="i-chip" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/></symbol>
+  <symbol id="i-fan" viewBox="0 0 24 24"><circle cx="12" cy="12" r="2"/><path d="M12 10c0-4 2-7 5-7 1 3-1 6-5 7zM14 12c4 0 7 2 7 5-3 1-6-1-7-5zM12 14c0 4-2 7-5 7-1-3 1-6 5-7zM10 12c-4 0-7-2-7-5 3-1 6 1 7 5z"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+  <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 16v-5a6 6 0 0 1 12 0v5l2 2H4z"/><path d="M10 20a2 2 0 0 0 4 0"/></symbol>
+  <symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3.5 6h.01M3.5 12h.01M3.5 18h.01"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.2 2.2M16.2 16.2l2.2 2.2M5.6 18.4l2.2-2.2M16.2 7.8l2.2-2.2"/></symbol>
+  <symbol id="i-checklist" viewBox="0 0 24 24"><path d="M3.5 6l1.5 1.5L8 5M3.5 12l1.5 1.5L8 11M3.5 18l1.5 1.5L8 17M11 6h10M11 12h10M11 18h10"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></symbol>
+  <symbol id="i-unlock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 7.5-2"/></symbol>
+  <symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 3l10 18H2z"/><path d="M12 10v4M12 17.5h.01"/></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+  <symbol id="i-external" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9"/><path d="M19 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5"/></symbol>
+  <symbol id="i-chart" viewBox="0 0 24 24"><path d="M3 20h18M6 16l4-5 4 3 5-7"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6"/></symbol>
+  <symbol id="i-edit" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13 7l4 4"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a1 1 0 0 1 1-1h10"/></symbol>
+  <symbol id="i-chev-l" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></symbol>
+  <symbol id="i-chev-r" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></symbol>
+  <symbol id="i-chev-d" viewBox="0 0 24 24"><path d="M5 9l7 7 7-7"/></symbol>
+  <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></symbol>
+  <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></symbol>
+  <symbol id="i-sign-in" viewBox="0 0 24 24"><path d="M10 17l5-5-5-5M15 12H3"/><path d="M13 3h6a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-6"/></symbol>
+  <symbol id="i-sign-out" viewBox="0 0 24 24"><path d="M16 17l5-5-5-5M21 12H9"/><path d="M11 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h6"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4l13 8-13 8z"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12l5 5L20 7"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12M6 11l6 6 6-6M4 21h16"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5"/></symbol>
+  <symbol id="i-star" viewBox="0 0 24 24"><path d="M12 3l2.8 5.7 6.2.9-4.5 4.4 1.1 6.2L12 17.3 6.4 20.2l1.1-6.2L3 9.6l6.2-.9z"/></symbol>
+  <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+</svg>
+
+<div class="shell" id="shell">
+  <nav class="nav" id="nav" aria-label="Pages"></nav>
+  <div class="page">
+    <header class="ph" id="ph">
+      <div class="ph-l">
+        <button class="btn icon menu-btn" id="ph-menu" type="button" aria-label="Menu" hidden><svg class="ic" aria-hidden="true"><use href="#i-menu"/></svg></button>
+        <h1 class="title" id="ph-title">Overview</h1>
+        <span class="prof mx" id="h-profile">—</span>
+      </div>
+      <div class="ph-r">
+        <span class="chip" id="h-status" role="status">…</span>
+        <span class="meta uptime mx" title="daemon uptime">up —</span>
+        <span class="meta ver mx"><span class="version">v —</span><span class="badge beta" hidden>beta</span></span>
+        <button class="chip warn mx" id="h-cert" type="button" hidden><svg class="ic" aria-hidden="true"><use href="#i-warn"/></svg><span id="h-cert-t">certificate</span></button>
+        <span class="live" id="h-live" aria-live="polite"><i></i><span class="mx">live</span></span>
+        <span class="meta user" id="h-user" hidden><svg class="ic" aria-hidden="true"><use href="#i-user"/></svg><span id="h-user-n"></span></span>
+        <button class="btn sm" id="h-signin" type="button"><svg class="ic" aria-hidden="true"><use href="#i-sign-in"/></svg><span class="mx">Sign in</span></button>
+        <button class="btn sm" id="h-signout" type="button" hidden><svg class="ic" aria-hidden="true"><use href="#i-sign-out"/></svg><span class="mx">Sign out</span></button>
+      </div>
+    </header>
+    <div class="banner" id="banner" role="alert" hidden>Connection to the daemon lost — retrying. Fans keep running on the daemon side.</div>
+    <main id="main">
+      <section id="p-overview" class="pg" hidden>
+        <div class="tiles" id="tiles"></div>
+        <div class="bar ov-bar">
+          <span class="hint sm">History</span>
+          <div class="seg" role="group" aria-label="History range" id="rg-seg"><button data-range="2h" class="on" aria-pressed="true">2 h</button><button data-range="24h" aria-pressed="false">24 h</button><button data-range="7d" aria-pressed="false">7 d</button></div>
+          <span class="hint sm mx">2 h at every cycle, 24 h as 1-min and 7 d as 5-min means</span>
+          <button class="btn sm" id="ov-csv" type="button" data-auth hidden><svg class="ic" aria-hidden="true"><use href="#i-download"/></svg>CSV</button>
+        </div>
+        <div class="charts charts3" id="charts">
+          <div class="card chart-card"><div class="card-h"><h2>Temperature · last 2 h</h2><div class="legend" id="lg-temp"></div></div><div class="chart" id="ch-temp"><canvas></canvas></div></div>
+          <div class="card chart-card"><div class="card-h"><h2>Fan speed · last 2 h</h2><div class="seg" role="group" aria-label="Fan chart metric"><button class="on" aria-pressed="true">RPM</button><button aria-pressed="false">Duty</button></div><div class="legend" id="lg-fan"></div></div><div class="chart" id="ch-fan"><canvas></canvas></div></div>
+          <div class="card chart-card" id="extra-card" data-auth hidden><div class="card-h"><h2>Extra sensors · last 2 h</h2><div class="legend" id="lg-extra"></div></div><div class="chart" id="ch-extra"><canvas></canvas></div></div>
+        </div>
+        <div class="grid3 ov" id="ov-more" data-auth hidden>
+          <div class="card sensors"><div class="card-h"><h2>Sensors</h2><span class="hint sm">chart = record in the history</span></div><div id="sensors"></div></div>
+          <div class="card"><div class="card-h"><h2>System</h2><button class="btn sm link" data-go="system" type="button">Details<svg class="ic" aria-hidden="true"><use href="#i-chev-r"/></svg></button></div><dl class="kv" id="sys"></dl></div>
+          <div class="card"><div class="card-h"><h2>Recent alerts</h2><button class="btn sm link" data-go="alerts" type="button">All<svg class="ic" aria-hidden="true"><use href="#i-chev-r"/></svg></button></div><ul class="alerts" id="alerts"></ul></div>
+        </div>
+      </section>
+
+      <section id="p-system" class="pg" hidden>
+        <div class="bar"><p class="hint">Read from sysfs, <code>/proc</code> and the SMBIOS tables, PCI names via <code>lspci</code>. Static parts cached for 10 minutes; memory, load and link state live.</p><div class="actions"><span class="meta" id="sy-when">—</span><button class="btn" type="button"><svg class="ic" aria-hidden="true"><use href="#i-refresh"/></svg>Refresh</button></div></div>
+        <div class="grid2">
+          <div class="card"><h2>Host</h2><dl class="kv" id="sy-host"></dl></div>
+          <div class="card"><h2>Machine</h2><dl class="kv" id="sy-machine"></dl></div>
+          <div class="card"><h2>CPU</h2><dl class="kv" id="sy-cpu"></dl></div>
+          <div class="card"><h2>Fan controller</h2><dl class="kv" id="sy-fan"></dl></div>
+        </div>
+        <div class="card sy"><h2>Memory</h2><dl class="kv" id="sy-mem"></dl><div class="tbl-wrap"><table class="tbl sm" id="sy-dimms"><thead><tr><th>Slot</th><th>Bank</th><th>Size</th><th>Type</th><th>Speed</th><th>ECC</th><th>Manufacturer</th><th>Part number</th></tr></thead><tbody></tbody></table></div></div>
+        <div class="card sy"><h2>GPU · NPU</h2><div class="tbl-wrap"><table class="tbl sm" id="sy-acc"><thead><tr><th>Kind</th><th>Name</th><th>Vendor</th><th>PCI</th><th>Driver</th><th>Driver version</th><th>Device</th></tr></thead><tbody></tbody></table></div></div>
+        <div class="card sy"><h2>Network</h2><div class="tbl-wrap"><table class="tbl sm" id="sy-nics"><thead><tr><th>Interface</th><th>State</th><th>Speed</th><th>Duplex</th><th>Model</th><th>Driver</th><th>MAC</th><th>MTU</th><th>PCI</th></tr></thead><tbody></tbody></table></div></div>
+        <div class="card sy"><h2>Storage</h2><div class="tbl-wrap"><table class="tbl sm" id="sy-ctl"><thead><tr><th>Controller</th><th>Name</th><th>Driver</th><th>PCI</th></tr></thead><tbody></tbody></table></div><div class="tbl-wrap"><table class="tbl sm" id="sy-disks"><thead><tr><th>Disk</th><th>Size</th><th>Type</th><th>Transport</th><th>Model</th><th>Temp</th></tr></thead><tbody></tbody></table></div></div>
+      </section>
+
+      <section id="p-fans" class="pg" hidden>
+        <p class="gloss"><b>duty</b> is the PWM value 0–255 the daemon writes (100 % = 255). Each cycle a channel moves from its current duty towards the curve's target in <code>step_up</code>/<code>step_down</code> steps. <b>critical</b> forces 100 % at once; a <b>stall</b> kicks the channel up until it spins. <b>stop</b> is the duty left when the daemon stops. Curves are stored in °C.</p>
+        <div class="seg chsel" role="group" aria-label="Channel" id="ch-sel" hidden></div>
+        <div class="fan-cards" id="fan-cards"></div>
+        <div class="card presets-card">
+          <div class="card-h"><h2>Presets</h2><span class="hint sm">a preset is a full set of channel values · the badge on a channel names the preset its values match</span><div class="actions"><button class="btn" id="ps-new" type="button"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg>Save current as…</button></div></div>
+          <div class="preset-row" id="preset-row"></div>
+        </div>
+        <div class="actbar" id="actbar"><span class="dirty-t" id="cv-dirty" hidden><i class="dirty"></i>unsaved changes</span><span class="hint sm" id="cv-clean">no unsaved changes</span><div class="actions"><button class="btn" id="cv-revert" type="button">Revert</button><button class="btn primary" id="cv-apply" type="button">Apply to daemon</button></div></div>
+      </section>
+
+      <section id="p-schedules" class="pg" hidden>
+        <div class="grid-sc">
+          <div class="card sc-ed">
+            <div class="card-h"><h2>Schedule</h2><span class="hint sm">preset switches by time of day — transitions only; a manual apply inside a window is respected</span></div>
+            <div class="tbl-wrap"><table class="tbl sc-tbl" id="sc-tbl"><thead><tr><th>Preset</th><th>From</th><th>To</th><th>Days</th><th></th></tr></thead><tbody></tbody></table></div>
+            <div class="act"><button class="btn" id="sc-add" type="button"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg>Add entry</button><span class="hint sm">an entry without a window is the fallback outside every window</span><div class="actions"><button class="btn" type="button">Revert</button><button class="btn primary" type="button">Save</button></div></div>
+          </div>
+          <div class="card"><h2>Status</h2><dl class="kv" id="sc-kv"></dl><div class="notice" id="sc-notice" hidden></div></div>
+        </div>
+      </section>
+
+      <section id="p-alerts" class="pg" hidden>
+        <div class="grid2">
+          <div class="card"><div class="card-h"><h2>Delivery</h2><button class="btn sm link" data-go="settings" data-sec="st-alerts" type="button">Configure<svg class="ic" aria-hidden="true"><use href="#i-chev-r"/></svg></button></div><dl class="kv" id="al-status"></dl><div class="act"><button class="btn" id="al-test" type="button"><svg class="ic" aria-hidden="true"><use href="#i-bell"/></svg>Send test alert</button><span class="hint sm">kind <code>test</code>, no cooldown</span></div></div>
+          <div class="card"><h2>Recent alerts</h2><ul class="alerts" id="al-recent"></ul></div>
+        </div>
+        <div class="card tbl-wrap"><table class="tbl" id="al-kinds"><thead><tr><th>Kind</th><th>Description</th><th>Last sent</th></tr></thead><tbody></tbody></table></div>
+      </section>
+
+      <section id="p-log" class="pg" hidden>
+        <div class="bar"><label class="grow">Filter <input id="lg-filter" type="search" placeholder="substring…"></label><label class="chk"><input type="checkbox" checked> auto-scroll</label><span class="meta" id="lg-meta">—</span><button class="btn" type="button"><svg class="ic" aria-hidden="true"><use href="#i-refresh"/></svg>Refresh</button><button class="btn" type="button"><svg class="ic" aria-hidden="true"><use href="#i-download"/></svg>Export</button></div>
+        <pre class="log" id="log" tabindex="0" aria-label="Daemon log"></pre>
+      </section>
+
+      <section id="p-settings" class="pg" hidden>
+        <div class="settings">
+          <nav class="subnav" aria-label="Settings sections" id="subnav"></nav>
+          <div class="st-list" id="st-list">
+            <section class="card st" id="st-display" aria-labelledby="st-display-h"><h2 id="st-display-h">Display</h2>
+              <div class="frow"><label>Temperature unit<select id="s-unit"><option value="C">°C</option><option value="F">°F</option></select></label><label>Refresh interval<select id="s-interval"><option value="5">5 s</option><option value="10">10 s</option><option value="30">30 s</option></select></label><label>Theme<select id="s-theme"><option value="system">system</option><option value="dark">dark</option><option value="light">light</option></select></label><label>Navigation<select id="s-nav"><option value="side">sidebar</option><option value="rail">icon rail</option></select></label></div>
+              <p class="hint sm">Stored in this browser only.</p>
+            </section>
+            <section class="card st" id="st-account" aria-labelledby="st-account-h"><h2 id="st-account-h">Account &amp; sessions</h2>
+              <div class="frow"><span class="kv-inline">signed in as <b class="mono" id="ac-user"></b></span><div class="actions"><button class="btn" type="button">Change password…</button><button class="btn" type="button">Change user…</button><button class="btn" type="button">Sign out other sessions</button></div></div>
+              <div class="tbl-wrap"><table class="tbl sm" id="ac-sessions"><thead><tr><th>ID</th><th>Created</th><th>Last seen</th><th>Expires</th><th>IP</th></tr></thead><tbody></tbody></table></div>
+            </section>
+            <section class="card st" id="st-tokens" aria-labelledby="st-tokens-h"><h2 id="st-tokens-h">API tokens</h2>
+              <p class="hint sm">For scripts, Home Assistant and agents: <code>Authorization: Bearer n5t_…</code> instead of the password. A token never manages tokens or the account; a password change leaves tokens valid — revoke them here.</p>
+              <div class="tbl-wrap"><table class="tbl sm" id="ac-tok"><thead><tr><th>Name</th><th>Scope</th><th>Created</th><th>Expires</th><th>Last used</th><th>Last address</th><th></th></tr></thead><tbody></tbody></table></div>
+              <div class="act"><button class="btn" type="button"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg>Create token…</button></div>
+            </section>
+            <section class="card st" id="st-cert" aria-labelledby="st-cert-h"><div class="card-h"><h2 id="st-cert-h">Certificate</h2><span class="badge" id="ct-mode">—</span></div>
+              <dl class="kv" id="ct-kv"></dl>
+              <div class="chips" id="ct-san" aria-label="Subject alternative names"></div>
+              <div class="fp"><span class="k">SHA-256</span><code id="ct-fp"></code><button class="btn sm" type="button" title="Copy fingerprint"><svg class="ic" aria-hidden="true"><use href="#i-copy"/></svg>copy</button></div>
+              <div class="notice" id="ct-notice" role="alert" hidden></div>
+              <div class="act"><button class="btn" type="button" title="PEM — Firefox, macOS, Linux"><svg class="ic" aria-hidden="true"><use href="#i-download"/></svg>Download .crt</button><button class="btn" type="button" title="DER — Windows, Android"><svg class="ic" aria-hidden="true"><use href="#i-download"/></svg>Download .cer</button><button class="btn" type="button">Regenerate…</button><button class="btn" type="button">Upload own certificate…</button></div>
+              <details class="how"><summary>How to trust this certificate</summary><ol>
+                <li><b>Windows:</b> download <b>.cer</b> → double-click → Install Certificate → <i>Local Machine</i> → <i>Place all certificates in the following store</i> → <i>Trusted Root Certification Authorities</i>. Chrome and Edge pick it up after a restart.</li>
+                <li><b>macOS:</b> download <b>.crt</b> → Keychain Access → keychain <i>System</i> → Trust → <i>Always Trust</i>.</li>
+                <li><b>Firefox:</b> Settings → Privacy &amp; Security → Certificates → <i>Authorities</i> → Import the <b>.crt</b>.</li>
+                <li><b>Android:</b> download <b>.cer</b> → Settings → Security → Encryption &amp; credentials → Install a certificate → <i>CA certificate</i>.</li>
+              </ol></details>
+            </section>
+            <section class="card st" id="st-alerts" aria-labelledby="st-alerts-h"><h2 id="st-alerts-h">Alert transport</h2>
+              <form class="inline" id="al-form"><label>Transport <select id="al-transport"><option value="auto">auto</option><option value="pve">pve</option><option value="mail" disabled>mail (not installed)</option><option value="webhook">webhook</option><option value="log">log</option><option value="off">off</option></select></label><label id="al-mailto-l">Mail to <input id="al-mailto" placeholder="root" maxlength="128"></label><label id="al-wh-l" hidden>URL <input id="al-wh" type="url" class="wide" placeholder="https://ntfy.example/n5"></label><label id="al-whf-l" hidden>Format <select><option>json</option><option>text</option></select></label><button class="btn primary" type="button">Save</button></form>
+              <p class="hint sm">auto: Proxmox notifications if available, otherwise local mail, otherwise only the log. webhook: one POST per alert (ntfy, Gotify, Home Assistant).</p>
+              <div class="grid2 tight"><div><h3>PVE notification template</h3><dl class="kv" id="al-tpl"></dl><div class="act"><button class="btn" type="button" disabled>Update template</button><span class="hint sm">up to date</span></div></div><div><h3>Test</h3><p class="hint sm">Sends kind <code>test</code> over the effective transport, no cooldown.</p><div class="act"><button class="btn" type="button"><svg class="ic" aria-hidden="true"><use href="#i-bell"/></svg>Send test alert</button></div></div></div>
+            </section>
+            <section class="card st" id="st-backup" aria-labelledby="st-backup-h"><h2 id="st-backup-h">Backup</h2>
+              <p class="hint sm">Config + presets as one JSON bundle. Import replaces both and may require a restart.</p>
+              <div class="act"><button class="btn" type="button"><svg class="ic" aria-hidden="true"><use href="#i-download"/></svg>Export settings</button><button class="btn" type="button">Import settings…</button></div>
+            </section>
+            <section class="card st danger" id="st-danger" aria-labelledby="st-danger-h"><h2 id="st-danger-h">Danger zone</h2>
+              <div class="dz"><div><b>Clear the log file</b><span class="hint sm">Truncates the current log; rotated files and the journal stay.</span></div><button class="btn danger" type="button">Clear log</button></div>
+              <div class="dz"><div><b>Regenerate the certificate with a new key</b><span class="hint sm">Breaks the trust you imported on every client.</span></div><button class="btn danger" type="button">Regenerate with new key</button></div>
+              <div class="dz"><div><b>Reset the certificate to automatic</b><span class="hint sm">Removes an uploaded certificate and its key.</span></div><button class="btn danger" type="button" disabled>Back to auto</button></div>
+            </section>
+          </div>
+        </div>
+      </section>
+
+      <section id="p-compat" class="pg" hidden>
+        <div class="card tbl-wrap"><table class="tbl" id="profiles"><thead><tr><th>Profile</th><th>Title</th><th>Status</th><th>Notes</th></tr></thead><tbody></tbody></table></div>
+      </section>
+
+      <section id="p-about" class="pg" hidden>
+        <div class="card about">
+          <p class="ab-t"><b>n5-fangov</b> <span class="mono" id="ab-version"></span> <span class="badge beta" id="ab-beta" hidden>beta</span></p>
+          <p>A fan governor for small servers whose EC or Super-I/O exports its fan outputs through a kernel hwmon driver. The daemon takes over the <code>pwm</code> channels the driver exposes, drives each from its own curve with a selectable temperature source, slews between steps and stands guard: a critical temperature forces full duty, a stall kicks the channel up, a systemd watchdog restarts a hung daemon and the failsafe leaves the channels at a safe duty when it stops. This dashboard and the <code>n5-fangov</code> CLI share one API.</p>
+          <dl class="kv" id="ab-kv"></dl>
+        </div>
+        <div class="card tbl-wrap" id="ab-compat" hidden><h2>Compatibility</h2><table class="tbl" id="profiles2"><thead><tr><th>Profile</th><th>Title</th><th>Status</th><th>Notes</th></tr></thead><tbody></tbody></table></div>
+      </section>
+    </main>
+  </div>
+</div>
+
+<nav class="bnav" id="bnav" aria-label="Pages"></nav>
+
+<dialog class="dlg narrow" id="login" aria-labelledby="l-title">
+  <form novalidate>
+    <div class="dlg-h"><h2 id="l-title">Sign in</h2><button class="btn icon" type="button" aria-label="Close" data-close><svg class="ic" aria-hidden="true"><use href="#i-close"/></svg></button></div>
+    <label>User <input id="l-user" autocomplete="username" required autocapitalize="off" spellcheck="false" value="admin"></label>
+    <label>Password <input id="l-pass" type="password" autocomplete="current-password" required></label>
+    <label class="chk"><input type="checkbox"> <span>Remember me <span class="hint sm">30 days on this browser</span></span></label>
+    <div class="act"><button class="btn primary" type="submit">Sign in</button></div>
+    <p class="hint sm">Forgot the password? On the host, as root: <code>n5-fangov passwd</code> — root on the box is the recovery path.</p>
+  </form>
+</dialog>
+
+<dialog class="dlg" id="preset-ed" aria-labelledby="pe-title">
+  <div class="dlg-h"><h2 id="pe-title">New preset</h2><button class="btn icon" type="button" aria-label="Close" data-close><svg class="ic" aria-hidden="true"><use href="#i-close"/></svg></button></div>
+  <div class="pe-body" id="pe-body"></div>
+</dialog>
+
+<dialog class="sheet" id="more" aria-labelledby="more-title">
+  <div class="dlg-h"><h2 id="more-title">More</h2><button class="btn icon" type="button" aria-label="Close" data-close><svg class="ic" aria-hidden="true"><use href="#i-close"/></svg></button></div>
+  <ul id="more-list"></ul>
+</dialog>
+
+<div class="toasts" id="toasts"><div aria-live="polite"></div></div>
+<script src="proto.js"></script>
+</body>
+</html>

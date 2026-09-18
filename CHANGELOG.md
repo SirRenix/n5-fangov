@@ -54,6 +54,15 @@ in 0.3.1 below. Open:
 
 ### Planned (0.4.0, separate session) — dashboard redesign, public release
 
+**Step 1 done 2026-09-18 (branch `feat/redesign`):** the target structure is the contract
+`DESIGN.md` §11a (page model Monitor / Control / Operate / Settings / Info, channel-centric
+Fans page with an explicit Auto/Manual switch, preset editor, editable Schedules page,
+consolidated Settings page, SVG sprite, new tokens, budgets `app.js` ≤ 128 KiB /
+`mock.js` ≤ 48 KiB / `app.css` ≤ 48 KiB) and a mock-only prototype in
+`docs/design/proto/` with the open decisions as flags (`nav=side|rail|top`, `spark=0`,
+`fans=tabs`, `compat=about`); `shots.mjs` + `compare.mjs` produce the old/new comparison
+page the operator decides on. Nothing in `internal/` changed.
+
 Structural redesign of the dashboard (sidebar navigation, channel-centric Fans page,
 consolidated Settings page, SVG icons, sparklines) — concept and hand-over in
 [`docs/design/REDESIGN-CONCEPT.md`](docs/design/REDESIGN-CONCEPT.md). Deliberately after
