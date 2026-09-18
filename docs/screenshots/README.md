@@ -50,6 +50,7 @@ by clicking the same controls a user would.
 | `29-alerts-webhook.png` | Alerts, webhook transport | `?mock=1&user=1&tab=alerts` → transport *webhook*, URL filled | URL + format fields, the `mail_to` field hidden |
 | `30-account-tokens.png` | Account dialog, API tokens | ⚙ → *Account…* → *Create token…* → *Create* | tokens table, the secret shown once with *Copy* |
 | `31-curves-fields.png` | Curves with hysteresis / min on | `?mock=1&user=1&tab=curves`, first point focused | new fields, composite sensor option on `hdd`, keyboard focus ring on a point |
+| `32-home-assistant-tiles.png` | Home Assistant, System view with the n5-fangov tiles | not from the mock: a real Home Assistant with the rest sensors of [API and integrations](../12-api.md#home-assistant); labels re-set to the documentation wording | heading, controller status, temperature and rpm per channel, hdd mode |
 
 Not reproducible from the mock and therefore not included: the browser's own
 certificate warning and the OS trust dialogs ([HTTPS](../08-https-security.md#the-certificate),

@@ -245,6 +245,34 @@ Repeat the three sensors per channel (`ssd`, `hdd`, …); `rpm` is −1 on a cha
 without a tachometer, `temp` −999 while the sensor is unknown — filter those in a
 template if they should not reach the history.
 
+**On a dashboard** — a *sections* view with one `tile` card per sensor (the package form
+of the sensors above lives in `/config/packages/n5_fangov.yaml`, the card block in the
+dashboard YAML or the UI editor); a verified box, 2026-09-18, rest sensors polling every 30 s:
+
+![Home Assistant, System view: heading N5 fans, tiles for controller status, temperature and rpm per channel, hdd mode](screenshots/32-home-assistant-tiles.png)
+
+```yaml
+- type: grid
+  column_span: 2
+  cards:
+    - type: heading
+      heading: N5 fans (n5-fangov)
+      icon: mdi:fan
+    - { type: tile, entity: sensor.n5_fan_controller_status, name: Controller }
+    - { type: tile, entity: sensor.n5_fan_cpu_temperature, name: CPU temp }
+    - { type: tile, entity: sensor.n5_fan_cpu_rpm, name: CPU fan }
+    - { type: tile, entity: sensor.n5_fan_ssd_temperature, name: SSD temp }
+    - { type: tile, entity: sensor.n5_fan_ssd_rpm, name: SSD fan }
+    - { type: tile, entity: sensor.n5_fan_hdd_temperature, name: HDD temp }
+    - { type: tile, entity: sensor.n5_fan_hdd_rpm, name: HDD fan }
+    - { type: tile, entity: sensor.n5_fan_hdd_mode, name: HDD mode }
+```
+
+A `rest:` block that is new to the installation needs one Home Assistant Core restart;
+afterwards *Developer tools → YAML → REST entities and services* (`rest.reload`) picks up
+changes. The controller status sensor (`value_json.status`) is a cheap liveness check for
+an automation.
+
 **Preset command** — a `rest_command` that applies a preset by name; needs a `control`
 token. A Bearer caller sends **no** `X-N5-Fangov-Csrf` header: that header guards
 cookie and Basic callers only, a token is exempt.
