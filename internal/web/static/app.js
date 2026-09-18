@@ -20,10 +20,13 @@ const on = (sel, ev, fn) => $(sel).addEventListener(ev, fn);
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const SERIES = Array.from({ length: 8 }, (_, i) => '--s' + (i + 1));
 const cssVar = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+// icons: the sprite at the top of index.html; icons next to text are aria-hidden, icon-only controls carry aria-label
+const NS = 'http://www.w3.org/2000/svg';
+const ico = name => { const s = document.createElementNS(NS, 'svg'); s.setAttribute('class', 'ic'); s.setAttribute('aria-hidden', 'true'); const u = document.createElementNS(NS, 'use'); u.setAttribute('href', '#i-' + name); s.append(u); return s; };
 // UI constants: bp mirror app.css, timings ms, geometry px; limits are defaults until GET /api/version merges into LIM
 const UI = Object.freeze({
 	bp: { xs: 480, sm: 700, md: 900, lg: 1100 },
-	timing: { toast: 5000, toastErr: 12000, toastLong: 15000, toastNotice: 8000, alerts: 60000, system: 30000, log: 10000, schedules: 60000, blobRevoke: 30000 },
+	timing: { toast: 5000, toastErr: 12000, toastLong: 15000, toastNotice: 8000, alerts: 60000, system: 30000, log: 10000, schedules: 60000, blobRevoke: 30000, subLock: 1000 },
 	toastMax: 3,
 	chart: { yMargin: .15, yRound: 5, minSpanTemp: 15, minSpanRpm: 1000, minSpan: 10, pad: { l: 40, r: 58, t: 8, b: 22 },
 		lineW: 2, fillAlpha: .08, dotR: 4.5, dotStroke: 2, labelH: 13, labelGap: 6, tipGap: 12, dash: { hover: [3, 3], crit: [4, 3], now: [2, 3] } },
@@ -51,8 +54,8 @@ const ddmm = ts => { const d = new Date(ts * 1000); return `${String(d.getDate()
 const RANGES = { '2h': { label: '2 h', minutes: 120, windowS: 7200, gridS: 1800, maxPoints: 0, poll: 30000, since: true, fmt: hm },
 	'24h': { label: '24 h', minutes: 1440, windowS: 86400, gridS: 4 * 3600, maxPoints: 1500, poll: 60000, fmt: ts => new Date(ts * 1000).toLocaleDateString('en', { weekday: 'short' }) + ' ' + hm(ts) },
 	'7d': { label: '7 d', minutes: 10080, windowS: 7 * 86400, gridS: 86400, maxPoints: 2100, poll: 60000, fmt: ddmm } };
-// settings (whitelisted values; anything else falls back to the default)
-const S = { unit: 'C', interval: 5, theme: 'system', range: '2h' }, S_OK = { unit: ['C', 'F'], interval: [5, 10, 30], theme: ['system', 'dark', 'light'], range: Object.keys(RANGES) };
+// settings (whitelisted values; anything else falls back to the default); nav = sidebar expanded or icon rail
+const S = { unit: 'C', interval: 5, theme: 'system', range: '2h', nav: 'side' }, S_OK = { unit: ['C', 'F'], interval: [5, 10, 30], theme: ['system', 'dark', 'light'], range: Object.keys(RANGES), nav: ['side', 'rail'] };
 try { const j = JSON.parse(localStorage.getItem('n5-fangov') || '{}'); for (const k in S_OK) if (S_OK[k].includes(j[k])) S[k] = j[k]; } catch (e) {}
 const R = () => RANGES[S.range];
 const saveS = () => { try { localStorage.setItem('n5-fangov', JSON.stringify(S)); } catch (e) {} };
@@ -84,7 +87,7 @@ const interp = (curve, t) => {
 // toasts: errors go to the assertive live region
 const toast = (msg, kind, ms) => {
 	const t = h('div', { class: 'toast ' + (kind || '') }, msg,
-		h('button', { 'aria-label': 'Dismiss', onclick: () => t.remove() }, '×'));
+		h('button', { 'aria-label': 'Dismiss', onclick: () => t.remove() }, ico('close')));
 	const host = $(kind === 'err' ? '#toasts-a' : '#toasts'); while (host.children.length >= UI.toastMax) host.firstChild.remove(); host.append(t); // at most 3 per region, oldest dropped
 	setTimeout(() => t.remove(), ms || (kind === 'err' ? UI.timing.toastErr : UI.timing.toast));
 };
@@ -228,12 +231,13 @@ let snap = null, cfg = null, cfgRaw = '', profiles = [], sensors = [], version =
 const LOOPBACK = /^(localhost|127\.\d+\.\d+\.\d+|\[::1\])$/i.test(location.hostname);
 let cert = null;
 const dLeft = iso => Math.ceil((new Date(iso) - Date.now()) / 86400e3);
-// lock button: warn colour + text on fallback or expiry within certSoonDays
-const secState = () => { const e = $('#h-sec'), on = tls === null ? location.protocol === 'https:' : !!tls, i = cert && cert.info, fb = !!(cert && cert.fallback), left = i ? dLeft(i.not_after) : null, soon = left !== null && left < UI.thresh.certSoonDays;
-	e.textContent = on ? '🔒 TLS' + (fb ? ' · fallback' : soon ? ` · ${left < 0 ? 'expired' : left + ' d'}` : '') : '🔓 HTTP';
-	e.className = 'meta sec ' + (on ? (fb || soon ? 'warn' : 'ok') : LOOPBACK ? '' : 'warn');
-	e.title = (on ? 'TLS connection' : LOOPBACK ? 'plain HTTP on loopback' : 'plain HTTP off loopback — credentials travel unencrypted')
-		+ (cert ? `\ncertificate: ${cert.mode}` + (i ? ` · expires ${i.not_after.slice(0, 10)}${soon ? ' (soon!)' : ''}` : '') : '') + '\nclick for the certificate panel'; };
+// certificate warning chip in the page header: shown only while the certificate is in fallback, expires within certSoonDays,
+// is expired, or the listener is plain HTTP off loopback; click → Settings → Certificate
+const secState = () => { const e = $('#h-cert'), on = tls === null ? location.protocol === 'https:' : !!tls, i = cert && cert.info, fb = !!(cert && cert.fallback), left = i ? dLeft(i.not_after) : null, soon = left !== null && left < UI.thresh.certSoonDays;
+	const warn = on ? fb || soon : !LOOPBACK; e.hidden = !warn || !signedIn(); if (e.hidden) return;
+	$('#h-cert-t').textContent = !on ? 'plain HTTP' : fb ? 'certificate fallback' : left < 0 ? 'certificate expired' : `certificate expires in ${left} d`;
+	e.title = (on ? 'TLS connection' : 'plain HTTP off loopback — credentials travel unencrypted')
+		+ (cert ? `\ncertificate: ${cert.mode}` + (i ? ` · expires ${i.not_after.slice(0, 10)}${soon ? ' (soon!)' : ''}` : '') : '') + '\nclick for the certificate settings'; };
 let hist = [], lastTs = 0, fanMetric = 'rpm';
 const critOf = name => { const c = cfg && chList().find(x => x.name === name); return c && +c.critical > 0 ? +c.critical : null; };
 const chList = () => (cfg && (cfg.channel || cfg.channels)) || [];
@@ -250,21 +254,19 @@ const verTxt = v => v ? 'verified on hardware' : 'from documentation · untested
 const preBadge = (els, pre) => { for (const el of els) { el.hidden = !pre; el.textContent = (pre || '').split('.')[0]; } };
 const errText = e => /lspci.*(not found|no such file)/i.test(e) ? 'lspci not installed — apt install pciutils for PCI device names (ids only until then)' : e;
 
-// header (uptime/version/verified are mirrored into the settings popover for phones)
+// page header: title from PAGES, profile title, status chip, uptime, version + beta badge, certificate chip (secState), user
 function renderHeader() {
+	const p = PAGES.find(x => x.id === cur); if (p) { $('#ph-title').textContent = p.t; document.title = `${p.t} · n5-fangov`; }
+	if (version) { for (const v of $$('.version')) v.textContent = 'v' + version.replace(/^v/, ''); const nv = $('#nav-ver'); if (nv) nv.textContent = 'v' + version.replace(/^v/, ''); }
 	if (!snap) return;
-	const pr = profiles.find(p => p.name === snap.profile), title = pr ? pr.title : snap.profile || '—', pf = $('#h-profile');
-	pf.textContent = title; pf.title = title;
-	for (const b of $$('.verified')) { b.hidden = false; b.classList.toggle('ok', !!snap.verified); b.classList.toggle('warn', !snap.verified); b.textContent = verTxt(snap.verified); }
+	const pr = profiles.find(x => x.name === snap.profile), title = pr ? pr.title : snap.profile || '—', pf = $('#h-profile');
+	pf.textContent = title; pf.title = title + (snap.verified === undefined ? '' : ' · ' + verTxt(snap.verified));
 	const st = snap.dry_run ? 'dry-run' : snap.status || 'unknown';
 	const c = $('#h-status'); c.className = 'chip ' + st; c.textContent = st;
 	for (const u of $$('.uptime')) u.textContent = 'up ' + fmtUp(snap.uptime_s || 0);
-	if (version) for (const v of $$('.version')) v.textContent = 'v' + version.replace(/^v/, '');
 }
-// sticky tabs sit below the header; its height is measured (it wraps)
-const hdr = $('#hdr'); new ResizeObserver(() => document.documentElement.style.setProperty('--hdr-h', hdr.offsetHeight + 'px')).observe(hdr);
-const tw = $('#tabs-w'), tn = $('#tabs'), tabsFade = () => { tw.classList.toggle('can-l', tn.scrollLeft > 1); tw.classList.toggle('can-r', tn.scrollLeft + tn.clientWidth < tn.scrollWidth - 1); };
-tn.addEventListener('scroll', tabsFade, { passive: true }); new ResizeObserver(tabsFade).observe(tn);
+// the page header's height (it wraps) feeds the sticky settings sub-navigation and the section scroll margin
+const ph = $('#ph'); new ResizeObserver(() => document.documentElement.style.setProperty('--hdr-h', ph.offsetHeight + 'px')).observe(ph);
 // daemon limits → hints, field bounds, slider minimums
 const applyLimits = () => { const L = LIM;
 	$('#cv-hint').firstChild.textContent = `Drag points or edit the table. ${L.curve_points_min}–${L.curve_points_max} points, temperatures ascending, duty never falling. Applying rewrites the `;
@@ -272,19 +274,79 @@ const applyLimits = () => { const L = LIM;
 	const pw = $('#ac-new'); pw.minLength = L.password_min; pw.maxLength = L.password_max;
 	for (const k in MN) { const m = MN[k]; m.min = minDuty(m.c); m.range.min = m.num.min = m.min; } if (snap) renderSensors(); };
 
-// auth: mirrors the server's visibility split
+// pages: the nav (sidebar / icon rail / phone bottom bar + More sheet) is built from PAGES; hash routing #<page>[/<section>]
+const PAGES = [
+	{ g: 'Monitor', id: 'overview', t: 'Overview', ic: 'gauge', anon: true }, { g: 'Monitor', id: 'system', t: 'System', ic: 'chip' },
+	{ g: 'Control', id: 'fans', t: 'Fans', ic: 'fan' }, { g: 'Control', id: 'schedules', t: 'Schedules', ic: 'clock' },
+	{ g: 'Operate', id: 'alerts', t: 'Alerts', ic: 'bell' }, { g: 'Operate', id: 'log', t: 'Log', ic: 'list' },
+	{ g: 'Settings', id: 'settings', t: 'Settings', ic: 'gear' },
+	{ g: 'Info', id: 'about', t: 'About', ic: 'info', anon: true }];
+const BOTTOM = ['overview', 'fans', 'alerts', 'settings']; // the phone bar; the rest goes into the More sheet
+let cur = 'overview', lastHash = '';
+const visible = () => PAGES.filter(p => signedIn() || p.anon);
+const navBtn = (p, extra) => h('button', { 'aria-current': p.id === cur ? 'page' : null, title: p.t, 'data-page': p.id, onclick: () => go(p.id) }, ico(p.ic), h('span', { class: 'lbl' }, p.t), extra);
+const dirtyDot = () => h('i', { class: 'dirty', hidden: !edDirty, title: 'unsaved changes', role: 'img', 'aria-label': 'unsaved changes' });
+function buildNav() {
+	const nav = clear($('#nav')), rail = S.nav === 'rail'; $('#shell').classList.toggle('rail', rail);
+	nav.append(h('div', { class: 'brand-row' }, h('span', { class: 'logo' }, ico('fan')), h('span', { class: 'brand' }, 'n5-fangov')));
+	let lastG = null;
+	for (const p of visible()) {
+		if (p.g !== lastG) { if (lastG) nav.append(h('div', { class: 'grp-sep' })); nav.append(h('div', { class: 'grp' }, p.g), h('ul')); lastG = p.g; }
+		nav.lastChild.append(h('li', null, navBtn(p, p.id === 'fans' ? Object.assign(dirtyDot(), { id: 'nav-dirty' }) : null)));
+	}
+	nav.append(h('div', { class: 'foot' }, h('ul', null, h('li', null, h('button', { title: rail ? 'Expand the navigation' : 'Collapse the navigation', 'aria-label': rail ? 'Expand the navigation' : 'Collapse the navigation',
+		onclick: () => { S.nav = rail ? 'side' : 'rail'; saveS(); $('#s-nav').value = S.nav; buildNav(); $('#nav .foot button').focus(); } }, ico(rail ? 'chev-r' : 'chev-l'), h('span', { class: 'lbl' }, 'Collapse')))),
+		h('span', { class: 'vtxt', id: 'nav-ver' }, version ? 'v' + version.replace(/^v/, '') : '')));
+	// phone: bottom bar + More sheet
+	const b = clear($('#bnav')), vis = visible(), main = vis.filter(p => BOTTOM.includes(p.id)), rest = vis.filter(p => !BOTTOM.includes(p.id));
+	for (const p of main) b.append(navBtn(p, p.id === 'fans' ? dirtyDot() : null));
+	if (rest.length) b.append(h('button', { class: 'more', 'aria-current': rest.some(p => p.id === cur) ? 'page' : null, 'aria-haspopup': 'dialog', 'aria-controls': 'more', onclick: () => openMore(rest) }, ico('more'), h('span', { class: 'lbl' }, 'More')));
+}
+const openMore = rest => { const ul = clear($('#more-list'));
+	for (const p of rest) ul.append(h('li', null, h('button', { 'aria-current': p.id === cur ? 'page' : null, onclick: () => { $('#more').close(); go(p.id); } }, ico(p.ic), p.t, h('span', { class: 'grp-t' }, p.g))));
+	$('#more').showModal(); };
+// go: switch the page (auth-gated), mark the nav entries, keep the hash, optionally scroll to a section; returns false for an unknown/forbidden page
+function go(id, sec) {
+	const p = PAGES.find(x => x.id === id && (signedIn() || x.anon)); if (!p) return false;
+	const changed = cur !== p.id; cur = p.id;
+	lastHash = '#' + cur + (sec ? '/' + sec : ''); if (location.hash !== lastHash) location.hash = lastHash;
+	for (const s of $$('.pg')) s.hidden = s.id !== 'p-' + cur;
+	for (const b of $$('[data-page]')) b.dataset.page === cur ? b.setAttribute('aria-current', 'page') : b.removeAttribute('aria-current');
+	const more = $('#bnav .more'); if (more) BOTTOM.includes(cur) ? more.removeAttribute('aria-current') : more.setAttribute('aria-current', 'page');
+	renderHeader();
+	if (changed) window.scrollTo(0, 0);
+	// every page needs an entry (TestNavHasPages); a missing one would throw after the section switch
+	(({ overview: () => { renderCharts(); pollSensors(); loadAlerts(); }, system: () => { renderSystemTab(); loadSystem(); },
+		fans: () => { if (!edState && cfg) loadEditor(); if (snap) renderManual(); pollSensors(1); drawEds(); loadPresets(); },
+		schedules: loadSchedules, alerts: () => { alDirty = false; renderAlertsTab(); loadAlerts(); }, log: loadLog,
+		settings: () => { alDirty = false; renderAlertsTab(); renderSettings(); }, about: () => { renderProfiles(); } })[id] || (() => {}))();
+	if (sec) { const el = $('#' + sec); if (el) el.scrollIntoView({ block: 'start' }); if (cur === 'settings') markSub(sec, true); }
+	return true;
+}
+// route from the hash (Overview when the page is unknown or needs auth); the 0.3 mock parameter &tab= is consumed once and maps
+// curves|manual|presets → fans and compat → about (screenshot script)
+let tabOnce = MOCK && Q.get('tab');
+const route = () => { const tab = tabOnce, map = { curves: 'fans', manual: 'fans', presets: 'fans', compat: 'about' }, hp = location.hash.slice(1).split('/'); tabOnce = null;
+	const id = tab ? map[tab] || tab : hp[0] || 'overview', sec = tab === 'compat' ? 'compat' : hp[1]; if (!go(id, sec)) go('overview'); };
+addEventListener('hashchange', () => { if (location.hash !== lastHash) route(); });
+document.addEventListener('click', ev => { const b = ev.target.closest('[data-go]'); if (b) go(b.dataset.go, b.dataset.sec); });
+for (const b of $$('[data-close]')) b.addEventListener('click', () => b.closest('dialog').close());
+backdrop($('#more')); backdrop($('#preset-ed'));
+
+// auth: mirrors the server's visibility split — nav entries, bottom bar and every [data-auth] element are hidden while anonymous
 async function applyAuth() {
 	const on = signedIn(), basic = sess.mode !== 'none';
-	for (const t of $$('#tabs [data-auth]')) t.hidden = !on;
-	for (const [id, show] of [['#h-settings', on], ['#h-sec', on], ['#h-signin', !on && basic], ['#h-signout', on && basic], ['#h-user', on && basic], ['#s-account', on && basic], ['#ov-more', on], ['#ov-csv', on]]) $(id).hidden = !show;
-	$('#h-user').textContent = sess.user || ''; tabsFade();
-	if ($('#tab-' + curTab).hidden) selectTab('overview');
-	if (!on) { cert = null; cfg = null; edState = null; dirty(false); alerts = null; sysinfo = null; dash = []; profiles = []; SN.key = null; for (const id of ['#editors', '#presets', '#log', '#sc-tbl tbody', '#sc-kv', '#ac-tok tbody']) clear($(id)); secState(); renderCharts(); loadAbout(); return; }
+	for (const el of $$('[data-auth]:not(.pg)')) el.hidden = !on;
+	for (const [id, show] of [['#h-signin', !on && basic], ['#h-signout', on && basic], ['#h-user', on && basic]]) $(id).hidden = !show;
+	$('#h-user-n').textContent = sess.user || ''; buildNav();
+	if (!on) { cert = null; cfg = null; edState = null; dirty(false); alerts = null; sysinfo = null; dash = []; profiles = []; SN.key = null; for (const id of ['#editors', '#presets', '#log', '#sc-tbl tbody', '#sc-kv', '#ac-tok tbody']) clear($(id));
+		route(); // a page that needs auth falls back to the Overview
+		secState(); renderCharts(); loadAbout(); return; }
 	hist = []; lastTs = 0; // history is re-read with the extra series
 	await loadConfig(); loadCert(); loadDash(); loadAlerts(); loadSystem(); resetHistory(); loadAbout();
 	api('/api/profiles').then(r => { profiles = r.body || []; renderHeader(); renderSystem(); renderProfiles(); }).catch(() => {});
-	if (edStash) { edState = edStash; edStash = null; buildEditors(); dirty(true); cvNotice('Unsaved curve edits from before the session expired are restored — apply or revert.', ''); if (curTab !== 'curves') toast('Unsaved curve edits restored (Curves tab)', 'warn'); }
-	else if (curTab === 'curves') loadEditor();
+	if (edStash) { edState = edStash; edStash = null; buildEditors(); dirty(true); cvNotice('Unsaved curve edits from before the session expired are restored — apply or revert.', ''); if (cur !== 'fans') toast('Unsaved curve edits restored (Fans page)', 'warn'); }
+	route(); // the page's loader runs with the config known
 	poll();
 }
 const ld = $('#login'), lf = $('#login-f'), lErr = notice('#l-err');
@@ -293,7 +355,7 @@ on('#l-close', 'click', () => ld.close()); backdrop(ld); ld.addEventListener('cl
 lf.addEventListener('submit', async ev => { ev.preventDefault(); const u = $('#l-user').value.trim(), p = $('#l-pass').value; if (!u || !p) return lErr('user and password needed');
 	const bt = $('#l-submit'); bt.disabled = true; lErr('');
 	try { const r = await api('/api/login', { method: 'POST', json: { user: u, password: p, remember: $('#l-remember').checked } });
-		sess = { authenticated: true, mode: 'basic', user: r.body.user || u, via: 'cookie' }; ld.close(); toast('Signed in', 'ok'); applyAuth(); $('#tab-' + curTab).focus(); }
+		sess = { authenticated: true, mode: 'basic', user: r.body.user || u, via: 'cookie' }; ld.close(); toast('Signed in', 'ok'); applyAuth(); const nb = $(`#nav [data-page="${cur}"]`); if (nb) nb.focus(); }
 	catch (e) { lErr(e.status === 401 ? 'invalid user or password' : e.status === 429 ? 'too many attempts' : e.message); $('#l-pass').value = ''; $('#l-pass').focus(); }
 	bt.disabled = false; });
 on('#h-signout', 'click', async () => { if (edDirty && !await ask('Sign out', 'Unsaved curve changes are discarded.', { ok: 'Sign out', danger: true })) return;
@@ -333,7 +395,7 @@ function renderCards() {
 		k.rpm.textContent = c.rpm < 0 ? 'no tach' : c.rpm.toLocaleString('en') + ' rpm';
 	});
 }
-// system inventory: Overview card (at a glance) + System tab (full tables)
+// system inventory: Overview card (at a glance) + System page (full tables)
 let sysinfo = null;
 const GiB = 1 << 30, fmtB = b => !(b > 0) ? '0 B' : b >= 1024 * GiB ? (b / 1024 / GiB).toFixed(1) + ' TiB' : b >= GiB ? (b / GiB).toFixed(1) + ' GiB' : Math.round(b / (1 << 20)) + ' MiB';
 const fmtMb = m => m >= 1000 ? +(m / 1000).toFixed(1) + ' Gbit/s' : m + ' Mbit/s';
@@ -381,15 +443,15 @@ function renderSystemTab() {
 	trow(tb, { mono: diskSum(s.storage.disks) });
 }
 async function loadSystem() { if (!signedIn()) return;
-	try { sysinfo = (await api('/api/system')).body; renderSystem(); if (curTab === 'system') renderSystemTab(); }
-	catch (e) { if (e.status === 401) return; sysinfo = null; renderSystem(); if (curTab === 'system') syNotice(e.status === 501 ? 'This daemon has no system inventory (older version?).' : 'system: ' + e.message, 'err'); } }
+	try { sysinfo = (await api('/api/system')).body; renderSystem(); if (cur === 'system') renderSystemTab(); }
+	catch (e) { if (e.status === 401) return; sysinfo = null; renderSystem(); if (cur === 'system') syNotice(e.status === 501 ? 'This daemon has no system inventory (older version?).' : 'system: ' + e.message, 'err'); } }
 on('#sy-refresh', 'click', loadSystem);
-// alerts list (Overview card + Alerts tab); `error` = raised but not delivered
+// alerts list (Overview card + Alerts page); `error` = raised but not delivered
 const alertList = (el, recent, empty) => { clear(el); if (!recent.length) el.append(h('li', { class: 'empty' }, empty || 'no alerts'));
 	for (const a of recent) el.append(h('li', null, h('span', { class: 'k ' + a.kind }, a.kind), h('span', { class: 'msg' }, a.msg || '', a.error ? h('span', { class: 'de' }, 'not delivered: ' + a.error) : null), tm(a.ts))); };
 const alNotice = notice('#al-notice');
 async function loadAlerts() { if (!signedIn()) return;
-	try { alerts = (await api('/api/alerts')).body; alertList($('#alerts'), alerts.recent || []); alNotice(''); if (curTab === 'alerts') renderAlertsTab(); }
+	try { alerts = (await api('/api/alerts')).body; alertList($('#alerts'), alerts.recent || []); alNotice(''); if (cur === 'alerts' || cur === 'settings') renderAlertsTab(); }
 	catch (e) { if (e.status === 401) return; alerts = null; alertList($('#alerts'), [], 'alerts: unavailable'); alertList($('#al-recent'), []); alNotice('alerts: ' + e.message); } }
 // sensors card, grouped by `kind` first (disk:* → SSD·NVMe or HDD), then id prefix / hwmon chip
 const GROUPS = [['CPU', /^(k10temp|coretemp)/], ['SSD · NVMe', /^nvme/], ['HDD', /^drivetemp/], ['GPU', /^(amdgpu|nouveau|i915|radeon)/], ['NIC', /^(nic|eth|mlx|igc|ixgbe|r8169|atlantic)/], ['EC · board', /^(ec$|minisforum|acpitz|spd5118)/]];
@@ -412,7 +474,7 @@ function renderSensors() {
 		r.v.textContent = v === undefined || v === null ? '—' : fmtT(v) + ' ' + unit(); r.b.classList.toggle('on', on); r.b.setAttribute('aria-pressed', String(on)); r.b.disabled = !on && dash.length >= max;
 		r.b.title = r.b.disabled ? `at most ${max} sensors` : ''; }
 }
-async function pollSensors(force) { if (!signedIn() || !force && curTab !== 'overview') return;
+async function pollSensors(force) { if (!signedIn() || !force && cur !== 'overview') return;
 	try { sensors = (await api('/api/sensors')).body || []; renderSensors(); fillSensorSelects(); } catch (e) {} }
 async function loadDash() { try { dash = (await api('/api/dashboard')).body.sensors || []; renderSensors(); renderCharts(); } catch (e) {} }
 async function setDash(ids, msg) { const r = await act(() => api('/api/dashboard', { method: 'PUT', json: { sensors: ids } }), r => msg((r.body.sensors || ids).length)); if (!r) return;
@@ -422,7 +484,7 @@ function renderCharts() {
 	const names = snap.channels.map(c => c.name);
 	const mk = (key, f) => names.map((n, i) => ({ name: n, color: seriesColor(i), data: hist.filter(p => p[key] && p[key][n] > -900).map(p => [p.ts, f ? f(p[key][n]) : p[key][n]]) }));
 	const legend = (el, ss, rm) => { clear(el); for (const s of ss) { const i = h('i'); i.style.background = `var(${s.color})`;
-		el.append(h('span', null, i, s.name, rm ? h('button', { class: 'x', 'aria-label': 'remove ' + s.name, title: 'remove from the chart', onclick: () => rm(s.name) }, '×') : null)); } };
+		el.append(h('span', null, i, s.name, rm ? h('button', { class: 'x', 'aria-label': 'remove ' + s.name, title: 'remove from the chart', onclick: () => rm(s.name) }, ico('close')) : null)); } };
 	const tf = { fmt: (v, ax) => v.toFixed(ax ? 0 : 1) + (ax ? '' : ' ' + unit()), minSpan: C.minSpanTemp };
 	const ts = mk('temp', tC), last = ' · last ' + R().label; legend($('#lg-temp'), ts);
 	$('#ch-temp-title').textContent = 'Temperature' + last; $('#ch-extra-title').textContent = 'Extra sensors' + last;
@@ -446,7 +508,7 @@ on('#ov-csv', 'click', () => act(() => download('/api/history.csv?minutes=' + R(
 // curves — edited in °C whatever the display unit; edState = working copy, edDirty = unsaved
 const ED = {}, drawEds = () => { for (const k in ED) ED[k].draw(); }; let edState = null, edStash = null, edDirty = false;
 const cvNotice = notice('#cv-notice'), K = UI.curve;
-const dirty = v => { edDirty = !!v; $('#cv-dirty').hidden = !v; $('#cv-badge').hidden = !v; };
+const dirty = v => { edDirty = !!v; $('#cv-dirty').hidden = !v; $('#cv-badge').hidden = !v; for (const d of $$('#nav-dirty, #bnav .dirty')) d.hidden = !v; };
 addEventListener('beforeunload', ev => { if (edDirty) ev.preventDefault(); });
 // Go durations ("1m0s") ↔ seconds; min_on is kept in the daemon's canonical form, the select lists the common values
 const durS = s => { const m = /^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+(?:\.\d+)?)s)?$/.exec(s || ''); return m && m[0] ? (+m[1] || 0) * 3600 + (+m[2] || 0) * 60 + (+m[3] || 0) : 0; };
@@ -468,7 +530,7 @@ const stripChannels = raw => { const out = []; let skip = false;
 const fromCfg = () => chList().map(c => ({ name: c.name, pwm: c.pwm, sensor: parts(c.sensor).join(','), curve: (c.curve || []).map(p => [+p[0], +p[1]]), critical: +c.critical, stop: c.stop === undefined || c.stop === 'auto' ? 'auto' : String(c.stop),
 	hysteresis: +c.hysteresis || 0, min_on: normDur(c.min_on) }));
 function loadEditor(keepNotice) { edState = fromCfg(); dirty(false); buildEditors(keepNotice); }
-function buildEditors(keepNotice) { // keepNotice: the 202 / warnings notice of an apply survives the reload of the editors (cleared by Revert, tab switch, next apply)
+function buildEditors(keepNotice) { // keepNotice: the 202 / warnings notice of an apply survives the reload of the editors (cleared by Revert, page switch, next apply)
 	const host = clear($('#editors')); for (const k in ED) delete ED[k];
 	if (!keepNotice) cvNotice('');
 	edState.forEach((c, i) => {
@@ -691,7 +753,7 @@ async function loadSchedules() { if (!signedIn()) return; const tb = clear($('#s
 		scNotice(l && !l.ok ? `Last switch failed: ${l.error || 'unknown error'} — the previous curves stay; retried at the next transition.` : '', '');
 	} catch (e) { if (e.status === 401) return; clear(kvEl); tb.append(h('tr', null, h('td', { colspan: 3, class: 'empty' }, e.status === 501 ? 'schedules: unavailable' : 'schedules: ' + e.message))); scNotice(''); } }
 
-// alerts tab; unsaved form edits survive the refresh; missing transports are disabled
+// alerts page + Settings → Alert transport; unsaved form edits survive the refresh; missing transports are disabled
 let alDirty = false; on('#al-form', 'input', () => { alDirty = true; });
 // mail_to for auto/mail, webhook_url + webhook_format for webhook
 const transVis = () => { const t = $('#al-transport').value; $('#al-mailto-l').hidden = !/^(auto|mail)$/.test(t); $('#al-wh-l').hidden = $('#al-whf-l').hidden = t !== 'webhook'; };
@@ -715,10 +777,11 @@ on('#al-form', 'submit', async ev => { ev.preventDefault(); const t = $('#al-tra
 	if (t === 'webhook') { j.webhook_url = $('#al-wh').value.trim(); j.webhook_format = $('#al-whf').value; if (!/^https?:\/\/\S+$/.test(j.webhook_url)) { toast('Webhook: an absolute http(s) URL is required', 'err'); return $('#al-wh').focus(); } }
 	const r = await act(() => api('/api/alerts', { method: 'PUT', json: j })); if (!r) return;
 	alDirty = false; toast('Transport saved — effective: ' + (r.body.status && r.body.status.effective), 'ok'); loadAlerts(); });
-on('#al-test', 'click', async () => {
+const sendTest = async () => { // Alerts page and Settings → Alert transport share the button
 	try { const r = await api('/api/alerts/test', { method: 'POST' }); toast('Test alert sent via ' + r.body.transport, 'ok'); }
 	catch (e) { if (e.status === 409) return toast('Test alert already running', 'warn'); toast('Test alert failed' + (e.body && e.body.transport ? ` (${e.body.transport})` : '') + ': ' + e.message, 'err'); }
-	loadAlerts(); });
+	loadAlerts(); };
+on('#al-test', 'click', sendTest); on('#al-test2', 'click', sendTest);
 on('#al-tpl-btn', 'click', async () => { const r = await act(() => api('/api/alerts/template', { method: 'POST' })); if (r) { toast('Template written to ' + r.body.path, 'ok'); loadAlerts(); } });
 
 // about (public; `go` is empty for anonymous readers, so the page is re-read on every sign-in / sign-out)
@@ -732,7 +795,7 @@ function renderAbout(a) {
 	const ul = clear($('#ab-credits')); for (const c of a.credits || []) ul.append(h('li', null, h('a', { href: c.url, rel: 'noopener', target: '_blank' }, c.name), c.note ? ' — ' + c.note : ''));
 }
 
-// log: last N lines, re-read every 10 s while the tab is open
+// log: last N lines, re-read every 10 s while the page is open
 let logLines = [], logSrc = '';
 const logLine = l => typeof l === 'string' ? l : JSON.stringify(l);
 async function loadLog() {
@@ -791,7 +854,7 @@ let timers = [], polling = false, repoll = false;
 async function poll() { // a call mid-poll queues one more round
 	if (polling) { repoll = true; return; } polling = true;
 	try { const r = await api('/api/state'); snap = r.body; renderHeader(); renderCards(); renderManual(); renderSystem();
-		if (curTab === 'curves') drawEds(); }
+		if (cur === 'fans') drawEds(); }
 	catch (e) {}
 	await pollSensors();
 	polling = false; if (repoll) { repoll = false; poll(); }
@@ -802,36 +865,35 @@ function schedule() {
 	if (document.hidden) return;
 	poll(); loadHistory(); const T = UI.timing;
 	timers = [setInterval(poll, S.interval * 1000), setInterval(loadHistory, R().poll),
-		setInterval(() => { if (curTab === 'overview' || curTab === 'alerts') loadAlerts(); }, T.alerts),
-		setInterval(() => { if (curTab === 'presets') loadSchedules(); }, T.schedules),
-		setInterval(() => { if (curTab === 'overview' || curTab === 'system') loadSystem(); }, T.system), // live parts: memory, load, link state
-		setInterval(() => { if (curTab === 'log') loadLog(); }, T.log)];
+		setInterval(() => { if (cur === 'overview' || cur === 'alerts') loadAlerts(); }, T.alerts),
+		setInterval(() => { if (cur === 'schedules') loadSchedules(); }, T.schedules),
+		setInterval(() => { if (cur === 'overview' || cur === 'system') loadSystem(); }, T.system), // live parts: memory, load, link state
+		setInterval(() => { if (cur === 'log') loadLog(); }, T.log)];
 }
 document.addEventListener('visibilitychange', schedule);
 
-// tabs
-let curTab = 'overview';
-const TABS = $$('#tabs [role=tab]');
-function selectTab(id, focus) {
-	if ($('#tab-' + id).hidden) return;
-	curTab = id;
-	TABS.forEach(t => { const on = t.id === 'tab-' + id; t.setAttribute('aria-selected', on); t.tabIndex = on ? 0 : -1; $('#' + t.getAttribute('aria-controls')).hidden = !on; if (on) { t.scrollIntoView({ block: 'nearest', inline: 'nearest' }); if (focus) t.focus(); } });
-	// every tab needs an entry (TestTabsHaveHandlers); a missing one throws after the panel switch
-	(({ overview: () => { renderCharts(); pollSensors(); loadAlerts(); }, manual: () => { if (snap) renderManual(); }, presets: () => { loadPresets(); loadSchedules(); }, log: loadLog, compat: renderProfiles, alerts: () => { alDirty = false; renderAlertsTab(); loadAlerts(); }, about: () => {},
-		system: () => { renderSystemTab(); loadSystem(); },
-		curves: () => { if (!edState) loadEditor();
-			pollSensors(1); drawEds(); } })[id] || (() => {}))();
+// settings page: Display (persisted in localStorage), then the sections the former dialogs held; sub-navigation marks the section in view
+// a click pins its section for a moment: the last sections cannot reach the top of the viewport, the observer would mark the one above
+let subLock = 0;
+const subVis = new Set(), subIO = new IntersectionObserver(es => { for (const e of es) e.isIntersecting ? subVis.add(e.target.id) : subVis.delete(e.target.id);
+	if (Date.now() < subLock || cur !== 'settings') return;
+	const list = $$('#st-list .st').filter(x => !x.hidden), atEnd = innerHeight + scrollY >= document.documentElement.scrollHeight - 2, first = atEnd ? list[list.length - 1] : list.find(x => subVis.has(x.id));
+	if (first) markSub(first.id); }, { rootMargin: '-64px 0px -60% 0px' });
+const markSub = (id, pin) => { if (pin) subLock = Date.now() + UI.timing.subLock; for (const b of $$('#subnav button')) b.dataset.sec === id ? b.setAttribute('aria-current', 'true') : b.removeAttribute('aria-current'); };
+function buildSubnav() {
+	const sn = clear($('#subnav')); subIO.disconnect(); subVis.clear();
+	for (const st of $$('#st-list .st')) { if (st.hidden) continue; subIO.observe(st);
+		sn.append(h('button', { 'data-sec': st.id, onclick: () => { st.scrollIntoView({ block: 'start' }); markSub(st.id, true); lastHash = '#settings/' + st.id; history.replaceState(null, '', lastHash); } }, st.classList.contains('danger') ? ico('warn') : null, $('h2', st).textContent)); }
+	if (!$('#subnav [aria-current]')) markSub('st-display');
 }
-TABS.forEach(t => { t.addEventListener('click', () => selectTab(t.id.slice(4)));
-	t.addEventListener('keydown', ev => { const vis = TABS.filter(x => !x.hidden), i = vis.indexOf(t), d = { ArrowRight: 1, ArrowLeft: -1, Home: -i, End: vis.length - 1 - i }[ev.key];
-		if (d === undefined) return; ev.preventDefault(); selectTab(vis[(i + d + vis.length) % vis.length].id.slice(4), true); }); });
-
-// settings UI
-const sb = $('#h-settings'), sp = $('#settings'), showS = on => { sp.hidden = !on; sb.setAttribute('aria-expanded', on); };
-sb.addEventListener('click', () => showS(sp.hidden));
-document.addEventListener('click', ev => { if (!sp.hidden && !sp.contains(ev.target) && ev.target !== sb) showS(false); });
-document.addEventListener('keydown', ev => { if (ev.key === 'Escape' && !sp.hidden) { showS(false); sb.focus(); } });
-$('#s-unit').value = S.unit; $('#s-interval').value = String(S.interval); $('#s-theme').value = S.theme;
+// entering the page: account + sessions, tokens (session callers only), certificate, alert transport are re-read
+function renderSettings() {
+	acNotice(''); acReset(); $('#ac-user').textContent = sess.user || '';
+	const tok = /^(cookie|basic)$/.test(sess.via || ''); $('#st-tokens').hidden = $('#ac-tokens').hidden = !tok;
+	buildSubnav(); loadAccount(); openCert();
+}
+$('#s-unit').value = S.unit; $('#s-interval').value = String(S.interval); $('#s-theme').value = S.theme; $('#s-nav').value = S.nav;
+on('#s-nav', 'change', ev => { S.nav = ev.target.value; saveS(); buildNav(); });
 on('#s-unit', 'change', ev => { S.unit = ev.target.value; saveS(); if (snap) { renderCards(); renderCharts(); renderSensors(); fillSensorSelects(); redrawAll(); } });
 on('#s-interval', 'change', ev => { S.interval = +ev.target.value; saveS(); schedule(); });
 on('#s-theme', 'change', ev => { S.theme = ev.target.value; saveS(); document.documentElement.dataset.theme = S.theme; redrawAll(); });
@@ -839,7 +901,7 @@ matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => { i
 document.documentElement.dataset.theme = S.theme;
 // settings bundle
 const gNotice = notice('#g-notice');
-on('#s-export', 'click', () => { showS(false); act(() => download('/api/config/export', 'n5-fangov-settings.json'), n => `Settings exported as ${n}`); });
+on('#s-export', 'click', () => { act(() => download('/api/config/export', 'n5-fangov-settings.json'), n => `Settings exported as ${n}`); });
 on('#s-import', 'click', () => $('#s-file').click());
 on('#s-file', 'change', async () => {
 	const inp = $('#s-file'), f = inp.files[0]; inp.value = ''; if (!f) return;
@@ -847,16 +909,15 @@ on('#s-file', 'change', async () => {
 	const text = await f.text(); let j = null; try { j = JSON.parse(text); } catch (e) {}
 	if (!j || typeof j !== 'object' || Array.isArray(j)) return toast(`${f.name}: not a JSON settings bundle`, 'err');
 	if (!await ask('Import settings', `Import settings from ${f.name}?\nDaemon config and presets are replaced (after validation).`, { ok: 'Import', danger: true })) return;
-	showS(false);
 	try { const r = await api('/api/config/import', { method: 'POST', body: text, headers: { 'Content-Type': 'application/json' } });
 		if (r.status === 202) { gNotice('Settings imported — restart required: systemctl restart n5-fangov'); toast('Imported — restart required', 'warn', UI.timing.toastErr); }
 		else { toast('Settings imported', 'ok'); }
-		await loadConfig(); edState = null; dirty(false); if (curTab === 'curves') loadEditor(); if (curTab === 'presets') loadPresets(); poll();
+		await loadConfig(); edState = null; dirty(false); if (cur === 'fans') { loadEditor(); loadPresets(); } poll();
 	} catch (e) { toast(e.message, 'err', UI.timing.toastLong); }
 });
 
-// account dialog (Settings → Account…)
-const acd = $('#account'), acNotice = notice('#ac-notice');
+// account & sessions, API tokens (Settings page)
+const acNotice = notice('#ac-notice');
 const acReset = () => { for (const f of ['#ac-pw-f', '#ac-us-f', '#ac-tk-f']) { $(f).reset(); $(f).hidden = true; } $('#ac-tk-new').hidden = true; $('#ac-tk-secret').value = ''; $('#ac-tk-never').hidden = true; };
 async function loadAccount() {
 	try { const a = (await api('/api/account')).body; $('#ac-user').textContent = a.user || sess.user || ''; const tb = clear($('#ac-sessions tbody')), ss = a.sessions || [];
@@ -885,9 +946,7 @@ on('#ac-tk-f', 'submit', async ev => { ev.preventDefault(); const name = $('#ac-
 on('#ac-tk-copy', 'click', () => { const inp = $('#ac-tk-secret'); const fb = () => { inp.focus(); inp.select(); toast('Clipboard blocked — the secret is selected, press Ctrl+C', 'warn'); };
 	navigator.clipboard ? navigator.clipboard.writeText(inp.value).then(() => toast('Token copied', 'ok'), fb) : fb(); });
 on('#ac-tk-done', 'click', () => { $('#ac-tk-new').hidden = true; $('#ac-tk-secret').value = ''; $('#ac-tk').focus(); });
-on('#s-acc', 'click', () => { showS(false); acNotice(''); acReset(); $('#ac-user').textContent = sess.user || ''; $('#ac-tokens').hidden = !/^(cookie|basic)$/.test(sess.via || ''); if (!acd.open) acd.showModal(); $('#ac-pw').focus(); loadAccount(); });
-on('#ac-close', 'click', () => acd.close()); backdrop(acd); acd.addEventListener('close', acReset);
-$$('#account [data-cancel]').forEach(b => b.addEventListener('click', acReset));
+$$('#st-account [data-cancel], #st-tokens [data-cancel]').forEach(b => b.addEventListener('click', acReset));
 for (const [b, f, i] of [['#ac-pw', '#ac-pw-f', '#ac-cur'], ['#ac-us', '#ac-us-f', '#ac-ucur']]) on(b, 'click', () => { acReset(); $(f).hidden = false; $(i).focus(); });
 const acFail = (e, id) => { acNotice(e.message, 'err'); $(id).value = ''; $(id).focus(); };
 on('#ac-pw-f', 'submit', async ev => { ev.preventDefault(); const cur = $('#ac-cur').value, n = $('#ac-new').value, len = [...n].length; // code points, as the server counts
@@ -896,19 +955,20 @@ on('#ac-pw-f', 'submit', async ev => { ev.preventDefault(); const cur = $('#ac-c
 	catch (e) { acFail(e, '#ac-cur'); } });
 on('#ac-us-f', 'submit', async ev => { ev.preventDefault(); const cur = $('#ac-ucur').value, u = $('#ac-uname').value.trim();
 	if (!LIM.user.test(u)) return acNotice('user name: letters, digits, _ . - (1–32)', 'err'); if (!cur) return acNotice('current password required', 'err');
-	try { const r = await api('/api/account/user', { method: 'POST', json: { current_password: cur, user: u } }); sess.user = r.body.user || u; $('#h-user').textContent = sess.user; acReset(); acNotice(''); toast('User name changed to ' + sess.user, 'ok'); loadAccount(); }
+	try { const r = await api('/api/account/user', { method: 'POST', json: { current_password: cur, user: u } }); sess.user = r.body.user || u; $('#h-user-n').textContent = sess.user; acReset(); acNotice(''); toast('User name changed to ' + sess.user, 'ok'); loadAccount(); }
 	catch (e) { acFail(e, '#ac-ucur'); } });
 on('#ac-revoke', 'click', async () => { if (!await ask('Sign out other sessions', 'Sign out every other session? This one stays signed in.', { ok: 'Sign out others', danger: true })) return;
 	const r = await act(() => api('/api/account/sessions/revoke', { method: 'POST', json: { others: true } })); if (r) { toast(`${r.body.revoked || 0} other session(s) signed out`, 'ok'); loadAccount(); } });
 
-// certificate panel (protected; POSTs need CSRF)
-const dlg = $('#cert'), ctNotice = notice('#ct-notice');
+// certificate (Settings page; protected, POSTs need CSRF)
+const ctNotice = notice('#ct-notice');
 const ctForm = (id, first) => { for (const f of ['#ct-regen-f', '#ct-upload-f']) $(f).hidden = f !== id || !$(f).hidden; if (!$(id).hidden) $(first).focus(); };
 async function loadCert() { if (!signedIn()) return; try { cert = (await api('/api/tls')).body; } catch (e) { cert = null; if (e.status !== 501 && e.status !== 401) toast('certificate: ' + e.message, 'err'); } secState(); }
 function renderCert() {
 	const c = cert || { mode: 'off' }, i = c.info, b = $('#ct-mode'), fb = !!c.fallback, isFile = c.mode === 'file', isAuto = c.mode === 'auto' || fb;
 	b.textContent = fb ? 'automatic (fallback)' : isFile ? 'own certificate' : isAuto ? 'automatic' : 'TLS off'; b.className = 'badge ' + (fb ? 'warn' : isAuto ? 'ok' : c.mode);
 	$('#ct-off').hidden = !!i; $('#ct-body').hidden = !i; $('#ct-reset').hidden = !isFile && !fb; $('#ct-regen').hidden = isFile || fb; // fallback: regenerate is refused (409) until reset to auto
+	$('#dz-reset').disabled = !isFile && !fb; $('#dz-regen').disabled = !i || isFile || fb;
 	if (!i) return;
 	const left = dLeft(i.not_after), soon = left < UI.thresh.certSoonDays, until = h('dd', { class: left < 0 ? 'expired' : soon ? 'soon' : '' }, i.not_after.slice(0, 10) + (left < 0 ? ' — expired' : soon ? ` — in ${left} days` : ''));
 	kv($('#ct-kv'), [['subject', i.subject], ['issuer', i.issuer], ['valid from', i.not_before.slice(0, 10)], ['valid until', until], ['key', i.key_algo + (i.is_ca ? ' · CA flag (trust anchor)' : '')], ['serial', h('dd', { class: 'mono' }, i.serial_hex)]]);
@@ -921,11 +981,9 @@ function renderCert() {
 	if (w.length) ctNotice(w.join('\n'), 'warn');
 }
 const ctClearUpload = () => { for (const id of ['#ct-cpem', '#ct-kpem', '#ct-cfile', '#ct-kfile']) $(id).value = ''; $('#ct-force').checked = false; $('#ct-force-l').hidden = true; };
-async function openCert() { showS(false); ctNotice(''); $('#ct-regen-f').hidden = $('#ct-upload-f').hidden = true; ctClearUpload(); await loadCert(); renderCert(); if (!dlg.open) dlg.showModal(); }
-on('#h-sec', 'click', openCert); on('#s-cert', 'click', openCert);
-on('#ct-close', 'click', () => dlg.close()); backdrop(dlg);
-dlg.addEventListener('close', ctClearUpload);
-$$('#cert [data-cancel]').forEach(b => b.addEventListener('click', () => { b.closest('form').hidden = true; ctClearUpload(); }));
+async function openCert() { ctNotice(''); $('#ct-regen-f').hidden = $('#ct-upload-f').hidden = true; ctClearUpload(); await loadCert(); renderCert(); }
+on('#h-cert', 'click', () => go('settings', 'st-cert'));
+$$('#st-cert [data-cancel]').forEach(b => b.addEventListener('click', () => { b.closest('form').hidden = true; ctClearUpload(); }));
 for (const x of ['crt', 'cer']) on('#ct-' + x, 'click', () => act(() => download('/api/tls/cert.' + x, 'n5-fangov.' + x), n => `Downloaded ${n} — now import it (see How to trust)`));
 on('#ct-copy', 'click', () => navigator.clipboard.writeText($('#ct-fp').textContent).then(() => toast('Fingerprint copied', 'ok'), () => toast('Clipboard blocked — select the text', 'warn')));
 on('#ct-regen', 'click', () => { $('#ct-newkey').checked = false; ctForm('#ct-regen-f', '#ct-newkey'); });
@@ -935,9 +993,11 @@ const ctDone = async (r, msg) => { const w = r.body.warning ? [r.body.warning] :
 	toast(msg + (w.length ? ' (warnings)' : ''), w.length ? 'warn' : 'ok', UI.timing.toastNotice);
 	await loadCert(); renderCert(); const have = new Set((cert && cert.warnings) || []), extra = w.filter(x => !have.has(x));
 	if (extra.length) { const n = $('#ct-notice'); ctNotice((n.hidden ? '' : n.textContent + '\n') + extra.join('\n'), 'warn'); } loadConfig(); };
-on('#ct-regen-f', 'submit', async ev => { ev.preventDefault(); const nk = $('#ct-newkey').checked;
-	if (nk && !await ask('New private key', 'Generate a new private key?\nEvery browser and OS store trusting the current certificate must import the new one.', { ok: 'Regenerate', danger: true })) return;
-	const r = await act(() => api('/api/tls/regenerate', { method: 'POST', json: { keep_key: !nk } })); if (!r) return; $('#ct-regen-f').hidden = true; ctDone(r, 'Certificate regenerated'); });
+// regenerate: the form's checkbox or the danger zone's "with new key" button
+const ctRegen = async nk => { if (nk && !await ask('New private key', 'Generate a new private key?\nEvery browser and OS store trusting the current certificate must import the new one.', { ok: 'Regenerate', danger: true })) return;
+	const r = await act(() => api('/api/tls/regenerate', { method: 'POST', json: { keep_key: !nk } })); if (!r) return; $('#ct-regen-f').hidden = true; ctDone(r, 'Certificate regenerated'); };
+on('#ct-regen-f', 'submit', ev => { ev.preventDefault(); ctRegen($('#ct-newkey').checked); });
+on('#dz-regen', 'click', () => ctRegen(true));
 for (const [f, ta] of [['#ct-cfile', '#ct-cpem'], ['#ct-kfile', '#ct-kpem']]) $(f).addEventListener('change', async ev => { const x = ev.target.files[0]; if (!x) return;
 	if (x.size > LIM.pemBytes) return toast(x.name + ': larger than 64 KiB', 'err'); $(ta).value = await x.text(); });
 // 400 + force_required: the leaf does not cover this session's host name
@@ -946,8 +1006,9 @@ on('#ct-upload-f', 'submit', async ev => { ev.preventDefault(); const c = $('#ct
 	let r; try { r = await api('/api/tls/upload', { method: 'POST', json: { cert: c, key: k, force: $('#ct-force').checked } }); }
 	catch (e) { if (e.body && e.body.force_required) { $('#ct-force-l').hidden = false; $('#ct-force-h').textContent = e.body.host; ctNotice(e.message, 'err'); toast('Certificate does not cover ' + e.body.host, 'err'); } else toast(e.message, 'err'); return; }
 	$('#ct-upload-f').hidden = true; ctClearUpload(); ctDone(r, 'Own certificate installed'); });
-on('#ct-reset', 'click', async () => { if (!await ask('Back to auto', 'Back to the automatic certificate? The uploaded pair is deleted.', { ok: 'Back to auto', danger: true })) return;
-	const r = await act(() => api('/api/tls/reset', { method: 'POST' })); if (r) ctDone(r, 'Automatic certificate active'); });
+const ctReset = async () => { if (!await ask('Back to auto', 'Back to the automatic certificate? The uploaded pair is deleted.', { ok: 'Back to auto', danger: true })) return;
+	const r = await act(() => api('/api/tls/reset', { method: 'POST' })); if (r) ctDone(r, 'Automatic certificate active'); };
+on('#ct-reset', 'click', ctReset); on('#dz-reset', 'click', ctReset);
 
 // boot: session first, protected bits via applyAuth. With ?mock=1 the boot waits for mock.js (never requested otherwise).
 const boot = async () => {
@@ -955,7 +1016,7 @@ const boot = async () => {
 	api('/api/version').then(r => { version = r.body.version || ''; if (typeof r.body.tls === 'boolean') tls = r.body.tls; if (r.body.prerelease !== undefined) preBadge($$('.beta'), r.body.prerelease);
 		if (r.body.limits) { Object.assign(LIM, r.body.limits); applyLimits(); } secState(); renderHeader(); }).catch(() => {});
 	try { sess = (await api('/api/session')).body || sess; } catch (e) { sess = anon(); }
-	await applyAuth(); if (MOCK && Q.get('tab')) selectTab(Q.get('tab'));
+	await applyAuth();
 	if (document.hidden) { poll(); loadHistory(); }
 	schedule();
 };

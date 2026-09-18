@@ -1383,8 +1383,8 @@ func TestStaticIndex(t *testing.T) {
 	if !strings.HasPrefix(r.hdr.Get("Content-Type"), "text/javascript") || !strings.Contains(r.body, "X-N5-Fangov-Csrf") {
 		t.Errorf("app.js: %q %.100s", r.hdr.Get("Content-Type"), r.body)
 	}
-	if len(r.body) > 96*1024 {
-		t.Errorf("app.js is %d bytes, budget 96 KB (DESIGN \"Dashboard\")", len(r.body))
+	if len(r.body) > 128*1024 {
+		t.Errorf("app.js is %d bytes, budget 128 KiB (DESIGN 11a)", len(r.body))
 	}
 	// UI assumptions the server honours: since-polling, {"lines"} log wrapper,
 	// "channel" key, "<unchanged>" hash placeholder passes through untouched,
@@ -1402,8 +1402,8 @@ func TestStaticIndex(t *testing.T) {
 	if !strings.HasPrefix(r.hdr.Get("Content-Type"), "text/javascript") || !strings.Contains(r.body, "window.n5mock") {
 		t.Errorf("mock.js: %q %.100s", r.hdr.Get("Content-Type"), r.body)
 	}
-	if len(r.body) > 40*1024 {
-		t.Errorf("mock.js is %d bytes, budget 40 KB (DESIGN \"Dashboard\")", len(r.body))
+	if len(r.body) > 48*1024 {
+		t.Errorf("mock.js is %d bytes, budget 48 KiB (DESIGN 11a)", len(r.body))
 	}
 	if html, _ := staticFS.ReadFile("static/index.html"); strings.Contains(string(html), "mock.js") {
 		t.Errorf("index.html references mock.js; the production page must never request it")
@@ -1415,6 +1415,9 @@ func TestStaticIndex(t *testing.T) {
 	wantCode(t, r, 200)
 	if !strings.HasPrefix(r.hdr.Get("Content-Type"), "text/css") {
 		t.Errorf("app.css content-type %q", r.hdr.Get("Content-Type"))
+	}
+	if len(r.body) > 48*1024 {
+		t.Errorf("app.css is %d bytes, budget 48 KiB (DESIGN 11a)", len(r.body))
 	}
 	wantCode(t, e.do(t, "GET", "/index.html", "", nil), 200)
 	wantCode(t, e.do(t, "GET", "/other.txt", "", nil), 404)
@@ -1482,11 +1485,12 @@ func TestServeWarnsNonLoopbackWithoutAuth(t *testing.T) {
 	}
 }
 
-// TestTabsHaveHandlers (AUDIT hoch #1): every role="tab" in index.html must
-// have an entry in selectTab's dispatch map in app.js — a missing entry threw
-// a TypeError on every switch to the Manual tab and, with ?tab=manual, kept
-// the boot sequence from reaching schedule().
-func TestTabsHaveHandlers(t *testing.T) {
+// TestNavHasPages (AUDIT hoch #1, 0.4.0 shell): every page section
+// id="p-<id>" in index.html must be listed in PAGES (the nav is built from
+// it) and have an entry in go's dispatch map in app.js, and every PAGES id
+// needs a section — a missing dispatch entry threw a TypeError on every
+// switch to the page and, with ?tab=, kept the boot from reaching schedule().
+func TestNavHasPages(t *testing.T) {
 	html, err := staticFS.ReadFile("static/index.html")
 	if err != nil {
 		t.Fatal(err)
@@ -1495,23 +1499,60 @@ func TestTabsHaveHandlers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tabs := regexp.MustCompile(`role="tab" id="tab-([a-z]+)"`).FindAllStringSubmatch(string(html), -1)
-	if len(tabs) < 5 {
-		t.Fatalf("found only %d tabs in index.html", len(tabs))
+	src := string(js)
+	secs := regexp.MustCompile(`<section id="p-([a-z]+)" class="pg"`).FindAllStringSubmatch(string(html), -1)
+	if len(secs) < 5 {
+		t.Fatalf("found only %d page sections in index.html", len(secs))
 	}
 	// the dispatch map is the object literal that ends with `})[id]`
-	i := strings.Index(string(js), "})[id]")
+	i := strings.Index(src, "})[id]")
 	if i < 0 {
 		t.Fatal("dispatch map `})[id]` not found in app.js")
 	}
-	start := strings.LastIndex(string(js)[:i], "(({")
+	start := strings.LastIndex(src[:i], "(({")
 	if start < 0 {
 		t.Fatal("dispatch map start `(({` not found in app.js")
 	}
-	m := string(js)[start:i]
-	for _, tb := range tabs {
-		if !regexp.MustCompile(`(?m)(^|[\s{,])` + tb[1] + `:`).MatchString(m) {
-			t.Errorf("tab %q has no handler in selectTab's dispatch map", tb[1])
+	m := src[start:i]
+	pl := strings.Index(src, "const PAGES = [")
+	if pl < 0 {
+		t.Fatal("PAGES list not found in app.js")
+	}
+	pe := strings.Index(src[pl:], "];")
+	pages := regexp.MustCompile(`id: '([a-z]+)'`).FindAllStringSubmatch(src[pl:pl+pe], -1)
+	if len(pages) < 5 {
+		t.Fatalf("found only %d PAGES entries in app.js", len(pages))
+	}
+	have := map[string]bool{}
+	for _, sec := range secs {
+		have[sec[1]] = true
+		if !regexp.MustCompile(`(?m)(^|[\s{,])` + sec[1] + ":").MatchString(m) {
+			t.Errorf("page %q has no handler in go's dispatch map", sec[1])
+		}
+		found := false
+		for _, p := range pages {
+			if p[1] == sec[1] {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("page %q has a section but no PAGES entry in app.js", sec[1])
+		}
+	}
+	for _, p := range pages {
+		if !have[p[1]] {
+			t.Errorf("PAGES entry %q has no <section id=\"p-%s\"> in index.html", p[1], p[1])
+		}
+	}
+	// the old tab bar, settings popover and the account / certificate dialogs are gone (their content lives on the Settings page)
+	for _, gone := range []string{`role="tab"`, `id="h-settings"`, `<dialog class="dlg" id="account"`, `<dialog class="dlg" id="cert"`, `class="popover"`} {
+		if strings.Contains(string(html), gone) {
+			t.Errorf("index.html still carries %s", gone)
+		}
+	}
+	for _, want := range []string{`<nav class="nav" id="nav" aria-label="Pages">`, `<nav class="bnav" id="bnav"`, `<dialog class="sheet" id="more"`, `id="st-cert"`, `id="st-account"`, `id="st-danger"`, `id="h-cert"`} {
+		if !strings.Contains(string(html), want) {
+			t.Errorf("index.html lacks %s", want)
 		}
 	}
 }
