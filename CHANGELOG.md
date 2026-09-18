@@ -31,8 +31,13 @@ in 0.3.1-rc1 below. Open:
 - Repository public after the history rewrite; upstream issues (driver validation data,
   ProxFansX compatibility note); DKMS `.deb` in the sibling repository with the header
   meta-package as dependency (user path: two `apt install` + `setup`).
-- Reboot proof on the reference host (DKMS + daemon together) — the last open operations
-  question, no code; part of the release-gate test.
+- ~~Reboot proof on the reference host (DKMS + daemon together)~~ — done 2026-09-18 in
+  the release-gate test of 0.3.1-rc1: module loaded from `modules-load.d` at boot, daemon
+  READY 40 s later, curves in effect, history reloaded from `history.json`, no alerts.
+- Operator decision pending: should `setup` write the recommended built-in set
+  (`n5pro-balanced`) instead of the profile defaults? The profile defaults
+  (`hdd [[36,105],[46,255]]`) match none of the three built-in presets, so a fresh setup
+  runs the HDD fan at 76 % at 42 °C until a preset is applied (gate finding 5b).
 - ~~Measure whether the EC regulates pwm4 again after a write~~ — measured 2026-09-17 on
   the reference host: the driver refuses a `pwm4` write while `pwm4_enable = 2` (EBUSY);
   after `enable = 1`, duty 100 and `enable = 2` again the EC left 100 in place for 90 s.
@@ -69,12 +74,71 @@ installation test on the real host following the documentation alone** — unins
 kernel-driver check, install by release path and by package, setup, dashboard, update
 hook, reboot, troubleshooting, uninstall/reinstall. Checklist: [`docs/RELEASE-GATE.md`](docs/RELEASE-GATE.md).
 Applies to every 0.3.x release and to 0.4.0. Preconditions: docs split, repository hardening
-merged, history rewritten (all done). While the repository is private the tester downloads
-the release assets with `gh release download <tag>` instead of the public URL; the public
-curl path is re-run once at 0.4.0.
+merged, history rewritten (all done). While the repository is private the release assets
+are downloaded with `gh release download <tag>` on a signed-in client and copied to the
+host with `scp` (the host has no `gh`, gate finding 2026-09-18); the public curl path is
+re-run once at 0.4.0. First run 2026-09-18 on 0.3.1-rc1: passed, findings in 0.3.1-rc2.
 
 **Not planned**: MQTT/discovery (REST + token is enough and smaller), a German UI
 (audience is GitHub), multi-host management, a frontend framework.
+
+## [0.3.1-rc2] — 2026-09-18
+
+The release-gate run of 0.3.1-rc1 (operator, on the reference host, documentation only —
+`docs/RELEASE-GATE.md`) passed all ten rows functionally, including the reboot proof, and
+produced the findings below. rc2 fixes them; rows 3, 4, 6 (certificate recipe) and 10 are
+re-run on rc2 before `0.3.1`.
+
+### Fixed
+
+- **The `.deb` shipped a different binary than the release asset.** The workflow called
+  `make deb VERSION=<tag>` — with the leading `v` — and `deb` rebuilt, so the package's
+  binary printed `v0.3.1-rc1` in `n5-fangov version`, the webhook `User-Agent` and every
+  alert text. The workflow now packages the file it built (`make deb-only`), asserts the
+  sha256 of the `.deb`'s binary equals the uploaded asset, checks for `md5sums` and refuses
+  a version literal with a prefix; `internal/version` strips a leading `v` at init as a
+  second guard. Contract: DESIGN §12 "One release, one binary".
+- **Installer unit copies survived `apt remove` and shadowed the package.** `install.sh`
+  puts the units under `/etc/systemd/system/`, the package under `/lib/systemd/system/`;
+  after "install.sh, then .deb" the `/etc` copy took precedence for every later package
+  update and stayed behind on `apt remove`. The postinst now removes a copy that is
+  byte-identical to the packaged unit (and re-links the enable symlink); a differing copy
+  is named in a warning and kept.
+- **Alert texts reached mail clients with mojibake** (`â€”` for the em dash via the PVE
+  notification path, which carries no charset). Every sink now delivers ASCII
+  (`alert.ASCII`: dashes, ellipsis, degree sign, quotes, umlauts mapped; anything else
+  `?`); the test alert, the kernel-gate line and the schedule window use plain dashes.
+- **CSV export file name was stamped in UTC** while its `time` column is local time
+  (`…-000837.csv` for an 02:08 export). Now local time.
+- Login dialog: the recovery hint *Forgot the password? On the host, as root:
+  `n5-fangov passwd`* — root on the box is the only recovery path, by design; the
+  troubleshooting page has the matching row.
+
+### Changed
+
+- `make deb` = `build` + `deb-only`; the package carries `DEBIAN/md5sums` (`dpkg -V` works).
+
+### Documentation (release-gate findings)
+
+- Private-phase download without `gh` on the host: assets and source tarball fetched on a
+  signed-in client and copied with `scp`; the two renames the sha256 line needs
+  (install page, release-gate preconditions).
+- Reference outputs on the pages the gate walks through: `uninstall.sh --purge`, the
+  installer, the `.deb` postinst lines (fresh / config present) and the apt-hook line,
+  the `setup` dialog, `check` and `status`, the test alert as delivered, the webhook JSON
+  and headers as received.
+- `.deb` is a release asset (no `make deb` needed); switching from the installer to the
+  package; `uninstall.sh` runs from the checkout, `apt remove` for the package;
+  `scope (local|lan)` in the dialog, `HOST:PORT` as `--listen`; the hwmon number is not
+  stable across boots (find the device by name); the good line of the kernel-gate hook
+  and how to exercise it with any package reinstall; row 1 of the troubleshooting table
+  ends with the start; Windows certificate import: choose the store explicitly (the
+  wizard's default *Automatically select* puts it in the wrong store), close the browser;
+  the first visit goes through the warning page, then sign in, then download; token
+  placeholder without brackets; CSV file name; Manual and Presets behaviour with the
+  0.4.0 items (preset editor, editable schedules, manual toggle) recorded in
+  `docs/design/REDESIGN-CONCEPT.md`; release-gate checklist row 7 uses a small package
+  reinstall instead of the kernel.
 
 ## [0.3.1-rc1] — 2026-09-17
 
