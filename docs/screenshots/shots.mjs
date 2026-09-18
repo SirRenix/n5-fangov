@@ -125,9 +125,10 @@ try {
 	await evalJS(`document.getElementById('st-tokens').scrollIntoView(); 1`); await shot('19-settings-tokens.png', { view: true });
 	// 20 about with the Compatibility card (deep link #about/compat)
 	await nav('?mock=1&user=1#about/compat'); await shot('20-about-compatibility.png');
-	// 21 connection banner (same DOM the client shows after two failed polls)
-	await nav('?mock=1&user=1');
-	await evalJS(`document.getElementById('banner').hidden=false; document.getElementById('h-live').classList.add('err'); 1`); await shot('21-connection-lost.png', { view: true });
+	// 21 connection banner: the mock's &down=1 fails state / history / sensors from 2 s after the boot; the client counts two failures in a row
+	// (the 5 s poll: state, then sensors) and shows the banner over the content it already has
+	await nav('?mock=1&user=1&down=1', { wait: 7000 });
+	await evalJS(`(()=>{if(document.getElementById('banner').hidden) throw new Error('21: banner not shown with &down=1'); return 1;})()`); await shot('21-connection-lost.png', { view: true });
 	// 22 light theme
 	await setLS({ ...LS, theme: 'light' }); await nav('?mock=1&user=1'); await shot('22-overview-light.png');
 	await setLS(LS);

@@ -1,6 +1,6 @@
 // n5-fangov dashboard mock — loaded by app.js only with ?mock=1, never referenced by index.html.
 // Publishes window.n5mock(path, opt) → Promise<{status, body, filename?}>; api() calls it instead of fetch.
-// Flags: &user=1 &auth=none &tls=off|file|soon|fallback &tab= &syserr=1 &reject=1 &restart=1 &expire=1 &schedfail=1 &pwm4=1 &lag=1
+// Flags: &user=1 &auth=none &tls=off|file|soon|fallback &tab= &syserr=1 &reject=1 &restart=1 &expire=1 &schedfail=1 &pwm4=1 &lag=1 &down=1
 // Names and addresses are documentation values (n5host, 192.0.2.x, n5.lan, example.test).
 'use strict';
 window.n5mock = (() => {
@@ -177,6 +177,7 @@ window.n5mock = (() => {
 			credits: [['ltdstudio/minisforum-n5-it5571', 'the kernel driver'], ['Sl0thC0der/proxfansx', 'dashboard idea; nct67xx/it87xx profiles']].map(([name, note]) => ({ name, url: GH + name, note })) });
 		if (p === '/api/openapi.json') return ok(openapi());
 		if (M.in && M.exp && now - t0 > 15 && p === '/api/state') { M.in = M.exp = false; return fail('unauthorized', 401); } // &expire=1: session dies once after 15 s
+		if (Q.get('down') === '1' && now - t0 > 2 && /^\/api\/(state|history|sensors)$/.test(p)) return fail('network: mock down', 0); // &down=1: after the boot the poll path fails like a lost daemon (status 0 = no answer) → connection banner
 		if (p === '/api/state') { const pt = point(now), stall = (now | 0) % 40 < 3, hold = (now | 0) % 300 < 90;
 			const body = { ts: pt.ts, status: 'ok', profile: 'n5pro', verified: true, dry_run: false, uptime_s: 435723,
 				// like the daemon: an override replaces the target and the mode, stall and critical win on top; &lag=1 reports the previous

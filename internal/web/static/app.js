@@ -64,9 +64,11 @@ const tC = v => S.unit === 'F' ? v * 9 / 5 + 32 : v;
 const unit = () => S.unit === 'F' ? '°F' : '°C';
 const fmtT = (v, d = 1) => !(v > -900) ? '—' : tC(v).toFixed(d);
 const pct = d => Math.round(d / 255 * 100);
-const rel = ts => { const s = Math.max(0, Date.now() / 1000 - ts | 0);
-	return s < 60 ? s + ' s ago' : s < 3600 ? (s / 60 | 0) + ' min ago' : s < 86400 ? `${s / 3600 | 0} h ${s % 3600 / 60 | 0} min ago` : `${s / 86400 | 0} d ${s % 86400 / 3600 | 0} h ago`; };
-const fmtUp = s => { const d = s / 86400 | 0, hh = s % 86400 / 3600 | 0, m = s % 3600 / 60 | 0; return d ? `${d}d ${hh}h` : hh ? `${hh}h ${m}m` : `${m}m`; };
+// "6 d 3 h" / "2 h 5 min" / "4 min", zero parts dropped
+const elapsed = s => { const d = s / 86400 | 0, hh = s % 86400 / 3600 | 0, m = s % 3600 / 60 | 0;
+	return d ? `${d} d` + (hh ? ` ${hh} h` : '') : hh ? `${hh} h` + (m ? ` ${m} min` : '') : `${m} min`; };
+const rel = ts => { const s = Math.max(0, Date.now() / 1000 - ts | 0); return (s < 60 ? s + ' s' : elapsed(s)) + ' ago'; };
+const fmtUp = s => { const d = s / 86400 | 0, hh = s % 86400 / 3600 | 0, m = s % 3600 / 60 | 0; return d ? `${d}d` + (hh ? ` ${hh}h` : '') : hh ? `${hh}h` + (m ? ` ${m}m` : '') : `${m}m`; };
 // Go duration ("30m0s", "1h0m0s") → "30 min" / "1 h"
 const fmtDur = s => { const m = /^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+(?:\.\d+)?)s)?$/.exec(s || ''); if (!m || !m[0]) return s || '—';
 	const t = (+m[1] || 0) * 3600 + (+m[2] || 0) * 60 + (+m[3] || 0); return t && t % 3600 === 0 ? t / 3600 + ' h' : t && t % 60 === 0 ? t / 60 + ' min' : t + ' s'; };
@@ -105,21 +107,24 @@ backdrop(cfd); cfd.addEventListener('close', () => cfEnd(false));
 // share one close watcher group with the dialog below it and one Escape would close both
 cfd.addEventListener('keydown', ev => { if (ev.key === 'Escape') { ev.preventDefault(); cfEnd(false); } });
 
-// API: cookie session; a 401 while signed in = session gone (unsaved curve edits are stashed)
+// API: cookie session; a 401 while signed in = session gone (unsaved curve and schedule edits are stashed and restored after the next sign-in)
 const anon = mode => ({ authenticated: false, mode: mode || 'basic', user: '' });
 let failures = 0, sess = anon();
 const signedIn = () => !!sess.authenticated;
-const sessionLost = () => { if (!signedIn()) return; sess = anon(sess.mode); if (edDirty) edStash = edState; toast('Session expired — sign in again' + (edDirty ? ' — curve edits kept' : ''), 'warn'); applyAuth(); };
+const sessionLost = () => { if (!signedIn()) return; sess = anon(sess.mode); if (edDirty) edStash = edState; if (scDirty) scStash = scState;
+	toast('Session expired — sign in again' + (edDirty ? ' — curve edits kept' : '') + (scDirty ? ' — schedule edits kept' : ''), 'warn'); applyAuth(); };
+// consecutive network / 5xx answers (mock &down=1: status 0); two show the banner
+const tally = status => { failures = status > 0 && status < 500 ? 0 : failures + 1; connState(); };
 const api = async (path, opt) => {
 	opt = opt || {};
-	if (MOCK) return window.n5mock(path, opt).catch(e => { if (e.status === 401) sessionLost(); throw e; }); // mock.js, loaded at boot
+	if (MOCK) return window.n5mock(path, opt).then(r => { tally(r.status); return r; }, e => { if (e.status === 401) sessionLost(); tally(e.status); throw e; }); // mock.js, loaded at boot
 	const headers = Object.assign({}, opt.headers || {});
 	if (opt.method && opt.method !== 'GET') headers['X-N5-Fangov-Csrf'] = '1';
 	if (opt.json !== undefined) { headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(opt.json); }
 	let r;
 	try { r = await fetch(path, { method: opt.method || 'GET', headers, body: opt.body, cache: 'no-store', credentials: 'same-origin' }); }
-	catch (e) { failures++; connState(); throw new Error('network: ' + e.message); }
-	failures = r.status < 500 ? 0 : failures + 1; connState();
+	catch (e) { tally(0); throw new Error('network: ' + e.message); }
+	tally(r.status);
 	const ct = r.headers.get('content-type') || '';
 	const body = r.status === 204 ? null : ct.includes('json') ? await r.json().catch(() => null) : await r.text();
 	if (!r.ok) {
@@ -167,7 +172,7 @@ function chart(wrap, series, opt) {
 			let lo = Infinity, hi = -Infinity; for (const [, v] of all) { if (v < lo) lo = v; if (v > hi) hi = v; }
 			if (!isFinite(lo)) { lo = 0; hi = 1; }
 			const span = Math.max(hi - lo, opt.minSpan || C.minSpan), m = span * C.yMargin, r = C.yRound;
-			if (yMin === undefined) yMin = Math.floor((lo - m) / r) * r; if (yMax === undefined) yMax = Math.ceil((hi + m) / r) * r;
+			if (yMin === undefined) yMin = Math.max(Math.floor((lo - m) / r) * r, opt.floor === undefined ? -Infinity : opt.floor); if (yMax === undefined) yMax = Math.ceil((hi + m) / r) * r;
 		}
 		const X = t => pad.l + (t - x0) / (x1 - x0) * pw, Y = v => pad.t + (1 - (v - yMin) / (yMax - yMin)) * ph;
 		st.X = X; st.pad = pad; st.pw = pw;
@@ -239,7 +244,8 @@ const dLeft = iso => Math.ceil((new Date(iso) - Date.now()) / 86400e3);
 // is expired, or the listener is plain HTTP off loopback; click → Settings → Certificate
 const secState = () => { const e = $('#h-cert'), on = tls === null ? location.protocol === 'https:' : !!tls, i = cert && cert.info, fb = !!(cert && cert.fallback), left = i ? dLeft(i.not_after) : null, soon = left !== null && left < UI.thresh.certSoonDays;
 	const warn = on ? fb || soon : !LOOPBACK; e.hidden = !warn || !signedIn(); if (e.hidden) return;
-	$('#h-cert-t').textContent = !on ? 'plain HTTP' : fb ? 'certificate fallback' : left < 0 ? 'certificate expired' : `certificate expires in ${left} d`;
+	const txt = !on ? 'plain HTTP' : fb ? 'certificate fallback' : left < 0 ? 'certificate expired' : `certificate expires in ${left} d`;
+	$('#h-cert-t').textContent = txt; e.setAttribute('aria-label', txt); // < 700 px: icon-only
 	e.title = (on ? 'TLS connection' : 'plain HTTP off loopback — credentials travel unencrypted')
 		+ (cert ? `\ncertificate: ${cert.mode}` + (i ? ` · expires ${i.not_after.slice(0, 10)}${soon ? ' (soon!)' : ''}` : '') : '') + '\nclick for the certificate settings'; };
 let hist = [], lastTs = 0, fanMetric = 'rpm';
@@ -268,11 +274,12 @@ function renderHeader() {
 	const pr = profiles.find(x => x.name === snap.profile), title = pr ? pr.title : snap.profile || '—', pf = $('#h-profile');
 	pf.textContent = title; pf.title = title + (snap.verified === undefined ? '' : ' · ' + verTxt(snap.verified));
 	const st = snap.dry_run ? 'dry-run' : snap.status || 'unknown';
-	const c = $('#h-status'); c.className = 'chip ' + st; c.textContent = st;
+	const c = $('#h-status'); c.className = 'chip ' + st; if (c.textContent !== st) c.textContent = st; // role=status: no mutation without change
 	for (const u of $$('.uptime')) u.textContent = 'up ' + fmtUp(snap.uptime_s || 0);
 }
-// the page header's height (it wraps) feeds the sticky settings sub-navigation and the section scroll margin
+// the page header's height (it wraps) feeds the sticky settings sub-navigation and the section scroll margin; the sticky action bar's (0 while hidden) lifts the toasts
 const ph = $('#ph'); new ResizeObserver(() => document.documentElement.style.setProperty('--hdr-h', ph.offsetHeight + 'px')).observe(ph);
+const ab = $('#actbar'); new ResizeObserver(() => document.documentElement.style.setProperty('--actbar-h', ab.offsetHeight + 'px')).observe(ab);
 // daemon limits → hints, field bounds, slider minimums
 const applyLimits = () => { const L = LIM;
 	$('#cv-hint').textContent = `${L.curve_points_min}–${L.curve_points_max}`;
@@ -290,17 +297,19 @@ const PAGES = [
 const BOTTOM = ['overview', 'fans', 'alerts', 'settings']; // the phone bar; the rest goes into the More sheet
 let cur = 'overview', lastHash = '';
 const visible = () => PAGES.filter(p => signedIn() || p.anon);
-const navBtn = (p, extra) => h('button', { 'aria-current': p.id === cur ? 'page' : null, title: p.t, 'data-page': p.id, onclick: () => go(p.id) }, ico(p.ic), h('span', { class: 'lbl' }, p.t), extra);
+const navBtn = (p, extra) => h('button', { 'aria-current': p.id === cur ? 'page' : null, title: p.t, 'data-page': p.id, onclick: () => goUser(p.id) }, ico(p.ic), h('span', { class: 'lbl' }, p.t), extra);
 const dirtyDot = () => h('i', { class: 'dirty', hidden: !edDirty, title: 'unsaved changes', role: 'img', 'aria-label': 'unsaved changes' });
+// 700–1099 px: the icon rail is forced (the 220 px sidebar leaves the header no room); the stored preference applies from 1100 px
+const RAIL_MQ = matchMedia(`(max-width:${UI.bp.lg - .02}px)`); RAIL_MQ.addEventListener('change', () => buildNav());
 function buildNav() {
-	const nav = clear($('#nav')), rail = S.nav === 'rail'; $('#shell').classList.toggle('rail', rail);
+	const nav = clear($('#nav')), forced = RAIL_MQ.matches, rail = forced || S.nav === 'rail'; $('#shell').classList.toggle('rail', rail);
 	nav.append(h('div', { class: 'brand-row' }, h('span', { class: 'logo' }, ico('fan')), h('span', { class: 'brand' }, 'n5-fangov')));
 	let lastG = null;
 	for (const p of visible()) {
-		if (p.g !== lastG) { if (lastG) nav.append(h('div', { class: 'grp-sep' })); nav.append(h('div', { class: 'grp' }, p.g), h('ul')); lastG = p.g; }
+		if (p.g !== lastG) { const gid = 'grp-' + p.g.toLowerCase(); if (lastG) nav.append(h('div', { class: 'grp-sep' })); nav.append(h('div', { class: 'grp', id: gid }, p.g), h('ul', { 'aria-labelledby': gid })); lastG = p.g; }
 		nav.lastChild.append(h('li', null, navBtn(p, p.id === 'fans' ? Object.assign(dirtyDot(), { id: 'nav-dirty' }) : null)));
 	}
-	nav.append(h('div', { class: 'foot' }, h('ul', null, h('li', null, h('button', { title: rail ? 'Expand the navigation' : 'Collapse the navigation', 'aria-label': rail ? 'Expand the navigation' : 'Collapse the navigation',
+	nav.append(h('div', { class: 'foot' }, h('ul', null, h('li', { hidden: forced }, h('button', { title: rail ? 'Expand the navigation' : 'Collapse the navigation', 'aria-label': rail ? 'Expand the navigation' : 'Collapse the navigation',
 		onclick: () => { S.nav = rail ? 'side' : 'rail'; saveS(); $('#s-nav').value = S.nav; buildNav(); $('#nav .foot button').focus(); } }, ico(rail ? 'chev-r' : 'chev-l'), h('span', { class: 'lbl' }, 'Collapse')))),
 		h('span', { class: 'vtxt', id: 'nav-ver' }, version ? 'v' + version.replace(/^v/, '') : '')));
 	// phone: bottom bar + More sheet
@@ -309,14 +318,17 @@ function buildNav() {
 	if (rest.length) b.append(h('button', { class: 'more', 'aria-current': rest.some(p => p.id === cur) ? 'page' : null, 'aria-haspopup': 'dialog', 'aria-controls': 'more', onclick: () => openMore(rest) }, ico('more'), h('span', { class: 'lbl' }, 'More')));
 }
 const openMore = rest => { const ul = clear($('#more-list'));
-	for (const p of rest) ul.append(h('li', null, h('button', { 'aria-current': p.id === cur ? 'page' : null, onclick: () => { $('#more').close(); go(p.id); } }, ico(p.ic), p.t, h('span', { class: 'grp-t' }, p.g))));
-	$('#more').showModal(); };
-// go: switch the page (auth-gated), mark the nav entries, keep the hash, optionally scroll to a section; returns false for an unknown/forbidden page
-function go(id, sec) {
+	for (const p of rest) ul.append(h('li', null, h('button', { 'aria-current': p.id === cur ? 'page' : null, onclick: () => { $('#more').close(); goUser(p.id); } }, ico(p.ic), p.t, h('span', { class: 'grp-t', 'aria-hidden': 'true' }, p.g))));
+	$('#more').showModal(); ($('#more-list [aria-current]') || $('#more-list button')).focus(); };
+// go: switch the page (auth-gated), mark the nav entries, keep the hash, optionally scroll to a section; false for an unknown/forbidden page.
+// No hash yet (boot) or a fallback page: replaceState, not a push (a push re-triggers itself on Back). goUser (nav, links, Back/Forward) also moves the focus to the heading.
+let byUser = false; const goUser = (id, sec) => { byUser = true; try { return go(id, sec); } finally { byUser = false; } };
+function go(id, sec, replace) {
 	const p = PAGES.find(x => x.id === id && (signedIn() || x.anon)); if (!p) return false;
 	if (scGuard(p.id, sec)) return true; // unsaved schedule edits: the switch waits for the dialog
-	const changed = cur !== p.id; cur = p.id;
-	lastHash = '#' + cur + (sec ? '/' + sec : ''); if (location.hash !== lastHash) location.hash = lastHash;
+	const changed = cur !== p.id, user = byUser; cur = p.id;
+	lastHash = '#' + cur + (sec ? '/' + sec : '');
+	if (location.hash !== lastHash) { if (replace || !location.hash) history.replaceState(null, '', lastHash); else location.hash = lastHash; }
 	for (const s of $$('.pg')) s.hidden = s.id !== 'p-' + cur;
 	for (const b of $$('[data-page]')) b.dataset.page === cur ? b.setAttribute('aria-current', 'page') : b.removeAttribute('aria-current');
 	const more = $('#bnav .more'); if (more) BOTTOM.includes(cur) ? more.removeAttribute('aria-current') : more.setAttribute('aria-current', 'page');
@@ -327,16 +339,19 @@ function go(id, sec) {
 		fans: () => { if (!edState && cfg) loadEditor(); renderLive(); pollSensors(1); drawEds(); loadPresets(); },
 		schedules: loadSchedules, alerts: () => { alDirty = false; renderAlertsTab(); loadAlerts(); }, log: loadLog,
 		settings: () => { alDirty = false; renderAlertsTab(); renderSettings(); }, about: () => { renderProfiles(); } })[id] || (() => {}))();
-	if (sec) { const el = $('#' + sec); if (el) el.scrollIntoView({ block: 'start' }); if (cur === 'settings') markSub(sec, true); }
+	const el = sec && $('#' + sec);
+	if (sec) { if (el) el.scrollIntoView({ block: 'start' }); if (cur === 'settings') markSub(sec, true); }
+	if (user && changed) { const f = el || $('#ph-title'); f.tabIndex = -1; f.focus({ preventScroll: true }); }
 	return true;
 }
 // route from the hash (Overview when the page is unknown or needs auth); the 0.3 mock parameter &tab= is consumed once and maps
 // curves|manual|presets → fans and compat → about (screenshot script)
 let tabOnce = MOCK && Q.get('tab');
 const route = () => { const tab = tabOnce, map = { curves: 'fans', manual: 'fans', presets: 'fans', compat: 'about' }, hp = location.hash.slice(1).split('/'); tabOnce = null;
-	const id = tab ? map[tab] || tab : hp[0] || 'overview', sec = tab === 'compat' ? 'compat' : hp[1]; if (!go(id, sec)) go('overview'); };
-addEventListener('hashchange', () => { if (location.hash !== lastHash) route(); });
-document.addEventListener('click', ev => { const b = ev.target.closest('[data-go]'); if (b) go(b.dataset.go, b.dataset.sec); });
+	const id = tab ? map[tab] || tab : hp[0] || 'overview', sec = tab === 'compat' ? 'compat' : hp[1]; if (!go(id, sec)) go('overview', null, true); };
+addEventListener('hashchange', () => { if (location.hash !== lastHash) { byUser = true; try { route(); } finally { byUser = false; } } });
+document.addEventListener('click', ev => { const b = ev.target.closest('[data-go]'); if (b) goUser(b.dataset.go, b.dataset.sec); });
+on('#skip', 'click', ev => { ev.preventDefault(); $('#main').focus(); }); // skip link: a hash href would route
 for (const b of $$('[data-close]')) b.addEventListener('click', () => b.closest('dialog').close());
 backdrop($('#more')); // the preset editor closes through peClose
 
@@ -348,12 +363,16 @@ async function applyAuth() {
 	$('#h-user-n').textContent = sess.user || ''; buildNav();
 	if (!on) psReset();
 	if (!on) { cert = null; cfg = null; edState = null; dirty(false); scReset(); alerts = null; sysinfo = null; dash = []; profiles = []; SN.key = null; for (const k in ED) delete ED[k]; for (const id of ['#fan-cards', '#ch-sel', '#preset-row', '#log', '#sc-tbl tbody', '#sc-kv', '#ac-tok tbody']) clear($(id));
+		// protected content leaves the DOM, not only the view
+		for (const el of $$('#p-system dl, #p-system tbody, #p-alerts dl, #p-alerts tbody, #p-alerts ul, #profiles tbody, #sensors, #sys, #alerts, #ac-sessions tbody, #ct-kv, #ct-san, #al-tpl')) clear(el);
+		for (const id of ['#ct-fp', '#ac-user', '#ac-tk-nn', '#sy-when']) $(id).textContent = ''; ctClearUpload(); acReset(); $('#al-form').reset(); alDirty = false; if (ped.open) ped.close();
 		route(); // a page that needs auth falls back to the Overview
 		secState(); renderCharts(); loadAbout(); return; }
 	hist = []; lastTs = 0; // history is re-read with the extra series
 	await loadConfig(); loadCert(); loadDash(); loadAlerts(); loadSystem(); resetHistory(); loadAbout();
 	api('/api/profiles').then(r => { profiles = r.body || []; renderHeader(); renderSystem(); renderProfiles(); }).catch(() => {});
 	if (edStash) { edState = edStash; edStash = null; buildEditors(); dirty(true); cvNotice('Unsaved curve edits from before the session expired are restored — apply or revert.', ''); if (cur !== 'fans') toast('Unsaved curve edits restored (Fans page)', 'warn'); }
+	if (scStash) { scState = scStash; scStash = null; scSetDirty(true); scErr('Unsaved schedule edits from before the session expired are restored — save or revert.', ''); if (cur !== 'schedules') toast('Unsaved schedule edits restored (Schedules page)', 'warn'); }
 	route(); // the page's loader runs with the config known
 	poll();
 }
@@ -363,7 +382,9 @@ on('#l-close', 'click', () => ld.close()); backdrop(ld); ld.addEventListener('cl
 lf.addEventListener('submit', async ev => { ev.preventDefault(); const u = $('#l-user').value.trim(), p = $('#l-pass').value; if (!u || !p) return lErr('user and password needed');
 	const bt = $('#l-submit'); bt.disabled = true; lErr('');
 	try { const r = await api('/api/login', { method: 'POST', json: { user: u, password: p, remember: $('#l-remember').checked } });
-		sess = { authenticated: true, mode: 'basic', user: r.body.user || u, via: 'cookie' }; ld.close(); toast('Signed in', 'ok'); applyAuth(); const nb = $(`#nav [data-page="${cur}"]`); if (nb) nb.focus(); }
+		sess = { authenticated: true, mode: 'basic', user: r.body.user || u, via: 'cookie' }; ld.close(); toast('Signed in', 'ok'); applyAuth();
+		// focus: the page's sidebar entry, below 700 px (sidebar display:none) its bottom-bar entry, else the heading
+		$$(`[data-page="${cur}"]`).concat($('#ph-title')).find(e => e.getClientRects().length).focus(); }
 	catch (e) { lErr(e.status === 401 ? 'invalid user or password' : e.status === 429 ? 'too many attempts' : e.message); $('#l-pass').value = ''; $('#l-pass').focus(); }
 	bt.disabled = false; });
 on('#h-signout', 'click', async () => { const un = [edDirty && 'curve', scDirty && 'schedule'].filter(Boolean);
@@ -374,20 +395,20 @@ on('#h-signout', 'click', async () => { const un = [edDirty && 'curve', scDirty 
 // overview
 // tiles (§11a): one .tile per channel, built once and updated in place; the sparkline is the last 2 h of `hist` in the channel's series colour
 const cards = {}, SPARK_S = RANGES['2h'].windowS;
-function spark(cv, data, color) {
+function spark(cv, data, color, padR) { // padR: room for the range label at the right edge, so the line end never runs under it
 	const dpr = window.devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight; if (!W || !H) return;
 	cv.width = W * dpr; cv.height = H * dpr; const ctx = cv.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 	if (data.length < 2) return;
 	let lo = Infinity, hi = -Infinity; for (const [, v] of data) { if (v < lo) lo = v; if (v > hi) hi = v; } lo -= 1; hi += 1;
 	const t1 = Date.now() / 1000, t0 = t1 - SPARK_S, col = cssVar(color), P = C.sparkPad;
-	const X = t => P + (t - t0) / SPARK_S * (W - 2 * P), Y = v => P + (1 - (v - lo) / (hi - lo)) * (H - 2 * P);
+	const X = t => P + (t - t0) / SPARK_S * (W - 2 * P - (padR || 0)), Y = v => P + (1 - (v - lo) / (hi - lo)) * (H - 2 * P);
 	ctx.beginPath(); data.forEach(([t, v], i) => i ? ctx.lineTo(X(t), Y(v)) : ctx.moveTo(X(t), Y(v)));
 	ctx.strokeStyle = col; ctx.lineWidth = C.sparkW; ctx.lineJoin = 'round'; ctx.stroke();
 	const last = data[data.length - 1]; ctx.lineTo(X(last[0]), H); ctx.lineTo(X(data[0][0]), H); ctx.closePath(); ctx.globalAlpha = C.sparkFill; ctx.fillStyle = col; ctx.fill(); ctx.globalAlpha = 1;
 	ctx.beginPath(); ctx.arc(X(last[0]), Y(last[1]), C.sparkDot, 0, 7); ctx.fillStyle = col; ctx.fill();
 }
 const sparkData = n => { const cut = Date.now() / 1000 - SPARK_S; return hist.filter(p => p.ts >= cut && p.temp && p.temp[n] > -900).map(p => [p.ts, tC(p.temp[n])]); };
-const drawSpark = k => spark(k.cv, sparkData(k.name), k.color);
+const drawSpark = k => spark(k.cv, sparkData(k.name), k.color, k.rng.offsetWidth + C.sparkPad * 2);
 const drawSparks = () => { for (const n in cards) drawSpark(cards[n]); };
 function renderCards() {
 	const host = $('#cards');
@@ -396,11 +417,11 @@ function renderCards() {
 	snap.channels.forEach((c, i) => {
 		let k = cards[c.name];
 		if (!k) {
-			k = cards[c.name] = { el: h('div', { class: 'card tile' }), name: c.name, cv: h('canvas') };
+			k = cards[c.name] = { el: h('div', { class: 'card tile' }), name: c.name, cv: h('canvas', { role: 'img', 'aria-label': `${c.name} temperature, last 2 h` }), rng: h('span', { class: 'rng', 'aria-hidden': 'true' }, '2 h') };
 			k.mode = h('span', { class: 'mode' }); k.hold = h('span', { class: 'badge hold', title: TIP.hold, hidden: true });
 			k.temp = h('div', { class: 'temp' }); k.duty = h('span', { class: 'v' }); k.bar = h('i'); k.tgt = h('b', { hidden: true }); k.rpm = h('span', { class: 'v' });
 			k.el.append(h('div', { class: 'top' }, chanHead(c), h('span', { class: 'badges' }, k.hold, k.mode)), k.temp,
-				h('div', { class: 'spark', title: 'temperature, last 2 h' }, k.cv, h('span', { class: 'rng' }, '2 h')),
+				h('div', { class: 'spark', title: 'temperature, last 2 h' }, k.cv, k.rng),
 				h('div', { class: 'row' }, h('span', { class: 'k', title: TIP.duty }, 'duty'), h('div', { class: 'bar-h' }, k.bar, k.tgt), k.duty),
 				h('div', { class: 'row' }, h('span', { class: 'k' }, 'rpm'), h('span'), k.rpm));
 			host.append(k.el);
@@ -506,7 +527,7 @@ async function pollSensors(force) { if (!signedIn() || !force && cur !== 'overvi
 	try { const first = !sensors.length; sensors = (await api('/api/sensors')).body || []; renderSensors(); fillSensorSelects(); if (first && sensors.length) renderCharts(); } catch (e) {} } // first catalogue: the extra-chart legend switches from ids to descriptions
 async function loadDash() { try { dash = (await api('/api/dashboard')).body.sensors || []; renderSensors(); renderCharts(); } catch (e) {} }
 async function setDash(ids, msg) { const r = await act(() => api('/api/dashboard', { method: 'PUT', json: { sensors: ids } }), r => msg((r.body.sensors || ids).length)); if (!r) return;
-	dash = r.body.sensors || ids; const w = r.body.warnings || []; if (w.length) toast(w.join('\n'), 'warn'); renderSensors(); renderCharts(); resetHistory(); }
+	dash = r.body.sensors || ids; const w = r.body.warnings || []; if (w.length) toast(w.join('\n'), 'warn'); renderSensors(); renderCharts(); resetHistory(); loadConfig(); } // [dashboard] changed in the file: cfgRaw follows
 function renderCharts() {
 	if (!snap) return;
 	const names = snap.channels.map(c => c.name);
@@ -519,7 +540,8 @@ function renderCharts() {
 	chart($('#ch-temp'), ts, tf);
 	const fs = mk(fanMetric); legend($('#lg-fan'), fs);
 	$('#ch-fan-title').textContent = (fanMetric === 'rpm' ? 'Fan speed' : 'Duty') + last;
-	chart($('#ch-fan'), fs, fanMetric === 'rpm' ? { fmt: (v, ax) => ax ? String(Math.round(v)) : Math.round(v) + ' rpm', yMin: 0, minSpan: C.minSpanRpm } : { fmt: (v, ax) => ax ? String(Math.round(v)) : `${Math.round(v)} (${pct(v)} %)`, yMin: 0, yMax: LIM.duty });
+	// rpm autoscales like the temperature (a 0-based axis squeezes 2000–3300 rpm into the top third), duty keeps 0..255
+	chart($('#ch-fan'), fs, fanMetric === 'rpm' ? { fmt: (v, ax) => ax ? String(Math.round(v)) : Math.round(v) + ' rpm', minSpan: C.minSpanRpm, floor: 0 } : { fmt: (v, ax) => ax ? String(Math.round(v)) : `${Math.round(v)} (${pct(v)} %)`, yMin: 0, yMax: LIM.duty });
 	// extra sensors chart, only while something is watched
 	const on = signedIn() && dash.length > 0; $('#extra-card').hidden = !on; if (!on) return;
 	const es = dash.map((id, i) => ({ id, name: snDesc(id), color: seriesColor(names.length + i), data: hist.filter(p => p.extra && p.extra[id] > -900).map(p => [p.ts, tC(p.extra[id])]) }));
@@ -752,6 +774,7 @@ const validateCurves = (chs = edState) => { const errs = []; for (const c of chs
 on('#cv-apply', 'click', async () => {
 	for (const k in ED) ED[k].sort(); const errs = validateCurves();
 	if (errs.length) return cvNotice('Not applied — fix these first:\n' + errs.join('\n'), 'err');
+	await loadConfig(); // fresh raw: [dashboard], [alert], [[schedule]] may have changed since the last read
 	const body = stripChannels(cfgRaw) + edState.map(tomlChannel).join('\n');
 	try { const r = await api('/api/config?strict=1', { method: 'PUT', body, headers: { 'Content-Type': 'application/toml' } });
 		const warn = r.body && Array.isArray(r.body.warnings) && r.body.warnings.length ? 'Config warnings outside the channel tables:\n' + r.body.warnings.join('\n') : '';
@@ -859,8 +882,8 @@ const stripSchedules = raw => { const out = []; let skip = false;
 		if (TOML_HDR.test(t)) skip = false;
 		if (!skip) out.push(ln); } return out.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd() + '\n\n'; };
 const tomlSchedule = e => `[[schedule]]\npreset = "${e.preset}"\n` + (e.fallback ? '' : `from = "${e.from}"\nto = "${e.to}"\n` + (e.days.length && e.days.length < 7 ? `days = [${SC_DAYS.filter(d => e.days.includes(d)).map(d => `"${d}"`).join(', ')}]\n` : ''));
-const scNotice = notice('#sc-notice'), scErr = notice('#sc-err'), inRel = ts => { const s = Math.max(0, ts - Date.now() / 1000 | 0); return 'in ' + (s < 3600 ? `${s / 60 | 0} min` : s < 86400 ? `${s / 3600 | 0} h ${s % 3600 / 60 | 0} min` : `${s / 86400 | 0} d ${s % 86400 / 3600 | 0} h`); };
-let scState = null, scDirty = false, scStat = null, scNames = [];
+const scNotice = notice('#sc-notice'), scErr = notice('#sc-err'), inRel = ts => 'in ' + elapsed(Math.max(0, ts - Date.now() / 1000 | 0));
+let scState = null, scDirty = false, scStat = null, scNames = [], scStash = null;
 const scSetDirty = v => { scDirty = !!v; $('#sc-save').disabled = !v; $('#sc-dirty').hidden = !v; };
 // page-leave guard (from go): true = the switch waits for the dialog
 function scGuard(id, sec) { if (cur !== 'schedules' || id === 'schedules' || !scDirty) return false;
@@ -878,11 +901,11 @@ const scDays = e => { const all = h('span', { class: 'all' }, 'every day'), sync
 	const bt = SC_DAYS.map(d => h('button', { 'aria-label': d, onclick: () => { e.days = e.days.includes(d) ? e.days.filter(x => x !== d) : e.days.concat(d); if (e.days.length === 7) e.days = []; sync(); scSetDirty(1); } }, d[0].toUpperCase() + d[1]));
 	sync(); return h('div', { class: 'days', role: 'group', 'aria-label': 'days' }, bt, all); };
 function scBuild(focus) { // focus: [row, selector] after a structural change
-	const tb = clear($('#sc-tbl tbody')), es = scState || [], hasFb = es.some(e => e.fallback), empty = t => tb.append(h('tr', null, h('td', { colspan: 5, class: 'empty' }, t)));
-	$('#sc-add').disabled = !scStat;
+	const tb = clear($('#sc-tbl tbody')), es = scState || [], hasFb = es.some(e => e.fallback), empty = t => tb.append(h('tr', null, h('td', { colspan: 5, class: 'empty' }, t))), add = $('#sc-add');
+	add.disabled = !scStat || !scNames.length; add.title = scStat && !scNames.length ? 'create a preset first (Fans page → Save current as…)' : '';
 	if (!scStat) return empty('No scheduler in this daemon — [[schedule]] tables are not applied.');
-	if (!es.length) empty('No schedule — the daemon keeps the curves it has. Add an entry to switch presets by time of day.');
-	es.forEach((e, i) => { const known = () => scNames.includes(e.preset), miss = h('span', { class: 'miss', hidden: known() }, 'preset missing');
+	if (!es.length) empty(scNames.length ? 'No schedule — the daemon keeps the curves it has. Add an entry to switch presets by time of day.' : 'No schedule — and no presets to switch between yet: create one on the Fans page first (Save current as…).');
+	es.forEach((e, i) => { const known = () => !e.preset || scNames.includes(e.preset), miss = h('span', { class: 'miss', hidden: known() }, 'preset missing'); // a fresh row without a choice is not "missing"
 		const sel = h('select', { 'aria-label': `entry ${i + 1} preset`, onchange: () => { e.preset = sel.value; miss.hidden = known(); scSetDirty(1); } },
 			!e.preset ? h('option', { value: '', selected: true }, '— choose —') : known() ? null : h('option', { value: e.preset, selected: true }, `${e.preset} (missing)`), scNames.map(n => h('option', { value: n, selected: n === e.preset }, n)));
 		const time = k => h('input', { type: 'time', value: e[k], 'aria-label': `entry ${i + 1} ${k}`, required: true, oninput: ev => { e[k] = ev.target.value; scSetDirty(1); } });
@@ -902,6 +925,7 @@ async function loadSchedules() { if (!signedIn()) return; // the 60 s poll never
 	try { const [s, ps] = await Promise.all([api('/api/schedules'), api('/api/presets').catch(() => ({ body: [] }))]);
 		scStat = s.body || {}; scNames = (ps.body || []).map(p => p.name); renderScStatus();
 		if (!scDirty) { scState = (scStat.entries || []).map(e => ({ preset: e.preset || '', from: e.from || '', to: e.to || '', days: (e.days || []).filter(d => SC_DAYS.includes(d)), fallback: !!e.fallback, active: !!e.active })); scBuild(); }
+		else if (!$('#sc-tbl tbody').rows.length) scBuild(); // scStash restored after a sign-in: the table is still empty
 	} catch (e) { if (e.status === 401) return; scStat = scState = null; scSetDirty(false); kv($('#sc-kv'), [['scheduler', e.status === 501 ? 'unavailable (501)' : e.message]]); scNotice(''); scBuild(); } }
 on('#sc-add', 'click', () => { if (!scState) return; scState.push({ preset: scNames[0] || '', from: '', to: '', days: [], fallback: false }); scSetDirty(1); scBuild([scState.length - 1, 'select']); });
 on('#sc-revert', 'click', () => { scSetDirty(false); scErr(''); loadSchedules(); toast('Reverted', ''); });
@@ -933,13 +957,14 @@ function renderAlertsTab() {
 	$('#al-tpl-reason').textContent = !t.writable ? (t.reason || 'not writable') : upToDate ? 'up to date' : '';
 	const tb = clear($('#al-kinds tbody')), last = a.last || {};
 	for (const k of a.kinds || []) tb.append(h('tr', null, h('td', { class: 'mono' }, k.kind), h('td', null, k.description || ''), h('td', null, tm(last[k.kind] || 0))));
+	if (!(a.kinds || []).length) tb.append(h('tr', null, h('td', { colspan: 3, class: 'empty' }, 'no alert kinds reported')));
 	alertList($('#al-recent'), a.recent || []);
 }
 on('#al-form', 'submit', async ev => { ev.preventDefault(); const t = $('#al-transport').value, j = { transport: t };
 	if (/^(auto|mail)$/.test(t)) j.mail_to = $('#al-mailto').value.trim();
 	if (t === 'webhook') { j.webhook_url = $('#al-wh').value.trim(); j.webhook_format = $('#al-whf').value; if (!/^https?:\/\/\S+$/.test(j.webhook_url)) { toast('Webhook: an absolute http(s) URL is required', 'err'); return $('#al-wh').focus(); } }
 	const r = await act(() => api('/api/alerts', { method: 'PUT', json: j })); if (!r) return;
-	alDirty = false; toast('Transport saved — effective: ' + (r.body.status && r.body.status.effective), 'ok'); loadAlerts(); });
+	alDirty = false; toast('Transport saved — effective: ' + (r.body.status && r.body.status.effective), 'ok'); loadAlerts(); loadConfig(); }); // [alert] changed in the file: cfgRaw follows
 const sendTest = async () => { // Alerts page and Settings → Alert transport share the button
 	try { const r = await api('/api/alerts/test', { method: 'POST' }); toast('Test alert sent via ' + r.body.transport, 'ok'); }
 	catch (e) { if (e.status === 409) return toast('Test alert already running', 'warn'); toast('Test alert failed' + (e.body && e.body.transport ? ` (${e.body.transport})` : '') + ': ' + e.message, 'err'); }
@@ -1015,8 +1040,8 @@ const resetHistory = () => { hist = []; lastTs = 0; histGen++; loadHistory(); };
 let timers = [], polling = false, repoll = false;
 async function poll() { // a call mid-poll queues one more round
 	if (polling) { repoll = true; return; } polling = true;
-	try { const r = await api('/api/state'); snap = r.body; renderHeader(); renderCards(); renderLive(); renderSystem();
-		if (cur === 'fans') drawEds(); }
+	try { const r = await api('/api/state'), first = !snap; snap = r.body; renderHeader(); renderCards(); renderLive(); renderSystem();
+		if (cur === 'fans') drawEds(); if (first) renderCharts(); } // the history may precede the first snapshot
 	catch (e) {}
 	await pollSensors();
 	polling = false; if (repoll) { repoll = false; poll(); }
@@ -1046,11 +1071,13 @@ function buildSubnav() {
 	const sn = clear($('#subnav')); subIO.disconnect(); subVis.clear();
 	for (const st of $$('#st-list .st')) { if (st.hidden) continue; subIO.observe(st);
 		sn.append(h('button', { 'data-sec': st.id, onclick: () => { st.scrollIntoView({ block: 'start' }); markSub(st.id, true); lastHash = '#settings/' + st.id; history.replaceState(null, '', lastHash); } }, st.classList.contains('danger') ? ico('warn') : null, $('h2', st).textContent)); }
-	if (!$('#subnav [aria-current]')) markSub('st-display');
+	// initial marker from the scroll position (re-entered scrolled): the last section whose top passed the header
+	const list = $$('#st-list .st').filter(x => !x.hidden), top = ph.offsetHeight + 16; let at = list[0]; for (const s of list) if (s.getBoundingClientRect().top <= top) at = s;
+	if (at) markSub(at.id);
 }
 // entering the page: account + sessions, tokens (session callers only), certificate, alert transport are re-read
 function renderSettings() {
-	acNotice(''); acReset(); $('#ac-user').textContent = sess.user || '';
+	acNotice(''); acReset(); $('#ac-user').textContent = sess.user || ''; for (const u of $$('.ac-un')) u.defaultValue = sess.user || ''; // hidden username fields of the password forms
 	const tok = /^(cookie|basic)$/.test(sess.via || ''); $('#st-tokens').hidden = $('#ac-tokens').hidden = !tok;
 	buildSubnav(); loadAccount(); openCert();
 }
