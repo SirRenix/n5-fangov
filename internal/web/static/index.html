@@ -129,7 +129,10 @@
 </section>
 
 <section id="p-fans" class="pg" data-auth hidden>
-  <p class="gloss"><b>duty</b> is the PWM value 0–255 the daemon writes (100 % = 255). Each cycle a channel moves from its current duty towards the curve's target in <code>step_up</code>/<code>step_down</code> steps (slew, shown as “current → target” on the Overview). <b>critical</b> forces 100 % at once whatever the curve says; a <b>stall</b> (fan reports 0 rpm) kicks the channel up until it spins. <b>stop</b> is the duty left on the channel when the daemon stops: <code>auto</code> hands it back to the driver, a number keeps a fixed duty. Curves are stored and edited in °C regardless of the display unit. Drag points or edit the table: <span id="cv-hint">2–8</span> points, temperatures ascending, duty never falling. <em>Apply to daemon</em> rewrites the <code>[[channel]]</code> tables and keeps everything else.</p>
+  <p class="gloss">Drag points or edit the table: <span id="cv-hint">2–8</span> points, temperatures ascending (°C, whatever the display unit), duty never falling. <em>Apply to daemon</em> rewrites the <code>[[channel]]</code> tables and keeps everything else.</p>
+  <details class="gloss how"><summary>More about duty, critical, stall, stop</summary>
+    <p><b>duty</b> is the PWM value 0–255 the daemon writes (100 % = 255). Each cycle a channel moves from its current duty towards the curve's target in <code>step_up</code>/<code>step_down</code> steps (slew, shown as “current → target” on the Overview). <b>critical</b> forces 100 % at once whatever the curve says; a <b>stall</b> (fan reports 0 rpm) kicks the channel up until it spins. <b>stop</b> is the duty left on the channel when the daemon stops: <code>auto</code> hands it back to the driver, a number keeps a fixed duty.</p>
+  </details>
   <div class="notice" id="cv-notice" role="alert" hidden></div>
   <div class="seg chsel" id="ch-sel" role="group" aria-label="Channel" hidden></div>
   <div class="fan-cards" id="fan-cards"></div>
@@ -369,7 +372,7 @@
 </dialog>
 
 <dialog class="dlg" id="preset-ed" aria-labelledby="pe-title">
-  <div class="dlg-h"><h2 id="pe-title">New preset</h2><button class="btn icon" type="button" aria-label="Close" data-close><svg class="ic" aria-hidden="true"><use href="#i-close"/></svg></button></div>
+  <div class="dlg-h"><h2 id="pe-title">New preset</h2><button class="btn icon" type="button" aria-label="Close" id="pe-close"><svg class="ic" aria-hidden="true"><use href="#i-close"/></svg></button></div>
   <div class="pe-body" id="pe-body"></div>
 </dialog>
 

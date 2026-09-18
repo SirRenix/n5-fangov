@@ -175,6 +175,11 @@ func TestPresetSaveBody(t *testing.T) {
 	for _, tc := range []struct{ body, want string }{
 		{`{"channels":[{"name":"cpu","pwm":1,"sensor":"k10temp","curve":[[40,80],[75,255]],"critical":85,"min_on":"soon"}]}`, "not a duration"},
 		{`{"channels":[{"name":"hdd","pwm":3,"sensor":"drivetemp:max","curve":[[36,105],[46,255]],"critical":56}]}`, "do not match the running config"},
+		// the running config's name on another pwm: Apply merges by pwm, so this would swap curves
+		{`{"channels":[{"name":"cpu","pwm":2,"sensor":"k10temp","curve":[[40,80],[75,255]],"critical":85}]}`, "do not match the running config"},
+		// a point that is not [temp, duty] is an error, not [40, 0] or a truncated triple
+		{`{"channels":[{"name":"cpu","pwm":1,"sensor":"k10temp","curve":[[40],[75,255]],"critical":85}]}`, "need [temp, duty]"},
+		{`{"channels":[{"name":"cpu","pwm":1,"sensor":"k10temp","curve":[[40,80,1],[75,255]],"critical":85}]}`, "need [temp, duty]"},
 		{`{"channels":[]}`, "none given"},
 	} {
 		r = e.do(t, "PUT", "/api/presets/summer", tc.body, csrf)
@@ -185,6 +190,12 @@ func TestPresetSaveBody(t *testing.T) {
 		}
 	}
 	wantError(t, e.do(t, "PUT", "/api/presets/summer", `{"channels":[{"name":"cpu"}],"description":"x"}`, csrf), 400, "invalid JSON body")
+	// trailing data after the object (a second document, a stray bracket) is not ignored
+	wantError(t, e.do(t, "PUT", "/api/presets/summer", good+" {}", csrf), 400, "trailing data")
+	wantError(t, e.do(t, "PUT", "/api/presets/summer", good+"]", csrf), 400, "trailing data")
+	if len(e.presets.chans) != 1 {
+		t.Errorf("a rejected body was stored: %v", e.presets.chans)
+	}
 	wantError(t, e.do(t, "PUT", "/api/presets/n5pro-balanced", good, csrf), 409, "built-in")
 	// the empty body path is unchanged
 	wantCode(t, e.do(t, "PUT", "/api/presets/night", "", csrf), 200)

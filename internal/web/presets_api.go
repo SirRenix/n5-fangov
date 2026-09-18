@@ -159,12 +159,18 @@ func (s *Server) savePreset(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var b struct {
-			Channels []PresetChannel `json:"channels"`
+			Channels []presetChannelIn `json:"channels"`
 		}
 		dec := json.NewDecoder(bytes.NewReader(body))
 		dec.DisallowUnknownFields()
 		if derr := dec.Decode(&b); derr != nil {
 			writeError(w, http.StatusBadRequest, "invalid JSON body: "+derr.Error())
+			return
+		}
+		// one JSON value and nothing after it: a second document, a stray
+		// bracket or text behind the object is not silently ignored
+		if derr := dec.Decode(new(json.RawMessage)); derr != io.EOF {
+			writeError(w, http.StatusBadRequest, "invalid JSON body: trailing data after the object")
 			return
 		}
 		chans, errs := s.presetChannels(b.Channels)
@@ -192,7 +198,7 @@ func (s *Server) savePreset(w http.ResponseWriter, r *http.Request) {
 // an error here, a channel the parser drops is one too) and checks the
 // channel set against the running config. It returns the parsed channels
 // or the list of errors.
-func (s *Server) presetChannels(in []PresetChannel) ([]config.Channel, []string) {
+func (s *Server) presetChannels(in []presetChannelIn) ([]config.Channel, []string) {
 	var errs []string
 	if len(in) == 0 {
 		return nil, []string{"channels: none given"}
@@ -203,7 +209,17 @@ func (s *Server) presetChannels(in []PresetChannel) ([]config.Channel, []string)
 		if channelName.MatchString(c.Name) {
 			pre = "channel." + c.Name
 		}
-		ch := config.Channel{Name: c.Name, PWM: c.PWM, Sensor: c.Sensor, Curve: c.Curve, Critical: c.Critical, Stop: c.Stop, Hysteresis: c.Hysteresis}
+		// every point is exactly [temp, duty]: a [][2]int field would read
+		// [40] as [40, 0] and drop the third value of [40, 80, 1]
+		curve := make([][2]int, 0, len(c.Curve))
+		for j, pt := range c.Curve {
+			if len(pt) != 2 {
+				errs = append(errs, fmt.Sprintf("%s.curve: point %d has %d values, need [temp, duty]", pre, j, len(pt)))
+				continue
+			}
+			curve = append(curve, [2]int{pt[0], pt[1]})
+		}
+		ch := config.Channel{Name: c.Name, PWM: c.PWM, Sensor: c.Sensor, Curve: curve, Critical: c.Critical, Stop: c.Stop, Hysteresis: c.Hysteresis}
 		if ch.Stop == "" {
 			ch.Stop = "auto"
 		}
@@ -237,9 +253,9 @@ func (s *Server) presetChannels(in []PresetChannel) ([]config.Channel, []string)
 		raw, rerr := s.deps.Config.Raw()
 		if rerr == nil {
 			if cfg, _, perr := config.Parse(raw); perr == nil && len(cfg.Channels) > 0 {
-				want, have := channelNameSet(cfg.Channels), channelNameSet(parsed)
+				want, have := channelKeySet(cfg.Channels), channelKeySet(parsed)
 				if !slices.Equal(want, have) {
-					return nil, []string{fmt.Sprintf("channel: names %v do not match the running config %v", have, want)}
+					return nil, []string{fmt.Sprintf("channel: names/pwm %v do not match the running config %v", have, want)}
 				}
 			}
 		}
@@ -247,11 +263,29 @@ func (s *Server) presetChannels(in []PresetChannel) ([]config.Channel, []string)
 	return parsed, nil
 }
 
-// channelNameSet lists the channel names sorted (set comparison).
-func channelNameSet(chans []config.Channel) []string {
+// presetChannelIn is one channel of the PUT /api/presets/{name} body: like
+// PresetChannel, but the curve is decoded as free-length points so that a
+// malformed point is an error instead of a silently padded or truncated
+// one (presetChannels checks the shape).
+type presetChannelIn struct {
+	Name       string  `json:"name"`
+	PWM        int     `json:"pwm"`
+	Sensor     string  `json:"sensor"`
+	Curve      [][]int `json:"curve"`
+	Critical   int     `json:"critical"`
+	Stop       string  `json:"stop"`
+	Hysteresis int     `json:"hysteresis"`
+	MinOn      string  `json:"min_on"`
+}
+
+// channelKeySet lists the channels as "name@pwmN" sorted (set comparison):
+// Apply merges a preset by pwm and keeps the config channel's name, so a
+// preset whose names sit on other pwms than the running config's would
+// swap curves between channels on apply.
+func channelKeySet(chans []config.Channel) []string {
 	out := make([]string, 0, len(chans))
 	for _, c := range chans {
-		out = append(out, c.Name)
+		out = append(out, fmt.Sprintf("%s@pwm%d", c.Name, c.PWM))
 	}
 	slices.Sort(out)
 	return out

@@ -94,13 +94,16 @@ const toast = (msg, kind, ms) => {
 };
 // confirm dialog (replaces window.confirm): ask(title, text, {ok, danger}) → Promise<boolean>
 const cfd = $('#confirm'); let cfRes = null;
-const ask = (title, text, opt) => new Promise(res => { opt = opt || {}; cfRes = res;
+const ask = (title, text, opt) => new Promise(res => { opt = opt || {}; if (cfRes) cfRes(false); cfRes = res; // a second ask answers the open one with "no"
 	$('#cf-title').textContent = title; $('#cf-text').textContent = text; const ok = $('#cf-ok');
 	ok.textContent = opt.ok || 'Confirm'; ok.className = 'btn primary' + (opt.danger ? ' danger' : '');
-	cfd.showModal(); (opt.danger ? $('#cf-cancel') : ok).focus(); });
+	if (!cfd.open) cfd.showModal(); (opt.danger ? $('#cf-cancel') : ok).focus(); });
 const cfEnd = v => { const r = cfRes; cfRes = null; if (cfd.open) cfd.close(); if (r) r(v); };
 on('#cf-ok', 'click', () => cfEnd(true)); on('#cf-cancel', 'click', () => cfEnd(false)); on('#cf-close', 'click', () => cfEnd(false));
 backdrop(cfd); cfd.addEventListener('close', () => cfEnd(false));
+// Escape is answered here, not by the browser: a confirm opened without a user activation (e.g. from an Escape in the preset editor) would otherwise
+// share one close watcher group with the dialog below it and one Escape would close both
+cfd.addEventListener('keydown', ev => { if (ev.key === 'Escape') { ev.preventDefault(); cfEnd(false); } });
 
 // API: cookie session; a 401 while signed in = session gone (unsaved curve edits are stashed)
 const anon = mode => ({ authenticated: false, mode: mode || 'basic', user: '' });
@@ -245,8 +248,10 @@ const chList = () => (cfg && (cfg.channel || cfg.channels)) || [];
 // colour by share of critical; without one (anonymous) neutral
 const tempClass = (t, crit) => { if (t === null || t <= -900) return 'na'; if (!crit) return '';
 	const r = t / crit; return r < UI.thresh.warm ? 't-ok' : r < UI.thresh.hot ? 't-warm' : r < 1 ? 't-hot' : 't-crit'; };
-const isHdd = c => /hdd|drive|disk/.test(c.name) || /^drivetemp/.test(c.sensor || '');
-const minDuty = c => isHdd(c) ? LIM.min_hdd_override : 0;
+// the daemon's hddLike rule (control/controller.go): fixed stop duty or pwm3 on the N5 Pro → manual duty ≥ min_hdd_override
+const profName = () => snap ? snap.profile : (profiles.find(p => p.active) || {}).name || '';
+const stopN = s => s === undefined || s === null || /^\s*(auto)?\s*$/i.test(String(s)) ? 'auto' : String(s).trim();
+const minDuty = c => stopN(c.stop) !== 'auto' || profName() === 'n5pro' && +c.pwm === 3 ? LIM.min_hdd_override : 0;
 const seriesColor = i => SERIES[i % SERIES.length];
 const modeBadge = (el, m) => { el.className = 'mode m-' + (m || 'unknown'); el.textContent = m || 'unknown'; el.title = m === 'stall' ? 'stall: the fan reports 0 rpm, the channel is raised until it spins' : m === 'critical' ? TIP.critical : ''; };
 const chanHead = (c, ...pre) => h('span', null, ...pre, h('span', { class: 'name' }, c.name), h('span', { class: 'sub' }, `pwm${c.pwm} · ${c.sensor || '?'}`));
@@ -333,7 +338,7 @@ const route = () => { const tab = tabOnce, map = { curves: 'fans', manual: 'fans
 addEventListener('hashchange', () => { if (location.hash !== lastHash) route(); });
 document.addEventListener('click', ev => { const b = ev.target.closest('[data-go]'); if (b) go(b.dataset.go, b.dataset.sec); });
 for (const b of $$('[data-close]')) b.addEventListener('click', () => b.closest('dialog').close());
-backdrop($('#more')); backdrop($('#preset-ed'));
+backdrop($('#more')); // the preset editor closes through peClose
 
 // auth: mirrors the server's visibility split — nav entries, bottom bar and every [data-auth] element are hidden while anonymous
 async function applyAuth() {
@@ -341,6 +346,7 @@ async function applyAuth() {
 	for (const el of $$('[data-auth]:not(.pg)')) el.hidden = !on;
 	for (const [id, show] of [['#h-signin', !on && basic], ['#h-signout', on && basic], ['#h-user', on && basic]]) $(id).hidden = !show;
 	$('#h-user-n').textContent = sess.user || ''; buildNav();
+	if (!on) psReset();
 	if (!on) { cert = null; cfg = null; edState = null; dirty(false); scReset(); alerts = null; sysinfo = null; dash = []; profiles = []; SN.key = null; for (const k in ED) delete ED[k]; for (const id of ['#fan-cards', '#ch-sel', '#preset-row', '#log', '#sc-tbl tbody', '#sc-kv', '#ac-tok tbody']) clear($(id));
 		route(); // a page that needs auth falls back to the Overview
 		secState(); renderCharts(); loadAbout(); return; }
@@ -544,7 +550,7 @@ const minOnSel = (c, onchange) => { const mo = h('select', { title: TIP.minOn, o
 	for (const [v, t] of MIN_ON.filter(x => durS(x[0]) <= LIM.min_on_max_s).concat(MIN_ON.some(x => x[0] === c.min_on) ? [] : [[c.min_on, fmtDur(c.min_on)]])) mo.append(h('option', { value: v, selected: v === c.min_on }, t)); return mo; };
 // [[channel]] tables: sensor as an array for a composite, hysteresis / min_on omitted at their defaults
 const tomlChannel = c => { const ps = parts(c.sensor);
-	return `[[channel]]\nname = "${c.name}"\npwm = ${c.pwm}\nsensor = ${ps.length > 1 ? `[${ps.map(x => `"${x}"`).join(', ')}]` : `"${ps[0] || ''}"`}\ncurve = [${c.curve.map(p => `[${p[0]}, ${p[1]}]`).join(', ')}]\ncritical = ${c.critical}\nstop = ${c.stop === 'auto' || c.stop === '' || c.stop === undefined ? '"auto"' : c.stop}\n`
+	return `[[channel]]\nname = "${c.name}"\npwm = ${c.pwm}\nsensor = ${ps.length > 1 ? `[${ps.map(x => `"${x}"`).join(', ')}]` : `"${ps[0] || ''}"`}\ncurve = [${c.curve.map(p => `[${p[0]}, ${p[1]}]`).join(', ')}]\ncritical = ${c.critical}\nstop = ${stopN(c.stop) === 'auto' ? '"auto"' : stopN(c.stop)}\n`
 		+ (c.hysteresis > 0 ? `hysteresis = ${c.hysteresis}\n` : '') + (durS(c.min_on) ? `min_on = "${c.min_on}"\n` : ''); };
 // every [[channel]] table is dropped as a block; the block ends at the next table header of ANY kind — [section] or [[other]], e.g. [[schedule]] —
 // so the other array tables survive the rewrite. A header carries a bare/quoted key path only: an array element line ("[45, 85],") has a comma and is no header.
@@ -555,7 +561,7 @@ const stripChannels = raw => { const out = []; let skip = false;
 		if (TOML_HDR.test(t)) skip = false;
 		if (!skip) out.push(ln); } return out.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd() + '\n\n'; };
 // a channel as the editors hold it (copied: the preset editor and the stash never share arrays with the config or a preset detail)
-const chCopy = c => ({ name: c.name, pwm: +c.pwm, sensor: parts(c.sensor).join(','), curve: (c.curve || []).map(p => [+p[0], +p[1]]), critical: +c.critical, stop: c.stop === undefined || c.stop === 'auto' || c.stop === '' ? 'auto' : String(c.stop),
+const chCopy = c => ({ name: c.name, pwm: +c.pwm, sensor: parts(c.sensor).join(','), curve: (c.curve || []).map(p => [+p[0], +p[1]]), critical: +c.critical, stop: stopN(c.stop),
 	hysteresis: +c.hysteresis || 0, min_on: normDur(c.min_on) });
 const fromCfg = () => chList().map(chCopy);
 function loadEditor(keepNotice) { edState = fromCfg(); dirty(false); buildEditors(keepNotice); }
@@ -579,7 +585,10 @@ function buildEditors(keepNotice) { // keepNotice: the 202 / warnings notice of 
 		const hyst = h('input', { type: 'number', min: 0, max: L.hysteresis_max, step: 1, value: c.hysteresis, title: TIP.hyst, oninput: () => { c.hysteresis = +hyst.value; dt(); } });
 		const mo = minOnSel(c, dt);
 		const tbody = h('tbody'), ptsEl = h('div', { class: 'ptl' });
-		const ref = REF[c.name] && snap && snap.profile === 'n5pro' ? h('p', { class: 'ref' }, 'Duty → RPM (measured): ', ...REF[c.name].flatMap(([d, r], j) => [j ? ' · ' : '', h('b', null, `${d}→${r}`)])) : null;
+		// duty→RPM reference: filled by renderLive once the profile is known (the editors are built before the first /api/state)
+		const ref = REF[c.name] ? h('p', { class: 'ref', hidden: true }) : null;
+		ed.ref = () => { if (!ref || ref.childNodes.length || profName() !== 'n5pro') return; ref.hidden = false;
+			ref.append('Duty → RPM (measured): ', ...REF[c.name].flatMap(([d, r], j) => [j ? ' · ' : '', h('b', null, `${d}→${r}`)])); };
 		ed.sel = sl; ed.cv = cv; ed.tbody = tbody; ed.ptsEl = ptsEl;
 		const fillTable = () => {
 			clear(tbody); c.curve.forEach((p, j) => tbody.append(h('tr', null,
@@ -603,30 +612,34 @@ function buildEditors(keepNotice) { // keepNotice: the 202 / warnings notice of 
 		// live & override: the values refresh with every state poll (renderLive), the switch is the override
 		const lv = ed.lv = { temp: h('span', { class: 't' }), duty: h('span', { class: 'd' }), rpm: h('span', { class: 'hint sm' }), tgt: h('span'), mode: h('span', { class: 'mode' }), hmode: h('span', { class: 'mode' }),
 			pre: h('span', { class: 'badge preset', hidden: true }), warn: h('p', { class: 'warn' }), min: minDuty(c) };
-		lv.range = h('input', { type: 'range', min: lv.min, max: L.duty, value: 0, 'aria-label': `${c.name} manual duty`, oninput: () => { lv.dirty = 1; lv.show(+lv.range.value); } });
-		lv.num = h('input', { type: 'number', min: lv.min, max: L.duty, value: 0, 'aria-label': `${c.name} manual duty value`, title: TIP.duty, oninput: () => { lv.dirty = 1; lv.show(clamp(+lv.num.value || 0, 0, L.duty), 1); } });
-		lv.set = h('button', { class: 'btn primary sm', onclick: async () => { const v = +lv.range.value; lv.dirty = 0;
-			await act(() => api('/api/override/' + c.name, { method: 'PUT', json: { duty: v } }), `${c.name}: manual ${v} (${pct(v)} %)`); poll(); } }, 'Set');
+		// the manual block is disabled (not only dimmed) while the switch is off: keyboard and screen reader see the gate
+		lv.range = h('input', { type: 'range', min: lv.min, max: L.duty, value: 0, disabled: true, 'aria-label': `${c.name} manual duty`, oninput: () => { lv.dirty = 1; lv.show(+lv.range.value); } });
+		lv.num = h('input', { type: 'number', min: lv.min, max: L.duty, value: 0, disabled: true, 'aria-label': `${c.name} manual duty value`, title: TIP.duty, oninput: () => { lv.dirty = 1; lv.show(clamp(+lv.num.value || 0, 0, L.duty), 1); } });
+		lv.set = h('button', { class: 'btn primary sm', disabled: true, onclick: async () => { const v = +lv.range.value; lv.dirty = 0;
+			if (await act(() => api('/api/override/' + c.name, { method: 'PUT', json: { duty: v } }), `${c.name}: manual ${v} (${pct(v)} %)`)) lv.pend(true, v); poll(); } }, 'Set');
 		lv.pctEl = h('span', { class: 'hint sm' });
 		lv.show = (v, keep) => { lv.range.value = v; if (!keep) lv.num.value = v; lv.pctEl.textContent = `${pct(v)} %`;
-			const low = lv.min > 0 && v < lv.min; lv.set.disabled = low;
-			lv.warn.textContent = lv.min ? `HDD-like channel: minimum ${lv.min} (the EC stops regulating it; lower values are refused)` : 'Critical-temperature and stall guards still apply and override any manual value.'; lv.warn.classList.toggle('on', low); };
-		// the switch: Manual holds the duty the channel runs now (PUT /api/override with the snapshot duty), Auto is the DELETE
+			lv.low = lv.min > 0 && v < lv.min; lv.set.disabled = lv.low || lv.box.dataset.off === 'true';
+			lv.warn.textContent = lv.min ? `HDD-like channel: minimum ${lv.min} (the EC stops regulating it; lower values are refused)` : 'Critical-temperature and stall guards still apply and override any manual value.'; lv.warn.classList.toggle('on', lv.low); };
+		// the switch: Manual holds the duty the channel runs now (PUT /api/override with the snapshot duty), Auto is the DELETE. The snapshot mode follows
+		// with the next cycle, so the switch shows the client flag lv.on, held through a pending window (lv.pend) — see renderLive. aria-busy, not disabled: the focus stays
 		lv.sw = h('button', { class: 'switch', role: 'switch', 'aria-checked': 'false', 'aria-label': `${c.name}: manual override`, onclick: async () => {
-			const on = lv.sw.getAttribute('aria-checked') !== 'true', live = snap && snap.channels.find(x => x.name === c.name) || {}; lv.sw.disabled = true;
-			const d = Math.max(lv.min, +live.duty || 0);
+			if (lv.busy) return; const on = !lv.on, live = snap && snap.channels.find(x => x.name === c.name) || {}; lv.busy = 1; lv.sw.setAttribute('aria-busy', 'true');
+			const d = Math.max(lv.min, live.duty >= 0 ? live.duty : live.target >= 0 ? live.target : lv.min); // duty -1 = write failed: hold the target, never 0
 			const r = on ? await act(() => api('/api/override/' + c.name, { method: 'PUT', json: { duty: d } }), `${c.name}: manual — holding ${d} (${pct(d)} %)`)
 				: await act(() => api('/api/override/' + c.name, { method: 'DELETE' }), `${c.name}: back to auto`);
-			lv.sw.disabled = false; if (r) { lv.dirty = 0; lv.state(on ? 'manual' : 'auto'); if (on) lv.show(d); } poll(); } },
+			lv.busy = 0; lv.sw.removeAttribute('aria-busy'); if (r) { lv.dirty = 0; lv.pend(on, d); lv.state(on ? 'manual' : 'auto'); if (on) lv.show(d); } poll(); } },
 			h('span', { class: 'track', 'aria-hidden': 'true' }), h('span', null, h('b', null, 'Manual'), ' override'));
-		lv.state = m => { const on = m === 'manual'; lv.sw.setAttribute('aria-checked', on); lv.box.dataset.off = !on; modeBadge(lv.mode, m); modeBadge(lv.hmode, m); };
-		lv.box = h('div', { class: 'live', 'data-off': 'true' }, h('h3', null, 'Live & override'),
+		lv.on = false; lv.pend = (on, v) => { lv.on = on; lv.want = v; lv.until = Date.now() + 2 * Math.max(2, cfg && cfg.daemon ? durS(cfg.daemon.interval) : 10) * 1000; };
+		lv.state = m => { const on = lv.on; lv.sw.setAttribute('aria-checked', on); lv.box.dataset.off = !on; lv.range.disabled = lv.num.disabled = !on; lv.set.disabled = !on || !!lv.low;
+			modeBadge(lv.mode, m); modeBadge(lv.hmode, m); };
+		lv.box = h('div', { class: 'live', 'data-off': 'true' }, h('h3', null, `Live & override — ${c.name}`),
 			h('div', { class: 'now' }, lv.temp, h('span', { class: 'arrow', 'aria-hidden': 'true' }, '→'), lv.duty, lv.rpm),
 			h('div', { class: 'tgt' }, lv.tgt, lv.mode), lv.sw,
 			h('div', { class: 'man' }, h('div', { class: 'rg' }, lv.range, lv.num, lv.pctEl), h('div', { class: 'actions' }, lv.set)), lv.warn);
 		lv.show(0);
 		ed.card = h('div', { class: 'card fan' },
-			h('div', { class: 'fh' }, h('span', { class: 'name' }, c.name), h('span', { class: 'sub' }, `pwm${c.pwm} · ${c.sensor || '?'}`), h('span', { class: 'badges' }, lv.pre, lv.hmode)),
+			h('div', { class: 'fh' }, h('h2', { class: 'name' }, c.name), h('span', { class: 'sub' }, `pwm${c.pwm} · ${c.sensor || '?'}`), h('span', { class: 'badges' }, lv.pre, lv.hmode)),
 			h('div', { class: 'ed' },
 				h('div', { class: 'fields' }, h('label', null, 'sensor', sl), h('label', { title: TIP.critical }, 'critical °C', crit), h('label', { title: TIP.stop }, 'stop', stop),
 					h('label', { title: TIP.hyst }, 'hysteresis °C', hyst), h('label', { title: TIP.minOn }, 'min on', mo)),
@@ -652,9 +665,15 @@ function renderLive() { if (!snap) return;
 	for (const c of snap.channels) { const ed = ED[c.name]; if (!ed) continue; const { lv } = ed, crit = critOf(c.name);
 		lv.temp.className = 't ' + tempClass(c.temp, crit); clear(lv.temp).append(fmtT(c.temp), h('small', null, ' ' + unit()));
 		clear(lv.duty).append(String(c.duty), h('small', null, ` duty · ${pct(c.duty)} %`)); lv.rpm.textContent = c.rpm < 0 ? 'no tach' : `${c.rpm.toLocaleString('en')} rpm`;
-		lv.tgt.textContent = `curve target ${c.target !== undefined ? c.target : '—'} · mode`;
-		if (!lv.sw.disabled) lv.state(c.mode);
-		if (c.mode !== 'manual' && !lv.dirty) lv.show(c.duty); }
+		// lag: the snapshot trails a PUT/DELETE by a cycle — flag and slider wait for the daemon to agree or the window to pass; manual → on, auto → off,
+		// critical/stall leave the flag alone (the override persists underneath, the switch still turns it off)
+		const man = c.mode === 'manual', lag = lv.until > Date.now() && (man !== lv.on || man && c.target !== lv.want);
+		if (!lv.busy && !lag) { lv.until = 0; if (man) lv.on = true; else if (c.mode === 'auto') lv.on = false; }
+		lv.state(c.mode);
+		lv.tgt.textContent = (lv.on ? `held ${man && !lag ? c.target : lv.range.value}` : `curve target ${c.target !== undefined ? c.target : '—'}`) + ' · mode';
+		if (!lv.dirty && !lv.busy && !lag) { if (!lv.on) lv.show(c.duty); else if (man) lv.show(c.target); }
+		const mn = minDuty(chList().find(x => x.name === c.name) || ed.c); if (mn !== lv.min) { lv.min = mn; lv.range.min = lv.num.min = mn; lv.show(+lv.range.value, 1); } // profile known now
+		ed.ref(); }
 }
 function fillSensorSelects() {
 	// a composite id "a,b" is one option (never dropped by the editor); the catalogue's single ids follow
@@ -716,16 +735,17 @@ function bindCurveDrag(ed) {
 	const up = () => { drag = -1; }; cv.addEventListener('pointerup', up); cv.addEventListener('pointercancel', up);
 }
 // the daemon's rules (rule 8 would otherwise replace the curve by its default); one channel at a time, shared with the preset editor
+// integers only (the daemon decodes int64: 45.5 is a 400, not a rounding); critical ≥ last point + 1; stop "" = auto
 const validateChannel = (c, errs) => { const L = LIM, n = c.curve.length, nm = c.name;
 	if (n < L.curve_points_min || n > L.curve_points_max) errs.push(`${nm}: ${n} points (need ${L.curve_points_min}..${L.curve_points_max})`);
 	c.curve.forEach((p, i) => { const q = `${nm} point ${i + 1}`;
-		if (!Number.isFinite(p[0]) || p[0] < L.temp[0] || p[0] > L.temp[1]) errs.push(`${q}: temp ${p[0]} outside ${L.temp[0]}..${L.temp[1]} °C`);
-		if (!Number.isFinite(p[1]) || p[1] < 0 || p[1] > L.duty) errs.push(`${q}: duty ${p[1]} outside 0..${L.duty}`);
+		if (!Number.isInteger(p[0]) || p[0] < L.temp[0] || p[0] > L.temp[1]) errs.push(`${q}: temp ${p[0]} must be a whole number ${L.temp[0]}..${L.temp[1]} °C`);
+		if (!Number.isInteger(p[1]) || p[1] < 0 || p[1] > L.duty) errs.push(`${q}: duty ${p[1]} must be a whole number 0..${L.duty}`);
 		if (i && p[0] <= c.curve[i - 1][0]) errs.push(`${q}: temp ${p[0]} °C not above point ${i} (${c.curve[i - 1][0]} °C)`);
 		if (i && p[1] < c.curve[i - 1][1]) errs.push(`${q}: duty ${p[1]} below point ${i} (${c.curve[i - 1][1]}) — duty must not fall`); });
-	const last = n ? c.curve[n - 1][0] : 0, cmin = Math.max(L.critical_min, last + 1);
-	if (!(c.critical >= cmin && c.critical <= L.critical_max)) errs.push(`${nm}: critical ${c.critical || '—'} must be ${cmin}..${L.critical_max} °C (above the last point)`);
-	if (c.stop !== 'auto' && !(/^\d+$/.test(c.stop) && +c.stop >= L.min_hdd_override && +c.stop <= L.duty)) errs.push(`${nm}: stop must be "auto" or a fixed duty ${L.min_hdd_override}..${L.duty}`);
+	const last = n ? c.curve[n - 1][0] : L.temp[0], cmin = last + 1;
+	if (!(Number.isInteger(c.critical) && c.critical >= cmin && c.critical <= L.critical_max)) errs.push(`${nm}: critical ${c.critical || '—'} must be a whole number ${cmin}..${L.critical_max} °C (above the last point)`);
+	const st = stopN(c.stop); if (st !== 'auto' && !(/^\d+$/.test(st) && +st >= L.min_hdd_override && +st <= L.duty)) errs.push(`${nm}: stop must be "auto" (or empty) or a fixed duty ${L.min_hdd_override}..${L.duty}`);
 	if (!(Number.isInteger(c.hysteresis) && c.hysteresis >= 0 && c.hysteresis <= L.hysteresis_max)) errs.push(`${nm}: hysteresis must be 0..${L.hysteresis_max} °C`);
 	if (durS(c.min_on) > L.min_on_max_s) errs.push(`${nm}: min_on above ${fmtDur(normDur(L.min_on_max_s + 's'))}`); return errs; };
 const validateCurves = (chs = edState) => { const errs = []; for (const c of chs) validateChannel(c, errs); return errs; };
@@ -743,11 +763,17 @@ on('#cv-revert', 'click', () => { loadEditor(); toast('Reverted', ''); });
 
 // presets: chips under the channel cards (built-ins: badge, no save-over, no delete); active = every channel equals the daemon config,
 // the badge on a channel names the first preset whose channel matches (chKey); details are cached per name (PD)
-const chKey = chs => JSON.stringify((chs || []).map(c => [c.name, +c.pwm, parts(c.sensor).join(','), (c.curve || []).map(p => [+p[0], +p[1]]), +c.critical, c.stop === undefined || c.stop === 'auto' ? 'auto' : String(c.stop), +c.hysteresis || 0, durS(c.min_on)]).sort());
+const chKey = chs => JSON.stringify((chs || []).map(c => [c.name, +c.pwm, parts(c.sensor).join(','), (c.curve || []).map(p => [+p[0], +p[1]]), +c.critical, stopN(c.stop), +c.hysteresis || 0, durS(c.min_on)]).sort());
+// what Apply makes of a preset here (cmd mergeChannelsByPWM): a preset channel replaces the config channel with the same pwm and takes its name; a table
+// without hysteresis and min_on (both 0 — the file omits them) keeps the config channel's post-processing; other config channels stay, new pwms are
+// appended. "active" and the channel badge compare against this merge, not the raw preset.
+const mergePre = (pc, hc) => Object.assign({}, pc, { name: hc.name }, +pc.hysteresis || durS(pc.min_on) ? null : { hysteresis: hc.hysteresis, min_on: hc.min_on });
+const applied = (chs, host) => { const pcs = chs || []; return host.map(hc => { const pc = pcs.find(x => +x.pwm === +hc.pwm); return pc ? mergePre(pc, hc) : hc; }).concat(pcs.filter(pc => !host.some(hc => +hc.pwm === +pc.pwm))); };
 const psNotice = notice('#ps-notice'), PD = {}, psGet = name => PD[name] ? Promise.resolve(PD[name]) : api('/api/presets/' + encodeURIComponent(name)).then(r => (PD[name] = r.body));
 let psList = [];
+const psReset = () => { for (const k in PD) delete PD[k]; psList = []; builtinNames = []; }; // sign-out
 const recommended = p => /^recommended/i.test(p.description || '') || p.name === 'n5pro-balanced';
-const presetOf = c => { const k = chKey([c]); for (const p of psList) { const d = PD[p.name], pc = d && (d.channels || []).find(x => x.name === c.name); if (pc && chKey([pc]) === k) return p.name; } return null; };
+const presetOf = c => { const k = chKey([c]); for (const p of psList) { const d = PD[p.name], pc = d && (d.channels || []).find(x => +x.pwm === +c.pwm); if (pc && chKey([mergePre(pc, c)]) === k) return p.name; } return null; };
 const presetBadges = () => { for (const c of chList()) { const ed = ED[c.name]; if (!ed) continue; const n = presetOf(c), b = ed.lv.pre;
 	clear(b); b.hidden = false; if (n) { b.className = 'badge preset'; b.title = 'the preset these values match'; b.append(ico('check'), n); } else { b.className = 'badge builtin'; b.title = 'no preset matches these values'; b.append('custom'); } } };
 const nameOk = n => LIM.name.test(n) ? builtinNames.includes(n) ? `${n} is a built-in preset — pick another name` : '' : 'Name: a-z, 0-9, _ and -, at most 64 characters';
@@ -758,11 +784,11 @@ const applyPreset = async p => { if (!await ask('Apply preset', `Apply preset ${
 async function loadPresets() {
 	const host = $('#preset-row'); try {
 		psList = (await api('/api/presets')).body || []; builtinNames = psList.filter(p => p.builtin).map(p => p.name);
-		for (const k in PD) if (!psList.some(p => p.name === k)) delete PD[k];
+		for (const k in PD) delete PD[k]; // every detail is re-read (CLI, second browser, import)
 		await Promise.all(psList.map(p => psGet(p.name).catch(() => null)));
-		const cur = chKey(chList()); clear(host); presetBadges();
+		const host_ = chList(), cur = chKey(host_); clear(host); presetBadges();
 		if (!psList.length) host.append(h('div', { class: 'empty-cta' }, 'No presets yet — Save current as… stores the editor values as the first one.'));
-		for (const p of psList) { const d = PD[p.name], on = !!d && chKey(d.channels) === cur;
+		for (const p of psList) { const d = PD[p.name], on = !!d && chKey(applied(d.channels, host_)) === cur;
 			host.append(h('div', { class: 'pchip' + (on ? ' active' : '') }, h('i', { class: 'dot', role: 'img', 'aria-label': on ? 'active — the daemon runs these values' : 'not active', title: on ? 'active — the daemon runs these values' : '' }),
 				recommended(p) ? h('span', { class: 'star', role: 'img', 'aria-label': 'recommended', title: 'recommended' }, ico('star')) : null,
 				h('span', { class: 'pn' }, p.name), p.builtin ? h('span', { class: 'badge builtin' }, 'built-in') : null, p.description ? h('span', { class: 'pd', title: p.description }, p.description) : null,
@@ -776,27 +802,36 @@ on('#ps-new', 'click', () => openPresetEditor(null));
 // preset editor dialog: "Start from" (the editor's unsaved values, the daemon's running curves or any preset), name, one block per channel with the
 // curve table; Save = PUT /api/presets/{name} with the composed channels (nothing is applied); built-in presets open read-only
 const ped = $('#preset-ed'), peNotice = notice('#pe-notice');
+// unsaved edits (peDirty) ask before the dialog goes: Cancel, Escape (keydown, before the dialog's own cancel) and the backdrop share peClose
+let peDirty = false;
+const peClose = async () => { if (peDirty && !await ask('Discard changes', 'Unsaved preset edits are discarded.', { ok: 'Discard', danger: true })) return; peDirty = false; ped.close(); };
+ped.addEventListener('keydown', ev => { if (ev.key === 'Escape') { ev.preventDefault(); peClose(); } });
+ped.addEventListener('cancel', ev => { if (peDirty) { ev.preventDefault(); peClose(); } });
+ped.addEventListener('click', ev => { if (ev.target === ped) peClose(); });
+on('#pe-close', 'click', peClose);
 function openPresetEditor(name) {
-	const body = clear($('#pe-body')), d = name ? PD[name] : null, ro = !!(d && d.builtin), pe = { chans: [] };
+	const body = clear($('#pe-body')), d = name ? PD[name] : null, ro = !!(d && d.builtin), pe = { chans: [] }; peDirty = false;
 	$('#pe-title').textContent = name ? (ro ? `Preset ${name}` : `Edit preset ${name}`) : 'New preset';
 	const srcs = [['editor', 'the editor (unsaved values)'], ['daemon', 'the daemon (running curves)'], ...psList.map(p => ['p:' + p.name, `preset ${p.name}`])];
 	const src = h('select', { 'aria-label': 'start from', disabled: !!name, onchange: () => fill(src.value) });
 	for (const [v, t] of srcs) src.append(h('option', { value: v, selected: v === (name ? 'p:' + name : 'editor') }, t));
-	const nm = h('input', { type: 'text', value: name || '', placeholder: 'summer', maxlength: 64, readonly: ro, autocapitalize: 'off', spellcheck: 'false', 'aria-describedby': 'pe-hint' });
-	const chBox = h('div', { class: 'pe-chs' }), noticeEl = h('div', { class: 'notice err', id: 'pe-notice', role: 'alert', hidden: true });
+	const nm = h('input', { type: 'text', value: name || '', placeholder: 'summer', maxlength: 64, readonly: ro, autocapitalize: 'off', spellcheck: 'false', 'aria-describedby': 'pe-hint', oninput: () => { peDirty = true; } });
+	const chBox = h('div', { class: 'pe-chs', oninput: () => { peDirty = true; }, onclick: ev => { if (ev.target.closest('button')) peDirty = true; } }), noticeEl = h('div', { class: 'notice err', id: 'pe-notice', role: 'alert', hidden: true });
 	body.append(h('div', { class: 'src' }, 'Start from ', src, h('span', { class: 'hint sm' }, 'Saving stores the values below — nothing is applied to the daemon.')),
 		h('div', { class: 'frow' }, h('label', null, 'Name ', nm), h('span', { class: 'hint sm', id: 'pe-hint' }, ro ? 'built-in presets are read-only' : 'a–z, 0–9, _ and -, at most 64 characters')),
 		chBox, noticeEl,
-		h('div', { class: 'act' }, h('button', { class: 'btn', onclick: () => ped.close() }, ro ? 'Close' : 'Cancel'), ro ? null : h('button', { class: 'btn primary', onclick: save }, name ? 'Save changes' : 'Save preset')));
+		h('div', { class: 'act' }, h('button', { class: 'btn', onclick: peClose }, ro ? 'Close' : 'Cancel'), ro ? null : h('button', { class: 'btn primary', onclick: save }, name ? 'Save changes' : 'Save preset')));
 	const fill = v => { const from = v === 'editor' ? edState || fromCfg() : v === 'daemon' ? chList() : (PD[v.slice(2)] || {}).channels || [];
 		pe.chans = from.map(chCopy); clear(chBox); peNotice(''); for (const c of pe.chans) chBox.append(peChannel(c, ro)); };
+	// Save: PUT under the current name first, the rename last — either failure leaves a consistent preset; a new preset never overwrites one unasked
 	async function save() { const n = nm.value.trim(), bad = nameOk(n); const errs = bad ? [bad] : validateCurves(pe.chans);
 		if (errs.length) { peNotice('Not saved — fix these first:\n' + errs.join('\n'), 'err'); if (bad) nm.focus(); return; }
-		const chans = pe.chans.map(c => ({ name: c.name, pwm: c.pwm, sensor: c.sensor, curve: c.curve, critical: c.critical, stop: c.stop, hysteresis: c.hysteresis, min_on: c.min_on }));
-		try { if (name && n !== name) await api(`/api/presets/${encodeURIComponent(name)}/rename`, { method: 'POST', json: { name: n } });
-			await api('/api/presets/' + encodeURIComponent(n), { method: 'PUT', json: { channels: chans } }); delete PD[n]; if (name) delete PD[name];
-		} catch (e) { return peNotice(e.message, 'err'); }
-		ped.close(); toast(name ? (n !== name ? `Preset ${name} renamed to ${n} and saved` : `Preset ${n} saved`) : `Preset ${n} saved`, 'ok'); loadPresets(); }
+		if (!name && psList.some(p => p.name === n) && !await ask('Overwrite preset', `Preset ${n} exists — replace it with these values?`, { ok: 'Overwrite', danger: true })) return;
+		const chans = pe.chans.map(c => ({ name: c.name, pwm: c.pwm, sensor: c.sensor, curve: c.curve, critical: c.critical, stop: stopN(c.stop), hysteresis: c.hysteresis, min_on: c.min_on })), old = name;
+		try { await api('/api/presets/' + encodeURIComponent(name || n), { method: 'PUT', json: { channels: chans } }); delete PD[name || n];
+			if (name && n !== name) { await api(`/api/presets/${encodeURIComponent(name)}/rename`, { method: 'POST', json: { name: n } }); name = n; delete PD[n]; $('#pe-title').textContent = `Edit preset ${n}`; }
+		} catch (e) { loadPresets(); return peNotice(e.message, 'err'); }
+		peDirty = false; ped.close(); toast(old ? (n !== old ? `Preset ${old} renamed to ${n} and saved` : `Preset ${n} saved`) : `Preset ${n} saved`, 'ok'); loadPresets(); }
 	fill(src.value); ped.showModal(); (ro ? $('.act .btn', body) : nm).focus();
 }
 // one channel block of the preset editor: fields + an editable point table (same rules as the curve editor)

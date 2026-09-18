@@ -37,7 +37,7 @@
   --content-max:1500px;--editor-min:460px;
   --toast-w:min(360px,calc(100vw - 2*var(--sp-4)));
   --dlg-w:min(640px,calc(100vw - 2*var(--sp-4)));--dlg-w-narrow:min(380px,calc(100vw - 2*var(--sp-4)));--dlg-max-h:calc(100vh - 2*var(--sp-4));
-  --w-num:5.5em;--w-num-sm:4.5em;--w-text:12em;--w-select:170px;--w-rowlabel:52px;--w-value:88px;
+  --w-num:5.5em;--w-num-sm:4.5em;--w-text:12em;--w-select:170px;--w-select-sm:140px;--w-rowlabel:52px;--w-value:88px;
   --hit-min:24px;--hdr-h:52px;--live-w:280px;--sw-w:36px;--sw-h:20px;--sw-knob:16px;--pd-max:260px;
   /* shell: sidebar / icon rail / phone bottom bar (§11a); --hdr-h is measured from the page header by app.js */
   --nav-w:220px;--rail-w:56px;--bottom-h:56px;--subnav-w:200px;
@@ -260,7 +260,7 @@ input[type=checkbox]{accent-color:var(--info)}
 .fan-cards{display:grid;gap:var(--gap);margin-bottom:var(--gap)}
 .fan{display:grid;gap:var(--sp-3);grid-template-columns:1fr;padding:0;overflow:hidden}
 .fan .fh{grid-column:1/-1;display:flex;align-items:center;gap:var(--sp-25);flex-wrap:wrap;padding:var(--sp-3) var(--sp-4);border-bottom:var(--bw) solid var(--line);background:var(--bg3);min-height:var(--hit-min)}
-.fan .fh .name{font-size:var(--fs-15);font-weight:var(--fw-semibold)}
+.fan .fh h2.name{margin:0;font-size:var(--fs-15);font-weight:var(--fw-semibold);color:var(--fg);text-transform:none;letter-spacing:0}
 .fan .fh .sub{margin:0;color:var(--fg3);font-size:var(--fs-12)}
 .fan .fh .badges{margin-left:auto;display:inline-flex;gap:var(--sp-15);align-items:center;flex-wrap:wrap}
 .badge.preset{color:var(--info);border-color:color-mix(in srgb,var(--info) var(--tint-border),transparent);background:color-mix(in srgb,var(--info) var(--tint-bg),transparent);display:inline-flex;align-items:center;gap:var(--sp-05)}
@@ -273,6 +273,7 @@ input[type=checkbox]{accent-color:var(--info)}
 .fan .now .t{font-size:var(--fs-28);font-weight:var(--fw-bold);line-height:1}
 .fan .now .t small{font-size:var(--fs-12);color:var(--fg2);font-weight:var(--fw-medium)}
 .fan .now .arrow{color:var(--fg3)}
+.fan .now .hint{flex-basis:100%}
 .fan .now .d{font-size:var(--fs-18);font-weight:var(--fw-semibold)}
 .fan .now .d small{font-size:var(--fs-12);color:var(--fg2);font-weight:var(--fw-medium)}
 .fan .tgt{display:flex;align-items:center;gap:var(--sp-15);flex-wrap:wrap;color:var(--fg3);font-size:var(--fs-12)}
@@ -288,7 +289,7 @@ input[type=checkbox]{accent-color:var(--info)}
 @media (prefers-reduced-motion:reduce){.switch .track,.switch .track::after{transition:none}}
 .fan .man{display:grid;gap:var(--sp-2)}
 .fan .rg{display:flex;gap:var(--sp-2);align-items:center}
-.fan .rg input[type=range]{flex:1;min-width:0}
+.fan .rg input[type=range]{flex:1;min-width:0;min-height:var(--hit-min)}
 .fan .rg input[type=number]{width:var(--w-num)}
 .fan .live .actions{display:flex;gap:var(--sp-2);flex-wrap:wrap;align-items:center}
 .fan .live .warn{color:var(--fg3);font-size:var(--fs-12);margin:0}
@@ -298,7 +299,7 @@ input[type=checkbox]{accent-color:var(--info)}
 .ed{display:grid;gap:var(--sp-25)}
 .ed .fields{display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-2) var(--sp-35);margin-top:var(--sp-1)}
 .ed .fields label{display:inline-flex;align-items:center;gap:var(--sp-15);font-size:var(--fs-12);color:var(--fg2)}
-.ed .fields select{max-width:var(--w-select)}
+.ed .fields select{max-width:var(--w-select-sm)}
 .ed .fields input[type=text]{width:5em}
 .ed .fields input[type=number]{width:var(--w-num-sm)}
 .ed .cvs{position:relative;height:var(--curve-h)}
@@ -314,6 +315,8 @@ input[type=checkbox]{accent-color:var(--info)}
 .ed .ref b{color:var(--fg2);font-weight:var(--fw-medium)}
 .gloss{margin:0 0 var(--sp-3);font-size:var(--fs-12);color:var(--fg2)}
 .gloss b{color:var(--fg);font-weight:var(--fw-semibold)}
+details.gloss summary{font-size:var(--fs-12)}
+details.gloss p{margin:var(--sp-15) 0 0}
 /* presets row: chips (active dot, recommended star, built-in badge) with Apply and icon buttons */
 .presets-card{margin-bottom:var(--gap)}
 .presets-card .card-h .hint{flex:1;min-width:200px}

@@ -212,6 +212,45 @@ critical = 90
 	}
 }
 
+// TestPresetSaveChannelsRoundTrip: the preset editor's path end to end —
+// SaveChannels (web.PresetChannelSaver) writes the composed tables,
+// Detail reads them back value for value (hysteresis and min_on
+// included), and Apply merges them into the config by pwm.
+func TestPresetSaveChannelsRoundTrip(t *testing.T) {
+	cfgPath := writeStoreConfig(t)
+	svc := &fakeService{}
+	s := dirPresetStore{dir: filepath.Join(t.TempDir(), "presets"), cfgPath: cfgPath, svc: svc, profile: "n5pro"}
+	chans := []config.Channel{{Name: "cpu", PWM: 1, Sensor: "k10temp", Curve: [][2]int{{40, 80}, {60, 150}, {75, 255}}, Critical: 85, Stop: "auto", Hysteresis: 2, MinOn: 90 * time.Second}}
+	if err := s.SaveChannels("n5pro-quiet", chans); !errors.Is(err, web.ErrPresetBuiltin) {
+		t.Fatalf("save over a built-in: %v", err)
+	}
+	if err := s.SaveChannels("summer", nil); err == nil {
+		t.Fatal("empty channel list must be refused")
+	}
+	if err := s.SaveChannels("summer", chans); err != nil {
+		t.Fatal(err)
+	}
+	det, err := s.Detail("summer")
+	if err != nil || det.Builtin || len(det.Channels) != 1 {
+		t.Fatalf("detail: %+v %v", det, err)
+	}
+	want := web.PresetChannel{Name: "cpu", PWM: 1, Sensor: "k10temp", Curve: [][2]int{{40, 80}, {60, 150}, {75, 255}}, Critical: 85, Stop: "auto", Hysteresis: 2, MinOn: "1m30s"}
+	if !reflect.DeepEqual(det.Channels[0], want) {
+		t.Errorf("detail channel = %+v, want %+v", det.Channels[0], want)
+	}
+	if err := s.Apply("summer"); err != nil || svc.reloads() != 1 {
+		t.Fatalf("apply: %v", err)
+	}
+	cfg, warns, err := config.Load(cfgPath)
+	if err != nil || len(warns) != 0 {
+		t.Fatalf("load after apply: %v %v", err, warns)
+	}
+	c := cfg.Channel("cpu")
+	if c == nil || len(cfg.Channels) != 1 || c.Critical != 85 || c.Hysteresis != 2 || c.MinOn != 90*time.Second || !reflect.DeepEqual(c.Curve, want.Curve) {
+		t.Errorf("config after apply: %+v", cfg.Channels)
+	}
+}
+
 // TestMergeChannelsByPWM: the pure merge, including a preset name that
 // collides with a kept config channel on another pwm.
 func TestMergeChannelsByPWM(t *testing.T) {

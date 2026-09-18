@@ -1,6 +1,6 @@
 // n5-fangov dashboard mock — loaded by app.js only with ?mock=1, never referenced by index.html.
 // Publishes window.n5mock(path, opt) → Promise<{status, body, filename?}>; api() calls it instead of fetch.
-// Flags: &user=1 &auth=none &tls=off|file|soon|fallback &tab= &syserr=1 &reject=1 &restart=1 &expire=1 &schedfail=1 &pwm4=1
+// Flags: &user=1 &auth=none &tls=off|file|soon|fallback &tab= &syserr=1 &reject=1 &restart=1 &expire=1 &schedfail=1 &pwm4=1 &lag=1
 // Names and addresses are documentation values (n5host, 192.0.2.x, n5.lan, example.test).
 'use strict';
 window.n5mock = (() => {
@@ -23,7 +23,7 @@ window.n5mock = (() => {
 	const presets = {
 		'n5pro-balanced': { builtin: true, description: 'Recommended: HDDs held near 40 °C, audible under load only', ch: cfg.channel },
 		'n5pro-quiet': { builtin: true, description: 'Quiet: lowest noise, HDDs around 45 °C', ch: shift(4) }, 'n5pro-cool': { builtin: true, description: 'Cool: drives first', ch: shift(-6) }, summer: { ch: shift(-4) } };
-	const overrides = {};
+	const overrides = {}, ovLag = {};
 	// day/night shape (peak in the afternoon) on top of the short-period wobble, so 24 h / 7 d look plausible
 	const day = t => Math.sin(((t / 86400) % 1 - .3) * 2 * Math.PI);
 	const temp = (name, t) => ({ cpu: 38 + 9 * Math.sin(t / 900) + 3 * Math.sin(t / 130) + 3 * day(t), ssd: 41 + 4 * Math.sin(t / 1400 + 1) + 2 * day(t), hdd: 39 + 2.5 * Math.sin(t / 2600 + 2) + 2.5 * day(t), pcie: 34 + 2 * Math.sin(t / 700) + 2 * day(t) })[name];
@@ -60,15 +60,22 @@ window.n5mock = (() => {
 	const parseSchedules = body => tables(body, 'schedule').map(b => ({ preset: kv(b, 'preset').replace(/"/g, ''), from: kv(b, 'from').replace(/"/g, ''), to: kv(b, 'to').replace(/"/g, ''), days: [...kv(b, 'days').matchAll(/"([^"]*)"/g)].map(x => x[1]) }));
 	const parseChannels = body => tables(body, 'channel').map(b => { const s = kv(b, 'sensor'), mo = kv(b, 'min_on'), st = kv(b, 'stop');
 		return { name: kv(b, 'name').replace(/"/g, ''), pwm: +kv(b, 'pwm'), sensor: s.startsWith('[') ? [...s.matchAll(/"([^"]*)"/g)].map(x => x[1]).join(',') : s.replace(/"/g, ''),
-			curve: [...kv(b, 'curve').matchAll(/\[\s*(-?\d+)\s*,\s*(\d+)\s*\]/g)].map(x => [+x[1], +x[2]]), critical: +kv(b, 'critical'), stop: st === '"auto"' ? 'auto' : +st.replace(/"/g, ''),
+			curve: [...kv(b, 'curve').matchAll(/\[\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*\]/g)].map(x => [+x[1], +x[2]]), critical: +kv(b, 'critical'), stop: /^"auto"$/i.test(st) ? 'auto' : /^\d+$/.test(st) ? +st : st.replace(/"/g, ''),
 			hysteresis: +kv(b, 'hysteresis') || 0, min_on: mo ? mo.replace(/"/g, '') : '0s' }; });
+	// the daemon's channel rules (config.ValidateCurve, parser.stop, intField / durField): every warning is an error here
+	const durS = s => { const m = /^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/.exec(s); return m && m[0] ? (+m[1] || 0) * 3600 + (+m[2] || 0) * 60 + (+m[3] || 0) : -1; };
 	const check = chs => { const errs = [];
 		for (const c of chs) { const n = c.name, pts = c.curve;
-			pts.forEach((p, i) => { if (i && p[1] < pts[i - 1][1]) errs.push(`channel ${n}: point ${i} duty ${p[1]} below previous ${pts[i - 1][1]}`); });
-			const last = pts.length ? pts[pts.length - 1][0] : 0; if (c.critical < last + 1 || c.critical > 150) errs.push(`channel ${n}: critical ${c.critical} out of range ${last + 1}..150`);
-			if (c.stop !== 'auto' && c.stop < 60) errs.push(`channel ${n}: fixed stop duty ${c.stop} below 60`);
-			if (c.hysteresis < 0 || c.hysteresis > 10) errs.push(`channel ${n}: hysteresis ${c.hysteresis} out of range 0..10`);
-			if (!/^(\d+h)?(\d+m)?(\d+s)?$/.test(c.min_on) || c.min_on === '') errs.push(`channel ${n}: min_on "${c.min_on}" is not a duration`); }
+			if (pts.length < 2 || pts.length > 8) errs.push(`channel ${n}: curve: ${pts.length} points, need 2..8`);
+			pts.forEach((p, i) => { if (!Number.isInteger(p[0]) || !Number.isInteger(p[1])) errs.push(`channel ${n}: point ${i} is not [temp, duty] integers`);
+				else if (p[0] < -20 || p[0] > 120) errs.push(`channel ${n}: point ${i} temp ${p[0]} outside -20..120`);
+				else if (p[1] < 0 || p[1] > 255) errs.push(`channel ${n}: point ${i} duty ${p[1]} outside 0..255`);
+				else if (i && p[0] <= pts[i - 1][0]) errs.push(`channel ${n}: point ${i} temp ${p[0]} not above previous ${pts[i - 1][0]}`);
+				else if (i && p[1] < pts[i - 1][1]) errs.push(`channel ${n}: point ${i} duty ${p[1]} below previous ${pts[i - 1][1]}`); });
+			const last = pts.length ? pts[pts.length - 1][0] : 0; if (!Number.isInteger(c.critical) || c.critical < last + 1 || c.critical > 150) errs.push(`channel ${n}: critical ${c.critical} out of range ${last + 1}..150`);
+			const st = c.stop === '' || /^auto$/i.test(String(c.stop)) ? 'auto' : +c.stop; if (st !== 'auto' && !(Number.isInteger(st) && st >= 60 && st <= 255)) errs.push(`channel ${n}: stop "${c.stop}" is neither auto nor a fixed duty 60..255`);
+			if (!Number.isInteger(c.hysteresis) || c.hysteresis < 0 || c.hysteresis > 10) errs.push(`channel ${n}: hysteresis ${c.hysteresis} out of range 0..10`);
+			const mo = durS(c.min_on); if (mo < 0) errs.push(`channel ${n}: min_on "${c.min_on}" is not a duration`); else if (mo > 3600) errs.push(`channel ${n}: min_on ${c.min_on} above 1h0m0s`); }
 		if (Q.get('reject')) errs.push('channel cpu: sensor "k10temp" not found (mock &reject=1)'); return errs; };
 	const logs = [];
 	for (let i = 0; i < 200; i++) { const t = t0 - (200 - i) * 300; const p = point(t);
@@ -172,8 +179,11 @@ window.n5mock = (() => {
 		if (M.in && M.exp && now - t0 > 15 && p === '/api/state') { M.in = M.exp = false; return fail('unauthorized', 401); } // &expire=1: session dies once after 15 s
 		if (p === '/api/state') { const pt = point(now), stall = (now | 0) % 40 < 3, hold = (now | 0) % 300 < 90;
 			const body = { ts: pt.ts, status: 'ok', profile: 'n5pro', verified: true, dry_run: false, uptime_s: 435723,
-				channels: cfg.channel.map(c => { const n = c.name, st = n === 'hdd' && stall, ch = { name: n, pwm: c.pwm, sensor: c.sensor, temp: pt.temp[n], duty: pt.duty[n], target: n === 'cpu' ? pt.duty.cpu + 22 : pt.duty[n], rpm: st ? 0 : pt.rpm[n],
-					mode: n in overrides ? 'manual' : st ? 'stall' : 'auto' };
+				// like the daemon: an override replaces the target and the mode, stall and critical win on top; &lag=1 reports the previous
+				// override state for two more polls (the daemon's snapshot follows a PUT/DELETE only with the next cycle)
+				channels: cfg.channel.map(c => { const n = c.name, st = n === 'hdd' && stall, lg = ovLag[n], ov = lg && lg.left-- > 0 ? lg.ov : overrides[n]; if (lg && lg.left <= 0) delete ovLag[n];
+					const ch = { name: n, pwm: c.pwm, sensor: c.sensor, temp: pt.temp[n], duty: ov === undefined ? pt.duty[n] : ov, target: ov === undefined ? n === 'cpu' ? pt.duty.cpu + 22 : pt.duty[n] : ov, rpm: st ? 0 : pt.rpm[n],
+					mode: st ? 'stall' : ov !== undefined ? 'manual' : 'auto' };
 					// hysteresis: the held reading lags the raw one; min_on: a running hold now and then
 					if (c.hysteresis) { const held = Math.round(pt.temp[n]) - 1; if (Math.abs(held - pt.temp[n]) >= .1) ch.held_temp = held; }
 					if (c.min_on !== '0s' && hold && n === 'hdd') ch.hold_until = Math.floor(now - (now | 0) % 300 + 90);
@@ -194,9 +204,10 @@ window.n5mock = (() => {
 				dash = ids; return ok({ ok: true, sensors: dash, warnings: ids.filter(i => !SENS[i]).map(i => i + ': unresolved') }); }
 			return ok({ sensors: dash }); }
 		if (p.startsWith('/api/override/')) { const n = p.split('/')[3];
-			if (m === 'DELETE') { delete overrides[n]; return ok({ ok: true }); }
-			if (n === 'hdd' && opt.json.duty < 60) return fail(`duty ${opt.json.duty} below stall_min_duty 60 for hdd`, 400);
-			overrides[n] = opt.json.duty; return ok({ ok: true }); }
+			const lag = () => { if (Q.get('lag') === '1') ovLag[n] = { ov: overrides[n], left: 2 }; }; // &lag=1: the state answers keep the old mode for two polls
+			if (m === 'DELETE') { lag(); delete overrides[n]; return ok({ ok: true, channel: n, mode: 'auto' }); }
+			if ((n === 'hdd' || cfg.channel.some(c => c.name === n && c.stop !== 'auto')) && opt.json.duty < 60) return fail(`channel ${n} (fixed stop duty / not chip-regulated): manual duty must be at least 60`, 400);
+			lag(); overrides[n] = opt.json.duty; return ok({ ok: true, channel: n, duty: opt.json.duty, mode: 'manual' }); }
 		if (p === '/api/presets') return ok(Object.entries(presets).map(([name, v]) => ({ name, channels: v.ch.map(c => c.name), builtin: !!v.builtin, description: v.description })));
 		if (p.startsWith('/api/presets/')) { const n = p.split('/')[3], b = presets[n] && presets[n].builtin, sub = p.split('/')[4];
 			if (m === 'PUT') { if (b) return fail('built-in preset', 409); const chs = opt.json && opt.json.channels; // a JSON body = the composed channels (preset editor), validated like the config; empty = the running tables
@@ -205,7 +216,7 @@ window.n5mock = (() => {
 				presets[n] = { ch: (chs || cfg.channel).map(c => Object.assign({}, c)) }; return ok({ ok: true, saved: n }); }
 			if (m === 'DELETE') { if (b) return fail('built-in preset', 409); if (!presets[n]) return fail('no such preset', 404); delete presets[n]; return ok({ ok: true }); }
 			if (m === 'GET') { if (!presets[n]) return fail('unknown preset ' + n, 404); return ok({ name: n, builtin: !!b, description: presets[n].description, channels: presets[n].ch }); }
-			if (sub === 'rename') { const nn = opt.json.name; if (b || (presets[nn] && presets[nn].builtin)) return fail('built-in preset', 409); if (presets[nn]) return fail('preset exists', 409); presets[nn] = presets[n]; delete presets[n]; return ok({ ok: true, name: nn }); }
+			if (sub === 'rename') { const nn = opt.json.name; if (b || (presets[nn] && presets[nn].builtin)) return fail('built-in preset', 409); if (!presets[n]) return fail('unknown preset ' + n, 404); if (presets[nn]) return fail('preset exists', 409); presets[nn] = presets[n]; delete presets[n]; return ok({ ok: true, name: nn }); }
 			if (presets[n]) cfg.channel = presets[n].ch.map(c => Object.assign({}, c)); return wait({ status: n === 'summer' ? 202 : 200, body: { ok: true } }); }
 		if (p === '/api/schedules') return ok(schedStatus());
 		if (p.startsWith('/api/tokens')) return mockTokens(p, m, opt);

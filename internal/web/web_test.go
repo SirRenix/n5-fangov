@@ -650,6 +650,12 @@ func TestBodyTooLarge(t *testing.T) {
 	}
 	// Just under the limit is still fine.
 	wantCode(t, e.do(t, "PUT", "/api/override/cpu", `{"duty":10}`, csrf), 200)
+	// the preset save body shares the config limit
+	bigPreset := `{"channels":[{"name":"cpu","pwm":1,"sensor":"` + strings.Repeat("k", maxBody) + `","curve":[[40,80],[75,255]],"critical":85}]}`
+	wantError(t, e.do(t, "PUT", "/api/presets/x", bigPreset, csrf), 413, "exceeds")
+	if len(e.presets.chans) != 0 || len(e.presets.saved) != 0 {
+		t.Fatal("oversized preset body was stored")
+	}
 }
 
 func TestCSRFHeaderRequired(t *testing.T) {

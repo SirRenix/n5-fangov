@@ -859,7 +859,8 @@ sensors.
   `&tab=<id>`, `&syserr=1`, `&reject=1` (strict PUT 400), `&restart=1` (PUT /api/config
   answers 202), `&expire=1` (session dies after 15 s), `&schedfail=1` (last schedule
   switch failed), `&pwm4=1` (fourth channel `pcie`,
-  pwm 4, no tach); every endpoint above is implemented (login `admin`/`admin`); names and
+  pwm 4, no tach), `&lag=1` (an override PUT/DELETE shows in `/api/state` only after two
+  more polls — the daemon's next-cycle lag); every endpoint above is implemented (login `admin`/`admin`); names and
   addresses are documentation values (`n5host`, `192.0.2.x`, `n5.lan`).
 
 ### 11a. Target structure for 0.4.0 (redesign contract)
@@ -928,7 +929,11 @@ point table). Right, *Live & override*: now-temperature → duty target, an expl
 duty the channel runs at that moment — `PUT /api/override/{name}` with the snapshot duty,
 raised to the HDD minimum where it applies —, the slider + number field and *Set* then
 change it; switching back to Auto is the `DELETE /api/override/{name}`; the slider block
-is dimmed while the switch is off), the HDD minimum hint. The live block refreshes with
+is dimmed **and disabled** while the switch is off; the switch state is a client-side
+override flag held through one daemon cycle after a PUT/DELETE — the snapshot's `mode`
+follows a cycle later — and `critical`/`stall` leave it alone, so the override stays
+switchable off), the HDD minimum hint (the daemon's `hddLike` rule: fixed stop duty or
+pwm3 on the N5 Pro). The live block refreshes with
 every state poll without rebuilding the editor. Below the cards a **Presets row** of
 chips (active ●, recommended ★, built-in badge, description, *Apply* with confirm,
 icon buttons *Details* (built-in, read-only) / *Edit* (user preset) and *Delete*; rename
