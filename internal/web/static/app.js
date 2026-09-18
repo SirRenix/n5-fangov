@@ -309,6 +309,7 @@ const openMore = rest => { const ul = clear($('#more-list'));
 // go: switch the page (auth-gated), mark the nav entries, keep the hash, optionally scroll to a section; returns false for an unknown/forbidden page
 function go(id, sec) {
 	const p = PAGES.find(x => x.id === id && (signedIn() || x.anon)); if (!p) return false;
+	if (scGuard(p.id, sec)) return true; // unsaved schedule edits: the switch waits for the dialog
 	const changed = cur !== p.id; cur = p.id;
 	lastHash = '#' + cur + (sec ? '/' + sec : ''); if (location.hash !== lastHash) location.hash = lastHash;
 	for (const s of $$('.pg')) s.hidden = s.id !== 'p-' + cur;
@@ -340,7 +341,7 @@ async function applyAuth() {
 	for (const el of $$('[data-auth]:not(.pg)')) el.hidden = !on;
 	for (const [id, show] of [['#h-signin', !on && basic], ['#h-signout', on && basic], ['#h-user', on && basic]]) $(id).hidden = !show;
 	$('#h-user-n').textContent = sess.user || ''; buildNav();
-	if (!on) { cert = null; cfg = null; edState = null; dirty(false); alerts = null; sysinfo = null; dash = []; profiles = []; SN.key = null; for (const k in ED) delete ED[k]; for (const id of ['#fan-cards', '#ch-sel', '#preset-row', '#log', '#sc-tbl tbody', '#sc-kv', '#ac-tok tbody']) clear($(id));
+	if (!on) { cert = null; cfg = null; edState = null; dirty(false); scReset(); alerts = null; sysinfo = null; dash = []; profiles = []; SN.key = null; for (const k in ED) delete ED[k]; for (const id of ['#fan-cards', '#ch-sel', '#preset-row', '#log', '#sc-tbl tbody', '#sc-kv', '#ac-tok tbody']) clear($(id));
 		route(); // a page that needs auth falls back to the Overview
 		secState(); renderCharts(); loadAbout(); return; }
 	hist = []; lastTs = 0; // history is re-read with the extra series
@@ -359,7 +360,8 @@ lf.addEventListener('submit', async ev => { ev.preventDefault(); const u = $('#l
 		sess = { authenticated: true, mode: 'basic', user: r.body.user || u, via: 'cookie' }; ld.close(); toast('Signed in', 'ok'); applyAuth(); const nb = $(`#nav [data-page="${cur}"]`); if (nb) nb.focus(); }
 	catch (e) { lErr(e.status === 401 ? 'invalid user or password' : e.status === 429 ? 'too many attempts' : e.message); $('#l-pass').value = ''; $('#l-pass').focus(); }
 	bt.disabled = false; });
-on('#h-signout', 'click', async () => { if (edDirty && !await ask('Sign out', 'Unsaved curve changes are discarded.', { ok: 'Sign out', danger: true })) return;
+on('#h-signout', 'click', async () => { const un = [edDirty && 'curve', scDirty && 'schedule'].filter(Boolean);
+	if (un.length && !await ask('Sign out', `Unsaved ${un.join(' and ')} changes are discarded.`, { ok: 'Sign out', danger: true })) return;
 	try { await api('/api/logout', { method: 'POST' }); } catch (e) {}
 	sess = anon(sess.mode); toast('Signed out', 'ok'); applyAuth(); $('#h-signin').focus(); });
 
@@ -532,7 +534,7 @@ const cvNotice = notice('#cv-notice'), K = UI.curve;
 const chDirty = name => { const e = ED[name], o = chList().find(x => x.name === name); return !!(e && o) && chKey([e.c]) !== chKey([o]); };
 const dirty = v => { edDirty = !!v; $('#cv-dirty').hidden = !v; $('#cv-clean').hidden = !!v; for (const d of $$('#nav-dirty, #bnav .dirty')) d.hidden = !v;
 	for (const b of $$('#ch-sel button')) b.lastChild.hidden = !v || !chDirty(b.dataset.ch); };
-addEventListener('beforeunload', ev => { if (edDirty) ev.preventDefault(); });
+addEventListener('beforeunload', ev => { if (edDirty || scDirty) ev.preventDefault(); });
 // Go durations ("1m0s") ↔ seconds; min_on is kept in the daemon's canonical form, the select lists the common values
 const durS = s => { const m = /^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+(?:\.\d+)?)s)?$/.exec(s || ''); return m && m[0] ? (+m[1] || 0) * 3600 + (+m[2] || 0) * 60 + (+m[3] || 0) : 0; };
 const MIN_ON = [['0s', 'off'], ['30s', '30 s'], ['1m0s', '1 min'], ['2m0s', '2 min'], ['5m0s', '5 min'], ['10m0s', '10 min'], ['30m0s', '30 min'], ['1h0m0s', '1 h']];
@@ -814,18 +816,70 @@ const peChannel = (c, ro) => { const L = LIM, tbody = h('tbody');
 			h('label', { title: TIP.hyst }, 'hysteresis °C', inp('hysteresis', { type: 'number', min: 0, max: L.hysteresis_max, step: 1 })), h('label', { title: TIP.minOn }, 'min on', Object.assign(minOnSel(c, () => {}), { disabled: ro }))),
 		h('div', { class: 'ptl2' }, h('table', null, h('thead', null, h('tr', null, h('th', null, '°C'), h('th', { title: TIP.duty }, 'duty'), h('th'), h('th'))), tbody), ro ? null : add)); };
 
-// schedules card (read-only; the list is edited in the config file): 501 → "unavailable" like the alerts card
-const scNotice = notice('#sc-notice'), inRel = ts => { const s = Math.max(0, ts - Date.now() / 1000 | 0); return 'in ' + (s < 3600 ? `${s / 60 | 0} min` : s < 86400 ? `${s / 3600 | 0} h ${s % 3600 / 60 | 0} min` : `${s / 86400 | 0} d ${s % 86400 / 3600 | 0} h`); };
-async function loadSchedules() { if (!signedIn()) return; const tb = clear($('#sc-tbl tbody')), kvEl = $('#sc-kv');
-	try { const s = (await api('/api/schedules')).body || {}, es = s.entries || [];
-		for (const e of es) tb.append(h('tr', { class: e.active ? 'active' : '' }, h('td', { class: 'mono' }, e.preset, e.active ? h('span', { class: 'act' }, 'ACTIVE') : null),
-			h('td', null, e.fallback ? h('i', null, 'fallback') : `${e.from}–${e.to}`), h('td', null, e.fallback ? '—' : e.days && e.days.length ? e.days.join(' ') : 'every day')));
-		if (!es.length) tb.append(h('tr', null, h('td', { colspan: 3, class: 'empty' }, 'no schedules configured')));
-		const n = s.next, l = s.last;
-		kv(kvEl, [['next switch', n ? h('dd', null, h('time', { datetime: new Date(n.ts * 1000).toISOString(), title: abs(n.ts) }, inRel(n.ts)), ` → ${n.preset || 'no preset (no fallback)'}`) : '—'],
-			['last switch', l ? h('dd', null, `${l.preset} · `, tm(l.ts), l.ok ? ' · ok' : ' · failed') : 'none yet'], ['timezone', s.timezone || '—']]);
-		scNotice(l && !l.ok ? `Last switch failed: ${l.error || 'unknown error'} — the previous curves stay; retried at the next transition.` : '', '');
-	} catch (e) { if (e.status === 401) return; clear(kvEl); tb.append(h('tr', null, h('td', { colspan: 3, class: 'empty' }, e.status === 501 ? 'schedules: unavailable' : 'schedules: ' + e.message))); scNotice(''); } }
+// Schedules page: editor + status. Save splices the [[schedule]] tables like Apply splices [[channel]] (stripSchedules mirrors stripChannels), PUT ?strict=1; no restart (DESIGN 6b)
+const SC_HDR = /^\[\[\s*schedule\s*\]\]/, SC_DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+const stripSchedules = raw => { const out = []; let skip = false;
+	for (const ln of raw.split('\n')) { const t = ln.trim();
+		if (SC_HDR.test(t)) { skip = true; continue; }
+		if (TOML_HDR.test(t)) skip = false;
+		if (!skip) out.push(ln); } return out.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd() + '\n\n'; };
+const tomlSchedule = e => `[[schedule]]\npreset = "${e.preset}"\n` + (e.fallback ? '' : `from = "${e.from}"\nto = "${e.to}"\n` + (e.days.length && e.days.length < 7 ? `days = [${SC_DAYS.filter(d => e.days.includes(d)).map(d => `"${d}"`).join(', ')}]\n` : ''));
+const scNotice = notice('#sc-notice'), scErr = notice('#sc-err'), inRel = ts => { const s = Math.max(0, ts - Date.now() / 1000 | 0); return 'in ' + (s < 3600 ? `${s / 60 | 0} min` : s < 86400 ? `${s / 3600 | 0} h ${s % 3600 / 60 | 0} min` : `${s / 86400 | 0} d ${s % 86400 / 3600 | 0} h`); };
+let scState = null, scDirty = false, scStat = null, scNames = [];
+const scSetDirty = v => { scDirty = !!v; $('#sc-save').disabled = !v; $('#sc-dirty').hidden = !v; };
+// page-leave guard (from go): true = the switch waits for the dialog
+function scGuard(id, sec) { if (cur !== 'schedules' || id === 'schedules' || !scDirty) return false;
+	ask('Leave Schedules', 'Unsaved schedule changes are discarded.', { ok: 'Discard', danger: true }).then(ok => { if (ok) { scSetDirty(false); go(id, sec); } else if (location.hash !== lastHash) location.hash = lastHash; }); return true; }
+function scReset() { scState = scStat = null; scSetDirty(false); scErr(''); scNotice(''); clear($('#sc-tbl tbody')); clear($('#sc-kv')); }
+const scValidate = () => { const errs = [], hhmm = /^\d{2}:\d{2}$/; let fb = 0;
+	scState.forEach((e, i) => { const q = `entry ${i + 1}: `;
+		if (!e.preset) errs.push(q + 'choose a preset');
+		if (e.fallback) { if (++fb > 1) errs.push(q + 'only one fallback allowed'); }
+		else if (!hhmm.test(e.from) || !hhmm.test(e.to)) errs.push(q + 'from and to need a time (HH:MM)');
+		else if (e.from === e.to) errs.push(q + 'from equals to'); });
+	if (scState.length > 16) errs.push('at most 16 entries'); return errs; };
+// day toggles update in place (aria-pressed, "every day" hint) so the focus stays
+const scDays = e => { const all = h('span', { class: 'all' }, 'every day'), sync = () => { bt.forEach((b, i) => b.setAttribute('aria-pressed', String(e.days.includes(SC_DAYS[i])))); all.hidden = !!e.days.length; };
+	const bt = SC_DAYS.map(d => h('button', { 'aria-label': d, onclick: () => { e.days = e.days.includes(d) ? e.days.filter(x => x !== d) : e.days.concat(d); if (e.days.length === 7) e.days = []; sync(); scSetDirty(1); } }, d[0].toUpperCase() + d[1]));
+	sync(); return h('div', { class: 'days', role: 'group', 'aria-label': 'days' }, bt, all); };
+function scBuild(focus) { // focus: [row, selector] after a structural change
+	const tb = clear($('#sc-tbl tbody')), es = scState || [], hasFb = es.some(e => e.fallback), empty = t => tb.append(h('tr', null, h('td', { colspan: 5, class: 'empty' }, t)));
+	$('#sc-add').disabled = !scStat;
+	if (!scStat) return empty('No scheduler in this daemon — [[schedule]] tables are not applied.');
+	if (!es.length) empty('No schedule — the daemon keeps the curves it has. Add an entry to switch presets by time of day.');
+	es.forEach((e, i) => { const known = () => scNames.includes(e.preset), miss = h('span', { class: 'miss', hidden: known() }, 'preset missing');
+		const sel = h('select', { 'aria-label': `entry ${i + 1} preset`, onchange: () => { e.preset = sel.value; miss.hidden = known(); scSetDirty(1); } },
+			!e.preset ? h('option', { value: '', selected: true }, '— choose —') : known() ? null : h('option', { value: e.preset, selected: true }, `${e.preset} (missing)`), scNames.map(n => h('option', { value: n, selected: n === e.preset }, n)));
+		const time = k => h('input', { type: 'time', value: e[k], 'aria-label': `entry ${i + 1} ${k}`, required: true, oninput: ev => { e[k] = ev.target.value; scSetDirty(1); } });
+		const swap = h('button', { class: 'btn sm link', disabled: !e.fallback && hasFb, title: !e.fallback && hasFb ? 'there is already a fallback entry' : null,
+			onclick: () => { e.fallback = !e.fallback; if (e.fallback) { e.from = e.to = ''; e.days = []; } scSetDirty(1); scBuild([i, '.sub button']); } }, e.fallback ? 'add window' : 'make fallback');
+		tb.append(h('tr', { class: e.active ? 'active' : '' }, h('td', null, sel, h('div', { class: 'sub' }, e.active ? h('span', { class: 'act' }, 'ACTIVE') : null, miss, swap)),
+			e.fallback ? h('td', { colspan: 3, class: 'fb' }, 'fallback — outside every window') : [h('td', null, time('from')), h('td', null, time('to')), h('td', null, scDays(e))],
+			h('td', { class: 'rowact' }, h('button', { class: 'btn icon link', 'aria-label': `remove entry ${i + 1}`, onclick: () => { scState.splice(i, 1); scSetDirty(1); scBuild([Math.min(i, scState.length - 1), '.rowact button']); } }, ico('trash'))))); });
+	if (focus) { const r = tb.rows[focus[0]]; ((r && r.querySelector(focus[1])) || $('#sc-add')).focus(); }
+}
+function renderScStatus() { const s = scStat; if (!s) return; const es = s.entries || [], a = es[s.active], n = s.next, l = s.last;
+	kv($('#sc-kv'), [['active', a ? a.fallback ? `${a.preset} (fallback)` : `${a.preset} ${a.from}–${a.to}${a.days && a.days.length ? ' · ' + a.days.join(' ') : ''}` : es.length ? 'none (outside every window)' : 'none'],
+		['next switch', n ? h('dd', null, h('time', { datetime: new Date(n.ts * 1000).toISOString() }, abs(n.ts)), ` (${inRel(n.ts)}) → ${n.preset || 'no preset (no fallback)'}`) : es.length ? 'none within 8 days' : '—'],
+		['last switch', l ? h('dd', null, `${l.preset} · `, tm(l.ts), l.ok ? ' · ok' : h('span', { class: 't-crit' }, ` — failed: ${l.error || 'unknown error'}`)) : 'none yet'], ['timezone', s.timezone || '—']]);
+	scNotice(l && !l.ok ? `Last switch failed: ${l.error || 'unknown error'} — the previous curves stay; retried at the next transition.` : '', ''); }
+async function loadSchedules() { if (!signedIn()) return; // the 60 s poll never rebuilds a dirty editor
+	try { const [s, ps] = await Promise.all([api('/api/schedules'), api('/api/presets').catch(() => ({ body: [] }))]);
+		scStat = s.body || {}; scNames = (ps.body || []).map(p => p.name); renderScStatus();
+		if (!scDirty) { scState = (scStat.entries || []).map(e => ({ preset: e.preset || '', from: e.from || '', to: e.to || '', days: (e.days || []).filter(d => SC_DAYS.includes(d)), fallback: !!e.fallback, active: !!e.active })); scBuild(); }
+	} catch (e) { if (e.status === 401) return; scStat = scState = null; scSetDirty(false); kv($('#sc-kv'), [['scheduler', e.status === 501 ? 'unavailable (501)' : e.message]]); scNotice(''); scBuild(); } }
+on('#sc-add', 'click', () => { if (!scState) return; scState.push({ preset: scNames[0] || '', from: '', to: '', days: [], fallback: false }); scSetDirty(1); scBuild([scState.length - 1, 'select']); });
+on('#sc-revert', 'click', () => { scSetDirty(false); scErr(''); loadSchedules(); toast('Reverted', ''); });
+on('#sc-save', 'click', async () => { if (!scState) return; const errs = scValidate();
+	if (errs.length) return scErr('Not saved — fix these first:\n' + errs.join('\n'), 'err');
+	await loadConfig(); // splice into the file as it is now
+	const body = stripSchedules(cfgRaw) + scState.map(tomlSchedule).join('\n');
+	try { const r = await api('/api/config?strict=1', { method: 'PUT', body, headers: { 'Content-Type': 'application/toml' } });
+		const warn = r.body && Array.isArray(r.body.warnings) && r.body.warnings.length ? 'Config warnings:\n' + r.body.warnings.join('\n') : '';
+		scErr((r.status === 202 ? 'Written — restart required: systemctl restart n5-fangov\n' : '') + warn, '');
+		toast(r.status === 202 ? 'Schedule written — restart required' : warn ? 'Schedule saved with warnings' : 'Schedule saved', r.status === 202 || warn ? 'warn' : 'ok');
+		scSetDirty(false); await loadConfig(); loadSchedules();
+	} catch (e) { scErr(e.message, 'err'); } }); // notice is role=alert: no toast on top
 
 // alerts page + Settings → Alert transport; unsaved form edits survive the refresh; missing transports are disabled
 let alDirty = false; on('#al-form', 'input', () => { alDirty = true; });
@@ -864,7 +918,6 @@ function renderAbout(a) {
 	$('#ab-name').textContent = a.name || 'n5-fangov'; $('#ab-version').textContent = 'v' + (a.version || version || '?').replace(/^v/, ''); preBadge([$('#ab-beta')], a.prerelease);
 	const link = (id, href, text) => { const e = $(id); e.href = href || '#'; e.textContent = text || href || '—'; };
 	link('#ab-license', a.license_url, a.license); link('#ab-repo', a.repo, (a.repo || '').replace(/^https?:\/\//, '')); link('#ab-author', a.author_url, a.author); link('#ab-rel', a.repo + '/releases', 'GitHub releases');
-	link('#sc-doc', a.repo + '/blob/main/docs/06-configuration.md#schedules', 'configuration page');
 	$('#ab-go').textContent = a.go || '—'; $('#ab-go').hidden = $('#ab-go-t').hidden = !a.go; $('#ab-mock').hidden = !MOCK;
 	const ul = clear($('#ab-credits')); for (const c of a.credits || []) ul.append(h('li', null, h('a', { href: c.url, rel: 'noopener', target: '_blank' }, c.name), c.note ? ' — ' + c.note : ''));
 }
