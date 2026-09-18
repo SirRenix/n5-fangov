@@ -1477,3 +1477,29 @@ func TestChannelPostSet(t *testing.T) {
 		t.Errorf("Clone drops the flag")
 	}
 }
+
+// N5ProChannels is the n5pro-balanced preset (setup writes it, SanitizeChannels
+// adds it); the literal fallback inside must stay equal to the embedded TOML.
+func TestN5ProChannelsAreBalanced(t *testing.T) {
+	p, ok := BuiltinPresetByName("n5pro-balanced")
+	if !ok {
+		t.Fatal("n5pro-balanced missing")
+	}
+	want, _, err := ParseChannels(p.Raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := N5ProChannels()
+	if len(got) != len(want) {
+		t.Fatalf("N5ProChannels: %d channels, preset %d", len(got), len(want))
+	}
+	for i := range want {
+		g, w := got[i], want[i]
+		if g.Name != w.Name || g.PWM != w.PWM || g.Sensor != w.Sensor || g.Critical != w.Critical || g.Stop != w.Stop || fmt.Sprint(g.Curve) != fmt.Sprint(w.Curve) {
+			t.Errorf("channel %d: got %+v, preset %+v", i, g, w)
+		}
+	}
+	if got[2].Curve[1] != [2]int{42, 140} || got[2].Critical != 60 {
+		t.Errorf("hdd is not the balanced set: %+v", got[2])
+	}
+}

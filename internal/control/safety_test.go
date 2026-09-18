@@ -18,7 +18,7 @@ import (
 // written).
 func cpuOnly() config.Config {
 	cfg := config.Default()
-	cfg.Channels = config.N5ProChannels()[:1]
+	cfg.Channels = testN5Channels()[:1]
 	return cfg
 }
 
@@ -37,7 +37,8 @@ func TestN5ProMissingChannelsAdded(t *testing.T) {
 		t.Errorf("added hdd: %+v", hdd)
 	}
 	h.cycles(1)
-	h.expectDuty("hdd", 105)
+	// the added channel is the n5pro-balanced hdd curve: 33 C on [[30,87],[42,140],…] = 100
+	h.expectDuty("hdd", 100)
 	h.expectMode("hdd", ModeAuto)
 	h.c.Stop()
 	if h.dev.countCalls("stop:3=140") != 1 {

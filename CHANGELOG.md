@@ -34,10 +34,11 @@ in 0.3.1-rc1 below. Open:
 - ~~Reboot proof on the reference host (DKMS + daemon together)~~ — done 2026-09-18 in
   the release-gate test of 0.3.1-rc1: module loaded from `modules-load.d` at boot, daemon
   READY 40 s later, curves in effect, history reloaded from `history.json`, no alerts.
-- Operator decision pending: should `setup` write the recommended built-in set
-  (`n5pro-balanced`) instead of the profile defaults? The profile defaults
-  (`hdd [[36,105],[46,255]]`) match none of the three built-in presets, so a fresh setup
-  runs the HDD fan at 76 % at 42 °C until a preset is applied (gate finding 5b).
+- ~~`setup` writes the profile defaults, which match no built-in preset~~ — decided and
+  done in 0.3.1-rc3: `setup` writes `n5pro-balanced` (gate finding 5b).
+- pwm4 `stop = "auto"` stays as it is (keeps the last written duty, documented in DESIGN §6
+  and the configuration page); re-measured only if a use case for pwm4 comes up (operator
+  decision 2026-09-18).
 - ~~Measure whether the EC regulates pwm4 again after a write~~ — measured 2026-09-17 on
   the reference host: the driver refuses a `pwm4` write while `pwm4_enable = 2` (EBUSY);
   after `enable = 1`, duty 100 and `enable = 2` again the EC left 100 in place for 90 s.
@@ -81,6 +82,18 @@ re-run once at 0.4.0. First run 2026-09-18 on 0.3.1-rc1: passed, findings in 0.3
 
 **Not planned**: MQTT/discovery (REST + token is enough and smaller), a German UI
 (audience is GitHub), multi-host management, a frontend framework.
+
+## [0.3.1-rc3] — 2026-09-18
+
+### Changed
+
+- **`setup` writes the recommended preset.** On the N5 Pro `config.N5ProChannels()` — the
+  set `setup` writes and `SanitizeChannels` adds for a missing channel — is now the built-in
+  preset `n5pro-balanced`, parsed from the embedded TOML (one source, pinned by
+  `TestN5ProChannelsAreBalanced`). Before, it was a separate literal set (the n5-fand values
+  of 2026-09-14: `hdd [[36,105],[46,255]] critical 56`) that matched none of the three
+  presets, so a fresh setup ran the HDD fan at 76 % at 42 °C until someone applied a preset
+  (release-gate finding 5b; operator decision 2026-09-18). Existing configs are untouched.
 
 ## [0.3.1-rc2] — 2026-09-18
 

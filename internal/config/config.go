@@ -343,13 +343,24 @@ func DefaultTLS(listen string) string {
 	return "auto"
 }
 
-// N5ProChannels returns the channel set verified on the Minisforum N5 Pro
-// (values from n5pro-ec/deploy/n5-fand.conf, measured 14.09.2026).
+// N5ProChannels returns the channel set setup writes and SanitizeChannels
+// adds on the Minisforum N5 Pro: the built-in preset n5pro-balanced, the one
+// the dashboard marks as recommended (one source: the embedded TOML). Until
+// 0.3.1-rc3 this was a separate literal set (the n5-fand values of
+// 14.09.2026) that matched none of the three presets, so a fresh setup ran
+// the HDD fan at 76 % at 42 C until a preset was applied (release-gate
+// finding 5b, 2026-09-18). The literal below is the fallback should the
+// embedded preset ever fail to parse — it is pinned by TestN5ProChannelsAreBalanced.
 func N5ProChannels() []Channel {
+	if p, ok := BuiltinPresetByName("n5pro-balanced"); ok {
+		if chans, _, err := ParseChannels(p.Raw); err == nil && len(chans) == 3 {
+			return chans
+		}
+	}
 	return []Channel{
-		{Name: "cpu", PWM: 1, Sensor: "k10temp", Curve: [][2]int{{45, 85}, {80, 255}}, Critical: 88, Stop: "auto"},
-		{Name: "ssd", PWM: 2, Sensor: "nvme:max", Curve: [][2]int{{48, 74}, {65, 255}}, Critical: 72, Stop: "auto"},
-		{Name: "hdd", PWM: 3, Sensor: "drivetemp:max", Curve: [][2]int{{36, 105}, {46, 255}}, Critical: 56, Stop: "140"},
+		{Name: "cpu", PWM: 1, Sensor: "k10temp", Curve: [][2]int{{35, 60}, {60, 150}, {80, 255}}, Critical: 88, Stop: "auto"},
+		{Name: "ssd", PWM: 2, Sensor: "nvme:max", Curve: [][2]int{{35, 74}, {55, 160}, {68, 255}}, Critical: 72, Stop: "auto"},
+		{Name: "hdd", PWM: 3, Sensor: "drivetemp:max", Curve: [][2]int{{30, 87}, {42, 140}, {50, 200}, {55, 255}}, Critical: 60, Stop: "140"},
 	}
 }
 

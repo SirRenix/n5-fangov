@@ -13,7 +13,8 @@ password later.
 
 `n5-fangov setup` writes `/etc/n5-fangov/config.toml` for this machine:
 
-1. **Profile**: detected on the box (`n5pro` → the verified three-channel set;
+1. **Profile**: detected on the box (`n5pro` → the three-channel set of the built-in preset
+   `n5pro-balanced`, the recommended one;
    `nct67xx`/`it87xx` → one conservative channel per PWM output, sensor `k10temp` /
    `coretemp` / first hwmon temperature; `monitor` → no channels). No detected profile
    → `setup` refuses; on the N5 Pro that means the [kernel driver](02-kernel-driver.md)
@@ -36,9 +37,9 @@ The dialog on an N5 Pro, scope `lan`:
 
 ```
 profile: n5pro (Minisforum N5 Pro (IT5571 EC)) at /sys/class/hwmon/hwmon10  [verified on hardware]
-  channel cpu    pwm1  sensor k10temp          curve [[45 85] [80 255]]  critical 88  stop auto
-  channel ssd    pwm2  sensor nvme:max         curve [[48 74] [65 255]]  critical 72  stop auto
-  channel hdd    pwm3  sensor drivetemp:max    curve [[36 105] [46 255]]  critical 56  stop 140
+  channel cpu    pwm1  sensor k10temp          curve [[35 60] [60 150] [80 255]]  critical 88  stop auto
+  channel ssd    pwm2  sensor nvme:max         curve [[35 74] [55 160] [68 255]]  critical 72  stop auto
+  channel hdd    pwm3  sensor drivetemp:max    curve [[30 87] [42 140] [50 200] [55 255]]  critical 60  stop 140
 
 Web UI scope:
   local  127.0.0.1:8010, no auth, plain HTTP (use ssh -L or a reverse proxy)
@@ -50,9 +51,10 @@ repeat password:
 written: /etc/n5-fangov/config.toml
 ```
 
-The channel lines are the profile's default curves, and that is what `setup` writes.
-The three built-in sets (`n5pro-quiet`, `n5pro-balanced`, `n5pro-cool`) are applied
-afterwards from the [Presets tab](04-dashboard.md#presets); their values are in
+The channel lines are the built-in preset `n5pro-balanced` (the recommended set), and that
+is what `setup` writes (from 0.3.1-rc3; before, a separate default set that matched no
+preset). `n5pro-quiet` and `n5pro-cool` are applied from the
+[Presets tab](04-dashboard.md#presets); the values of all three are in
 [Presets](06-configuration.md#presets). The hwmon number (`hwmon10` here) is not stable
 across boots ([Verify](02-kernel-driver.md#verify)).
 

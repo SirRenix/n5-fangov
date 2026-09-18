@@ -359,9 +359,20 @@ type harness struct {
 	notify  int
 }
 
+// testN5Channels is the two-point channel set the controller tests were
+// written against (the pre-0.3.1-rc3 N5ProChannels); the expected duties in
+// this package derive from these curves, not from the preset setup writes.
+func testN5Channels() []config.Channel {
+	return []config.Channel{
+		{Name: "cpu", PWM: 1, Sensor: "k10temp", Curve: [][2]int{{45, 85}, {80, 255}}, Critical: 88, Stop: "auto"},
+		{Name: "ssd", PWM: 2, Sensor: "nvme:max", Curve: [][2]int{{48, 74}, {65, 255}}, Critical: 72, Stop: "auto"},
+		{Name: "hdd", PWM: 3, Sensor: "drivetemp:max", Curve: [][2]int{{36, 105}, {46, 255}}, Critical: 56, Stop: "140"},
+	}
+}
+
 func n5cfg() config.Config {
 	cfg := config.Default()
-	cfg.Channels = config.N5ProChannels()
+	cfg.Channels = testN5Channels()
 	return cfg
 }
 

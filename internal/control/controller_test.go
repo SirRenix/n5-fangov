@@ -348,7 +348,8 @@ func TestSensorFactoryFailsForOneChannel(t *testing.T) {
 	h.expectMode("hdd", ModeSensor)
 	h.expectDuty("cpu", 85)
 	h.expectMode("cpu", ModeAuto)
-	h.expectDuty("ssd", 74)
+	// ssd was added from the n5pro-balanced set: 44 C on [[35,74],[55,160],…] = 113
+	h.expectDuty("ssd", 113)
 	h.expectMode("ssd", ModeAuto)
 	if s := h.c.Snapshot(); s.Status != "ok" {
 		t.Errorf("status %q", s.Status)
