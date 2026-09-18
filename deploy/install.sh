@@ -98,12 +98,20 @@ systemctl daemon-reload
 systemctl enable n5-fangov.service
 echo "  enabled (not started)"
 
+# The next step depends on whether a config already exists (an update or a
+# reinstall keeps it): setup on a fresh box, check + start otherwise.
+if [[ -f /etc/n5-fangov/config.toml ]]; then
+    NEXT="run: n5-fangov check && systemctl start n5-fangov   (config kept; setup only to start over)"
+else
+    NEXT="run: n5-fangov setup"
+fi
+
 cat <<EOF
 
 Installed $("$BIN" version). Log file: $LOG_DIR/n5-fangov.log (rotating; journal unchanged).
 State (sessions, alert history): /var/lib/n5-fangov (created by systemd at the first start).
 
-run: n5-fangov setup
+$NEXT
 
 Dashboard (after setup + start): the Overview is visible without signing in; everything
 else — curves, presets, alerts, certificate, account — needs the login from setup.

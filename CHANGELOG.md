@@ -13,6 +13,12 @@ drove the *Unreleased* work is `docs/AUDIT.md` (code) and `docs/DESIGN-AUDIT.md`
 
 ## [Unreleased]
 
+### Fixed
+
+- `install.sh` ends with `run: n5-fangov check && systemctl start n5-fangov` when a config
+  already exists (update, reinstall) instead of always suggesting `setup` (release-gate
+  observation, 2026-09-18).
+
 ### Version plan (operator decision 2026-09-16, 22:30)
 
 - **0.3.x** (`0.3.1-rc*` → `0.3.1`, then `0.3.2`…; 0.3.0 stayed an rc): every feature of the
