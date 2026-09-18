@@ -102,7 +102,16 @@ and when `/etc/n5-fangov/config.toml` already exists:
 n5-fangov: installed and enabled. Next: n5-fangov check && systemctl start n5-fangov
 ```
 
-followed by the apt hook's line, which runs after every dpkg run from now on
+and when the daemon is already running — the package installed over an `install.sh`
+deployment, or an upgrade — the postinst restarts it, because a running process still
+executes the binary dpkg just replaced:
+
+```
+n5-fangov: daemon is running (installer deployment), restarting it so the new binary takes over
+```
+
+(on an upgrade the bracket carries the previous package version instead). Each of the
+three lines is followed by the apt hook's line, which runs after every dpkg run from now on
 ([kernel-update gate](02-kernel-driver.md#the-kernel-update-gate)):
 
 ```

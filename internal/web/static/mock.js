@@ -4,7 +4,7 @@
 // Names and addresses are documentation values (n5host, 192.0.2.x, n5.lan, example.test).
 'use strict';
 window.n5mock = (() => {
-	const Q = new URLSearchParams(location.search), t0 = Date.now() / 1000, MV = '0.4.0-rc2', PRE = MV.split('-')[1] || '';
+	const Q = new URLSearchParams(location.search), t0 = Date.now() / 1000, MV = '0.4.0-rc3', PRE = MV.split('-')[1] || '';
 	const interp = (curve, t) => { if (!curve.length) return 0; if (t <= curve[0][0]) return curve[0][1];
 		for (let i = 1; i < curve.length; i++) if (t <= curve[i][0]) { const [t0, d0] = curve[i - 1], [t1, d1] = curve[i]; return t1 === t0 ? d1 : d0 + (d1 - d0) * (t - t0) / (t1 - t0); }
 		return curve[curve.length - 1][1]; };
@@ -22,7 +22,9 @@ window.n5mock = (() => {
 	const shift = n => cfg.channel.map(c => Object.assign({}, c, { curve: c.curve.map(p => [p[0] + n, p[1]]) }));
 	const presets = {
 		'n5pro-balanced': { builtin: true, description: 'Recommended: HDDs held near 40 °C, audible under load only', ch: cfg.channel },
-		'n5pro-quiet': { builtin: true, description: 'Quiet: lowest noise, HDDs around 45 °C', ch: shift(4) }, 'n5pro-cool': { builtin: true, description: 'Cool: drives first', ch: shift(-6) }, summer: { ch: shift(-4) } };
+		'n5pro-quiet': { builtin: true, description: 'Quiet: lowest noise, HDDs around 45 °C', ch: shift(4) }, 'n5pro-cool': { builtin: true, description: 'Cool: drives first', ch: shift(-6) }, summer: { ch: shift(-4) },
+		// a user preset that shares cpu and ssd with n5pro-balanced (only the hdd curve differs): the channel badges list both, the active set names one
+		alternative: { ch: [cfg.channel[0], cfg.channel[1]].concat(shift(2).slice(2, 3)) } };
 	const overrides = {}, ovLag = {};
 	// day/night shape (peak in the afternoon) on top of the short-period wobble, so 24 h / 7 d look plausible
 	const day = t => Math.sin(((t / 86400) % 1 - .3) * 2 * Math.PI);
@@ -80,7 +82,7 @@ window.n5mock = (() => {
 	const logs = [];
 	for (let i = 0; i < 200; i++) { const t = t0 - (200 - i) * 300; const p = point(t);
 		logs.push(`${new Date(t * 1000).toISOString().slice(0, 19)} ${i % 37 === 5 ? 'WARN stall: hdd rpm=0 at duty=105' : i % 53 === 7 ? 'ERROR sensor drivetemp:max: no devices' : i % 71 === 9 ? 'INFO schedule: preset "n5pro-quiet" applied (22:00–07:00)' : 'INFO'} cpu ${p.temp.cpu}/${p.duty.cpu} hdd ${p.temp.hdd}/${p.duty.hdd}`); }
-	const wait = v => new Promise(r => setTimeout(r, 120, v)), ok = (body, filename) => wait({ status: 200, body, filename });
+	const wait = v => new Promise(r => setTimeout(r, 120, v)), ok = (body, filename) => wait({ status: 200, body: typeof body === 'string' ? body : JSON.parse(JSON.stringify(body)), filename }); // a copy, as a fetch would deliver: the page never holds the mock's live objects
 	const q = Q.get('tls'), T = { mode: q === 'off' || q === 'file' || q === 'fallback' ? (q === 'fallback' ? 'file' : q) : 'auto', fb: q === 'fallback', n: 0 };
 	const tlsInfo = () => { const up = T.mode === 'file' && !T.fb, cn = up ? 'CN=fans.example,O=Homelab' : 'CN=n5.lan,O=n5-fangov', d = new Date(t0 * 1000); d.setFullYear(d.getFullYear() + (up ? 1 : 10));
 		return { subject: cn, issuer: up ? 'CN=Homelab CA' : cn, dns_names: up ? ['fans.example'] : ['n5.lan', 'n5host', 'localhost'], ips: up ? [] : ['192.0.2.20', '127.0.0.1', '::1'],

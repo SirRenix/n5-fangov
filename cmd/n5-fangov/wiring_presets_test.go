@@ -462,3 +462,71 @@ func TestPresetApplyReloadError(t *testing.T) {
 		t.Fatalf("reloads = %d", svc.reloads())
 	}
 }
+
+// TestPresetApplySharedChannelsByteIdentical: a user preset that shares
+// channel values with the running config (two of its three tables are the
+// built-in n5pro-balanced ones) is applied without touching those tables —
+// their text in the file stays byte-identical, only the channel that
+// differs changes. The dashboard's badge rule rests on this: a channel can
+// belong to several presets, Apply switches only channels whose values
+// differ.
+func TestPresetApplySharedChannelsByteIdentical(t *testing.T) {
+	cfgPath := writeStoreConfig(t)
+	svc := &fakeService{}
+	s := dirPresetStore{dir: filepath.Join(t.TempDir(), "presets"), cfgPath: cfgPath, svc: svc, profile: "n5pro"}
+	if err := s.Apply("n5pro-balanced"); err != nil {
+		t.Fatalf("apply balanced: %v", err)
+	}
+	before, _ := os.ReadFile(cfgPath)
+	cfg, _, err := config.Load(cfgPath)
+	if err != nil || len(cfg.Channels) != 3 {
+		t.Fatalf("load: %v %d channels", err, len(cfg.Channels))
+	}
+	chans := config.CloneChannels(cfg.Channels)
+	var hdd *config.Channel
+	for i := range chans {
+		if chans[i].Name == "hdd" {
+			hdd = &chans[i]
+		}
+	}
+	if hdd == nil {
+		t.Fatal("no hdd channel after the balanced apply")
+	}
+	hdd.Curve = [][2]int{{32, 87}, {44, 150}, {52, 210}, {57, 255}}
+	hdd.Critical = 62
+	if err := s.SaveChannels("alternative", chans); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if err := s.Apply("alternative"); err != nil || svc.reloads() != 2 {
+		t.Fatalf("apply alternative: %v (reloads %d)", err, svc.reloads())
+	}
+	after, _ := os.ReadFile(cfgPath)
+	bb, ab := strings.Split(string(before), "[[channel]]"), strings.Split(string(after), "[[channel]]")
+	if len(bb) != 4 || len(ab) != 4 {
+		t.Fatalf("channel tables: %d before, %d after", len(bb)-1, len(ab)-1)
+	}
+	if bb[0] != ab[0] {
+		t.Errorf("text before the channel tables changed:\n%s\n---\n%s", bb[0], ab[0])
+	}
+	for i, name := range []string{"cpu", "ssd"} {
+		if !strings.Contains(bb[i+1], `name = "`+name+`"`) {
+			t.Fatalf("table %d is not %s:\n%s", i+1, name, bb[i+1])
+		}
+		if bb[i+1] != ab[i+1] {
+			t.Errorf("%s table changed although the preset shares its values:\n%s\n---\n%s", name, bb[i+1], ab[i+1])
+		}
+	}
+	if bb[3] == ab[3] || !strings.Contains(ab[3], "critical = 62") {
+		t.Errorf("hdd table not replaced by the preset:\n%s", ab[3])
+	}
+	got, _, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c := got.Channel("cpu"); c == nil || c.Curve[0][0] != 35 || c.Critical != 88 {
+		t.Errorf("cpu after the apply: %+v", c)
+	}
+	if d := got.Channel("hdd"); d == nil || d.Critical != 62 || d.Curve[1][1] != 150 || d.Stop != "140" {
+		t.Errorf("hdd after the apply: %+v", d)
+	}
+}

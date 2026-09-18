@@ -78,7 +78,7 @@ try {
 	await nav('?mock=1&user=1'); await shot('03-overview-signed-in.png');
 	// 04 header crop: title, status chip, uptime, version + pre-release badge, live, user, Sign out
 	await shot('04-header.png', { clip: { x: 0, y: 0, width: 1280, height: 60 } });
-	// 05 sidebar collapsed to the icon rail (the toggle in the brand row; state persists in localStorage)
+	// 05 sidebar collapsed to the icon rail (the panel-left toggle in the brand row; in the rail it stands under the logo and the header shows it too; state persists in localStorage)
 	await click('#nav .tog'); await sleep(400); await shot('05-sidebar-rail.png', { view: true }); await setLS(LS);
 	// 06 system page (full inventory tables)
 	await nav('?mock=1&user=1#system'); await shot('06-system.png');

@@ -40,15 +40,21 @@ every visitor counts as signed in; *Sign in*, *Sign out* and the user name are n
 
 ## The shell
 
-**Sidebar** (left, 220 px): the brand row — logo, name and, at its right edge, the
-**collapse toggle** (`‹` / `›`, *Collapse sidebar* / *Expand sidebar*) —, then the pages
-in five groups — *Monitor* (Overview, System), *Control* (Fans, Schedules), *Operate*
-(Alerts, Log), *Settings* (Settings), *Info* (About). The current page is marked
-(`aria-current="page"`, accent bar). The toggle switches to the 56 px **icon rail**
-(icons with the page name as tooltip; the toggle sits under the logo) and back; the same
-choice is *Navigation* in Settings → Display, stored in this browser. Between 700 and
-1099 px the rail is forced and the toggle hidden (the sidebar would leave the header no
-room); the stored choice applies from 1100 px. The footer shows the daemon's version.
+**Sidebar** (left, 220 px): the brand row — logo, name and, at its right end, the
+**sidebar toggle**: the panel-left icon (a rectangle with a divider, the control GitHub,
+Linear or VS Code use for the same thing; tooltip *Collapse sidebar · [*) —, then the
+pages in five groups — *Monitor* (Overview, System), *Control* (Fans, Schedules),
+*Operate* (Alerts, Log), *Settings* (Settings), *Info* (About). The current page is
+marked (`aria-current="page"`, accent bar). The toggle switches to the 56 px **icon
+rail** (icons with the page name as tooltip) and back; the `[` key does the same
+whenever the focus is not in a field or a dialog; the same choice is *Navigation* in
+Settings → Display, stored in this browser. In the rail the logo stands alone at the top
+(hovering it names the expand), the toggle sits directly under it, and the same icon
+appears at the **left edge of the page header** before the title — the place where every
+such app expands its sidebar. Between 700 and 1099 px the rail is forced (the sidebar
+would leave the header no room): the toggle in the rail is gone and the header icon is
+disabled with the tooltip *Sidebar collapses below 1100 px*; the stored choice applies
+from 1100 px. The footer shows the daemon's version.
 
 ![Sidebar collapsed to the icon rail](screenshots/05-sidebar-rail.png)
 
@@ -183,10 +189,13 @@ page carries them under *More about duty, critical, stall, stop*):
 
 ### Channel card
 
-Header: channel name, `pwmN · sensor`, the **preset badge** (✓ and the name of the preset
-whose values this channel matches — compared against what *Apply* of that preset would
+Header: channel name, `pwmN · sensor`, the **preset badge** and the mode badge. The
+preset badge lists **every** preset whose values this channel runs — `✓ alternative ·
+n5pro-balanced` when a user preset shares the channel with a built-in (user presets
+first, in the order of the Presets row; the tooltip lists them one per line), `custom`
+when no preset matches. The comparison is against what *Apply* of that preset would
 produce, so a preset that sets no hysteresis/min on still matches a channel that has
-them —, or `custom`) and the mode badge.
+them. The badge shows what the **daemon** runs, not the editor's unsaved values.
 
 **Curve editor** (left): the fields *sensor* (the catalogue's ids with their live reading;
 a channel configured with several sensors appears as one option `a,b (max of 2)` so the
@@ -232,9 +241,16 @@ The same from the shell: `n5-fangov set` / `auto` ([CLI](05-cli.md)).
 
 The action bar shows *no unsaved changes* or *unsaved changes* (the dot also sits on the
 Fans entry of the sidebar and on the phone's channel selector), *Revert* and *Apply to
-daemon*. Edits persist across page switches without a prompt; *Sign out* asks before
+daemon*; while there are unsaved changes a third button **Save as preset…** appears left
+of *Revert*. Edits persist across page switches without a prompt; *Sign out* asks before
 discarding them, a session loss stashes them ([below](#connection-loss-and-session-expiry)),
 the browser's own prompt covers a page close.
+
+*Save as preset…* opens the [preset editor](#presets) filled with the edited curves and
+*Start from* locked to *the editor (unsaved values)*. Saving stores the preset — the
+curve editor keeps its unsaved changes and nothing is written to the daemon; the toast
+says so (*Preset X saved — the editor still has unsaved changes; Apply to daemon writes
+them*). This is the way to keep an experiment as a set before or without applying it.
 
 *Apply to daemon* first checks what the daemon would replace by a default
 ([curve rules](06-configuration.md#curve-rules)) and sends nothing when a rule fails:
@@ -256,19 +272,34 @@ n5-fangov* stays until *Revert*, the next apply, a page switch or a session chan
 Warnings the daemon reports outside the channel tables are listed in the same notice.
 *Revert* reloads the daemon's curves.
 
+While the Fans page is open it re-reads config and presets every 30 s, so a preset applied
+from another browser, the CLI or the scheduler shows up in the badges, the active set and
+the Presets row within that time; a clean editor follows the daemon's curves, an editor
+with unsaved changes keeps them.
+
 ![Fans with a validation error: red notice, nothing sent](screenshots/08-fans-validation-error.png)
 ![Fans after Apply: restart required notice](screenshots/09-fans-restart-required.png)
 
 ### Presets
 
-The **Presets** row lists the built-in N5 Pro sets and the files in
-`/etc/n5-fangov/presets/`. The line under the heading states the two directions: *Apply
-writes a preset into the daemon · New preset… saves a set without applying it*. A chip
-per preset with the active dot (● = the daemon runs exactly these values, compared per
-pwm the way *Apply* merges), ★ *recommended*, the name, a *built-in* badge, the
+The **Presets** card lists the built-in N5 Pro sets and the files in
+`/etc/n5-fangov/presets/`. Its first line is the **active set**: *Active set:
+n5pro-balanced — the daemon runs exactly these values* when every channel matches one
+preset, *Active set: custom (matches no preset)* otherwise; when several presets match the
+whole set they are all named. The line under the heading states the two directions:
+*Apply writes a preset into the daemon · New preset… saves a set without applying it*. A
+chip per preset with the active dot (● = the daemon runs exactly these values, compared
+per pwm the way *Apply* merges), ★ *recommended*, the name, a *built-in* badge, the
 description, *Apply* (`active` and disabled while it is active), an icon button
 *Details* (built-in, opens the editor read-only) or *Edit* (user preset) and *Delete*
 (user preset, with confirmation).
+
+The rule behind badges and active set: **a channel can belong to several presets**, and
+*Apply* switches only the channels whose values differ — a preset that shares the cpu
+table with the running config leaves that table untouched (byte-identical in the file)
+and rewrites the rest. So after applying a user preset that took two of its three
+channels from `n5pro-balanced`, those two channels carry both names in their badge and
+the active set names the user preset.
 
 - *Apply* asks first (`The curves change immediately`; unsaved curve edits are discarded)
   and merges the preset into the config file by pwm — channels the preset does not name
@@ -276,7 +307,8 @@ description, *Apply* (`active` and disabled while it is active), an icon button
   built-in sets, the file format and the merge rule: [Presets](06-configuration.md#presets).
 - *New preset…* opens the **preset editor** dialog. *Start from* chooses the values it
   is filled with: *the daemon (running curves)* — the default —, *the editor (unsaved
-  values)* or any preset. Then the name (`a-z 0-9 _ -`, at most 64 characters; a
+  values)* or any preset (from *Save as preset…* in the action bar it is fixed to the
+  editor). Then the name (`a-z 0-9 _ -`, at most 64 characters; a
   built-in name is refused) and, per channel, critical / stop / hysteresis / min on and
   an editable point table with *add point* and remove — validated with the curve
   editor's rules. *Save preset* stores exactly the values shown (`PUT
@@ -557,8 +589,11 @@ production page never requests — with documentation values (`n5host`, `192.0.2
 
 The mock implements every endpoint of the API, including tokens (`n5t_mock…`),
 schedules, the history tiers, CSV, the webhook status, `disk:*` sensors and the preset
-body; it validates curves, stop and min on with the daemon's rules. Regenerating the
-screenshots: [screenshots/README.md](screenshots/README.md).
+body; it validates curves, stop and min on with the daemon's rules. Its presets are the
+three built-ins, `summer` and `alternative` (cpu and ssd taken from `n5pro-balanced`, its
+own hdd curve — the case behind the multi-name badge). Regenerating the screenshots:
+[screenshots/README.md](screenshots/README.md); the Fans control paths:
+[fans-matrix.mjs](11-development.md#fans-scenario-matrix).
 
 ## Connection loss and session expiry
 

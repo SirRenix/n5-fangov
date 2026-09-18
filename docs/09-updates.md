@@ -27,8 +27,17 @@ fans in between, `check --quiet` gates the new start).
 ## Package update
 
 `apt upgrade` of n5-fangov (or `apt install ./n5-fangov_<version>_amd64.deb`): the
-postinst restarts a running daemon; `ExecStopPost=failsafe` puts the fans into the safe
-state between the old and the new process, `check --quiet` gates the new start.
+postinst restarts a running daemon and says so —
+
+```
+n5-fangov: daemon is running (0.4.0~rc2), restarting it so the new binary takes over
+```
+
+(the bracket names the version being replaced; `installer deployment` when the package
+lands over an `install.sh` install). `ExecStopPost=failsafe` puts the fans into the safe
+state between the old and the new process, `check --quiet` gates the new start. The two
+other closing lines of the postinst, for a box without a running daemon, are on the
+[install page](01-install.md#the-debian-package).
 
 ## What an upgrade can affect
 

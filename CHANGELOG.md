@@ -29,9 +29,84 @@ drove the 0.3.1 work is `docs/AUDIT.md` (code) and `docs/DESIGN-AUDIT.md`
 - Certificate-trust walkthrough with screenshots of an **English** Windows wizard — rc2
   carries the German dialogs with both labels in the captions; swap the images when an
   English Windows is at hand.
+- Multiple dashboard users (more than the one `[web] user`) — under consideration; no
+  design yet.
+- Hard per-sensor-kind critical ceilings enforced by the daemon regardless of the config
+  (HDD 65 / NVMe 85 / CPU 100 °C) — planned for 0.4.1 (security review 2026-09-19).
 
 **Not planned**: MQTT/discovery (REST + token is enough and smaller), a German UI
 (audience is GitHub), multi-host management, a frontend framework.
+
+## [0.4.0-rc3] — 2026-09-19
+
+The operator's rc2 re-test of gate row 6 (`docs/RELEASE-GATE.md`): the sidebar toggle
+"must be integrated more nicely and be unmistakable; like modern layouts", the preset
+badge was ambiguous when a user preset shares a channel with a built-in, and "all possible
+user fails and control paths" of the Fans page are to be tested. Row 6 is re-run on rc3
+before the tag drops the suffix.
+
+### Added
+
+- **Fans → preset badge lists every match, and the active set** — per channel the badge
+  names **all** presets whose channel values the daemon runs (the merge-aware comparison
+  as before): `✓ alternative · n5pro-balanced`, user presets first in the row order, the
+  names one per line in the tooltip, `custom` when none matches. The Presets card opens
+  with the **active set**: *Active set: alternative — the daemon runs exactly these
+  values* when every channel matches one preset (several are all named), *Active set:
+  custom (matches no preset)* otherwise. The rule is documented on the Dashboard page: a
+  channel can belong to several presets; *Apply* switches only channels whose values
+  differ. On the daemon side `TestPresetApplySharedChannelsByteIdentical` pins that a
+  shared `[[channel]]` table stays byte-identical in the file, and
+  `TestOverrideSurvivesReload` (internal/control) that a reload — a preset apply, an
+  Apply — leaves a manual override in place.
+- **Save as preset… from the action bar** — while the editor is dirty a third button
+  (icon plus, left of *Revert*) opens the preset editor with *Start from* locked to *the
+  editor (unsaved values)* (hint *from the edited curves*); saving stores the preset and
+  leaves the editor dirty, nothing is applied (toast *Preset X saved — the editor still
+  has unsaved changes; Apply to daemon writes them*).
+- **Fans page refresh** — while the page is current, config and presets are re-read every
+  30 s: a preset applied from another browser, the CLI or the scheduler shows in the
+  badges, the active set and the Presets row within that time; a clean editor follows
+  the daemon's curves, a dirty one keeps its edits. The row is only rebuilt when
+  something changed. Before rc3 the badges followed only the page's own actions (the
+  scenario matrix caught it: r).
+- **Scenario matrix of the Fans control logic**: `tools/fans-matrix.mjs` (documented on
+  the development page next to `shots.mjs`) drives the mock (`?mock=1&user=1&lag=1`)
+  through 18 scenarios — apply built-in / user preset with shared channels, edit →
+  Revert / Apply / Save as preset…, New preset… from the daemon, override on → Set → off
+  with the lag, override kept across a preset apply and an Apply, the HDD minimum,
+  client validation, sign-out and session loss with dirty edits, the 375 px selector,
+  delete and rename of the active preset, `&restart=1`, a preset applied elsewhere —
+  and prints PASS/FAIL per scenario (all 18 PASS on rc3). The mock gained the user preset
+  `alternative` (cpu and ssd from `n5pro-balanced`, its own hdd curve) for the shared
+  case.
+- Install and update pages (rc2 gate G12): the third closing line of the package
+  postinst, `daemon is running (…), restarting it so the new binary takes over`, with
+  what the bracket carries (`installer deployment` or the replaced version).
+
+### Changed
+
+- **Sidebar toggle — the admin-tool pattern** (the GitHub / Linear / VS Code / shadcn
+  control): a **panel-left icon** (new sprite symbol `i-panel`) as a 32 px ghost icon
+  button at the right end of the brand row, tooltip *Collapse sidebar · [* / *Expand
+  sidebar · [*, `aria-label`, `aria-expanded`, `aria-keyshortcuts="["`; the **`[` key**
+  toggles when the focus is not in a field or a dialog. In the icon rail the brand row
+  holds the logo alone (hovering it names the expand), the toggle sits directly under it
+  as the first item behind the group separator, and the **page header** shows the same
+  icon at its left edge before the title (hidden while expanded and on phones). In the
+  forced rail (700–1099 px) the header icon stays, disabled, with the tooltip *Sidebar
+  collapses below 1100 px*. The chevron symbol `chev-l` is dropped from the sprite
+  (`chev-r` stays for the *Details* links). Dashboard page, DESIGN §11/§11a and
+  screenshot 05 follow.
+- **Budget: `app.js` ≤ 136 KiB** (was 128 KiB; `web_test.go`, DESIGN §11/§11a,
+  development page). Raised for the badge lists, the active set, *Save as preset…* and
+  the toggle pattern — rc2 sat at 128.6 KB against a 128 KiB limit. `app.css` ≤ 48 KiB
+  and `mock.js` ≤ 48 KiB stay.
+- Mock: every answer is a JSON copy of the mock's state, as a `fetch` would deliver —
+  the page never held the mock's live objects (it did until rc2, which hid the missing
+  refresh above); version string `0.4.0-rc3`.
+- The 27 mock screenshots are regenerated (07 shows the multi-name badge and the active
+  set, 05 the rail with the header icon).
 
 ## [0.4.0-rc2] — 2026-09-19
 

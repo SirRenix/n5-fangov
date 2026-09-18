@@ -27,7 +27,6 @@
   <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6"/></symbol>
   <symbol id="i-edit" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13 7l4 4"/></symbol>
   <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a1 1 0 0 1 1-1h10"/></symbol>
-  <symbol id="i-chev-l" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></symbol>
   <symbol id="i-chev-r" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></symbol>
   <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></symbol>
   <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></symbol>
@@ -36,6 +35,7 @@
   <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12l5 5L20 7"/></symbol>
   <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12M6 11l6 6 6-6M4 21h16"/></symbol>
   <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5"/></symbol>
+  <symbol id="i-panel" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></symbol>
   <symbol id="i-star" viewBox="0 0 24 24"><path d="M12 3l2.8 5.7 6.2.9-4.5 4.4 1.1 6.2L12 17.3 6.4 20.2l1.1-6.2L3 9.6l6.2-.9z"/></symbol>
 </svg>
 
@@ -44,6 +44,7 @@
   <div class="page">
     <header class="ph" id="ph">
       <div class="ph-l">
+        <button class="btn icon link tog" id="ph-tog" type="button" aria-label="Expand sidebar" aria-keyshortcuts="[" hidden><svg class="ic" aria-hidden="true"><use href="#i-panel"/></svg></button>
         <h1 class="title" id="ph-title" tabindex="-1">Overview</h1>
         <span class="prof mx" id="h-profile">—</span>
       </div>
@@ -134,11 +135,12 @@
   <div class="fan-cards" id="fan-cards"></div>
   <div class="card presets-card">
     <div class="card-h"><h2>Presets</h2><div class="actions"><button class="btn" id="ps-new" type="button"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg>New preset…</button></div></div>
+    <p class="active-set" id="ps-active" hidden></p>
     <p class="hint sm">Apply writes a preset into the daemon · New preset… saves a set without applying it</p>
     <div class="notice" id="ps-notice" hidden></div>
     <div class="preset-row" id="preset-row"></div>
   </div>
-  <div class="actbar" id="actbar"><span class="dirty-t" id="cv-dirty" hidden><i class="dirty"></i>unsaved changes</span><span class="hint sm" id="cv-clean">no unsaved changes</span><div class="actions"><button class="btn" id="cv-revert" type="button">Revert</button><button class="btn primary" id="cv-apply" type="button">Apply to daemon</button></div></div>
+  <div class="actbar" id="actbar"><span class="dirty-t" id="cv-dirty" hidden><i class="dirty"></i>unsaved changes</span><span class="hint sm" id="cv-clean">no unsaved changes</span><div class="actions"><button class="btn" id="cv-saveas" type="button" hidden><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg>Save as preset…</button><button class="btn" id="cv-revert" type="button">Revert</button><button class="btn primary" id="cv-apply" type="button">Apply to daemon</button></div></div>
 </section>
 
 <section id="p-schedules" class="pg" data-auth hidden>

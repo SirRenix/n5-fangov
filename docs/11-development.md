@@ -90,7 +90,8 @@ history tiers, CSV, the webhook status, `disk:*` sensors, the preset body; new
 endpoints get a mock branch in the same change. The mock's
 version string is one constant in `mock.js`, bumped with the release.
 
-**Budgets:** `app.js` ≤ 128 KiB, `mock.js` ≤ 48 KiB, `app.css` ≤ 48 KiB raw
+**Budgets:** `app.js` ≤ 136 KiB (128 KiB until 0.4.0-rc2; the raise is a CHANGELOG entry,
+not a silent edit), `mock.js` ≤ 48 KiB, `app.css` ≤ 48 KiB raw
 (`web_test.go`); `index.html` carries the SVG sprite and has no budget. Do not raise a
 limit to make a change fit; move something to `index.html` markup or drop it.
 
@@ -101,6 +102,22 @@ state behind each one and the regeneration command (`shots.mjs`, Node ≥ 22, he
 Chrome over the DevTools protocol) are in [screenshots/README.md](screenshots/README.md).
 Regenerate the affected ones when a view changes; [Dashboard](04-dashboard.md) embeds
 them.
+
+## Fans scenario matrix
+
+`tools/fans-matrix.mjs` is the second manual check next to `shots.mjs`: it drives the Fans
+page of the mock (`?mock=1&user=1&lag=1`) through the control paths and the user mistakes
+around curves, presets and the override switch — apply built-in / user preset (shared
+channels → badge lists both), edit → Revert / Apply / *Save as preset…*, *New preset…*
+from the daemon, override on → *Set* → off with the daemon's lag, override kept across a
+preset apply and an Apply, the HDD minimum, client validation, sign-out and session loss
+with dirty edits, the 375 px selector, delete and rename of the active preset,
+`&restart=1`, and a preset applied from elsewhere (the 30 s refresh). It prints PASS/FAIL
+per scenario and exits 1 on a FAIL; a change to the Fans logic runs it before the
+screenshots. Same setup as the screenshots: serve `internal/web/static/`, start headless
+Chrome with a DevTools port, then
+`node tools/fans-matrix.mjs http://127.0.0.1:8806/index.html 9237` (a few minutes,
+because every lagged transition waits for the poll).
 
 ## Design contract
 

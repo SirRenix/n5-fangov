@@ -26,7 +26,7 @@ const ico = name => { const s = document.createElementNS(NS, 'svg'); s.setAttrib
 // UI constants: bp mirror app.css, timings ms, geometry px; limits are defaults until GET /api/version merges into LIM
 const UI = Object.freeze({
 	bp: { xs: 480, sm: 700, md: 900, lg: 1100 },
-	timing: { toast: 5000, toastErr: 12000, toastLong: 15000, toastNotice: 8000, alerts: 60000, system: 30000, log: 10000, schedules: 60000, blobRevoke: 30000, subLock: 1000 },
+	timing: { toast: 5000, toastErr: 12000, toastLong: 15000, toastNotice: 8000, alerts: 60000, system: 30000, log: 10000, schedules: 60000, fans: 30000, blobRevoke: 30000, subLock: 1000 },
 	toastMax: 3,
 	chart: { yMargin: .15, yRound: 5, minSpanTemp: 15, minSpanRpm: 1000, minSpan: 10, pad: { l: 40, r: 58, t: 8, b: 22 },
 		lineW: 2, fillAlpha: .08, dotR: 4.5, dotStroke: 2, labelH: 13, labelGap: 6, tipGap: 12, dash: { hover: [3, 3], crit: [4, 3], now: [2, 3] },
@@ -301,12 +301,23 @@ const navBtn = (p, extra) => h('button', { 'aria-current': p.id === cur ? 'page'
 const dirtyDot = () => h('i', { class: 'dirty', hidden: !edDirty, title: 'unsaved changes', role: 'img', 'aria-label': 'unsaved changes' });
 // 700–1099 px: the icon rail is forced (the 220 px sidebar leaves the header no room); the stored preference applies from 1100 px
 const RAIL_MQ = matchMedia(`(max-width:${UI.bp.lg - .02}px)`); RAIL_MQ.addEventListener('change', () => buildNav());
+// the sidebar toggle (panel-left icon, the admin-tool pattern): at the right end of the brand row while expanded; in the rail under the logo as the
+// first item and, so the expand control sits where every such app has it, at the left edge of the page header (#ph-tog; hidden on phones).
+// The [ key toggles (toggleNav) when the focus is not in a field or a dialog. 700–1099 px: the rail is forced — the nav button is dropped, the
+// header button stays visible but disabled with the reason
+const navForced = () => RAIL_MQ.matches, navRail = () => navForced() || S.nav === 'rail';
+const toggleNav = () => { if (navForced()) return; S.nav = navRail() ? 'side' : 'rail'; saveS(); $('#s-nav').value = S.nav; buildNav(); $('#nav .tog').focus(); };
+document.addEventListener('keydown', ev => { if (ev.key !== '[' || ev.ctrlKey || ev.metaKey || ev.altKey || ev.repeat) return;
+	const t = ev.target; if (t.closest && t.closest('input, textarea, select, [contenteditable], dialog') || $('dialog[open]')) return; ev.preventDefault(); toggleNav(); });
+on('#ph-tog', 'click', toggleNav);
 function buildNav() {
-	const nav = clear($('#nav')), forced = RAIL_MQ.matches, rail = forced || S.nav === 'rail'; $('#shell').classList.toggle('rail', rail);
-	// the collapse toggle sits in the brand row (hidden while the rail is forced); the footer carries only the version
-	const tg = rail ? 'Expand sidebar' : 'Collapse sidebar';
-	nav.append(h('div', { class: 'brand-row' }, h('span', { class: 'logo' }, ico('fan')), h('span', { class: 'brand' }, 'n5-fangov'),
-		h('button', { class: 'btn icon link tog', hidden: forced, title: tg, 'aria-label': tg, 'aria-expanded': String(!rail), onclick: () => { S.nav = rail ? 'side' : 'rail'; saveS(); $('#s-nav').value = S.nav; buildNav(); $('#nav .tog').focus(); } }, ico(rail ? 'chev-r' : 'chev-l'))));
+	const nav = clear($('#nav')), forced = navForced(), rail = navRail(); $('#shell').classList.toggle('rail', rail);
+	const tg = (rail ? 'Expand sidebar' : 'Collapse sidebar'), tip = tg + ' · [', forcedTip = 'Sidebar collapses below 1100 px';
+	const tog = () => h('button', { class: 'btn icon link tog', title: tip, 'aria-label': tg, 'aria-expanded': String(!rail), 'aria-keyshortcuts': '[', onclick: toggleNav }, ico('panel'));
+	// brand row: logo, name, toggle; the rail shows the logo alone (tooltip: the expand hint) and the toggle under it, set apart by a group separator
+	nav.append(h('div', { class: 'brand-row' }, h('span', { class: 'logo', title: forced ? forcedTip : rail ? tip : null }, ico('fan')), h('span', { class: 'brand' }, 'n5-fangov'), rail ? null : tog()));
+	if (rail && !forced) nav.append(tog(), h('div', { class: 'grp-sep' }));
+	const pt = $('#ph-tog'); pt.hidden = !rail; pt.disabled = forced; pt.title = forced ? forcedTip : tip; pt.setAttribute('aria-label', forced ? forcedTip : tg); pt.setAttribute('aria-expanded', 'false');
 	let lastG = null;
 	for (const p of visible()) {
 		if (p.g !== lastG) { const gid = 'grp-' + p.g.toLowerCase(); if (lastG) nav.append(h('div', { class: 'grp-sep' })); nav.append(h('div', { class: 'grp', id: gid }, p.g), h('ul', { 'aria-labelledby': gid })); lastG = p.g; }
@@ -567,7 +578,7 @@ on('#ov-csv', 'click', () => act(() => download('/api/history.csv?minutes=' + R(
 const ED = {}, drawEds = () => { for (const k in ED) ED[k].draw(); }; let edState = null, edStash = null, edDirty = false;
 const cvNotice = notice('#cv-notice'), K = UI.curve;
 const chDirty = name => { const e = ED[name], o = chList().find(x => x.name === name); return !!(e && o) && chKey([e.c]) !== chKey([o]); };
-const dirty = v => { edDirty = !!v; $('#cv-dirty').hidden = !v; $('#cv-clean').hidden = !!v; for (const d of $$('#nav-dirty, #bnav .dirty')) d.hidden = !v;
+const dirty = v => { edDirty = !!v; $('#cv-dirty').hidden = !v; $('#cv-clean').hidden = !!v; $('#cv-saveas').hidden = !v; for (const d of $$('#nav-dirty, #bnav .dirty')) d.hidden = !v;
 	for (const b of $$('#ch-sel button')) b.lastChild.hidden = !v || !chDirty(b.dataset.ch); };
 addEventListener('beforeunload', ev => { if (edDirty || scDirty) ev.preventDefault(); });
 // Go durations ("1m0s") ↔ seconds; min_on is kept in the daemon's canonical form, the select lists the common values
@@ -800,12 +811,18 @@ const chKey = chs => JSON.stringify((chs || []).map(c => [c.name, +c.pwm, parts(
 const mergePre = (pc, hc) => Object.assign({}, pc, { name: hc.name }, +pc.hysteresis || durS(pc.min_on) ? null : { hysteresis: hc.hysteresis, min_on: hc.min_on });
 const applied = (chs, host) => { const pcs = chs || []; return host.map(hc => { const pc = pcs.find(x => +x.pwm === +hc.pwm); return pc ? mergePre(pc, hc) : hc; }).concat(pcs.filter(pc => !host.some(hc => +hc.pwm === +pc.pwm))); };
 const psNotice = notice('#ps-notice'), PD = {}, psGet = name => PD[name] ? Promise.resolve(PD[name]) : api('/api/presets/' + encodeURIComponent(name)).then(r => (PD[name] = r.body));
-let psList = [];
-const psReset = () => { for (const k in PD) delete PD[k]; psList = []; builtinNames = []; }; // sign-out
+let psList = [], psSig = '';
+const psReset = () => { for (const k in PD) delete PD[k]; psList = []; builtinNames = []; psSig = ''; $('#ps-active').hidden = true; }; // sign-out
 const recommended = p => /^recommended/i.test(p.description || '') || p.name === 'n5pro-balanced';
-const presetOf = c => { const k = chKey([c]); for (const p of psList) { const d = PD[p.name], pc = d && (d.channels || []).find(x => +x.pwm === +c.pwm); if (pc && chKey([mergePre(pc, c)]) === k) return p.name; } return null; };
-const presetBadges = () => { for (const c of chList()) { const ed = ED[c.name]; if (!ed) continue; const n = presetOf(c), b = ed.lv.pre;
-	clear(b); b.hidden = false; if (n) { b.className = 'badge preset'; b.title = 'the preset these values match'; b.append(ico('check'), n); } else { b.className = 'badge builtin'; b.title = 'no preset matches these values'; b.append('custom'); } } };
+// a channel can belong to several presets (a user preset that shares a channel with a built-in): the badge lists every match, user presets first, in
+// the row order; the active set is every preset whose merge equals the whole running config
+const userFirst = ps => ps.filter(p => !p.builtin).concat(ps.filter(p => p.builtin));
+const presetsOf = c => { const k = chKey([c]); return userFirst(psList.filter(p => { const d = PD[p.name], pc = d && (d.channels || []).find(x => +x.pwm === +c.pwm); return pc && chKey([mergePre(pc, c)]) === k; })).map(p => p.name); };
+const activeSets = () => { const host = chList(), k = chKey(host); return userFirst(psList.filter(p => PD[p.name] && chKey(applied(PD[p.name].channels, host)) === k)).map(p => p.name); };
+const presetBadges = () => { for (const c of chList()) { const ed = ED[c.name]; if (!ed) continue; const ns = presetsOf(c), b = ed.lv.pre;
+	clear(b); b.hidden = false; if (ns.length) { b.className = 'badge preset'; b.title = (ns.length > 1 ? 'the presets these values match:\n' : 'the preset these values match:\n') + ns.join('\n'); b.append(ico('check'), ns.join(' · ')); } else { b.className = 'badge builtin'; b.title = 'no preset matches these values'; b.append('custom'); } }
+	const as = activeSets(), el = clear($('#ps-active')); el.hidden = !cfg; el.classList.toggle('on', as.length > 0);
+	el.append(h('i', { class: 'dot', 'aria-hidden': 'true' }), 'Active set: ', as.length ? h('b', null, as.join(' · ')) : h('b', null, 'custom'), as.length ? (as.length > 1 ? ' — the daemon runs these values (several presets match)' : ' — the daemon runs exactly these values') : ' (matches no preset)'); };
 const nameOk = n => LIM.name.test(n) ? builtinNames.includes(n) ? `${n} is a built-in preset — pick another name` : '' : 'Name: a-z, 0-9, _ and -, at most 64 characters';
 const applyPreset = async p => { if (!await ask('Apply preset', `Apply preset ${p.name}? The curves change immediately.` + (edDirty ? '\nUnsaved curve edits are discarded.' : ''), { ok: 'Apply' })) return;
 	let r; try { r = await api(`/api/presets/${encodeURIComponent(p.name)}/apply`, { method: 'POST' }); } catch (e) { return toast(e.message, 'err'); }
@@ -816,7 +833,8 @@ async function loadPresets() {
 		psList = (await api('/api/presets')).body || []; builtinNames = psList.filter(p => p.builtin).map(p => p.name);
 		for (const k in PD) delete PD[k]; // every detail is re-read (CLI, second browser, import)
 		await Promise.all(psList.map(p => psGet(p.name).catch(() => null)));
-		const host_ = chList(), cur = chKey(host_); clear(host); presetBadges();
+		const host_ = chList(), cur = chKey(host_), sig = cur + JSON.stringify([psList, PD]); presetBadges();
+		if (sig === psSig && host.childNodes.length) return; psSig = sig; clear(host); // the periodic refresh leaves an unchanged row alone (focus, scroll)
 		if (!psList.length) host.append(h('div', { class: 'empty-cta' }, 'No presets yet — New preset… saves the running curves as the first one.'));
 		for (const p of psList) { const d = PD[p.name], on = !!d && chKey(applied(d.channels, host_)) === cur;
 			host.append(h('div', { class: 'pchip' + (on ? ' active' : '') }, h('i', { class: 'dot', role: 'img', 'aria-label': on ? 'active — the daemon runs these values' : 'not active', title: on ? 'active — the daemon runs these values' : '' }),
@@ -826,9 +844,15 @@ async function loadPresets() {
 				h('button', { class: 'btn icon link', 'aria-label': `${p.name}: ${p.builtin ? 'details' : 'edit'}`, title: p.builtin ? 'Details' : 'Edit', onclick: () => openPresetEditor(p.name) }, ico(p.builtin ? 'external' : 'edit')),
 				p.builtin ? null : h('button', { class: 'btn icon link danger', 'aria-label': `${p.name}: delete`, title: 'Delete', onclick: async () => { if (!await ask('Delete preset', `Delete preset ${p.name}?`, { ok: 'Delete', danger: true })) return;
 					if (await act(() => api('/api/presets/' + encodeURIComponent(p.name), { method: 'DELETE' }), `Preset ${p.name} deleted`)) loadPresets(); } }, ico('trash')))); }
-	} catch (e) { clear(host).append(h('p', { class: 'empty' }, 'presets: ' + e.message)); }
+	} catch (e) { psSig = ''; clear(host).append(h('p', { class: 'empty' }, 'presets: ' + e.message)); }
 }
 on('#ps-new', 'click', () => openPresetEditor(null));
+// Save as preset… (action bar, while dirty): the editor opens with Start from = the editor, locked; the curve editor keeps its unsaved changes
+on('#cv-saveas', 'click', () => { for (const k in ED) ED[k].sort(); openPresetEditor(null, 'editor'); });
+// the Fans page re-reads config and presets every 30 s while current (a preset applied from another browser or the CLI, a preset saved elsewhere):
+// a clean editor follows the daemon, a dirty one keeps its edits — the badges and the active set always show what the daemon runs
+async function refreshFans() { if (cur !== 'fans' || !signedIn() || !cfg) return; const before = chKey(chList()); await loadConfig();
+	if (chKey(chList()) !== before && !edDirty && cur === 'fans') loadEditor(true); if (cur === 'fans') loadPresets(); }
 // preset editor dialog (New preset…): "Start from" (the daemon's running curves by default, the editor's unsaved values or any preset), name, one block per channel with the
 // curve table; Save = PUT /api/presets/{name} with the composed channels (nothing is applied); built-in presets open read-only
 const ped = $('#preset-ed'), peNotice = notice('#pe-notice');
@@ -839,15 +863,15 @@ ped.addEventListener('keydown', ev => { if (ev.key === 'Escape') { ev.preventDef
 ped.addEventListener('cancel', ev => { if (peDirty) { ev.preventDefault(); peClose(); } });
 ped.addEventListener('click', ev => { if (ev.target === ped) peClose(); });
 on('#pe-close', 'click', peClose);
-function openPresetEditor(name) {
+function openPresetEditor(name, from) { // from = 'editor': Save as preset… — Start from is the editor's unsaved values and locked to it
 	const body = clear($('#pe-body')), d = name ? PD[name] : null, ro = !!(d && d.builtin), pe = { chans: [] }; peDirty = false;
-	$('#pe-title').textContent = name ? (ro ? `Preset ${name}` : `Edit preset ${name}`) : 'New preset';
+	$('#pe-title').textContent = name ? (ro ? `Preset ${name}` : `Edit preset ${name}`) : from === 'editor' ? 'Save as preset' : 'New preset';
 	const srcs = [['editor', 'the editor (unsaved values)'], ['daemon', 'the daemon (running curves)'], ...psList.map(p => ['p:' + p.name, `preset ${p.name}`])];
-	const src = h('select', { 'aria-label': 'start from', disabled: !!name, onchange: () => fill(src.value) });
-	for (const [v, t] of srcs) src.append(h('option', { value: v, selected: v === (name ? 'p:' + name : 'daemon') }, t));
+	const src = h('select', { 'aria-label': 'start from', disabled: !!name || !!from, onchange: () => fill(src.value) });
+	for (const [v, t] of srcs) src.append(h('option', { value: v, selected: v === (name ? 'p:' + name : from || 'daemon') }, t));
 	const nm = h('input', { type: 'text', value: name || '', placeholder: 'summer', maxlength: 64, readonly: ro, autocapitalize: 'off', spellcheck: 'false', 'aria-describedby': 'pe-hint', oninput: () => { peDirty = true; } });
 	const chBox = h('div', { class: 'pe-chs', oninput: () => { peDirty = true; }, onclick: ev => { if (ev.target.closest('button')) peDirty = true; } }), noticeEl = h('div', { class: 'notice err', id: 'pe-notice', role: 'alert', hidden: true });
-	body.append(h('div', { class: 'src' }, 'Start from ', src, h('span', { class: 'hint sm' }, 'Saving stores the values below — nothing is applied to the daemon.')),
+	body.append(h('div', { class: 'src' }, 'Start from ', src, h('span', { class: 'hint sm' }, from === 'editor' ? 'from the edited curves — saving stores them as a preset; the editor keeps its unsaved changes.' : 'Saving stores the values below — nothing is applied to the daemon.')),
 		h('div', { class: 'frow' }, h('label', null, 'Name ', nm), h('span', { class: 'hint sm', id: 'pe-hint' }, ro ? 'built-in presets are read-only' : 'a–z, 0–9, _ and -, at most 64 characters')),
 		chBox, noticeEl,
 		h('div', { class: 'act' }, h('button', { class: 'btn', onclick: peClose }, ro ? 'Close' : 'Cancel'), ro ? null : h('button', { class: 'btn primary', onclick: save }, name ? 'Save changes' : 'Save preset')));
@@ -861,7 +885,9 @@ function openPresetEditor(name) {
 		try { await api('/api/presets/' + encodeURIComponent(name || n), { method: 'PUT', json: { channels: chans } }); delete PD[name || n];
 			if (name && n !== name) { await api(`/api/presets/${encodeURIComponent(name)}/rename`, { method: 'POST', json: { name: n } }); name = n; delete PD[n]; $('#pe-title').textContent = `Edit preset ${n}`; }
 		} catch (e) { loadPresets(); return peNotice(e.message, 'err'); }
-		peDirty = false; ped.close(); toast(old ? (n !== old ? `Preset ${old} renamed to ${n} and saved` : `Preset ${n} saved`) : `Preset ${n} saved`, 'ok'); loadPresets(); }
+		peDirty = false; ped.close(); loadPresets();
+		if (from === 'editor' && edDirty) return toast(`Preset ${n} saved — the editor still has unsaved changes; Apply to daemon writes them`, 'warn', UI.timing.toastNotice);
+		toast(old ? (n !== old ? `Preset ${old} renamed to ${n} and saved` : `Preset ${n} saved`) : `Preset ${n} saved`, 'ok'); }
 	fill(src.value); ped.showModal(); (ro ? $('.act .btn', body) : nm).focus();
 }
 // one channel block of the preset editor: fields + an editable point table (same rules as the curve editor)
@@ -1066,7 +1092,7 @@ function schedule() {
 	poll(); loadHistory(); const T = UI.timing;
 	timers = [setInterval(poll, S.interval * 1000), setInterval(loadHistory, R().poll),
 		setInterval(() => { if (cur === 'overview' || cur === 'alerts') loadAlerts(); }, T.alerts),
-		setInterval(() => { if (cur === 'schedules') loadSchedules(); }, T.schedules),
+		setInterval(() => { if (cur === 'schedules') loadSchedules(); }, T.schedules), setInterval(refreshFans, T.fans),
 		setInterval(() => { if (cur === 'overview' || cur === 'system') loadSystem(); }, T.system), // live parts: memory, load, link state
 		setInterval(() => { if (cur === 'log') loadLog(); }, T.log), setInterval(scTick, 1000)];
 }

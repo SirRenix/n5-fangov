@@ -1016,3 +1016,44 @@ func TestHistoryPersisted(t *testing.T) {
 		t.Errorf("1-min tier after restart: %d points", len(got))
 	}
 }
+
+// TestOverrideSurvivesReload: a config reload (a preset apply, an Apply
+// from the dashboard) swaps the curves but leaves a manual override in
+// place — the channel stays in manual at the held duty and the new curve
+// drives it only after ClearOverride. The dashboard's switch relies on
+// this: "override on, then Apply a preset → override stays".
+func TestOverrideSurvivesReload(t *testing.T) {
+	h := newHarness(t, n5cfg(), nil)
+	h.cycles(1)
+	h.expectDuty("cpu", 85)
+	if err := h.c.SetOverride("cpu", 200); err != nil {
+		t.Fatal(err)
+	}
+	h.cycles(1)
+	h.expectDuty("cpu", 200)
+	h.expectMode("cpu", ModeManual)
+
+	cfg := n5cfg()
+	cfg.Channels[0].Curve = [][2]int{{30, 100}, {80, 255}}
+	if err := h.c.Reload(config.Marshal(cfg)); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	h.cycles(2)
+	h.expectDuty("cpu", 200)
+	h.expectMode("cpu", ModeManual)
+	if o := h.c.Overrides(); o["cpu"] != 200 {
+		t.Errorf("override dropped by the reload: %v", o)
+	}
+	if c := h.c.Config().Channels[0]; c.Curve[0][1] != 100 {
+		t.Errorf("curve not swapped under the override: %+v", c.Curve)
+	}
+	// back to the curve: the new one, not the old
+	if err := h.c.ClearOverride("cpu"); err != nil {
+		t.Fatal(err)
+	}
+	h.cycles(1)
+	h.expectMode("cpu", ModeAuto)
+	if st := h.state("cpu"); st.Target < 100 {
+		t.Errorf("target %d after the clear: the new curve should drive it (≥ 100)", st.Target)
+	}
+}

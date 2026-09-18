@@ -67,7 +67,7 @@ Index of all pages: [docs/README.md](docs/README.md).
 ## Status
 
 Current release: **0.3.1** (2026-09-18), verified through the release gate on the reference
-host; **0.4.0-rc2** (the dashboard redesign, the release that goes public) is the current
+host; **0.4.0-rc3** (the dashboard redesign, the release that goes public) is the current
 release candidate. A pre-release build shows its suffix in `n5-fangov version` and as a
 badge in the dashboard. Changes per version: [CHANGELOG.md](CHANGELOG.md).
 Validation data, the measurement scripts and the Bash predecessor `n5-fand` live in

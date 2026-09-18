@@ -42,7 +42,7 @@
   /* shell: sidebar / icon rail / phone bottom bar (§11a); --hdr-h is measured from the page header by app.js */
   --nav-w:220px;--rail-w:56px;--bottom-h:56px;--subnav-w:200px;
   --nav-active:color-mix(in srgb,var(--info) var(--tint-bg),transparent);
-  --ic:16px;--ic-stroke:1.75;--ic-sm:12px;--ic-md:18px;--ic-lg:20px;--logo:28px;
+  --ic:16px;--ic-stroke:1.75;--ic-sm:12px;--ic-md:18px;--ic-lg:20px;--logo:28px;--tog:32px;
   color-scheme:dark;
 }
 /* light: fg3 5.6 on white, ok 5.4, warn 5.9, crit 6.0, man 6.2, info 6.3 (4.7 on its 12 % tint over bg3, 4.5 on 22 % over white), s1-s8 ≥ 4.6; badges on their 12 % tint ≥ 4.6 */
@@ -86,7 +86,11 @@ main{padding:var(--sp-5);max-width:var(--content-max);margin:0 auto;width:100%}
 .brand{margin:0;font-weight:var(--fw-bold);font-size:var(--fs-16);letter-spacing:var(--ls-brand);line-height:inherit}
 .nav .brand-row .logo{width:var(--logo);height:var(--logo);border-radius:var(--r-md);background:var(--nav-active);color:var(--info);display:grid;place-items:center;flex:none}
 .nav .brand-row .logo .ic{width:var(--ic-md);height:var(--ic-md)}
-.nav .tog{margin-left:auto;color:var(--fg3)}
+/* sidebar toggle (panel-left icon): a 32 px ghost icon button at the right end of the brand row; in the rail under the logo (centred), and once more at the left edge of the page header */
+.tog{width:var(--tog);height:var(--tog);min-width:var(--tog);min-height:var(--tog);padding:0;color:var(--fg3)}
+.nav .brand-row .tog{margin-left:auto}
+.rail .nav>.tog{margin:0 auto}
+.ph-l .tog{margin-left:calc(-1*var(--sp-1))}
 .nav .grp{font-size:var(--fs-11);font-weight:var(--fw-semibold);color:var(--fg3);text-transform:uppercase;letter-spacing:var(--ls-caps);padding:var(--sp-3) var(--sp-25) var(--sp-1)}
 .nav ul{list-style:none;margin:0;padding:0;display:grid;gap:var(--sp-05)}
 .nav li button{display:flex;align-items:center;gap:var(--sp-25);width:100%;background:none;border:0;border-radius:var(--r-md);padding:var(--sp-2) var(--sp-25);color:var(--fg2);cursor:pointer;font-weight:var(--fw-medium);font-size:var(--fs-13);text-align:left;position:relative;min-height:36px}
@@ -99,8 +103,7 @@ main{padding:var(--sp-5);max-width:var(--content-max);margin:0 auto;width:100%}
 .nav .grp-sep{display:none}
 .rail .nav{padding:var(--sp-3) var(--sp-15)}
 .rail .nav .lbl,.rail .nav .brand,.rail .nav .grp,.rail .nav .foot{display:none}
-.rail .nav .brand-row{flex-direction:column;gap:var(--sp-1);padding-left:0;padding-right:0} /* logo above the toggle */
-.rail .nav .tog{margin:0}
+.rail .nav .brand-row{justify-content:center;padding:var(--sp-1) 0 var(--sp-15)} /* the logo alone; the toggle follows as the first item */
 .rail .nav li button{justify-content:center;padding:var(--sp-2)}
 .rail .nav li button[aria-current=page]::before{left:calc(-1*var(--sp-15))}
 .rail .nav .grp-sep{display:block;border-top:var(--bw) solid var(--line);margin:var(--sp-2) var(--sp-1)}
@@ -322,6 +325,11 @@ details.gloss p{margin:var(--sp-15) 0 0}
 .presets-card{margin-bottom:var(--gap)}
 .presets-card .card-h .actions{margin-left:auto}
 .presets-card>.hint{margin-bottom:var(--sp-25)}
+/* active set: the presets whose merge equals the whole running config (ring = custom, filled = a match) */
+.active-set{display:flex;align-items:center;flex-wrap:wrap;gap:var(--sp-15);margin:0 0 var(--sp-1);font-size:var(--fs-13);color:var(--fg2)}
+.active-set .dot{margin:0;border:var(--bw) solid var(--fg3)}
+.active-set.on .dot{background:var(--ok);border-color:var(--ok)}
+.active-set b{color:var(--fg)}
 .preset-row{display:flex;flex-wrap:wrap;gap:var(--sp-2)}
 .pchip{display:inline-flex;align-items:center;gap:var(--sp-15);border:var(--bw) solid var(--line2);border-radius:var(--r-lg);background:var(--bg3);padding:var(--sp-15) var(--sp-2) var(--sp-15) var(--sp-25);font-size:var(--fs-13);position:relative;max-width:100%;flex-wrap:wrap}
 .pchip.active{border-color:color-mix(in srgb,var(--ok) var(--tint-border),transparent);background:color-mix(in srgb,var(--ok) var(--tint-bg),transparent)}
@@ -496,6 +504,7 @@ details.gloss p{margin:var(--sp-15) 0 0}
   .mx{display:none!important}
   .ph{padding:var(--sp-2) var(--sp-3);min-height:48px}
   .ph .title{font-size:var(--fs-18)}
+  #ph-tog{display:none}
   main{padding:var(--page-pad-xs);padding-bottom:calc(var(--bottom-h) + var(--sp-3))}
   .bnav{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;position:fixed;left:0;right:0;bottom:0;height:var(--bottom-h);background:var(--bg2);border-top:var(--bw) solid var(--line);z-index:var(--z-header);padding:0 var(--sp-1) env(safe-area-inset-bottom)}
   .bnav button{background:none;border:0;display:grid;justify-items:center;gap:var(--sp-05);font-size:var(--fs-11);color:var(--fg3);padding:var(--sp-15) 0 var(--sp-1);cursor:pointer;position:relative}

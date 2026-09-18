@@ -751,7 +751,7 @@ first and collects locally otherwise.
 
 ## 11. Dashboard (internal/web/static)
 
-No framework, no build step; `app.js` ≤ **128 KiB**, `mock.js` ≤ **48 KiB**, `app.css` ≤
+No framework, no build step; `app.js` ≤ **136 KiB**, `mock.js` ≤ **48 KiB**, `app.css` ≤
 **48 KiB** (test `web_test.go`; `index.html` carries the SVG sprite and has no budget),
 CSP `script-src 'self'`, no `innerHTML`, no inline handlers. Colours, spacing, radii and
 type scale are tokens in one `:root` block (dark; light overrides under
@@ -763,7 +763,8 @@ file, never referenced by `index.html`). With `?mock=1` `app.js` inserts
 `<script src="mock.js">` and boots on its `load` event; `mock.js` publishes one function
 `window.n5mock(path, opt) → Promise<{status, body, filename?}>` that `api()` calls
 instead of `fetch`. Without the parameter the production page never requests `mock.js`.
-The mock implements every endpoint of section 9 including tokens (`n5t_mock…`),
+Every mock answer is a JSON copy (`ok()`), never the mock's live object — the page sees what
+a `fetch` would deliver. The mock implements every endpoint of section 9 including tokens (`n5t_mock…`),
 schedules, history tiers (24 h / 7 d synthesised), CSV, webhook status, `disk:*`
 sensors and the preset body, and checks curves, stop and min_on with the daemon's rules.
 
@@ -772,14 +773,20 @@ sensors and the preset body, and checks curves, stop and min_on with the daemon'
   Monitor: `overview`, `system`; Control: `fans`, `schedules`; Operate: `alerts`, `log`;
   Settings: `settings`; Info: `about` — with their sprite icon; `overview` and `about`
   are anonymous, every other section and nav entry carries `data-auth` / is filtered by
-  `visible()`. The sidebar is 220 px: brand row (logo, name, right-aligned icon button
-  `.tog` `chev-l` / `chev-r`, `aria-label` *Collapse sidebar* / *Expand sidebar*,
-  `aria-expanded`; in the rail it sits under the logo), group captions in 11 px caps
-  (`ul` labelled by the caption), every entry a `button` in Tab order with
+  `visible()`. The sidebar is 220 px: brand row (logo, name and, at its right end, the
+  **sidebar toggle** `.tog` — the panel-left icon `i-panel` as a 32 px ghost icon button
+  (`--tog`), tooltip *Collapse sidebar · [* / *Expand sidebar · [*, `aria-label`,
+  `aria-expanded`, `aria-keyshortcuts="["`), group captions in 11 px caps (`ul`
+  labelled by the caption), every entry a `button` in Tab order with
   `aria-current="page"` and an accent bar, the footer with the version only. The toggle
-  switches the 56 px icon rail (`S.nav`, also the *Navigation* select in Settings →
-  Display). 700–1099 px force the rail (`RAIL_MQ`) and hide the toggle; the stored
-  preference applies from 1100 px. Below 700 px the sidebar is `display:none`
+  switches the 56 px icon rail (`toggleNav`: `S.nav`, also the *Navigation* select in
+  Settings → Display; the `[` key toggles when the focus is not in a field or a dialog).
+  In the rail the brand row holds the logo alone (its tooltip is the expand hint), the
+  toggle stands directly under it as the first item, set apart by a `grp-sep`, and the
+  **page header** shows the same icon at its left edge before the title (`#ph-tog`,
+  hidden while expanded and below 700 px). 700–1099 px force the rail (`RAIL_MQ`):
+  the nav toggle is dropped, the header icon stays but is disabled with the tooltip
+  *Sidebar collapses below 1100 px*; the stored preference applies from 1100 px. Below 700 px the sidebar is `display:none`
   and `#bnav` is a fixed bottom bar with Overview · Fans · Alerts · Settings · *More*
   (`BOTTOM`; the rest in the `<dialog class="sheet">` *More* with the group as
   `aria-hidden` tag; anonymous: Overview · More → About); `main` gets `--bottom-h` as
@@ -839,9 +846,12 @@ sensors and the preset body, and checks curves, stop and min_on with the daemon'
   `#cv-notice` (`role="alert"`); the channel selector `#ch-sel` (below 700 px, one card
   at a time, `SEL.ch` kept across rebuilds, dirty dot per entry); one `.card.fan` per
   channel (`buildEditors` from `edState`, a copy of the config channels): header `h2`
-  name, `pwmN · sensor`, the **preset badge** (`presetOf`: the first preset whose channel
-  matches `chKey` after `mergePre` — the merge *Apply* would do, a preset without
-  hysteresis/min_on keeps the host's —, else `custom`) and the mode badge. Left, the
+  name, `pwmN · sensor`, the **preset badge** (`presetsOf`: **every** preset whose
+  channel matches `chKey` after `mergePre` — the merge *Apply* would do, a preset
+  without hysteresis/min_on keeps the host's —, user presets first in the row order,
+  rendered `✓ alternative · n5pro-balanced` with the names one per line in the tooltip;
+  `custom` when none matches) and the mode badge. The badge compares the **daemon's**
+  channel, not the editor's unsaved values. Left, the
   curve editor: sensor select (a composite id is one option `a,b (max of 2)`, the
   catalogue's single ids with their reading follow), critical, stop (`auto`/empty =
   auto), hysteresis, min_on (`MIN_ON` select, canonical Go form), canvas with drag
@@ -874,9 +884,25 @@ sensors and the preset body, and checks curves, stop and min_on with the daemon'
   warnings outside the channel tables are listed; notice and warnings survive the editor
   reload (`keepNotice`) until *Revert*, the next apply, a page switch or a session
   change. Edits persist across page switches (no dialog), *Sign out* asks, a session
-  loss stashes them (`edStash`), `beforeunload` covers a page close.
+  loss stashes them (`edStash`), `beforeunload` covers a page close. While dirty the
+  action bar shows **Save as preset…** (`#cv-saveas`, icon plus, left of *Revert*):
+  the preset editor opens with *Start from* = the editor, locked (select disabled, hint
+  *from the edited curves*); saving stores the preset and leaves the editor dirty (toast
+  *Preset X saved — the editor still has unsaved changes; Apply to daemon writes them*).
+  While the page is current, `refreshFans` re-reads config and presets every 30 s
+  (`UI.timing.fans`): a changed channel set rebuilds a **clean** editor, a dirty one keeps
+  its edits; badges, active set and the presets row always follow the daemon (a preset
+  applied from another browser or the CLI shows within 30 s). `loadPresets` skips the
+  DOM rebuild when list, details and config are unchanged (`psSig`).
 - **Presets** (row under the cards, `loadPresets`: list + every detail cached in `PD`,
-  re-read on every load and cleared on sign-out): one `.pchip` per preset — active dot
+  re-read on every load and cleared on sign-out). First line of the card: the **active
+  set** `#ps-active` (`activeSets`: every preset whose merge equals the whole running
+  config, user presets first — *Active set: alternative — the daemon runs exactly these
+  values*, several names joined by ` · `, else *Active set: custom (matches no preset)*;
+  filled dot = a match, ring = custom). Rule: a channel can belong to several presets;
+  *Apply* switches only channels whose values differ (the daemon's merge leaves a shared
+  table byte-identical, `TestPresetApplySharedChannelsByteIdentical`). Then one `.pchip`
+  per preset — active dot
   (`chKey(applied(preset, config)) === chKey(config)`), ★ recommended (`description`
   starts with "Recommended" or name `n5pro-balanced`), name, `built-in` badge,
   description, *Apply* (confirm; `active` and disabled while active; `POST …/apply`,
@@ -885,7 +911,7 @@ sensors and the preset body, and checks curves, stop and min_on with the daemon'
   writes a preset into the daemon · New preset… saves a set without applying it*.
   *New preset…* (icon plus) opens the **preset editor** `<dialog id="preset-ed">`: *Start
   from* (`daemon` = `chList()` — the default —, `editor` = `edState`, `p:<name>`; fixed
-  when editing), name (client rule `LIM.name`, built-in
+  when editing, locked to `editor` from *Save as preset…*), name (client rule `LIM.name`, built-in
   names refused), one `peChannel` block per channel (critical / stop / hysteresis /
   min_on, editable point table with `%`, remove, *add point*), Save = `PUT
   /api/presets/{name}` with the composed channels (nothing applied) — under the old
@@ -999,7 +1025,9 @@ sensors and the preset body, and checks curves, stop and min_on with the daemon'
   `&tab=<id>` (mapped, see routing), `&syserr=1`, `&reject=1` (strict PUT 400),
   `&restart=1` (PUT /api/config answers 202), `&expire=1` (session dies after 15 s),
   `&schedfail=1` (last schedule switch failed; the first entry names a preset the store
-  lacks), `&pwm4=1` (fourth channel `pcie`, pwm 4, no tach), `&lag=1` (an override
+  lacks), `&pwm4=1` (fourth channel `pcie`, pwm 4, no tach), the user preset
+  `alternative` that shares cpu and ssd with `n5pro-balanced` (the multi-name badge),
+  `&lag=1` (an override
   PUT/DELETE shows in `/api/state` only after two more polls — the daemon's next-cycle
   lag), `&down=1` (state, history and sensors unreachable from 2 s after the boot — the
   connection banner); login `admin`/`admin`; names and addresses are documentation
@@ -1015,7 +1043,10 @@ optional body of `PUT /api/presets/{name}`, section 9).
 
 - **Operator decisions (on the prototype screenshots, 2026-09-18):** sidebar, expanded by
   default, collapsible to the icon rail — no top-bar variant; the toggle in the brand row
-  (rc1 gate G4, not in the footer); sparklines on the tiles:
+  (rc1 gate G4, not in the footer), since rc3 the admin-tool pattern (rc2 re-test: "must
+  be integrated more nicely and be unmistakable"): panel-left icon at the right end of the
+  brand row, under the logo in the rail, the same icon at the left edge of the page header
+  while the rail is active, `[` as the shortcut; sparklines on the tiles:
   yes; Fans stacked on desktop, a channel selector below 700 px (a breakpoint, not a
   setting); Compatibility folded into About (`#about/compat`) — eight sidebar entries.
 - **Page model:** Monitor / Control / Operate / Settings / Info; Curves, Manual and
@@ -1033,20 +1064,22 @@ optional body of `PUT /api/presets/{name}`, section 9).
   /api/presets/{name}` with a JSON body, validated with the config's channel rules against
   the running channel set. The hint under the Presets heading names both directions
   (Apply writes into the daemon, New preset… saves without applying; rc1 gate G6).
-- **Budgets:** `app.js` ≤ 128 KiB, `mock.js` ≤ 48 KiB, `app.css` ≤ 48 KiB
+- **Budgets:** `app.js` ≤ 136 KiB (raised from 128 KiB in 0.4.0-rc3 for the badge
+  lists, the active set, *Save as preset…* and the toggle pattern — a decided raise, noted
+  in the CHANGELOG, not a silent one), `mock.js` ≤ 48 KiB, `app.css` ≤ 48 KiB
   (`web_test.go`); `index.html` has none. Do not raise a limit to make a change fit.
 - **Icons:** one inline SVG sprite at the top of `index.html` (`<svg hidden><symbol
   id="i-…">`), used as `<svg class="ic" aria-hidden="true"><use href="#i-gear"/></svg>`
   or `ico('gear')` in `app.js`; 16 px, `currentColor`, `stroke-width 1.75`. Present:
   gauge, chip, fan, clock, bell, list, gear, info, warn, close, external, chart, plus,
-  trash, edit, copy, chev-l, chev-r, more, user, sign-in, sign-out, check, download,
-  refresh, star. Unused symbols are removed (review C18). Icon-only controls carry
+  trash, edit, copy, chev-r, more, user, sign-in, sign-out, check, download,
+  refresh, star, panel (the sidebar toggle). Unused symbols are removed (review C18). Icon-only controls carry
   `aria-label`; icons next to text are `aria-hidden`.
 - **Navigation state:** the rail preference is the field `nav` (`side` | `rail`) of the
   `n5-fangov` `localStorage` object next to unit, interval, theme and range; the rail
   is forced below 1100 px and the preference never overrides that. Below 700 px the
   bottom bar carries Overview · Fans · Alerts · Settings · More.
-- **Tokens added to `:root`:** `--nav-w:220px; --rail-w:56px; --bottom-h:56px;
+- **Tokens added to `:root`:** `--nav-w:220px; --rail-w:56px; --bottom-h:56px; --tog:32px;
   --subnav-w:200px; --spark-h:28px; --fs-20:20px; --fs-32:32px; --z-nav:15;
   --nav-active:color-mix(in srgb, var(--info) var(--tint-bg), transparent); --ic:16px;
   --ic-stroke:1.75` (plus `--ic-sm/--ic-md/--ic-lg`, `--logo`). Light theme overrides
