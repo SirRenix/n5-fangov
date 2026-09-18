@@ -1596,6 +1596,62 @@ func TestCurveEditorKeepsOtherTables(t *testing.T) {
 	}
 }
 
+// TestScheduleEditorKeepsOtherTables: the Schedules page (0.4.0) saves the
+// config as "everything but the [[schedule]] tables" + its own schedule
+// tables (stripSchedules in app.js), the mirror of the curve editor's
+// splice. The skip must end at the next header of any kind (TOML_HDR), so
+// the [[channel]] tables that follow a schedule table survive a Save; the
+// tables it writes use the daemon's key names (preset, from, to, days) and
+// the PUT goes through ?strict=1 like Apply. The mock's PUT parses the
+// [[schedule]] tables back, so a dropped table is visible in the browser
+// (docs/screenshots/shots.mjs).
+func TestScheduleEditorKeepsOtherTables(t *testing.T) {
+	js, err := staticFS.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(js)
+	i := strings.Index(src, "const stripSchedules =")
+	if i < 0 {
+		t.Fatal("stripSchedules not found in app.js")
+	}
+	fn := src[i:]
+	if j := strings.Index(fn, "const tomlSchedule"); j > 0 {
+		fn = fn[:j]
+	}
+	if !strings.Contains(src, `const SC_HDR = /^\[\[\s*schedule\s*\]\]/`) {
+		t.Errorf("app.js: SC_HDR must match the [[schedule]] header")
+	}
+	if !strings.Contains(fn, "TOML_HDR.test(") || !strings.Contains(fn, "SC_HDR.test(") {
+		t.Errorf("app.js: stripSchedules must use TOML_HDR / SC_HDR: %.200s", fn)
+	}
+	if strings.Contains(fn, "CH_HDR.test(") {
+		t.Errorf("app.js: stripSchedules must not drop [[channel]] tables")
+	}
+	for _, want := range []string{"stripSchedules(cfgRaw) + scState.map(tomlSchedule)", `preset = "${e.preset}"`, `from = "${e.from}"\nto = "${e.to}"`, "days = [", `'aria-pressed'`, "'#sc-save'", "'#sc-err'"} {
+		if !strings.Contains(src, want) {
+			t.Errorf("app.js lacks %q", want)
+		}
+	}
+	// the save goes through the strict PUT, like the curve editor's Apply
+	if strings.Count(src, "'/api/config?strict=1'") < 2 {
+		t.Errorf("app.js: the schedule Save must PUT /api/config?strict=1 like Apply")
+	}
+	mock, _ := staticFS.ReadFile("static/mock.js")
+	if !strings.Contains(string(mock), "cfg.schedule = parseSchedules(") {
+		t.Errorf("mock.js: PUT /api/config must parse the [[schedule]] tables back")
+	}
+	html, _ := staticFS.ReadFile("static/index.html")
+	for _, want := range []string{`id="sc-tbl"`, `id="sc-add"`, `id="sc-save"`, `id="sc-revert"`, `id="sc-err" role="alert"`, `id="sc-kv"`} {
+		if !strings.Contains(string(html), want) {
+			t.Errorf("index.html lacks %s", want)
+		}
+	}
+	if strings.Contains(string(html), `id="sc-doc"`) {
+		t.Errorf("index.html still carries the read-only schedules hint (#sc-doc)")
+	}
+}
+
 // TestPrimaryButtonContrast (AUDIT hoch 5): the primary button's text must
 // keep WCAG AA contrast (4.5:1) on --info in both themes. The dark theme
 // uses var(--bg) as text, the light theme white.

@@ -149,12 +149,19 @@
 </section>
 
 <section id="p-schedules" class="pg" data-auth hidden>
-  <div class="card sc" id="sc-card">
-    <div class="card-h"><h2>Schedules</h2><span class="hint sm">preset switches by time of day — the scheduler acts on transitions only, a manual apply inside a window is respected</span></div>
-    <div class="notice" id="sc-notice" role="status" hidden></div>
-    <div class="tbl-wrap"><table class="tbl sm" id="sc-tbl"><thead><tr><th>Preset</th><th>Window</th><th>Days</th></tr></thead><tbody></tbody></table></div>
-    <dl class="kv" id="sc-kv"></dl>
-    <p class="hint sm">Edit in the config file: <code>[[schedule]]</code> tables with <code>preset</code>, <code>from</code>/<code>to</code> (<code>HH:MM</code>, may cross midnight) and <code>days</code>; an entry without a window is the fallback — see the <a id="sc-doc" rel="noopener" target="_blank">configuration page</a>.</p>
+  <div class="grid-sc">
+    <div class="card sc sc-ed">
+      <div class="card-h"><h2>Schedule</h2><span class="hint sm">preset switches by time of day — transitions only; a manual apply inside a window is respected</span></div>
+      <div class="notice" id="sc-err" role="alert" hidden></div>
+      <div class="tbl-wrap"><table class="tbl sc-tbl" id="sc-tbl"><thead><tr><th>Preset</th><th>From</th><th>To</th><th>Days</th><th><span class="sr">Actions</span></th></tr></thead><tbody></tbody></table></div>
+      <div class="act">
+        <button class="btn" id="sc-add" type="button"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg>Add entry</button>
+        <span class="hint sm">an entry without a window is the fallback outside every window; <code>to</code> before <code>from</code> crosses midnight</span>
+        <span class="dirty-t" id="sc-dirty" hidden><i class="dirty"></i>unsaved changes</span>
+        <div class="actions"><button class="btn" id="sc-revert" type="button">Revert</button><button class="btn primary" id="sc-save" type="button" disabled>Save</button></div>
+      </div>
+    </div>
+    <div class="card sc"><h2>Status</h2><div class="notice" id="sc-notice" role="status" hidden></div><dl class="kv" id="sc-kv"></dl></div>
   </div>
 </section>
 

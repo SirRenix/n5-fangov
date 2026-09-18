@@ -803,10 +803,23 @@ sensors.
 - **Presets:** cards with built-in/recommended badges and description, *Apply*, *Details*
   (channel tables via `GET /api/presets/{name}`, now with hysteresis/min_on columns),
   *Rename*, *Delete* (user presets), *Save current as…* (client-side name rule, built-in
-  names refused); **Schedules card** (read-only, `GET /api/schedules`): one row per entry
-  (preset, window or *fallback*, days, ACTIVE badge), next switch, last switch with its
-  error as a warn notice, timezone, hint that the list is edited in the config
-  (`[[schedule]]`, docs link); polled every 60 s while the tab is current.
+  names refused).
+- **Schedules:** editor card, one row per entry of `GET /api/schedules` — preset select
+  (from `/api/presets`; a missing name stays selectable as `<name> (missing)`, flagged),
+  *From* / *To* (`<input type=time>`), day toggles Mo…Su (`aria-pressed`, none = every
+  day), fallback row (*fallback — outside every window*, *add window* / *make fallback*),
+  ACTIVE badge, *Remove*; *Add entry*, *Revert*, *Save* (disabled while clean; dirty
+  indicator, leave-page / sign-out / `beforeunload` guards). Client validation: preset
+  set, `HH:MM` both on a windowed entry, from ≠ to, one fallback, ≤ 16 entries; errors in
+  a `role="alert"` notice. Save = raw config → `stripSchedules` (`[[schedule]]` blocks
+  dropped up to the next header of any kind, `TOML_HDR`) + the editor's tables (`from`/`to`
+  only when windowed, `days` only when not every day) → `PUT /api/config?strict=1`; 200
+  toast, 202 restart notice, 400 the server's errors (`TestScheduleEditorKeepsOtherTables`).
+  Status card: active entry, next switch (`<time>` absolute + relative), last switch with
+  its error in `--crit`, timezone; polled every 60 s while current, a dirty editor is not
+  rebuilt. 501 → "scheduler unavailable"; no entries → "No schedule — the daemon keeps
+  the curves it has …". Editor and status side by side from 1400 px; below 700 px every
+  entry is a stacked block (preset · remove / from · to / days), no sideways scrolling.
 - **Alerts:** transport form (select incl. `webhook`; `mail_to` for auto/mail,
   `webhook_url` + `webhook_format` for webhook, *Save*), effective transport and tool
   availability, template card with *Install / Update template* (disabled with reason),

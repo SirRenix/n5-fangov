@@ -18,6 +18,7 @@ window.n5mock = (() => {
 			{ name: 'hdd', pwm: 3, sensor: 'drivetemp:max,disk:sda', curve: [[36, 105], [46, 255]], critical: 56, stop: 87, hysteresis: 3, min_on: '5m0s' }],
 		schedule: [{ preset: 'n5pro-quiet', from: '22:00', to: '07:00', days: [] }, { preset: 'n5pro-cool', from: '13:00', to: '18:00', days: ['sat', 'sun'] }, { preset: 'n5pro-balanced', from: '', to: '', days: [] }] };
 	if (Q.get('pwm4') === '1') cfg.channel.push({ name: 'pcie', pwm: 4, sensor: 'ec:board', curve: [[30, 60], [60, 200]], critical: 80, stop: 120, hysteresis: 0, min_on: '0s' });
+	if (Q.get('schedfail')) cfg.schedule[0].preset = 'night'; // the failed switch below names this entry: a preset the store lacks ("(missing)" in the editor)
 	const shift = n => cfg.channel.map(c => Object.assign({}, c, { curve: c.curve.map(p => [p[0] + n, p[1]]) }));
 	const presets = {
 		'n5pro-balanced': { builtin: true, description: 'Recommended: HDDs held near 40 °C, audible under load only', ch: cfg.channel },

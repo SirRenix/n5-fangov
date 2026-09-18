@@ -315,10 +315,37 @@ input[type=checkbox]{accent-color:var(--info)}
 .tbl tr.dim td{color:var(--fg3)}
 .tbl .expired{color:var(--warn)}
 .tbl td .tid{display:block;color:var(--fg3);font-size:var(--fs-11)}
-/* schedules card (Schedules page) */
+/* Schedules page: editor card (one row per [[schedule]] entry) + status card; day toggles are aria-pressed buttons */
+.grid-sc{display:grid;grid-template-columns:1fr;gap:var(--gap)}
+@media (min-width:1400px){.grid-sc{grid-template-columns:minmax(0,1fr) 300px}}
 .sc{display:grid;gap:var(--sp-25);align-content:start}
 .sc .tbl-wrap{border:var(--bw) solid var(--line);border-radius:var(--r-md)}
 .sc .card-h .hint{flex:1;min-width:200px}
+.sc-ed .act .actions{margin-left:auto;display:flex;gap:var(--sp-2)}
+.sc-tbl td{vertical-align:middle;padding:var(--sp-2)}
+.sc-tbl td.empty{white-space:normal}
+.sc-tbl select,.sc-tbl input[type=time]{padding:3px var(--sp-15)}
+.sc-tbl .sub{display:flex;gap:var(--sp-2);align-items:center;margin-top:var(--sp-05);min-height:var(--hit-min)}
+.sc-tbl .act{display:inline;margin:0}
+.sc-tbl .miss{color:var(--warn);font-size:var(--fs-11)}
+.sc-tbl td.fb{color:var(--fg3);font-size:var(--fs-12)}
+.sc-tbl .rowact{text-align:right}
+.days{display:inline-flex;gap:var(--sp-05);flex-wrap:nowrap}
+.days button{width:calc(var(--hit-min) + var(--sp-15));min-height:var(--hit-min);border:var(--bw) solid var(--line2);background:var(--bg);color:var(--fg3);border-radius:var(--r-sm);font-size:var(--fs-11);font-weight:var(--fw-semibold);cursor:pointer;padding:0}
+.days button[aria-pressed=true]{background:var(--nav-active);color:var(--info);border-color:color-mix(in srgb,var(--info) var(--tint-border),transparent)}
+.days .all{color:var(--fg2);font-size:var(--fs-12);align-self:center;margin-left:var(--sp-1);white-space:nowrap}
+/* phone: one entry = a stacked block (preset · remove / from · to / days) instead of a sideways-scrolling row */
+@media (max-width:699.98px){
+  .sc-tbl thead{display:none}
+  .sc-tbl,.sc-tbl tbody{display:block}
+  .sc-tbl tr{display:grid;grid-template-columns:1fr 1fr auto;gap:var(--sp-1) var(--sp-2);padding:var(--sp-2) 0;border-bottom:var(--bw) solid var(--line)}
+  .sc-tbl tr:last-child{border-bottom:0}
+  .sc-tbl tr.active{background:color-mix(in srgb,var(--ok) var(--tint-row),transparent)}
+  .sc-tbl td,.sc-tbl tr.active td{display:block;border:0;padding:0 var(--sp-2);background:none}
+  .sc-tbl td:first-child,.sc-tbl td.fb,.sc-tbl td:nth-child(4){grid-column:1/3}
+  .sc-tbl td.rowact{grid-column:3;grid-row:1}
+  .sc-tbl td.empty{grid-column:1/-1}
+}
 
 /* toasts: two live regions (polite, assertive for errors) in one stack */
 .toasts{position:fixed;right:var(--sp-4);bottom:var(--sp-4);display:grid;gap:var(--sp-2);z-index:var(--z-toast);max-width:var(--toast-w)}
