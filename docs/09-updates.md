@@ -30,7 +30,7 @@ fans in between, `check --quiet` gates the new start).
 postinst restarts a running daemon and says so —
 
 ```
-n5-fangov: daemon is running (0.4.0~rc2), restarting it so the new binary takes over
+n5-fangov: daemon is running (0.3.1), restarting it so the new binary takes over
 ```
 
 (the bracket names the version being replaced; `installer deployment` when the package

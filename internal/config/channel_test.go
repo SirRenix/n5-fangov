@@ -249,7 +249,7 @@ func TestMarshalPostProcessingKeys(t *testing.T) {
 // TestMarshalStopNumeric: a fixed stop duty is written as a TOML integer
 // (stop = 140, the form of the built-in presets and the dashboard), "auto"
 // stays a quoted string; both forms and a quoted number parse back to the
-// same channels (gate 0.4.0-rc1, G10).
+// same channels (0.4.0 release gate, G10).
 func TestMarshalStopNumeric(t *testing.T) {
 	withChannels := func(chans []Channel) Config {
 		cfg := Default()

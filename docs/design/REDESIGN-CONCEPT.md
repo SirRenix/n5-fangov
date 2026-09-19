@@ -1,6 +1,7 @@
 # Dashboard redesign — concept (built in 0.4.0)
 
-Status: **built in 0.4.0-rc1** (2026-09-18, branch `feat/redesign`): the running dashboard
+Status: **built and released as 0.4.0** (2026-09-19); the prototype (`proto/`, a mock-only
+shell the decisions were taken on) was removed with the release. The running dashboard
 is described in `docs/04-dashboard.md` and DESIGN §11, the decisions and rules in DESIGN
 §11a; this page is the concept and the record of the decisions. Written 2026-09-16.
 Owner: operator. It assumed the 0.3.x features (tokens, webhook transport, schedules,
@@ -125,9 +126,10 @@ accordion (phone): **Display** (unit, interval, theme) · **Account & sessions**
 
 ## Findings from the 0.3.1 release gate (2026-09-18)
 
-UX items the manual gate test surfaced against 0.3.1 ("today" below = 0.3.1). The first
-three are built in 0.4.0-rc1 (preset editor, Schedules page, override switch); the
-certificate walkthrough with screenshots is still open (CHANGELOG, *Unreleased*):
+UX items the manual gate test surfaced against 0.3.1 ("today" below = 0.3.1). All four
+are built in 0.4.0 (preset editor, Schedules page, override switch, the certificate
+walkthrough with screenshots — of a German Windows; the English set is still open,
+CHANGELOG *Unreleased*):
 
 - **Preset editor.** Compose a set's values before saving. Today *Save current as…*
   stores the curves the daemon runs, so the new preset is the active one at once; other
@@ -152,5 +154,7 @@ certificate walkthrough with screenshots is still open (CHANGELOG, *Unreleased*)
 - **Compatibility** folds into About as a card (`#about/compat`); the sidebar has eight
   entries.
 
-The decisions and rules are `DESIGN.md` §11a; the prototype and the comparison page are
-described in `proto/README.md` (kept for reference until 0.4.0 final).
+The decisions and rules are `DESIGN.md` §11a. The prototype and its comparison page
+(`proto/`: `proto.html` against the production `app.css` and `mock.js`, screenshots at
+1920 / 1280 / 375 px in both themes, old and new side by side) were removed with the
+0.4.0 release; the screenshots in `docs/screenshots/` show the built result.

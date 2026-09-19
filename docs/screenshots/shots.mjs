@@ -2,7 +2,7 @@
 // Usage: node docs/screenshots/shots.mjs <outDir> <mockBaseURL> <cdpPort>   (see README.md here)
 // Pages are reached by hash (#fans, #settings/st-cert …); the mock's &tab= parameter still maps
 // curves|manual|presets → fans and compat → about. Page shots are full-page captures: the viewport
-// grows to the document height so the 100vh sidebar spans the whole image (docs/design/proto/shots.mjs);
+// grows to the document height so the 100vh sidebar spans the whole image;
 // dialogs, the header and toasts are viewport clips.
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';

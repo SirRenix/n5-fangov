@@ -90,7 +90,7 @@ history tiers, CSV, the webhook status, `disk:*` sensors, the preset body; new
 endpoints get a mock branch in the same change. The mock's
 version string is one constant in `mock.js`, bumped with the release.
 
-**Budgets:** `app.js` ≤ 136 KiB (128 KiB until 0.4.0-rc2; the raise is a CHANGELOG entry,
+**Budgets:** `app.js` ≤ 136 KiB (128 KiB at the start of 0.4.0; the raise is a CHANGELOG entry,
 not a silent edit), `mock.js` ≤ 48 KiB, `app.css` ≤ 48 KiB raw
 (`web_test.go`); `index.html` carries the SVG sprite and has no budget. Do not raise a
 limit to make a change fit; move something to `index.html` markup or drop it.
@@ -128,13 +128,13 @@ topic, never by version or review round, and a test file carries the name of the
 or topic it tests. The audits that shaped
 the current state are `AUDIT.md` and `DESIGN-AUDIT.md` in this directory; what the
 earlier review rounds found and where each finding is fixed is the legend
-[REVIEW-TAGS.md](REVIEW-TAGS.md) (the code carries no review tags); the planned
-dashboard redesign is in [design/REDESIGN-CONCEPT.md](design/REDESIGN-CONCEPT.md).
+[REVIEW-TAGS.md](REVIEW-TAGS.md) (the code carries no review tags); the concept and decisions behind the 0.4.0
+dashboard are in [design/REDESIGN-CONCEPT.md](design/REDESIGN-CONCEPT.md).
 
 ## Versioning
 
-`internal/version/version.go` holds the only version literal — the current pre-release,
-shown by `n5-fangov version`, in the dashboard header (`beta` badge until a release tag
+`internal/version/version.go` holds the only version literal — the current version,
+shown by `n5-fangov version`, in the dashboard header (a pre-release suffix as a badge until a release tag
 drops the suffix; `GET /api/version` and `/api/about` carry it as `prerelease`) and
 listed in [CHANGELOG.md](../CHANGELOG.md). `make` overrides it with `git describe`
 (`vX.Y.Z-3-gabcdef` on commits after a tag). The Debian package version maps

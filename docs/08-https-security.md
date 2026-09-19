@@ -3,8 +3,9 @@
 What this page covers: the dashboard certificate (automatic, own pair, trust recipes
 per OS), TLS transport and HSTS, what a visitor sees with and without a login, sessions
 and cookies, API tokens for scripts, login throttling, password hashes, the systemd
-sandbox, and running behind a reverse proxy. Reporting a vulnerability:
-[SECURITY.md](../SECURITY.md).
+sandbox, and running behind a reverse proxy. Reporting a vulnerability: GitHub's
+private vulnerability reporting is enabled on the repository (*Security → Report a
+vulnerability*); details in [SECURITY.md](../SECURITY.md).
 
 - [Defaults](#defaults)
 - [The certificate](#the-certificate)

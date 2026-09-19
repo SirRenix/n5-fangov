@@ -7,8 +7,9 @@ systemd sandbox are welcome.
 
 ## Reporting a vulnerability
 
-- **Preferred:** GitHub private vulnerability reporting — *Security → Report a
-  vulnerability* on this repository. The report stays private until a fix is out.
+- **Preferred:** GitHub private vulnerability reporting, enabled on this repository
+  since it went public with 0.4.0 — *Security → Report a vulnerability*. The report
+  stays private until a fix is out.
 - Do **not** open a public issue or pull request for a security problem.
 - Include: version (`n5-fangov version`), how the daemon is reached (loopback /
   LAN, `auth`, `tls` mode), steps to reproduce, and what an attacker gains.

@@ -6,7 +6,7 @@ Hardware-verified on the Minisforum N5 Pro (IT5571 EC via `minisforum_n5_it5571`
 generic hwmon profiles (NCT67xx, IT87xx, monitoring-only) ship as "from documentation,
 untested".
 
-This file is the contract between packages as it stands for the current pre-release
+This file is the contract between packages as it stands for the current release
 (`n5-fangov version`; history in [CHANGELOG.md](CHANGELOG.md)). Every builder follows it;
 deviations are written here first, then implemented. Where the text and the code
 disagree, the code is a bug or the text is — never a third state; fix one. Operator-facing
@@ -1041,10 +1041,10 @@ optional body of `PUT /api/presets/{name}`, section 9).
 
 - **Operator decisions (on the prototype screenshots, 2026-09-18):** sidebar, expanded by
   default, collapsible to the icon rail — no top-bar variant; the toggle in the brand row
-  (rc1 gate G4, not in the footer), since rc3 the admin-tool pattern (rc2 re-test: "must
-  be integrated more nicely and be unmistakable"): panel-left icon at the right end of the
+  (0.4.0 gate G4, not in the footer) in the admin-tool pattern (gate re-test: "must be
+  integrated more nicely and be unmistakable"): panel-left icon at the right end of the
   brand row, in the rail the same icon directly under the logo; nothing in the page
-  header (operator decision after rc3/rc4: the trigger stays in the sidebar), `[` as the shortcut; sparklines on the tiles:
+  header (operator decision: the trigger stays in the sidebar), `[` as the shortcut; sparklines on the tiles:
   yes; Fans stacked on desktop, a channel selector below 700 px (a breakpoint, not a
   setting); Compatibility folded into About (`#about/compat`) — eight sidebar entries.
 - **Page model:** Monitor / Control / Operate / Settings / Info; Curves, Manual and
@@ -1058,11 +1058,11 @@ optional body of `PUT /api/presets/{name}`, section 9).
   runs at that moment (raised to the HDD minimum), *Set* changes it, Auto is the
   `DELETE`; the client keeps its flag through one daemon cycle because the snapshot lags.
 - **Preset editor (gate finding):** *New preset…* composes values (*Start from*
-  daemon — the default since rc2 —, editor or preset) and saves without applying — `PUT
+  daemon — the default —, editor or preset) and saves without applying — `PUT
   /api/presets/{name}` with a JSON body, validated with the config's channel rules against
   the running channel set. The hint under the Presets heading names both directions
-  (Apply writes into the daemon, New preset… saves without applying; rc1 gate G6).
-- **Budgets:** `app.js` ≤ 136 KiB (raised from 128 KiB in 0.4.0-rc3 for the badge
+  (Apply writes into the daemon, New preset… saves without applying; 0.4.0 gate G6).
+- **Budgets:** `app.js` ≤ 136 KiB (raised from 128 KiB during 0.4.0 for the badge
   lists, the active set, *Save as preset…* and the toggle pattern — a decided raise, noted
   in the CHANGELOG, not a silent one), `mock.js` ≤ 48 KiB, `app.css` ≤ 48 KiB
   (`web_test.go`); `index.html` has none. Do not raise a limit to make a change fit.

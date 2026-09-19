@@ -1405,7 +1405,7 @@ func TestStaticIndex(t *testing.T) {
 	if !strings.HasPrefix(r.hdr.Get("Content-Type"), "text/javascript") || !strings.Contains(r.body, "X-N5-Fangov-Csrf") {
 		t.Errorf("app.js: %q %.100s", r.hdr.Get("Content-Type"), r.body)
 	}
-	if len(r.body) > 136*1024 { // raised from 128 KiB in 0.4.0-rc3 (badge lists, active set, Save as preset…, sidebar toggle)
+	if len(r.body) > 136*1024 { // raised from 128 KiB in 0.4.0 (badge lists, active set, Save as preset…, sidebar toggle)
 		t.Errorf("app.js is %d bytes, budget 136 KiB (DESIGN 11a)", len(r.body))
 	}
 	// UI assumptions the server honours: since-polling, {"lines"} log wrapper,
@@ -1416,7 +1416,7 @@ func TestStaticIndex(t *testing.T) {
 	for _, want := range []string{"since=", "b.lines", "cfg.channel", "warnings", "/api/log/export", "/api/config/export", "/api/config/import", "b.source", ".tls", "/api/tls/regenerate", "/api/tls/upload", "/api/tls/reset", "/api/tls/cert.", "force_required", "c.warnings", "c.fallback", "Math.ceil((new Date(iso)", "/api/system",
 		"/api/history.csv?minutes=", "/api/tokens", "/api/schedules", "webhook_url", "webhook_format", "held_temp", "hold_until", "hysteresis", "min_on", "temp_c", "window.n5mock",
 		"class: 'card tile'", "function spark(", "class: 'spark'", "s.kind === 'hdd'", "/api/dashboard",
-		// 0.4.0-rc3 Fans page: every matching preset per channel, the active set, Save as preset… from the action bar, the 30 s config/preset refresh, the [ shortcut
+		// 0.4.0 Fans page: every matching preset per channel, the active set, Save as preset… from the action bar, the 30 s config/preset refresh, the [ shortcut
 		"const presetsOf", "const activeSets", "#cv-saveas", "async function refreshFans", "aria-keyshortcuts"} {
 		if !strings.Contains(r.body, want) {
 			t.Errorf("app.js lacks %q", want)

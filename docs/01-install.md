@@ -27,29 +27,9 @@ Both install paths end with `n5-fangov setup` ([Setup](03-setup.md)).
 No Go toolchain needed. The release carries the static `linux/amd64` binary and its
 sha256; the units, scripts and templates come from the repository at the same tag.
 
-> **While the repository is private (until 0.4.0)** the public URLs in the block below
-> answer 404, and the host has no signed-in GitHub CLI — a hypervisor does not get one.
-> Fetch everything on any machine with a signed-in `gh` and copy it to the host:
->
-> ```
-> # on the signed-in client; VER without the leading v
-> VER=X.Y.Z
-> gh release download v$VER -R SirRenix/n5-fangov -D dist --clobber          # binary, .sha256, .deb
-> gh release download v$VER -R SirRenix/n5-fangov -A tar.gz -O src.tar.gz --clobber   # source of the tag
-> scp -r src.tar.gz dist root@192.0.2.20:/root/
->
-> # on the host, as root (a new shell: set VER again)
-> VER=X.Y.Z
-> mkdir n5-fangov && tar xzf src.tar.gz -C n5-fangov --strip-components=1
-> mv dist n5-fangov/ && cd n5-fangov
-> mv dist/n5-fangov-$VER-linux-amd64 dist/n5-fangov && mv dist/n5-fangov-$VER-linux-amd64.sha256 dist/n5-fangov.sha256
-> ```
->
-> A client that can reach the private repository over git may use
-> `git clone --branch v$VER --depth 1` instead of the tarball. Then continue at the
-> `sha256sum` line of the block below (the `.deb` is for the [package path](#the-debian-package)).
-
-The public path:
+A host without direct GitHub access (a hypervisor behind a proxy, say): run the `git
+clone` and the two `curl` lines on any machine, copy the checkout with its `dist/` to
+the host with `scp`, then continue at the `sha256sum` line.
 
 ```
 # as root; VER = the tag you want without the leading v, see the releases page
@@ -80,9 +60,9 @@ n5-fangov setup
 The `.deb` is a **release asset** — `n5-fangov_<debver>_amd64.deb`, where `<debver>`
 is the dpkg form of the tag (`0.3.1` → `n5-fangov_0.3.1_amd64.deb`; a pre-release
 `0.3.2-rc1` → `n5-fangov_0.3.2.rc1_amd64.deb`, dpkg version `0.3.2~rc1` — GitHub
-replaces the `~` in asset names). Download it like the binary (public URL, or the
-private-phase copy above); `make deb` only matters when you build your own from a
-checkout, it lands in `dist/` too.
+replaces the `~` in asset names). Download it like the binary (release URL into
+`dist/`); `make deb` only matters when you build your own from a checkout, it lands in
+`dist/` too.
 
 ```
 apt install ./dist/n5-fangov_0.3.1_amd64.deb

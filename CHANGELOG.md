@@ -10,23 +10,22 @@ Review findings referenced as `M1`…`M7`, `H1`…`H4`, `L1`…`L9` (reviews of 
 live in [`docs/REVIEW-TAGS.md`](docs/REVIEW-TAGS.md), not in the code. The audit that
 drove the 0.3.1 work is `docs/AUDIT.md` (code) and `docs/DESIGN-AUDIT.md`
 (dashboard); the reviews of the 0.4.0 redesign are referenced as `C01`… (code) and
-`D01`… (design) in the 0.4.0-rc1 section.
+`D01`… (design), the findings of its release gate as `G1`…`G12`, in the 0.4.0 section.
 
 ## [Unreleased]
 
 ### Still open from the 0.3.x plan (decided 2026-09-16)
 
-- Repository public after the history rewrite — with the 0.4.0 release, once the release
-  gate (0.4.0-rc1 section) has passed; upstream issues (driver validation data, ProxFansX compatibility
-  note); DKMS `.deb` in the sibling repository with the header meta-package as dependency
-  (user path: two `apt install` + `setup`).
+- Upstream issues (driver validation data, ProxFansX compatibility note); DKMS `.deb` in
+  the sibling repository with the header meta-package as dependency (user path: two
+  `apt install` + `setup`).
 - pwm4 `stop = "auto"` stays as it is (keeps the last written duty, documented in DESIGN §6
   and the configuration page); re-measured only if a use case for pwm4 comes up (operator
   decision 2026-09-18). Measured 2026-09-17 on the reference host: the driver refuses a
   `pwm4` write while `pwm4_enable = 2` (EBUSY); after `enable = 1`, duty 100 and
   `enable = 2` again the EC left 100 in place for 90 s — pwm4 behaves like pwm3. Whether
   `auto` on pwm4 should be forced to a fixed stop like pwm3 is an open operator decision.
-- Certificate-trust walkthrough with screenshots of an **English** Windows wizard — rc2
+- Certificate-trust walkthrough with screenshots of an **English** Windows wizard — 0.4.0
   carries the German dialogs with both labels in the captions; swap the images when an
   English Windows is at hand.
 - Multiple dashboard users (more than the one `[web] user`) — under consideration; no
@@ -37,168 +36,7 @@ drove the 0.3.1 work is `docs/AUDIT.md` (code) and `docs/DESIGN-AUDIT.md`
 **Not planned**: MQTT/discovery (REST + token is enough and smaller), a German UI
 (audience is GitHub), multi-host management, a frontend framework.
 
-## [0.4.0-rc5] — 2026-09-19
-
-### Changed
-
-- Sidebar toggle stays in the sidebar in both states: panel icon at the right of the brand
-  row, in the rail directly under the logo; the page-header icon of rc3/rc4 is gone
-  (operator: the trigger belongs to the sidebar, as in Proxmox, UniFi and Portainer).
-
-## [0.4.0-rc4] — 2026-09-19
-
-### Changed
-
-- Icon rail: one expand control instead of two — the logo expands the sidebar (tooltip,
-  `aria-label`), the page-header panel icon stays; the extra button under the logo is gone
-  (operator re-test of rc3).
-- README *Tested hardware* names the measured combination of the 0.4.0 gate (kernel
-  7.0.14-17-pve running, 7.0.12-1-pve fallback, PVE 9.2.20 / Debian 13.7, driver 0.2.0,
-  lm-sensors 3.6.2, Go 1.26) and states plainly that this is a one-person project whose
-  text and code can contain mistakes despite the gate; the kernel-driver page carries the
-  same verified combination.
-
-## [0.4.0-rc3] — 2026-09-19
-
-The operator's rc2 re-test of gate row 6 (`docs/RELEASE-GATE.md`): the sidebar toggle
-"must be integrated more nicely and be unmistakable; like modern layouts", the preset
-badge was ambiguous when a user preset shares a channel with a built-in, and "all possible
-user fails and control paths" of the Fans page are to be tested. Row 6 is re-run on rc3
-before the tag drops the suffix.
-
-### Added
-
-- **Fans → preset badge lists every match, and the active set** — per channel the badge
-  names **all** presets whose channel values the daemon runs (the merge-aware comparison
-  as before): `✓ alternative · n5pro-balanced`, user presets first in the row order, the
-  names one per line in the tooltip, `custom` when none matches. The Presets card opens
-  with the **active set**: *Active set: alternative — the daemon runs exactly these
-  values* when every channel matches one preset (several are all named), *Active set:
-  custom (matches no preset)* otherwise. The rule is documented on the Dashboard page: a
-  channel can belong to several presets; *Apply* switches only channels whose values
-  differ. On the daemon side `TestPresetApplySharedChannelsByteIdentical` pins that a
-  shared `[[channel]]` table stays byte-identical in the file, and
-  `TestOverrideSurvivesReload` (internal/control) that a reload — a preset apply, an
-  Apply — leaves a manual override in place.
-- **Save as preset… from the action bar** — while the editor is dirty a third button
-  (icon plus, left of *Revert*) opens the preset editor with *Start from* locked to *the
-  editor (unsaved values)* (hint *from the edited curves*); saving stores the preset and
-  leaves the editor dirty, nothing is applied (toast *Preset X saved — the editor still
-  has unsaved changes; Apply to daemon writes them*).
-- **Fans page refresh** — while the page is current, config and presets are re-read every
-  30 s: a preset applied from another browser, the CLI or the scheduler shows in the
-  badges, the active set and the Presets row within that time; a clean editor follows
-  the daemon's curves, a dirty one keeps its edits. The row is only rebuilt when
-  something changed. Before rc3 the badges followed only the page's own actions (the
-  scenario matrix caught it: r).
-- **Scenario matrix of the Fans control logic**: `tools/fans-matrix.mjs` (documented on
-  the development page next to `shots.mjs`) drives the mock (`?mock=1&user=1&lag=1`)
-  through 18 scenarios — apply built-in / user preset with shared channels, edit →
-  Revert / Apply / Save as preset…, New preset… from the daemon, override on → Set → off
-  with the lag, override kept across a preset apply and an Apply, the HDD minimum,
-  client validation, sign-out and session loss with dirty edits, the 375 px selector,
-  delete and rename of the active preset, `&restart=1`, a preset applied elsewhere —
-  and prints PASS/FAIL per scenario (all 18 PASS on rc3). The mock gained the user preset
-  `alternative` (cpu and ssd from `n5pro-balanced`, its own hdd curve) for the shared
-  case.
-- Install and update pages (rc2 gate G12): the third closing line of the package
-  postinst, `daemon is running (…), restarting it so the new binary takes over`, with
-  what the bracket carries (`installer deployment` or the replaced version).
-
-### Changed
-
-- **Sidebar toggle — the admin-tool pattern** (the GitHub / Linear / VS Code / shadcn
-  control): a **panel-left icon** (new sprite symbol `i-panel`) as a 32 px ghost icon
-  button at the right end of the brand row, tooltip *Collapse sidebar · [* / *Expand
-  sidebar · [*, `aria-label`, `aria-expanded`, `aria-keyshortcuts="["`; the **`[` key**
-  toggles when the focus is not in a field or a dialog. In the icon rail the brand row
-  holds the logo alone (hovering it names the expand), the toggle sits directly under it
-  as the first item behind the group separator, and the **page header** shows the same
-  icon at its left edge before the title (hidden while expanded and on phones). In the
-  forced rail (700–1099 px) the header icon stays, disabled, with the tooltip *Sidebar
-  collapses below 1100 px*. The chevron symbol `chev-l` is dropped from the sprite
-  (`chev-r` stays for the *Details* links). Dashboard page, DESIGN §11/§11a and
-  screenshot 05 follow.
-- **Budget: `app.js` ≤ 136 KiB** (was 128 KiB; `web_test.go`, DESIGN §11/§11a,
-  development page). Raised for the badge lists, the active set, *Save as preset…* and
-  the toggle pattern — rc2 sat at 128.6 KB against a 128 KiB limit. `app.css` ≤ 48 KiB
-  and `mock.js` ≤ 48 KiB stay.
-- Mock: every answer is a JSON copy of the mock's state, as a `fetch` would deliver —
-  the page never held the mock's live objects (it did until rc2, which hid the missing
-  refresh above); version string `0.4.0-rc3`.
-- The 27 mock screenshots are regenerated (07 shows the multi-name badge and the active
-  set, 05 the rail with the header icon).
-
-## [0.4.0-rc2] — 2026-09-19
-
-The release-gate findings of 0.4.0-rc1, run by the operator on the reference host on
-2026-09-18/19 following the documentation alone (`docs/RELEASE-GATE.md`): rows 1–7, 9
-and 10 passed; row 8 (reboot) was skipped — nothing in the boot chain (unit, DKMS gate,
-failsafe, kernel pin) changed since 0.3.1, whose reboot proof stands. Every finding was
-documentation or dashboard polish; the one data-format finding (G10) is below. Rows 3
-(installer output), 6 (dashboard: sidebar toggle, presets row, sensors card, schedules
-clock, certificate walkthrough) and 9 (troubleshooting rows) are re-run on rc2 before
-the tag drops the suffix.
-
-### Added
-
-- **Certificate walkthrough** (gate G3): `docs/08-https-security.md` → *Windows
-  walkthrough* — the eight dialogs of the import as screenshots
-  (`docs/screenshots/cert-windows-01…08`, German Windows 11, English labels in every
-  caption, host names anonymised), listed as static assets in the screenshots README.
-- **Schedules status card: `now`** (G11) — the daemon's clock `HH:MM:SS · <timezone>`
-  ticking every second, so a window can be compared against the clock the scheduler
-  uses; derived from the `ts` of `/api/state` (browser time plus the measured offset)
-  and the zone of `GET /api/schedules`, `browser time` before the first snapshot. The
-  separate timezone row is folded into it. The mock's `timezone` now has the daemon's
-  form (`CEST +02:00`).
-- **Overview → Sensors as collapsible groups** (G7): one `<details>` per group with the
-  summary `EC · board · 7 · max 35.4 °C` (name, count, live maximum); a group opens by
-  default when it holds a channel's sensor (composite parts included) or a charted id,
-  a group the operator toggles keeps its state in `localStorage` (`n5-fangov.sensors`).
-- Troubleshooting rows for a certificate that stays untrusted although the store holds
-  an entry named like the host (an old certificate under the same name after `--purge`,
-  a new key or an upload) and for "cannot find the certificate in the store" (G2).
-
-### Changed
-
-- **Sidebar toggle in the brand row** (G4): the collapse/expand button sits at the
-  right edge of the brand row (icon `chev-l` / `chev-r`, *Collapse sidebar* / *Expand
-  sidebar*, `aria-expanded`); in the icon rail it stands under the logo; the footer
-  keeps only the version. Between 700 and 1099 px the forced rail hides it as before.
-- **Presets row** (G6): *Save current as…* is **New preset…** (icon plus); the preset
-  editor's *Start from* defaults to *the daemon (running curves)*; the hint under the
-  heading reads *Apply writes a preset into the daemon · New preset… saves a set
-  without applying it*. Empty states and the Schedules hint name the new label.
-- `install.sh` closing hint (G1) names the 0.4.0 pages (Overview anonymous; Fans with
-  curves, override switch and presets, Schedules, Alerts, Log, Settings) instead of the
-  Alerts and Presets tabs.
-- HTTPS page (G2): the automatic certificate is issued to the **host** (`CN=<host
-  name>, O=n5-fangov`, `n5host` on the reference host) — that is the store entry's name,
-  not "n5-fangov"; a section *A new certificate with the same name* with the per-OS
-  removal of the old entry (Windows `certlm.msc`, Firefox Authorities, macOS Keychain
-  *System*, Android *Trusted credentials → User*, Linux `ca-certificates`); the in-app
-  *How to trust* text carries the same two facts.
-- Dashboard, DESIGN §3/§11/§11a, configuration page, release-gate row 6 and the
-  screenshot README follow; `shots.mjs` clicks the new toggle (05) and *New preset…*
-  (11); the 27 mock screenshots are regenerated.
-
-### Fixed
-
-- **Presets wrote `stop = "140"`** (G10) while the example config, the built-in presets
-  and the dashboard write `stop = 140`: `config.Marshal` and `MarshalChannels` write a
-  fixed stop duty as a TOML integer, only `"auto"` stays quoted (`numericStop`); the
-  parser keeps accepting both (`TestMarshalStopNumeric`, the existing quoted-number
-  cases in `TestStopBounds`). Both preset save paths (*New preset…* with the composed
-  channels, the empty-body `PUT` with the running tables) and the config writer go
-  through these two functions; a settings import stores preset text as exported.
-- Manual override (G8, re-checked against the mock with `&lag=1`): after *Set* the
-  number field and the slider keep the value the operator set while the daemon's
-  snapshot still reports the previous target, and follow the snapshot once it agrees;
-  the rpm in the card follows with that poll. No change was needed; the check is
-  recorded here.
-
-## [0.4.0-rc1] — 2026-09-18
+## [0.4.0] — 2026-09-19
 
 The dashboard redesign: a sidebar shell with eight pages instead of nine tabs, a
 channel-centric Fans page with an explicit override switch and a preset editor, an
@@ -206,26 +44,40 @@ editable Schedules page, one Settings page in place of the gear popover and the 
 dialogs, SVG icons, sparklines, a new screenshot set — and the one backend change it
 needs, the optional body of `PUT /api/presets/{name}`. Concept and decisions:
 [`docs/design/REDESIGN-CONCEPT.md`](docs/design/REDESIGN-CONCEPT.md); the running
-dashboard is DESIGN §11, the decisions and rules §11a. **0.4.0 is the release that
-switches the repository to public** once it has passed the release gate below.
+dashboard is DESIGN §11, the decisions and rules §11a. **The repository is public since
+0.4.0** — the first public release; 0.1.0 … 0.3.1 below were private. Verified in the
+Docker builder (`go vet`, `go test`) and through the release gate on the reference host
+(paragraph at the end of this section).
 
 ### Added
 
-- **Shell**: a sidebar (220 px; icon rail 56 px via *Collapse* or Settings → Display →
-  *Navigation*, stored in this browser, forced between 700 and 1099 px) with the pages
-  in five groups — Monitor: Overview, System; Control: Fans, Schedules; Operate: Alerts,
-  Log; Settings; Info: About —, hash routing (`#fans`, `#settings/st-cert`,
-  `#about/compat`; Back/Forward follow the hash), a page header with title, profile,
-  status chip, uptime, version, a **certificate warning chip** shown only while the
-  certificate is in fallback, expires within 30 days, is expired or the listener is
-  plain HTTP off loopback (click → Settings → Certificate), live indicator and user.
-  Below 700 px a fixed bottom bar (Overview · Fans · Alerts · Settings · *More* sheet).
-  Skip link; a user page switch focuses the heading. `TestNavHasPages` pins page
+- **Shell**: a sidebar (220 px; icon rail 56 px, stored in this browser, forced between
+  700 and 1099 px) with the pages in five groups — Monitor: Overview, System; Control:
+  Fans, Schedules; Operate: Alerts, Log; Settings; Info: About —, hash routing (`#fans`,
+  `#settings/st-cert`, `#about/compat`; Back/Forward follow the hash), a page header with
+  title, profile, status chip, uptime, version, a **certificate warning chip** shown only
+  while the certificate is in fallback, expires within 30 days, is expired or the
+  listener is plain HTTP off loopback (click → Settings → Certificate), live indicator
+  and user. Below 700 px a fixed bottom bar (Overview · Fans · Alerts · Settings · *More*
+  sheet). Skip link; a user page switch focuses the heading. `TestNavHasPages` pins page
   sections, `PAGES` and the dispatch map to each other.
+- **Sidebar toggle — the admin-tool pattern** (GitHub / Linear / VS Code / shadcn): a
+  **panel-left icon** (sprite symbol `i-panel`) as a 32 px ghost icon button at the right
+  end of the brand row, tooltip *Collapse sidebar · [* / *Expand sidebar · [*,
+  `aria-label`, `aria-expanded`, `aria-keyshortcuts="["`; the **`[` key** toggles when the
+  focus is not in a field or a dialog. In the icon rail the brand row holds the logo
+  alone — the logo expands the sidebar (tooltip, `aria-label`) — and the same icon sits
+  directly under it as the first item behind the group separator; the trigger lives in
+  the sidebar in both states and nowhere else (operator decision: as in Proxmox, UniFi
+  and Portainer). Settings → Display → *Navigation* switches the same state.
 - **Overview**: channel tiles with a 2 h **sparkline** each (temperature 32/700, mode and
   hold badges, duty bar with target marker, rpm); the extra-sensors chart as a third
-  chart of the same kind (three columns from 1500 px); the Sensors card lists every disk
-  under its group; empty states name the next step.
+  chart of the same kind (three columns from 1500 px); the **Sensors card as collapsible
+  groups** — one `<details>` per group with the summary `EC · board · 7 · max 35.4 °C`
+  (name, count, live maximum), every disk under its group; a group opens by default when
+  it holds a channel's sensor (composite parts included) or a charted id, a group the
+  operator toggles keeps its state in `localStorage` (`n5-fangov.sensors`); empty states
+  name the next step.
 - **Fans page** (Curves + Manual + Presets): one card per channel — the curve editor on
   the left (sensor, critical, stop, hysteresis, min on, canvas, point table, *+ add
   point* as an inline row, the N5 Pro duty→RPM reference) and **Live & override** on the
@@ -234,18 +86,42 @@ switches the repository to public** once it has passed the release gate below.
   (`PUT /api/override` with the snapshot duty, raised to the HDD minimum), slider +
   number + *Set* change it, off is the `DELETE`; slider and *Set* are disabled while off;
   the switch keeps the client's state through one daemon cycle and stays switchable off
-  under `critical`/`stall`; the HDD minimum follows the daemon's `hddLike` rule (fixed
-  stop duty or pwm3 on the N5 Pro). A **preset badge** per channel names the preset
-  its values match (`custom` otherwise). Sticky action bar with the dirty indicator,
-  *Revert*, *Apply to daemon*. Below 700 px a channel selector shows one card at a time.
+  under `critical`/`stall`; after *Set* the field and the slider keep the operator's
+  value until the snapshot agrees; the HDD minimum follows the daemon's `hddLike` rule
+  (fixed stop duty or pwm3 on the N5 Pro). Below 700 px a channel selector shows one
+  card at a time.
+- **Preset badge per channel lists every match**: the badge names **all** presets whose
+  channel values the daemon runs (the merge-aware comparison: what *Apply* would merge —
+  a preset without hysteresis/min_on keeps the host's post-processing, names follow the
+  config by pwm), `✓ alternative · n5pro-balanced`, user presets first in the row order,
+  the names one per line in the tooltip, `custom` when none matches. The Presets card
+  opens with the **active set**: *Active set: alternative — the daemon runs exactly
+  these values* when every channel matches one preset (several are all named), *Active
+  set: custom (matches no preset)* otherwise. The rule is documented on the Dashboard
+  page: a channel can belong to several presets; *Apply* switches only channels whose
+  values differ. `TestPresetApplySharedChannelsByteIdentical` pins that a shared
+  `[[channel]]` table stays byte-identical in the file, `TestOverrideSurvivesReload`
+  (internal/control) that a reload — a preset apply, an Apply — leaves a manual override
+  in place.
+- **Sticky action bar** with the dirty indicator, *Revert*, *Apply to daemon* and — while
+  the editor is dirty — **Save as preset…** (icon plus): opens the preset editor with
+  *Start from* locked to *the editor (unsaved values)*; saving stores the preset and
+  leaves the editor dirty, nothing is applied (toast *Preset X saved — the editor still
+  has unsaved changes; Apply to daemon writes them*).
+- **Fans page refresh**: while the page is current, config and presets are re-read every
+  30 s — a preset applied from another browser, the CLI or the scheduler shows in the
+  badges, the active set and the Presets row within that time; a clean editor follows
+  the daemon's curves, a dirty one keeps its edits; the row is only rebuilt when
+  something changed.
 - **Presets row** under the channel cards: chips with active dot, ★ recommended,
   built-in badge, description, *Apply* (confirm), *Details* (built-in, read-only) /
-  *Edit*, *Delete*; *Save current as…* opens the **preset editor** dialog — *Start from*
-  the editor's unsaved values, the daemon's running curves or any preset; name; per
-  channel critical / stop / hysteresis / min on and an editable point table, validated
-  with the curve editor's rules; *Save* stores exactly the values shown and applies
-  nothing; rename in the editor's name field (saved under the old name first, then
-  `POST …/rename`); overwrite and discard confirmations.
+  *Edit*, *Delete*; the hint *Apply writes a preset into the daemon · New preset… saves a
+  set without applying it*. **New preset…** (icon plus) opens the **preset editor**
+  dialog — *Start from* the daemon's running curves (default), the editor's unsaved
+  values or any preset; name; per channel critical / stop / hysteresis / min on and an
+  editable point table, validated with the curve editor's rules; *Save* stores exactly
+  the values shown and applies nothing; rename in the editor's name field (saved under
+  the old name first, then `POST …/rename`); overwrite and discard confirmations.
 - **`PUT /api/presets/{name}` with an optional JSON body** `{channels: [{name, pwm,
   sensor, curve, critical, stop?, hysteresis?, min_on?}]}` (≤ 256 KiB; OpenAPI schema
   `PresetSave`): the body is rendered as `[[channel]]` TOML and parsed with the config's
@@ -262,9 +138,13 @@ switches the repository to public** once it has passed the release gate below.
   fallback, ≤ 16; then the `[[schedule]]` tables are spliced into the config the way
   *Apply* splices `[[channel]]` and written with `PUT /api/config?strict=1`; the daemon
   takes them without a restart; `TestScheduleEditorKeepsOtherTables`). Status card
-  with the active entry, next switch, last switch with its error, timezone. Leave-page,
-  sign-out and `beforeunload` guards; unsaved schedule edits are stashed on a session
-  loss and restored after the next sign-in, like curve edits.
+  with the active entry, next switch, last switch with its error, and **`now`** — the
+  daemon's clock `HH:MM:SS · <timezone>` ticking every second, derived from the `ts` of
+  `/api/state` (browser time plus the measured offset) and the zone of `GET
+  /api/schedules`, `browser time` before the first snapshot — so a window can be compared
+  against the clock the scheduler uses. Leave-page, sign-out and `beforeunload` guards;
+  unsaved schedule edits are stashed on a session loss and restored after the next
+  sign-in, like curve edits.
 - **Settings page** with a sub-navigation: *Display* (unit, interval, theme,
   navigation), *Account & sessions*, *API tokens*, *Certificate* (incl. *How to trust*),
   *Alert transport* (form, PVE template card, test button), *Backup* (export / import),
@@ -281,32 +161,67 @@ switches the repository to public** once it has passed the release gate below.
   the boot — the connection banner); the mock stores the preset body, checks curves,
   stop and min_on with the daemon's rules, answers 404 for a rename of a missing preset
   and 400 for a manual duty below the HDD minimum; `&schedfail=1` also points the first
-  entry at a missing preset.
-- Screenshot set `docs/screenshots/01–28` regenerated from the new `shots.mjs` (hash
-  routing, full-page captures for the pages, viewport clips for dialogs, header crops and
+  entry at a missing preset; the user preset `alternative` (cpu and ssd from
+  `n5pro-balanced`, its own hdd curve) for the shared-channel case; `timezone` in the
+  daemon's form (`CEST +02:00`).
+- **Scenario matrix of the Fans control logic**: `tools/fans-matrix.mjs` (documented on
+  the development page next to `shots.mjs`) drives the mock (`?mock=1&user=1&lag=1`)
+  through 18 scenarios — apply built-in / user preset with shared channels, edit →
+  Revert / Apply / Save as preset…, New preset… from the daemon, override on → Set → off
+  with the lag, override kept across a preset apply and an Apply, the HDD minimum,
+  client validation, sign-out and session loss with dirty edits, the 375 px selector,
+  delete and rename of the active preset, `&restart=1`, a preset applied elsewhere —
+  and prints PASS/FAIL per scenario (all 18 PASS).
+- **Certificate walkthrough** (G3): `docs/08-https-security.md` → *Windows walkthrough*
+  — the eight dialogs of the import as screenshots (`docs/screenshots/cert-windows-01…08`,
+  German Windows 11, English labels in every caption, host names anonymised), listed as
+  static assets in the screenshots README.
+- Screenshot set `docs/screenshots/01–28` from the new `shots.mjs` (hash routing,
+  full-page captures for the pages, viewport clips for dialogs, header crops and
   toasts); the Home Assistant tiles image is `28-home-assistant-tiles.png`.
 - Documentation: the dashboard page rewritten for the pages, the preset body on the API
   page, schedules editable on the dashboard or in the file on the configuration page,
   every other page follows the new structure (Settings sections instead of gear, lock,
-  Account and Certificate dialogs); release-gate row 6 walks the new pages.
+  Account and Certificate dialogs); release-gate row 6 walks the new pages. HTTPS page
+  (G2): the automatic certificate is issued to the **host** (`CN=<host name>,
+  O=n5-fangov`, `n5host` on the reference host) — that is the store entry's name, not
+  "n5-fangov"; a section *A new certificate with the same name* with the per-OS removal
+  of the old entry (Windows `certlm.msc`, Firefox Authorities, macOS Keychain *System*,
+  Android *Trusted credentials → User*, Linux `ca-certificates`); the in-app *How to
+  trust* text carries the same two facts; troubleshooting rows for a certificate that
+  stays untrusted although the store holds an entry named like the host and for "cannot
+  find the certificate in the store". Install and update pages (G12): the third closing
+  line of the package postinst, `daemon is running (…), restarting it so the new binary
+  takes over`, with what the bracket carries. README *Tested hardware* names the measured
+  combination of the 0.4.0 gate (kernel 7.0.14-17-pve running, 7.0.12-1-pve fallback,
+  PVE 9.2.20 / Debian 13.7, driver 0.2.0, lm-sensors 3.6.2, Go 1.26) and states plainly
+  that this is a one-person project whose text and code can contain mistakes despite
+  the gate; the kernel-driver page carries the same verified combination.
 
 ### Changed
 
-- Budgets: `app.js` ≤ 128 KiB, `mock.js` ≤ 48 KiB, `app.css` ≤ 48 KiB (`web_test.go`);
-  `index.html` carries the sprite and has no budget.
+- Budgets: `app.js` ≤ 136 KiB (96 KB in 0.3.1; the pages, the badge lists, the active
+  set, *Save as preset…* and the toggle pattern), `mock.js` ≤ 48 KiB (40 KB), `app.css`
+  ≤ 48 KiB (`web_test.go`); `index.html` carries the sprite and has no budget.
 - Settings in `localStorage` (`n5-fangov`) gain the key `nav` (`side` | `rail`),
   whitelisted like the others.
 - The sign-in dialog, Confirm and the preset editor are the only `<dialog>`s besides the
   phone's *More* sheet; the page header no longer carries a lock button — the transport
   and certificate state appear as the warning chip only when something is wrong, the
   full state is Settings → Certificate.
-- *Save current as…* no longer stores the daemon's running curves unasked: it opens the
-  preset editor, prefilled from the editor's unsaved values (*Start from* switches to
-  the running curves or a preset).
+- Saving a preset never stores the daemon's running curves unasked: *New preset…* and
+  *Save as preset…* open the preset editor, and *Save* writes what the editor shows.
 - The "active" preset and the per-channel preset badge compare against what *Apply*
-  would merge (a preset without hysteresis/min_on keeps the host's post-processing;
-  names follow the config by pwm), not against the raw preset file; preset details are
-  re-read on every load and cleared on sign-out.
+  would merge, not against the raw preset file; preset details are re-read on every
+  load and cleared on sign-out.
+- Presets write a fixed stop duty as a TOML integer (`stop = 140`, the form of the
+  example config, the built-in presets and the dashboard); only `"auto"` stays quoted
+  (`config.Marshal`, `MarshalChannels`, `numericStop`); the parser keeps accepting both
+  (`TestMarshalStopNumeric`, the quoted-number cases in `TestStopBounds`). Both preset
+  save paths (*New preset…* with the composed channels, the empty-body `PUT` with the
+  running tables) and the config writer go through these two functions; a settings
+  import stores preset text as exported (G10 — until then a saved preset carried
+  `stop = "140"`).
 - Light theme `--info` is `#1a5fb4` (contrast of nav text, active entry, primary
   buttons); switch track, day toggles and the preset dot at 3:1; sparkline stroke
   checked per series.
@@ -315,6 +230,13 @@ switches the repository to public** once it has passed the release gate below.
   transport; the Alerts page shows delivery status, kinds and recent alerts.
 - Toasts are lifted above the sticky action bar (`--actbar-h`); the rpm chart autoscales
   like the temperature chart instead of a 0-based axis.
+- Mock: every answer is a JSON copy of the mock's state, as a `fetch` would deliver —
+  the page never holds the mock's live objects; version string `0.4.0`.
+- `install.sh` closing hint (G1) names the 0.4.0 pages (Overview anonymous; Fans with
+  curves, override switch and presets, Schedules, Alerts, Log, Settings) instead of the
+  Alerts and Presets tabs, and ends with `run: n5-fangov check && systemctl start
+  n5-fangov` when a config already exists (update, reinstall) instead of always
+  suggesting `setup`.
 
 ### Fixed
 
@@ -352,9 +274,6 @@ switches the repository to public** once it has passed the release gate below.
 - `stripChannels` / `stripSchedules` are extracted from `app.js` and run in Go against
   sample TOML (C17), so the "other tables survive the rewrite" rule is a test on both
   editors.
-- `install.sh` ends with `run: n5-fangov check && systemctl start n5-fangov` when a config
-  already exists (update, reinstall) instead of always suggesting `setup` (release-gate
-  observation, 2026-09-18).
 
 ### Removed
 
@@ -364,44 +283,26 @@ switches the repository to public** once it has passed the release gate below.
   content is the Settings page); the lock button (`🔒 TLS` / `🔓 HTTP`) in the header.
 - The Manual tab's *Set* / *Back to auto* pair as the only way into `MANUAL`; the
   read-only Schedules card on the Presets tab.
-- Six unused sprite symbols (C18) and dead CSS rules.
+- Six unused sprite symbols (C18), the chevron symbol `chev-l` (`chev-r` stays for the
+  *Details* links) and dead CSS rules.
+- The dashboard prototype `docs/design/proto/` (the mock-only shell the operator decided
+  on; the concept page keeps the decisions).
+- The private-phase download recipe (assets copied from a signed-in client with `scp`)
+  from the install page and the release-gate preconditions; the public `curl` path is the
+  path.
 
-### Version plan (operator decision 2026-09-16, 22:30)
+### Release gate
 
-- **0.3.x** (`0.3.1-rc*` → `0.3.1`, then `0.3.2`…; 0.3.0 stayed an rc): every feature of the
-  plan (interface, regulation add-ons, dashboard history and per-device sensors, maintenance
-  debt), as pre-releases on the private repository, each verified on the reference host.
-  Shipped as 0.3.1.
-- **0.4.0**: the dashboard redesign with new documentation screenshots — the release that
-  goes **public**. Built as 0.4.0-rc1 (this section); the repository stays private until
-  the gate has passed.
-- Each rc becomes a release only through the release gate below.
-
-### Release gate (decided 2026-09-16)
-
-A version loses its `-rc` suffix only after the operator has performed a **manual
-installation test on the real host following the documentation alone** — uninstall,
-kernel-driver check, install by release path and by package, setup, dashboard, update
-hook, reboot, troubleshooting, uninstall/reinstall. Checklist: [`docs/RELEASE-GATE.md`](docs/RELEASE-GATE.md).
-Applies to every 0.3.x release and to 0.4.0. Preconditions: docs split, repository hardening
-merged, history rewritten (all done). While the repository is private the release assets
-are downloaded with `gh release download <tag>` on a signed-in client and copied to the
-host with `scp` (the host has no `gh`, gate finding 2026-09-18); the public curl path is
-re-run once at 0.4.0. First run 2026-09-18 on 0.3.1-rc1: passed, findings fixed in 0.3.1.
-For 0.4.0-rc1 row 6 (dashboard) walks the new pages: preset apply, override switch,
-preset editor, schedule edit, test alert, export, token, phone layout.
-
-### Before the public release (documentation) — done 2026-09-16
-
-- **Split the README** (done): a short landing page (what it is, one screenshot, three-step
-  install, links) and a `docs/` set with one page per topic (install, kernel driver on the
-  N5 Pro, setup, dashboard guide with screenshots, CLI, configuration, alerts, HTTPS and
-  security, updates and rollback, troubleshooting, development). The 880-line README is
-  complete but tiring; a reader needs a table of contents and separation.
-- **Kernel driver page** (done, `docs/02-kernel-driver.md`): what the EC driver is, what DKMS does for it, install from the
-  sibling repository (later its `.deb`), verification (`dkms status`, `sensors`,
-  `n5-fangov detect`), the kernel-update gate, removal — the topic first-time users
-  stumble over.
+Checklist [`docs/RELEASE-GATE.md`](docs/RELEASE-GATE.md), operator on the reference
+host, documentation only (preconditions — docs split, kernel-driver page, repository
+hardening, history rewrite — done 2026-09-16). Rows 1–7, 9 and 10 passed on 0.4.0-rc1
+on 2026-09-18; row 8 (reboot) skipped — nothing in the boot chain (unit, DKMS gate,
+failsafe, kernel pin) changed since 0.3.1, whose reboot proof stands. Every finding
+(`G1`…`G12`) was documentation or dashboard polish except the preset stop format
+(G10). rc2 … rc5 (2026-09-19) are the operator's findings on the dashboard — sidebar
+toggle placement, unambiguous preset badges, the Fans control paths — each re-tested on
+the host; 0.4.0 is rc5 without the suffix. The public `curl` install path is exercised
+once after publication.
 
 ## [0.3.1] — 2026-09-18
 
@@ -993,8 +894,8 @@ of `v0.2.0`.
   security review `H1`–`H3`, `M1`–`M4`, `L1`–`L6` (Host header, CSRF, socket mode 0750,
   body limits, …).
 
-[Unreleased]: https://github.com/SirRenix/n5-fangov/compare/v0.4.0-rc1...HEAD
-[0.4.0-rc1]: https://github.com/SirRenix/n5-fangov/releases/tag/v0.4.0-rc1
+[Unreleased]: https://github.com/SirRenix/n5-fangov/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/SirRenix/n5-fangov/releases/tag/v0.4.0
 [0.3.1]: https://github.com/SirRenix/n5-fangov/releases/tag/v0.3.1
 [0.3.0-rc1]: https://github.com/SirRenix/n5-fangov/releases/tag/v0.3.0-rc1
 [0.3.0-beta.4]: https://github.com/SirRenix/n5-fangov/releases/tag/v0.3.0-beta.4
