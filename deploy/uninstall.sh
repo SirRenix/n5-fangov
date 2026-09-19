@@ -37,7 +37,7 @@ rm -rf /run/n5-fangov
 # tokens.json (the only copy of the API token hashes) is backed up first
 if [[ -f /var/lib/n5-fangov/tokens.json ]]; then
     dest="/var/backups/n5-fangov/tokens.json.$(date +%Y%m%d-%H%M%S)"
-    mkdir -p -m 0700 /var/backups/n5-fangov
+    mkdir -p /var/backups/n5-fangov && chmod 0700 /var/backups/n5-fangov
     if cp -p /var/lib/n5-fangov/tokens.json "$dest" && chmod 0600 "$dest" && chown root:root "$dest"; then
         echo "  API token store backed up to $dest (0600); restore it to /var/lib/n5-fangov/tokens.json after a reinstall"
     else
