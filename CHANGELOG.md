@@ -994,11 +994,7 @@ of `v0.2.0`.
 [Unreleased]: https://github.com/SirRenix/n5-fangov/compare/v0.4.0...HEAD
 [0.4.0]: https://github.com/SirRenix/n5-fangov/releases/tag/v0.4.0
 [0.3.1]: https://github.com/SirRenix/n5-fangov/releases/tag/v0.3.1
-[0.3.0-rc1]: https://github.com/SirRenix/n5-fangov/releases/tag/v0.3.0-rc1
-[0.3.0-beta.4]: https://github.com/SirRenix/n5-fangov/releases/tag/v0.3.0-beta.4
-[0.3.0-beta.3]: https://github.com/SirRenix/n5-fangov/releases/tag/v0.3.0-beta.3
-[0.3.0-beta.2]: https://github.com/SirRenix/n5-fangov/releases/tag/v0.3.0-beta.2
-[0.3.0-beta.1]: https://github.com/SirRenix/n5-fangov/releases/tag/v0.3.0-beta.1
-[0.2.1]: https://github.com/SirRenix/n5-fangov/releases/tag/v0.2.1
-[0.2.0]: https://github.com/SirRenix/n5-fangov/releases/tag/v0.2.0
-[0.1.0]: https://github.com/SirRenix/n5-fangov/commit/22bf33f
+
+Releases before 0.3.1 (0.1.0 – 0.3.0-rc1) were removed from GitHub on 2026-09-19 together
+with their tags; their history stays in this file. 0.3.1 is the last 0.3.x release, every
+0.4.x tag stays.
