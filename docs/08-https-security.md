@@ -330,7 +330,7 @@ and no API field names a command or a path. The files the API can write are
 its state files under `/var/lib/n5-fangov/` and the PVE notification template pair —
 nothing else, and none of them is executed. The daemon also refuses a hook that is a
 symlink, not root's, or writable by group or others, so the file cannot be planted
-through another service's hole either (0.4.1-rc1 review finding). A request outside the scope answers 403
+through another service's hole either (0.4.1 review finding). A request outside the scope answers 403
 `{"error":"token scope read does not allow PUT /api/override/cpu","scope":"read","required":"control"}`.
 `GET /api/alerts` is within `read`; a token caller gets `webhook_url` with query and
 userinfo redacted (the full URL is for browser sessions and Basic auth only), so a

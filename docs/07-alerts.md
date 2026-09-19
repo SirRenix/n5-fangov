@@ -31,7 +31,15 @@ journal), the PVE side, cooldowns, the test alert and the alert history.
 | Fan controller vanishes (driver reload) | daemon exits after 6 failed cycles, systemd restarts it with a fresh detection |
 | Scheduled preset switch fails | previous curves stay, alert, retry at the next transition |
 
-Every alert is always written to the journal, whatever the transport.
+Every alert is always written to the journal, whatever the transport, as two lines:
+`ALERT[<kind>]: <text>` when the daemon raises it (journal priority err),
+and `ALERT[<kind>] sent via <transport>: <text>` when the sink has handed it to
+`pve-notify`, `mail`, `webhook` or `log`. With transport `off` the second line reads
+`ALERT[<kind>] suppressed (transport off): …`; a failed delivery adds `alert: …` after
+it. An alert inside its cooldown writes nothing (a start alert: `ALERT[<kind>]
+suppressed (last one … ago, cooldown …): …`). Test alerts (*Send test alert*,
+`n5-fangov alerts test`) go to the sink directly and produce only the `sent via` line.
+Before 0.4.1 both lines were identical, so every daemon alert stood twice in the log.
 
 ## Transports
 
@@ -184,8 +192,9 @@ the PVE template card are **Settings → Alert transport**. Screenshots in
   response carries the delivery error when perl, mail or the webhook receiver fail. It
   also lands in the recent list. One test at a time (a second click while one runs
   answers `409 test in progress`), bounded to 20 s. This is the test that proves
-  delivery: it is sent by the daemon from inside its sandbox. What arrives (mail body,
-  PVE notification, webhook `message`):
+  delivery: it is sent by the daemon from inside its sandbox. The journal shows a single
+  `ALERT[test] sent via <transport>: …` line (no raise line — the test does not pass
+  through the controller). What arrives (mail body, PVE notification, webhook `message`):
 
   ```
   test alert from n5-fangov 0.3.1 on n5host at 2026-09-18 02:01:54 - delivery works if you can read this.

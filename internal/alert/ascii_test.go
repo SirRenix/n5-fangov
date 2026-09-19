@@ -26,7 +26,7 @@ func TestAlertTextsASCII(t *testing.T) {
 	l := &captureLogger{}
 	s := &Log{Logger: l}
 	s.Alert("test", "dash — here")
-	if got := l.last; got != "ALERT[test]: dash - here" {
+	if got := l.last; got != "ALERT[test] sent via log: dash - here" {
 		t.Fatalf("log sink delivered %q", got)
 	}
 }

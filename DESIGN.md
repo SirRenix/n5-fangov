@@ -1248,12 +1248,13 @@ devices (`/dev/log` is a symlink into `/run/systemd/journal/`); `ProtectHome` hi
 `/root` and `/home` (a hook there is `absent`), the hook may write only under
 `ReadWritePaths`, and `TimeoutStopSec=20` ends a running hook with the unit. Measured on a
 Debian 13 / systemd 257 box with the unit's property set (review of rc1): `/dev/log`
-exists, `logger` reaches the journal, `systemctl` answers. Neither `systemctl poweroff`
-nor `logger` from inside the sandbox has been **executed on the reference host** as of
-0.4.1-rc1 — the release-gate re-test runs the `logger` form; the poweroff form stays "to
-be verified on the host" until an operator runs it (docs/06-configuration.md).
+exists, `logger` reaches the journal, `systemctl` answers. The `logger` form **has been
+executed on the reference host** from inside the sandbox by the 0.4.1 release-gate
+re-test (U4: hook fired after 6 cycles, `logger` reached the journal, exit 0); the
+`systemctl poweroff` form has not and stays "to be verified on the host" until an
+operator runs it (docs/06-configuration.md).
 
-**Why the hook is a file and not a config value** (review finding S01 of 0.4.1-rc1): a
+**Why the hook is a file and not a config value** (review finding S01 of the 0.4.1 rc): a
 command string in the config would be writable through `PUT /api/config` and the bundle
 import and would run as root inside the sandbox — an admin token or the dashboard
 password would be root code execution on the host, and the very instance the ceilings

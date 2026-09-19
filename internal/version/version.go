@@ -6,7 +6,7 @@ import "strings"
 // Version is the semantic version of this build. A pre-release carries a
 // hyphenated suffix ("0.3.0-beta.1"); `make` overrides it with `git describe`
 // through -X, which yields "v0.3.0-beta.1-3-gabcdef" on commits after a tag.
-var Version = "0.4.1-rc1"
+var Version = "0.4.1"
 
 // A leading "v" (a tag name handed to -X by mistake, or git describe) is
 // never part of the version: `n5-fangov version`, /api/version, the webhook

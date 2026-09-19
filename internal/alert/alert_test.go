@@ -34,7 +34,7 @@ func TestLogSink(t *testing.T) {
 	l := &recLogger{}
 	s := &Log{Logger: l}
 	s.Alert("stall", "fan1 stopped")
-	if s.Name() != "log" || len(l.lines) != 1 || l.lines[0] != "ALERT[stall]: fan1 stopped" {
+	if s.Name() != "log" || len(l.lines) != 1 || l.lines[0] != "ALERT[stall] sent via log: fan1 stopped" {
 		t.Errorf("log sink: %v", l.lines)
 	}
 }

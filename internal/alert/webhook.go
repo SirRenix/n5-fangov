@@ -88,7 +88,7 @@ type webhookPayload struct {
 // the URL redacted.
 func (w *Webhook) SendCtx(ctx context.Context, kind, msg string) error {
 	kind, msg = ASCII(kind), ASCII(msg)
-	w.Logger.Printf("ALERT[%s]: %s", kind, msg)
+	w.Logger.Printf("ALERT[%s] sent via webhook: %s", kind, msg)
 	client := w.Client
 	if client == nil {
 		client = webhookClient()

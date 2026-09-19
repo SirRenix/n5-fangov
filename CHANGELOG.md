@@ -16,7 +16,7 @@ drove the 0.3.1 work is `docs/AUDIT.md` (code) and `docs/DESIGN-AUDIT.md`
 
 ### Roadmap (operator decision 2026-09-19)
 
-**0.4.1 — safety** is in test as 0.4.1-rc1 (below). Open from its scope: the
+**0.4.1 — safety** released (below). Open from its scope: the
 `systemctl poweroff` form of the emergency hook has not been executed from inside
 the sandbox on the reference host (documented as "to be verified on the host").
 
@@ -51,7 +51,19 @@ token scopes). No design yet.
 **Not planned**: MQTT/discovery (REST + token is enough and smaller), a German UI
 (audience is GitHub), multi-host management, a frontend framework.
 
-## [0.4.1-rc1] — 2026-09-19
+## [0.4.1] — 2026-09-19
+
+**Release gate.** The update re-test U1–U5 (`docs/RELEASE-GATE.md`) passed on the
+reference host on 2026-09-19: package update over 0.4.0 (U1), `check` advisory with
+`critical = 70` (U2), live `ceiling = 30` on the HDD channel → 255, mode `critical`,
+alert `ceiling` within one cycle (U3), emergency hook in the `logger` form fired after 6
+cycles from inside the unit's sandbox — `logger` reached the journal, hook exit 0 — (U4),
+values reverted (U5). Two findings fixed in the release: the transport log lines were
+indistinguishable from the raise line, so every daemon alert appeared twice in the log
+since 0.2 — the sink now logs `ALERT[kind] sent via <transport>: …` next to the daemon's
+`ALERT[kind]: …`; and gate row U3 named the reload path imprecisely (corrected in the
+gate). The `systemctl poweroff` form of the hook and the tokens backup on purge remain
+unexercised on the host.
 
 Safety: the guard chain gets a floor that no configuration can raise, an optional
 emergency hook for the case where a fan has failed, and two hardening fixes. Contract:
@@ -180,9 +192,10 @@ root code execution for an admin token: fixed by design, "Security").
   re-test (no purge there).
 - What is known about `systemctl poweroff` from inside the unit's sandbox is written down
   in DESIGN §12 and the configuration page (AF_UNIX and `@system-service` allowed, PID 1
-  does the work, empty capability set is not in the way); **neither the poweroff nor the
-  `logger` form has been executed from inside the sandbox on the reference host** — the
-  re-test runs the `logger` form, the poweroff form is to be verified on the host.
+  does the work, empty capability set is not in the way); the **`logger` form was
+  executed from inside the sandbox on the reference host** by the update re-test (U4,
+  2026-09-19: hook exit 0, journal line present); **the poweroff form has not been run**
+  and is to be verified deliberately on a host that may go down.
   Measured by the rc1 review on a Debian 13 / systemd 257 box with the unit's property
   set: `/dev/log` exists, `logger` writes to the journal, `systemctl` reaches PID 1 —
   an indication, not the host proof.
@@ -1045,7 +1058,8 @@ of `v0.2.0`.
   security review `H1`–`H3`, `M1`–`M4`, `L1`–`L6` (Host header, CSRF, socket mode 0750,
   body limits, …).
 
-[Unreleased]: https://github.com/SirRenix/n5-fangov/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/SirRenix/n5-fangov/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/SirRenix/n5-fangov/releases/tag/v0.4.1
 [0.4.0]: https://github.com/SirRenix/n5-fangov/releases/tag/v0.4.0
 [0.3.1]: https://github.com/SirRenix/n5-fangov/releases/tag/v0.3.1
 

@@ -105,7 +105,7 @@ rows the change touches. Operator, on the PVE host, as root; the old binary kept
 |---|---|---|---|
 | U1 | `apt install ./n5-fangov_<debver>_amd64.deb` over the running version (no remove, no purge) | postinst restarts the unit; `n5-fangov version` prints the rc; config, presets, `tokens.json`, `history.json` untouched (`ls -l /var/lib/n5-fangov`); dashboard sign-in still works with the old cookie or after a fresh sign-in | ☐ |
 | U2 | `n5-fangov check` with the HDD channel's `critical` raised above 65 in the config (e.g. `critical = 70`), then back | the advisory line `channel hdd: critical 70 above the built-in ceiling 65 — the ceiling acts first`, check still says `all good`; without it the line is gone. The line `[ok  ] emergency hook   /etc/n5-fangov/emergency.sh (absent)` is there in both runs (`emergency` is still `false`) | ☐ |
-| U3 | **Ceiling, live:** set `ceiling = 30` on the HDD channel (`[[channel]] name = "hdd"`), *Apply* from the Fans page or `PUT /api/config` (reload, no restart) | within one cycle the channel runs at 255 in mode `critical`, `ceiling_hit: true` in `GET /api/state`, the Alerts page shows kind `ceiling` with the reading and "ceiling 30C"; the curve editor draws the `ceiling` line at 30 °C; the tile colours by the ceiling | ☐ |
+| U3 | **Ceiling, live:** set `ceiling = 30` on the HDD channel (`[[channel]] name = "hdd"`) — edit the file, then Fans → *Revert* (re-reads the file, `ceiling` is carried) → *Apply to daemon*; or `systemctl restart n5-fangov` | within one cycle the channel runs at 255 in mode `critical`, `ceiling_hit: true` in `GET /api/state`, the Alerts page shows kind `ceiling` with the reading and "ceiling 30C"; the curve editor draws the `ceiling` line at 30 °C; the tile colours by the ceiling | ☐ |
 | U4 | **Emergency hook, logger form:** with U3 still in effect install the template — `install -m 0750 -o root -g root /usr/share/doc/n5-fangov/examples/emergency.example.sh /etc/n5-fangov/emergency.sh` (the `logger` line is active, the poweroff line stays commented) —, `n5-fangov check`, then set `[daemon] emergency = true` and `emergency_cycles = 2`, reload | `check` prints `[ok  ] emergency hook   /etc/n5-fangov/emergency.sh (ok)`; after 6 cycles in the ceiling state (3 × 2 — the fan spins, so the 3N rule fires) the daemon log shows `hdd: emergency action after 6 cycles at the ceiling (cooling ineffective): running /etc/n5-fangov/emergency.sh`, `journalctl -t n5-fangov-emergency` shows `channel hdd (drivetemp:max) at NN.N C, ceiling 30 C, … 6 cycles at the ceiling`, the Alerts page kind `emergency` with `hook exited 0` — this proves that the sandbox lets the hook reach the journal. Then `chmod 0777 /etc/n5-fangov/emergency.sh` and `n5-fangov check`: `[warn] emergency hook   … (refused: world-writable (mode 0777)); emergency = true but nothing would run`; `chmod 0750` back | ☐ |
 | U5 | Values back (`ceiling` key removed, `emergency = false`, `rm /etc/n5-fangov/emergency.sh` — or keep the hook installed if it is wanted), `systemctl restart n5-fangov` | channel back on its curve within a few cycles, `ceiling` reads 65, `ceiling_hit` false, no further alerts; `n5-fangov check` all `[ok]` (the hook line reads `(absent)` or `(ok)`) | ☐ |
 
@@ -116,3 +116,16 @@ deliberately, see the configuration page). Also not on the host: `PUT /api/confi
 `emergency_command = "…"` — the daemon answers with the unknown-key warning and nothing
 runs (config tests cover the parser; the deploy tests that no installer touches
 `/etc/n5-fangov/emergency.sh`).
+
+## Result 2026-09-19, v0.4.1
+
+U1–U5 passed on 0.4.1-rc1 on the reference host (package update over 0.4.0; `check`
+advisory with `critical = 70`; `ceiling = 30` on the HDD channel → 255, mode `critical`,
+alert `ceiling` within one cycle; emergency hook in the `logger` form fired after 6 cycles
+from inside the unit's sandbox — `logger` reached the journal, hook exit 0; values
+reverted). Two findings, fixed in 0.4.1: the transport log line was identical to the
+daemon's raise line, so every daemon alert stood twice in the log since 0.2 (now
+`ALERT[kind] sent via <transport>: …`); row U3 named the reload path imprecisely (now the
+*Revert* → *Apply to daemon* path or a restart). 0.4.1 is rc1 plus these two fixes. Still
+not exercised on the host: the `systemctl poweroff` form of the hook and the tokens
+backup on purge.

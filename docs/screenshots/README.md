@@ -3,7 +3,7 @@
 All images come from the built-in mock (`internal/web/static/index.html?mock=1`), so they
 show example values only (`n5host`, `192.0.2.x`, `n5.lan`, `fans.example`) — no data from
 a real host. Desktop views are 1280 px wide, dark theme, sidebar expanded; the mobile views
-are 375 px wide. The version in the header and the sidebar footer is the mock's version string (`MV` in `mock.js`, `0.4.1-rc1`); a release carries no badge, a pre-release suffix shows as one (the `RC1` badge in this set; the set is regenerated without it when the release drops the suffix).
+are 375 px wide. The version in the header and the sidebar footer is the mock's version string (`MV` in `mock.js`, `0.4.1`); a release carries no badge, a pre-release suffix shows as one (this set is the 0.4.1 release set, no badge).
 
 Regenerate the set with `shots.mjs` (Node ≥ 22, Chrome/Chromium; talks to the browser
 over the DevTools protocol; the mock is `mock.js` next to `app.js`, requested only behind
@@ -55,7 +55,7 @@ user would.
 | `27-header-cert-warning.png` | Header with the certificate warning chip | `&tls=soon` | crop (1280×60): *certificate expires in 12 d*; the chip leads to Settings → Certificate |
 | `28-home-assistant-tiles.png` | Home Assistant, System view with the n5-fangov tiles | not from the mock: a real Home Assistant with the rest sensors of [API and integrations](../12-api.md#home-assistant); labels re-set to the documentation wording | static asset, not touched by `shots.mjs` |
 
-The 0.3.1 set (tabs and dialogs of the old dashboard) is gone; this is the 0.4.0 set,
+The 0.3.1 set (tabs and dialogs of the old dashboard) is gone; this is the 0.4.1 set (the 0.4.0 layout, header without a badge),
 embedded by [Dashboard](../04-dashboard.md), the [README](../../README.md) and the
 [API page](../12-api.md) (28).
 

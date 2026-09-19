@@ -1403,7 +1403,7 @@ func TestStaticIndex(t *testing.T) {
 	}
 	if strings.Contains(r.body, "\u00c2") || strings.Contains(r.body, "\u00e2\u0080") || strings.Contains(r.body, "\u00c3") {
 		// double-encoded UTF-8 (a degree sign written through an ANSI path
-		// shows as "\u00c2\u00b0"), review finding S05 of 0.4.1-rc1
+		// shows as "\u00c2\u00b0"), review finding S05 of the 0.4.1 rc
 		t.Errorf("index.html carries mojibake")
 	}
 	if csp := r.hdr.Get("Content-Security-Policy"); !strings.Contains(csp, "script-src 'self'") || !strings.Contains(csp, "default-src 'none'") {

@@ -241,10 +241,10 @@ over its private socket; the capability set is empty, but a poweroff is carried 
 PID 1, not by the caller, and root needs no polkit for it. `ProtectHome=yes` hides
 `/root` and `/home` (a script there is invisible to the daemon), the hook can write only
 under the unit's `ReadWritePaths` (`/etc/n5-fangov`, `/var/lib/n5-fangov`, …), and
-`TimeoutStopSec=20` ends a running hook when the unit stops. **Neither `systemctl
-poweroff` nor `logger` has been executed from inside the sandbox on the reference host
-as of 0.4.1-rc1** — the release-gate re-test runs the `logger` form; the poweroff form
-is *to be verified on the host*: set `emergency_cycles = 1` and a test ceiling on a
+`TimeoutStopSec=20` ends a running hook when the unit stops. **The `logger` form has
+been executed from inside the sandbox on the reference host** (0.4.1 release gate: the
+hook fired, `logger` reached the journal, exit 0); **the `systemctl poweroff` form has
+not** and is *to be verified on the host*: set `emergency_cycles = 1` and a test ceiling on a
 channel you can heat safely (or `ceiling = 30` on the HDD channel for a moment),
 uncomment the line in your copy of the hook, and expect the box to go down cleanly.
 Start with the `logger` line.

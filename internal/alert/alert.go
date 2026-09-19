@@ -196,7 +196,7 @@ func (l *Log) Name() string { return EffectiveLog }
 // Alert writes the alert line to the logger.
 func (l *Log) Alert(kind, msg string) {
 	kind, msg = ASCII(kind), ASCII(msg)
-	l.Logger.Printf("ALERT[%s]: %s", kind, msg)
+	l.Logger.Printf("ALERT[%s] sent via log: %s", kind, msg)
 }
 
 // Send is Alert; the log never fails (no SendCtx: nothing to bound).
@@ -310,7 +310,7 @@ func (p *PVE) Send(kind, msg string) error { return p.SendCtx(context.Background
 // SendCtx is Send bounded by ctx as well as Timeout.
 func (p *PVE) SendCtx(ctx context.Context, kind, msg string) error {
 	kind, msg = ASCII(kind), ASCII(msg)
-	p.Logger.Printf("ALERT[%s]: %s", kind, msg)
+	p.Logger.Printf("ALERT[%s] sent via pve-notify: %s", kind, msg)
 	perl := p.Perl
 	if perl == "" {
 		perl = "perl"
@@ -356,7 +356,7 @@ func (m *Mail) Send(kind, msg string) error { return m.SendCtx(context.Backgroun
 // SendCtx is Send bounded by ctx as well as Timeout.
 func (m *Mail) SendCtx(ctx context.Context, kind, msg string) error {
 	kind, msg = ASCII(kind), ASCII(msg)
-	m.Logger.Printf("ALERT[%s]: %s", kind, msg)
+	m.Logger.Printf("ALERT[%s] sent via mail: %s", kind, msg)
 	bin := m.Bin
 	if bin == "" {
 		bin = "mail"
