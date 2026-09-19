@@ -781,12 +781,10 @@ sensors and the preset body, and checks curves, stop and min_on with the daemon'
   `aria-current="page"` and an accent bar, the footer with the version only. The toggle
   switches the 56 px icon rail (`toggleNav`: `S.nav`, also the *Navigation* select in
   Settings → Display; the `[` key toggles when the focus is not in a field or a dialog).
-  In the rail the brand row holds the logo alone (its tooltip is the expand hint), the
-  toggle stands directly under it as the first item, set apart by a `grp-sep`, and the
-  **page header** shows the same icon at its left edge before the title (`#ph-tog`,
-  hidden while expanded and below 700 px). 700–1099 px force the rail (`RAIL_MQ`):
-  the nav toggle is dropped, the header icon stays but is disabled with the tooltip
-  *Sidebar collapses below 1100 px*; the stored preference applies from 1100 px. Below 700 px the sidebar is `display:none`
+  In the rail the brand row holds the logo alone and the toggle stands directly under it
+  as the first item, set apart by a `grp-sep` — the trigger never leaves the sidebar.
+  700–1099 px force the rail (`RAIL_MQ`): no toggle, the logo's tooltip reads *Sidebar
+  collapses below 1100 px*; the stored preference applies from 1100 px. Below 700 px the sidebar is `display:none`
   and `#bnav` is a fixed bottom bar with Overview · Fans · Alerts · Settings · *More*
   (`BOTTOM`; the rest in the `<dialog class="sheet">` *More* with the group as
   `aria-hidden` tag; anonymous: Overview · More → About); `main` gets `--bottom-h` as
@@ -1045,8 +1043,8 @@ optional body of `PUT /api/presets/{name}`, section 9).
   default, collapsible to the icon rail — no top-bar variant; the toggle in the brand row
   (rc1 gate G4, not in the footer), since rc3 the admin-tool pattern (rc2 re-test: "must
   be integrated more nicely and be unmistakable"): panel-left icon at the right end of the
-  brand row; in the rail the logo is the expand control (no second button — rc3 re-test)
-  and the same icon sits at the left edge of the page header while the rail is active, `[` as the shortcut; sparklines on the tiles:
+  brand row, in the rail the same icon directly under the logo; nothing in the page
+  header (operator decision after rc3/rc4: the trigger stays in the sidebar), `[` as the shortcut; sparklines on the tiles:
   yes; Fans stacked on desktop, a channel selector below 700 px (a breakpoint, not a
   setting); Compatibility folded into About (`#about/compat`) — eight sidebar entries.
 - **Page model:** Monitor / Control / Operate / Settings / Info; Curves, Manual and

@@ -301,24 +301,21 @@ const navBtn = (p, extra) => h('button', { 'aria-current': p.id === cur ? 'page'
 const dirtyDot = () => h('i', { class: 'dirty', hidden: !edDirty, title: 'unsaved changes', role: 'img', 'aria-label': 'unsaved changes' });
 // 700–1099 px: the icon rail is forced (the 220 px sidebar leaves the header no room); the stored preference applies from 1100 px
 const RAIL_MQ = matchMedia(`(max-width:${UI.bp.lg - .02}px)`); RAIL_MQ.addEventListener('change', () => buildNav());
-// the sidebar toggle (panel-left icon, the admin-tool pattern): at the right end of the brand row while expanded; in the rail under the logo as the
-// first item and, so the expand control sits where every such app has it, at the left edge of the page header (#ph-tog; hidden on phones).
-// The [ key toggles (toggleNav) when the focus is not in a field or a dialog. 700–1099 px: the rail is forced — the nav button is dropped, the
-// header button stays visible but disabled with the reason
+// the sidebar toggle (panel-left icon): at the right end of the brand row while expanded, in the rail directly under the logo — one
+// trigger, always in the sidebar (Proxmox / UniFi / Portainer pattern; operator decision rc4). The [ key toggles (toggleNav) when the
+// focus is not in a field or a dialog. 700–1099 px: the rail is forced and has no toggle; the logo's tooltip says why.
 const navForced = () => RAIL_MQ.matches, navRail = () => navForced() || S.nav === 'rail';
 const toggleNav = () => { if (navForced()) return; S.nav = navRail() ? 'side' : 'rail'; saveS(); $('#s-nav').value = S.nav; buildNav(); $('#nav .tog').focus(); };
 document.addEventListener('keydown', ev => { if (ev.key !== '[' || ev.ctrlKey || ev.metaKey || ev.altKey || ev.repeat) return;
 	const t = ev.target; if (t.closest && t.closest('input, textarea, select, [contenteditable], dialog') || $('dialog[open]')) return; ev.preventDefault(); toggleNav(); });
-on('#ph-tog', 'click', toggleNav);
 function buildNav() {
 	const nav = clear($('#nav')), forced = navForced(), rail = navRail(); $('#shell').classList.toggle('rail', rail);
 	const tg = (rail ? 'Expand sidebar' : 'Collapse sidebar'), tip = tg + ' · [', forcedTip = 'Sidebar collapses below 1100 px';
 	const tog = () => h('button', { class: 'btn icon link tog', title: tip, 'aria-label': tg, 'aria-expanded': String(!rail), 'aria-keyshortcuts': '[', onclick: toggleNav }, ico('panel'));
-	// brand row: logo, name, toggle; the rail shows the logo alone — it is the expand control there (one trigger in the rail: the logo, one in the page header)
-	const logo = rail && !forced ? h('button', { class: 'logo', type: 'button', title: tip, 'aria-label': tg, 'aria-expanded': 'false', onclick: toggleNav }, ico('fan')) : h('span', { class: 'logo', title: forced ? forcedTip : null }, ico('fan'));
-	nav.append(h('div', { class: 'brand-row' }, logo, h('span', { class: 'brand' }, 'n5-fangov'), rail ? null : tog()));
-	if (rail) nav.append(h('div', { class: 'grp-sep' }));
-	const pt = $('#ph-tog'); pt.hidden = !rail; pt.disabled = forced; pt.title = forced ? forcedTip : tip; pt.setAttribute('aria-label', forced ? forcedTip : tg); pt.setAttribute('aria-expanded', 'false');
+	// brand row: logo, name, toggle at the right; in the rail the same toggle sits directly under the logo — one trigger, always in the
+	// sidebar (operator decision rc4: nothing in the page header). 700–1099 px: no toggle, the logo's tooltip says why.
+	nav.append(h('div', { class: 'brand-row' }, h('span', { class: 'logo', title: forced ? forcedTip : null }, ico('fan')), h('span', { class: 'brand' }, 'n5-fangov'), rail ? null : tog()));
+	if (rail) nav.append(forced ? null : tog(), h('div', { class: 'grp-sep' }));
 	let lastG = null;
 	for (const p of visible()) {
 		if (p.g !== lastG) { const gid = 'grp-' + p.g.toLowerCase(); if (lastG) nav.append(h('div', { class: 'grp-sep' })); nav.append(h('div', { class: 'grp', id: gid }, p.g), h('ul', { 'aria-labelledby': gid })); lastG = p.g; }

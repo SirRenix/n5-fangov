@@ -37,6 +37,14 @@ drove the 0.3.1 work is `docs/AUDIT.md` (code) and `docs/DESIGN-AUDIT.md`
 **Not planned**: MQTT/discovery (REST + token is enough and smaller), a German UI
 (audience is GitHub), multi-host management, a frontend framework.
 
+## [0.4.0-rc5] — 2026-09-19
+
+### Changed
+
+- Sidebar toggle stays in the sidebar in both states: panel icon at the right of the brand
+  row, in the rail directly under the logo; the page-header icon of rc3/rc4 is gone
+  (operator: the trigger belongs to the sidebar, as in Proxmox, UniFi and Portainer).
+
 ## [0.4.0-rc4] — 2026-09-19
 
 ### Changed

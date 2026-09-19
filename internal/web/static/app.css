@@ -89,8 +89,7 @@ main{padding:var(--sp-5);max-width:var(--content-max);margin:0 auto;width:100%}
 /* sidebar toggle (panel-left icon): a 32 px ghost icon button at the right end of the brand row; in the rail under the logo (centred), and once more at the left edge of the page header */
 .tog{width:var(--tog);height:var(--tog);min-width:var(--tog);min-height:var(--tog);padding:0;color:var(--fg3)}
 .nav .brand-row .tog{margin-left:auto}
-button.logo{border:0;cursor:pointer;font:inherit}
-.ph-l .tog{margin-left:calc(-1*var(--sp-1))}
+.rail .nav>.tog{margin:0 auto}
 .nav .grp{font-size:var(--fs-11);font-weight:var(--fw-semibold);color:var(--fg3);text-transform:uppercase;letter-spacing:var(--ls-caps);padding:var(--sp-3) var(--sp-25) var(--sp-1)}
 .nav ul{list-style:none;margin:0;padding:0;display:grid;gap:var(--sp-05)}
 .nav li button{display:flex;align-items:center;gap:var(--sp-25);width:100%;background:none;border:0;border-radius:var(--r-md);padding:var(--sp-2) var(--sp-25);color:var(--fg2);cursor:pointer;font-weight:var(--fw-medium);font-size:var(--fs-13);text-align:left;position:relative;min-height:36px}
@@ -504,7 +503,6 @@ details.gloss p{margin:var(--sp-15) 0 0}
   .mx{display:none!important}
   .ph{padding:var(--sp-2) var(--sp-3);min-height:48px}
   .ph .title{font-size:var(--fs-18)}
-  #ph-tog{display:none}
   main{padding:var(--page-pad-xs);padding-bottom:calc(var(--bottom-h) + var(--sp-3))}
   .bnav{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;position:fixed;left:0;right:0;bottom:0;height:var(--bottom-h);background:var(--bg2);border-top:var(--bw) solid var(--line);z-index:var(--z-header);padding:0 var(--sp-1) env(safe-area-inset-bottom)}
   .bnav button{background:none;border:0;display:grid;justify-items:center;gap:var(--sp-05);font-size:var(--fs-11);color:var(--fg3);padding:var(--sp-15) 0 var(--sp-1);cursor:pointer;position:relative}

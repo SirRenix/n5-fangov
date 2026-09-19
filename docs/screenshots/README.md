@@ -26,7 +26,7 @@ user would.
 | `02-login-dialog.png` | Sign-in dialog | `?mock=1` → *Sign in* | *Remember me* |
 | `03-overview-signed-in.png` | Overview, signed in | `?mock=1&user=1` | full page: tiles with 2 h sparklines, three charts (Extra sensors as the third), Sensors in collapsible groups (name · count · live max; channel and charted groups open), System glance, Recent alerts |
 | `04-header.png` | Header crop | `?mock=1&user=1` | title, status chip, uptime, version + pre-release badge, live, user, *Sign out* (1280×60) |
-| `05-sidebar-rail.png` | Sidebar collapsed | the panel-left toggle in the brand row | 56 px icon rail: the logo alone, the toggle directly under it, the same icon at the left edge of the page header; state in `localStorage` (`nav`) |
+| `05-sidebar-rail.png` | Sidebar collapsed | the panel-left toggle in the brand row | 56 px icon rail: the logo alone, the toggle directly under it (nothing in the page header); state in `localStorage` (`nav`) |
 | `06-system.png` | System | `#system` | Host / Machine / CPU / Fan controller, memory modules, GPU · NPU, Network, Storage; full page |
 | `07-fans.png` | Fans | `#fans` | one card per channel: curve editor left, *Live & override* right, the preset badge listing every matching preset (`alternative · n5pro-balanced` on cpu and ssd), the Presets card with the *Active set* line and its Apply · New preset… hint, sticky action bar; full page |
 | `08-fans-validation-error.png` | Fans, validation error | critical cleared, stop `300` → *Apply* | red notice, nothing sent |
