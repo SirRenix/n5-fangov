@@ -14,24 +14,52 @@ drove the 0.3.1 work is `docs/AUDIT.md` (code) and `docs/DESIGN-AUDIT.md`
 
 ## [Unreleased]
 
-### Still open from the 0.3.x plan (decided 2026-09-16)
+### Roadmap (operator decision 2026-09-19)
 
-- Upstream issues (driver validation data, ProxFansX compatibility note); DKMS `.deb` in
-  the sibling repository with the header meta-package as dependency (user path: two
-  `apt install` + `setup`).
+**0.4.1 — safety.** The guard chain gets a floor that no configuration can lower:
+
+- Hard per-sensor-kind critical ceilings enforced by the daemon regardless of `critical`
+  (HDD 65 / NVMe·SSD 85 / CPU 100 °C): at or above the ceiling the channel goes to 255 and
+  an alert `ceiling` is raised; `check` warns when a channel's `critical` is above its
+  ceiling. Controller tests; documented in the alerts page (guard chain) and the
+  configuration page. Motivation: with the admin password an attacker (or a typo) can set
+  every curve to duty 0 and `critical` to 150; the CPU throttles itself, the disks do not.
+- Optional emergency action when a fan has failed: `[daemon] on_emergency = "none" |
+  "command"` with a hook script (example: shut the VMs down, or `systemctl poweroff`) that
+  fires when a channel stays above its ceiling for N cycles **and** reports 0 RPM. Off by
+  default; the alert chain today ends at "alert".
+- Small hardening: switching the transport back to `auto` clears `webhook_url` from the
+  file; `apt purge` backs up `tokens.json` (or asks) instead of deleting it silently.
+
+**0.4.2 — operations and polish.**
+
+- `setup` on an existing config keeps hysteresis / `min_on`, the dashboard sensors and
+  the alert transport instead of discarding them (the 0.4.0 gate lost the HDD hysteresis
+  this way).
+- A short "update re-test" checklist in `docs/RELEASE-GATE.md` for rc iterations (package
+  update without purge), so a documentation fix does not need the full ten rows.
+- Review leftovers: rail height jump when the window crosses 1100 px with `nav: rail`;
+  the Schedules status card shows next/last switch in the host's timezone like its clock;
+  `app.css` cleanup to regain headroom under the 48 KiB budget.
+- Certificate-trust walkthrough with screenshots of an **English** Windows wizard — 0.4.0
+  carries the German dialogs with both labels in the captions; swap the images when an
+  English Windows is at hand.
+- Upstream issues (driver validation data to the driver author, ProxFansX compatibility
+  note); DKMS `.deb` in the sibling repository with the header meta-package as dependency
+  (user path: two `apt install` + `setup`) — the driver is the step first-time users
+  stumble over.
+
+**0.4.5 — multiple dashboard users** (more than the one `[web] user`; roles map to the
+token scopes). No design yet.
+
+### Still open, no version
+
 - pwm4 `stop = "auto"` stays as it is (keeps the last written duty, documented in DESIGN §6
   and the configuration page); re-measured only if a use case for pwm4 comes up (operator
   decision 2026-09-18). Measured 2026-09-17 on the reference host: the driver refuses a
   `pwm4` write while `pwm4_enable = 2` (EBUSY); after `enable = 1`, duty 100 and
   `enable = 2` again the EC left 100 in place for 90 s — pwm4 behaves like pwm3. Whether
   `auto` on pwm4 should be forced to a fixed stop like pwm3 is an open operator decision.
-- Certificate-trust walkthrough with screenshots of an **English** Windows wizard — 0.4.0
-  carries the German dialogs with both labels in the captions; swap the images when an
-  English Windows is at hand.
-- Multiple dashboard users (more than the one `[web] user`) — under consideration; no
-  design yet.
-- Hard per-sensor-kind critical ceilings enforced by the daemon regardless of the config
-  (HDD 65 / NVMe 85 / CPU 100 °C) — planned for 0.4.1 (security review 2026-09-19).
 
 **Not planned**: MQTT/discovery (REST + token is enough and smaller), a German UI
 (audience is GitHub), multi-host management, a frontend framework.
