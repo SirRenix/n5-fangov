@@ -71,7 +71,10 @@ jobs:
             awk -v v="$VER" '
               index($0, "## [" v) == 1 || index($0, "## " v) == 1 { on=1; next }
               on && /^## / { exit }
+              on && /^### / { exit }
               on { print }' CHANGELOG.md > notes.md
+            # the section's summary only (everything before its first ### heading); the details stay in CHANGELOG.md
+            printf '\nFull list of changes: [CHANGELOG.md](https://github.com/SirRenix/n5-fangov/blob/%s/CHANGELOG.md)\n' "${GITHUB_REF_NAME}" >> notes.md
           else
             git tag -l --format='%(contents)' "${GITHUB_REF_NAME}" > notes.md
           fi
