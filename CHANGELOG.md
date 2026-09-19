@@ -16,28 +16,15 @@ drove the 0.3.1 work is `docs/AUDIT.md` (code) and `docs/DESIGN-AUDIT.md`
 
 ### Roadmap (operator decision 2026-09-19)
 
-**0.4.1 — safety.** The guard chain gets a floor that no configuration can lower:
-
-- Hard per-sensor-kind critical ceilings enforced by the daemon regardless of `critical`
-  (HDD 65 / NVMe·SSD 85 / CPU 100 °C): at or above the ceiling the channel goes to 255 and
-  an alert `ceiling` is raised; `check` warns when a channel's `critical` is above its
-  ceiling. Controller tests; documented in the alerts page (guard chain) and the
-  configuration page. Motivation: with the admin password an attacker (or a typo) can set
-  every curve to duty 0 and `critical` to 150; the CPU throttles itself, the disks do not.
-- Optional emergency action when a fan has failed: `[daemon] on_emergency = "none" |
-  "command"` with a hook script (example: shut the VMs down, or `systemctl poweroff`) that
-  fires when a channel stays above its ceiling for N cycles **and** reports 0 RPM. Off by
-  default; the alert chain today ends at "alert".
-- Small hardening: switching the transport back to `auto` clears `webhook_url` from the
-  file; `apt purge` backs up `tokens.json` (or asks) instead of deleting it silently.
+**0.4.1 — safety** is in test as 0.4.1-rc1 (below). Open from its scope: the
+`systemctl poweroff` form of the emergency command has not been executed from inside
+the sandbox on the reference host (documented as "to be verified on the host").
 
 **0.4.2 — operations and polish.**
 
 - `setup` on an existing config keeps hysteresis / `min_on`, the dashboard sensors and
   the alert transport instead of discarding them (the 0.4.0 gate lost the HDD hysteresis
   this way).
-- A short "update re-test" checklist in `docs/RELEASE-GATE.md` for rc iterations (package
-  update without purge), so a documentation fix does not need the full ten rows.
 - Review leftovers: rail height jump when the window crosses 1100 px with `nav: rail`;
   the Schedules status card shows next/last switch in the host's timezone like its clock;
   `app.css` cleanup to regain headroom under the 48 KiB budget.
@@ -63,6 +50,88 @@ token scopes). No design yet.
 
 **Not planned**: MQTT/discovery (REST + token is enough and smaller), a German UI
 (audience is GitHub), multi-host management, a frontend framework.
+
+## [0.4.1-rc1] — 2026-09-19
+
+Safety: the guard chain gets a floor that no configuration can lower, an optional
+emergency action for the case where a fan has failed, and two hardening fixes. Contract:
+DESIGN §6 "Ceilings and emergency" (cycle order, state, alert texts), §3 (keys), §9
+(state fields, `ceiling_min`), §11 (dashboard), §12 (sandbox, tokens backup). Verified
+in the Docker builder (`gofmt`, `go vet`, `go test`, `-race` on the controller); the
+host re-test is the "Update re-test" section of `docs/RELEASE-GATE.md`.
+
+### Added
+
+- **Hard ceilings.** Every channel has a ceiling temperature derived from its sensor
+  kind, independent of `critical`: CPU 100 °C (`k10temp`, `coretemp`, `ec:cpu`,
+  `hwmon:…cpu…`), SSD 85 °C (`nvme:max`, `disk:<dev>` of kind ssd), HDD 65 °C
+  (`drivetemp:max`, `disk:<dev>` of kind hdd), everything else 100 °C; a composite takes
+  the lowest of its parts (`sensor.BuiltinCeiling`). `[[channel]] ceiling = N` may only
+  lower it (30..built-in; above → warning + built-in value, strict write → 400). Rule in
+  the cycle after critical and before the stall check: raw reading at/above the ceiling →
+  255 immediately, mode `critical`, whatever curve, override, hysteresis, `min_on` or
+  `critical` say; the channel stays there until the reading is 3 °C below the ceiling.
+  Alert kind `ceiling` on the transition (sensor, reading, ceiling and the configured
+  critical in the text; cooldown as every kind). `n5-fangov check` prints an advisory
+  `channel hdd: critical 70 above the built-in ceiling 65 — the ceiling acts first` when
+  `critical` is above the ceiling and still passes. `GET /api/state` channels carry
+  `ceiling` (°C) and `ceiling_hit`; `GET /api/version` limits carry `ceiling_min` (30);
+  OpenAPI schemas updated. Controller tests: ceiling forces 255 with a higher critical,
+  override ignored at the ceiling, recovery hysteresis, composite takes the lowest,
+  configured ceiling lowers but cannot raise, `disk:<dev>` kinds through the resolver;
+  config tests for the key; web tests for the state fields and the strict 400.
+- **Emergency action.** `[daemon] emergency_command = ""` (off by default) and
+  `emergency_cycles = 6` (1..60): when a channel has been in the ceiling state for
+  `emergency_cycles` consecutive cycles and its fan reports 0 RPM, or for 3 × as many
+  cycles regardless of RPM, the daemon runs the command once per episode through
+  `/bin/sh -c` with `N5_CHANNEL`, `N5_SENSOR`, `N5_TEMP`, `N5_CEILING`, `N5_RPM`,
+  `N5_CYCLES` in the environment, bounded to 60 s, output to the log, on its own
+  goroutine; alert kind `emergency` with the reason and the exit status; re-armed only
+  after the channel has left the ceiling state; with an empty command nothing runs and
+  no alert is raised. `deploy/emergency.example.sh` (installed to
+  `/usr/share/doc/n5-fangov/`) logs through `logger -t n5-fangov-emergency` and carries
+  a commented `systemctl poweroff` line. Tests: fires after N cycles with 0 RPM, after
+  3 N without, once, re-arms after leaving, exit status and timeout through the real
+  shell, empty command does nothing.
+- Dashboard: the curve editor draws the ceiling as a second dashed line (`--crit` at
+  reduced opacity, label `ceiling`); the channel card's `pwmN · sensor` line names it in
+  its tooltip; the Overview tiles and the live block colour by `min(critical, ceiling)`
+  and the unit tooltip names both; the mode badge says "ceiling reached" while
+  `ceiling_hit`; the Fans notice after *Apply* repeats the "critical above ceiling"
+  warning (no block); the glossary sentence. The mock reports the ceilings (cpu 100,
+  ssd 85, hdd 65), honours `&ceiling=1` (hdd above its ceiling: 255, mode `critical`,
+  alert `ceiling` in the recent list) and validates a `ceiling` key like the daemon.
+  `config.example.toml`, the configuration page (new section "Ceilings and the
+  emergency action"), the alerts page (guard chain, kinds), the troubleshooting page
+  (row "255 although below critical") and the API page document it.
+
+### Changed
+
+- Switching the alert transport to anything but `webhook` clears `webhook_url` in the
+  config file and in effect (`PUT /api/alerts`, Settings → Alert transport): a receiver
+  key does not linger after the switch. A request that leaves the transport alone keeps
+  the URL. There is no `alerts set` CLI; `PUT /api/config` and an import write the text
+  they are given.
+- `[[channel]] ceiling` travels through the curve editor's *Apply* (no editor field, the
+  value is kept as configured) and survives a preset apply (a preset without a ceiling
+  keeps the host's, like hysteresis/min_on); `GET /api/config` carries `ceiling`,
+  `emergency_command` and `emergency_cycles`.
+- The emergency command's shell run closes orphaned pipes 2 s after the kill
+  (`WaitDelay`), so a script that backgrounds something cannot hold the run open.
+
+### Security
+
+- `apt remove`/`apt purge` (postrm, both branches — `apt purge` runs `remove` first and
+  the state directory goes with it) and `uninstall.sh` back up
+  `/var/lib/n5-fangov/tokens.json` to `/var/backups/n5-fangov/tokens.json.<timestamp>`
+  (0600, root) and print one line naming the copy before the state directory is removed;
+  the updates page says how to put it back. Not exercised on the host by the update
+  re-test (no purge there).
+- What is known about `systemctl poweroff` from inside the unit's sandbox is written down
+  in DESIGN §12 and the configuration page (AF_UNIX and `@system-service` allowed, PID 1
+  does the work, empty capability set is not in the way); **neither the poweroff nor the
+  `logger` form has been executed from inside the sandbox on the reference host** — the
+  re-test runs the `logger` form, the poweroff form is to be verified on the host.
 
 ## [0.4.0] — 2026-09-19
 

@@ -3,7 +3,7 @@
 All images come from the built-in mock (`internal/web/static/index.html?mock=1`), so they
 show example values only (`n5host`, `192.0.2.x`, `n5.lan`, `fans.example`) — no data from
 a real host. Desktop views are 1280 px wide, dark theme, sidebar expanded; the mobile views
-are 375 px wide. The version in the header and the sidebar footer is the mock's version string (`MV` in `mock.js`, `0.4.0`); a release carries no badge, a pre-release suffix would show as one.
+are 375 px wide. The version in the header and the sidebar footer is the mock's version string (`MV` in `mock.js`, `0.4.1-rc1`); a release carries no badge, a pre-release suffix shows as one (the `RC1` badge in this set; the set is regenerated without it when the release drops the suffix).
 
 Regenerate the set with `shots.mjs` (Node ≥ 22, Chrome/Chromium; talks to the browser
 over the DevTools protocol; the mock is `mock.js` next to `app.js`, requested only behind
@@ -28,7 +28,7 @@ user would.
 | `04-header.png` | Header crop | `?mock=1&user=1` | title, status chip, uptime, version (no badge on a release), live, user, *Sign out* (1280×60) |
 | `05-sidebar-rail.png` | Sidebar collapsed | the panel-left toggle in the brand row | 56 px icon rail: the logo alone, the toggle directly under it (nothing in the page header); state in `localStorage` (`nav`) |
 | `06-system.png` | System | `#system` | Host / Machine / CPU / Fan controller, memory modules, GPU · NPU, Network, Storage; full page |
-| `07-fans.png` | Fans | `#fans` | one card per channel: curve editor left, *Live & override* right, the preset badge listing every matching preset (`alternative · n5pro-balanced` on cpu and ssd), the Presets card with the *Active set* line and its Apply · New preset… hint, sticky action bar; full page |
+| `07-fans.png` | Fans | `#fans` | one card per channel: curve editor left, *Live & override* right, the preset badge listing every matching preset (`alternative · n5pro-balanced` on cpu and ssd), the Presets card with the *Active set* line and its Apply · New preset… hint, sticky action bar; the curve editor draws the `crit` line and, dimmer, the daemon's `ceiling` line (0.4.1); full page |
 | `08-fans-validation-error.png` | Fans, validation error | critical cleared, stop `300` → *Apply* | red notice, nothing sent |
 | `09-fans-restart-required.png` | Fans, restart required | `&restart=1`, critical +1 → *Apply* (the mock answers 202) | restart notice, stays after the editor reload until *Revert* |
 | `10-fans-manual-switch.png` | Fans, Manual switch on | hdd channel: *Manual override* switch → on, slider dragged below the minimum | `role="switch"`; the slider stops at the minimum 60, the hint explains why (HDD-like channel) |

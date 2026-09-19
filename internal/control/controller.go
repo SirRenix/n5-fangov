@@ -8,6 +8,7 @@ import (
 	"log"
 	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime/debug"
 	"strconv"
@@ -63,8 +64,18 @@ type Options struct {
 	Status func(string)                                    // sd_notify STATUS
 	// SyncAlerts delivers alerts on the loop goroutine instead of a new one
 	// (tests). Production keeps them asynchronous so a slow perl/mail cannot
-	// starve the watchdog.
+	// starve the watchdog. The emergency command follows the same switch.
 	SyncAlerts bool
+
+	// DiskKind resolves a disk:<dev> device name to "ssd", "hdd" or "" for
+	// the built-in ceilings (sensor.BuiltinCeiling); nil = unknown (100).
+	DiskKind func(dev string) string
+	// Exec runs the emergency command (DESIGN "Ceilings and emergency"):
+	// command through /bin/sh -c with env appended to the environment,
+	// bounded by ctx; combined output and the error (exit status, timeout).
+	// nil = the real shell. EmergencyTimeout bounds one run; 0 = 60 s.
+	Exec             func(ctx context.Context, command string, env []string) ([]byte, error)
+	EmergencyTimeout time.Duration
 }
 
 // Limits on temperature plausibility in millidegrees; defined once in
@@ -121,6 +132,13 @@ const resolveEvery = 60
 // stallRecoverCycles with RPM > 0 end a stall condition.
 const stallRecoverCycles = 3
 
+// ceilingRecover is the hysteresis of the ceiling state in degrees: a
+// channel leaves it when the raw reading is this far below the ceiling.
+const ceilingRecover = 3
+
+// emergencyTimeout bounds one run of the emergency command.
+const emergencyTimeout = 60 * time.Second
+
 // writeErrorsBeforeFailsafe consecutive cycles with a write error trigger
 // the all-channel failsafe.
 const writeErrorsBeforeFailsafe = 2
@@ -148,6 +166,16 @@ type channel struct {
 	stallCnt int
 	stalled  bool
 	recov    int
+
+	// Ceiling state (DESIGN "Ceilings and emergency"): ceiling is the
+	// effective ceiling in degrees C (built-in lowered by cfg.Ceiling),
+	// ceilHit whether the channel is in the ceiling state, ceilCycles the
+	// consecutive cycles spent in it, emergencyFired whether the emergency
+	// command ran in this episode (re-armed when the state ends).
+	ceiling        int
+	ceilHit        bool
+	ceilCycles     int
+	emergencyFired bool
 
 	// Curve post-processing (DESIGN "Curve post-processing"), loop-only
 	// state. held is the hysteresis-held temperature the curve is evaluated
@@ -255,6 +283,12 @@ func New(cfg config.Config, dev profile.Device, sensors SensorFactory, alerter A
 	if alerter == nil {
 		alerter = alertLogger{opts.Logger}
 	}
+	if opts.Exec == nil {
+		opts.Exec = shellExec
+	}
+	if opts.EmergencyTimeout <= 0 {
+		opts.EmergencyTimeout = emergencyTimeout
+	}
 	c := &Controller{
 		dev:       dev,
 		newS:      sensors,
@@ -323,7 +357,7 @@ func (c *Controller) buildChannels(cfg config.Config) (chans []*channel, dropped
 			dropped = append(dropped, fmt.Sprintf("channel %q uses pwm%d which the %s profile does not provide; channel ignored", cc.Name, cc.PWM, c.dev.Profile().Name()))
 			continue
 		}
-		ch := &channel{cfg: cc, hasTach: dc.HasTach, cur: 255, rpm: -1, mode: ModeAuto, target: 255}
+		ch := &channel{cfg: cc, hasTach: dc.HasTach, cur: 255, rpm: -1, mode: ModeAuto, target: 255, ceiling: c.ceilingOf(cc)}
 		// The real duty at start; 255 only when unreadable. Slew starts from
 		// what the chip is actually doing, dry-run shows the real value.
 		switch v, err := c.dev.ReadDuty(cc.PWM); {
@@ -688,10 +722,121 @@ func (c *Controller) computeTargets(cs *cycleState) {
 			crit = true
 		}
 		critParts = append(critParts, fmt.Sprintf("%s=%s", ch.cfg.Name, fmtTemp(ch.temp)))
+		c.applyCeiling(ch, cs.d)
 	}
 	if crit {
 		c.raise("temp", "critical temperature reached: "+strings.Join(critParts, " ")+" -> 255")
 	}
+}
+
+// ceilingOf is the effective ceiling of a channel config: the sensor's
+// built-in ceiling (composite: the lowest part), lowered by cfg.Ceiling.
+func (c *Controller) ceilingOf(cc config.Channel) int {
+	return sensor.EffectiveCeiling(cc.Sensor, cc.Ceiling, c.opts.DiskKind)
+}
+
+// applyCeiling is the ceiling rule (DESIGN "Ceilings and emergency"),
+// run after critical and before the stall check for a channel with a
+// known temperature: at/above the ceiling the channel enters the ceiling
+// state — 255, mode critical, whatever curve, override, hysteresis, min_on
+// or critical say — and leaves it only ceilingRecover degrees below. The
+// alert goes out on the transition. While in the state the emergency
+// counter runs (emergency).
+func (c *Controller) applyCeiling(ch *channel, d config.Daemon) {
+	limit := ch.ceiling * 1000
+	switch {
+	case !ch.ceilHit && ch.temp >= limit:
+		ch.ceilHit = true
+		ch.ceilCycles = 0
+		c.raise("ceiling", fmt.Sprintf("%s: %s at %s reached the ceiling %dC (critical %dC) -> 255",
+			ch.cfg.Name, ch.cfg.Sensor, fmtTemp(ch.temp), ch.ceiling, ch.cfg.Critical))
+	case ch.ceilHit && ch.temp < limit-ceilingRecover*1000:
+		ch.ceilHit, ch.ceilCycles, ch.emergencyFired = false, 0, false
+		c.log.Printf("%s: %s below the ceiling again (%s < %dC), regulation resumed", ch.cfg.Name, ch.cfg.Sensor, fmtTemp(ch.temp), ch.ceiling-ceilingRecover)
+	}
+	if !ch.ceilHit {
+		return
+	}
+	ch.target = 255
+	ch.mode = ModeCritical
+	ch.holding = false
+	ch.ceilCycles++
+	c.emergency(ch, d)
+}
+
+// emergency runs the emergency command once per ceiling episode when the
+// channel spent emergency_cycles cycles at the ceiling with a fan that
+// reports 0 RPM, or three times as many cycles regardless of RPM; an
+// empty command means nothing runs and no alert is raised.
+func (c *Controller) emergency(ch *channel, d config.Daemon) {
+	if ch.emergencyFired || d.EmergencyCommand == "" || d.EmergencyCycles <= 0 {
+		return
+	}
+	var reason string
+	switch {
+	case ch.hasTach && ch.rpm == 0 && ch.ceilCycles >= d.EmergencyCycles:
+		reason = "fan reports 0 RPM"
+	case ch.ceilCycles >= 3*d.EmergencyCycles:
+		reason = "cooling ineffective"
+	default:
+		return
+	}
+	ch.emergencyFired = true
+	env := []string{
+		"N5_CHANNEL=" + ch.cfg.Name,
+		"N5_SENSOR=" + ch.cfg.Sensor,
+		"N5_TEMP=" + strconv.FormatFloat(float64(ch.temp)/1000, 'f', 1, 64),
+		"N5_CEILING=" + strconv.Itoa(ch.ceiling),
+		"N5_RPM=" + strconv.Itoa(ch.rpm),
+		"N5_CYCLES=" + strconv.Itoa(ch.ceilCycles),
+	}
+	name, cycles, cmd := ch.cfg.Name, ch.ceilCycles, d.EmergencyCommand
+	c.log.Printf("%s%s: emergency action after %d cycles at the ceiling (%s): running emergency_command", logfile.PrefixErr, name, cycles, reason)
+	run := func() {
+		defer func() {
+			if r := recover(); r != nil {
+				c.log.Printf("%semergency command panicked: %v", logfile.PrefixErr, r)
+			}
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), c.opts.EmergencyTimeout)
+		defer cancel()
+		out, err := c.opts.Exec(ctx, cmd, env)
+		for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
+			if line != "" {
+				c.log.Printf("emergency[%s]: %s", name, line)
+			}
+		}
+		status := "0"
+		switch {
+		case err == nil:
+		case errors.Is(ctx.Err(), context.DeadlineExceeded):
+			status = "timeout after " + c.opts.EmergencyTimeout.String()
+		default:
+			var ee *exec.ExitError
+			if errors.As(err, &ee) {
+				status = strconv.Itoa(ee.ExitCode())
+			} else {
+				status = err.Error()
+			}
+		}
+		c.raise("emergency", fmt.Sprintf("%s: emergency action after %d cycles at the ceiling (%s): command exited %s", name, cycles, reason, status))
+	}
+	if c.opts.SyncAlerts {
+		run()
+		return
+	}
+	go run()
+}
+
+// shellExec is the production Options.Exec: /bin/sh -c command with env
+// on top of the daemon's environment, combined output, killed at ctx.
+func shellExec(ctx context.Context, command string, env []string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", command)
+	cmd.Env = append(os.Environ(), env...)
+	// children that inherit the pipes (a script that backgrounds something)
+	// must not hold the run open after the kill: 2 s, then the pipes close
+	cmd.WaitDelay = 2 * time.Second
+	return cmd.CombinedOutput()
 }
 
 // checkStall runs the stall detection and recovery on every channel with
@@ -1392,8 +1537,11 @@ func (c *Controller) swapChannelConfig(ups []chanUpdate) {
 		if ups[i].newSensor {
 			ch.sensor = ups[i].sensor
 			ch.heldOK, ch.haveCurve, ch.holding = false, false, false
+			// the ceiling state belongs to the old reading
+			ch.ceilHit, ch.ceilCycles, ch.emergencyFired = false, 0, false
 		}
 		ch.cfg = ups[i].cfg
+		ch.ceiling = c.ceilingOf(ups[i].cfg)
 	}
 }
 
@@ -1487,6 +1635,7 @@ func (c *Controller) buildSnapshotLocked(status Status, extra, watched map[strin
 		cs := ChannelState{
 			Name: ch.cfg.Name, PWM: ch.cfg.PWM, Sensor: ch.cfg.Sensor,
 			Temp: -999, Duty: ch.cur, Target: ch.target, RPM: ch.rpm, Mode: ch.mode,
+			Ceiling: ch.ceiling, CeilingHit: ch.ceilHit,
 		}
 		if ch.tempOK {
 			cs.Temp = float64(ch.temp) / 1000

@@ -51,8 +51,8 @@ func newFakeService() *fakeService {
 		snap: control.Snapshot{
 			TS: 1789500000, Status: "ok", Profile: "n5pro", Verified: true, HwmonPath: "/sys/class/hwmon/hwmon14",
 			Channels: []control.ChannelState{
-				{Name: "cpu", PWM: 1, Sensor: "k10temp", Temp: 36.0, Duty: 85, Target: 85, RPM: 2000, Mode: control.ModeAuto},
-				{Name: "hdd", PWM: 3, Sensor: "drivetemp:max", Temp: 31.5, Duty: 60, Target: 60, RPM: 900, Mode: control.ModeManual},
+				{Name: "cpu", PWM: 1, Sensor: "k10temp", Temp: 36.0, Duty: 85, Target: 85, RPM: 2000, Mode: control.ModeAuto, Ceiling: 100},
+				{Name: "hdd", PWM: 3, Sensor: "drivetemp:max", Temp: 31.5, Duty: 60, Target: 60, RPM: 900, Mode: control.ModeManual, Ceiling: 65},
 			},
 			ExtraTemps: map[string]float64{"ec:system": 32.0},
 			Alerts:     map[string]int64{"stall": 1789490000},
@@ -483,6 +483,10 @@ func TestStateJSONShape(t *testing.T) {
 	c0 := chs[0].(map[string]any)
 	if c0["name"] != "cpu" || c0["mode"] != "auto" || c0["duty"].(float64) != 85 || c0["rpm"].(float64) != 2000 || c0["target"].(float64) != 85 {
 		t.Errorf("channel 0 = %v", c0)
+	}
+	// 0.4.1: the effective ceiling and the ceiling state, always present for a signed-in caller
+	if c0["ceiling"].(float64) != 100 || c0["ceiling_hit"] != false || chs[1].(map[string]any)["ceiling"].(float64) != 65 {
+		t.Errorf("ceiling fields: %v", chs)
 	}
 	if m["alerts"].(map[string]any)["stall"].(float64) != 1789490000 {
 		t.Errorf("alerts = %v", m["alerts"])
@@ -1417,7 +1421,9 @@ func TestStaticIndex(t *testing.T) {
 		"/api/history.csv?minutes=", "/api/tokens", "/api/schedules", "webhook_url", "webhook_format", "held_temp", "hold_until", "hysteresis", "min_on", "temp_c", "window.n5mock",
 		"class: 'card tile'", "function spark(", "class: 'spark'", "s.kind === 'hdd'", "/api/dashboard",
 		// 0.4.0 Fans page: every matching preset per channel, the active set, Save as preset… from the action bar, the 30 s config/preset refresh, the [ shortcut
-		"const presetsOf", "const activeSets", "#cv-saveas", "async function refreshFans", "aria-keyshortcuts"} {
+		"const presetsOf", "const activeSets", "#cv-saveas", "async function refreshFans", "aria-keyshortcuts",
+		// 0.4.1: the daemon's ceiling on the tiles, the curve editor (second dashed line) and the apply notice
+		"const ceilOf", "c.ceiling_hit", "const ceilingWarnings", "'ceiling', x -"} {
 		if !strings.Contains(r.body, want) {
 			t.Errorf("app.js lacks %q", want)
 		}
@@ -1992,7 +1998,7 @@ func TestVersionLimits(t *testing.T) {
 		Limits Limits `json:"limits"`
 	}
 	decode(t, r.body, &v)
-	want := Limits{MinHDDOverride: control.MinHDDOverride, CriticalMin: 30, CriticalMax: config.MaxCritical, CurvePointsMax: config.MaxCurvePts, DashboardSensorsMax: config.MaxDashboardSensors, PasswordMin: config.MinPasswordLen, PasswordMax: config.MaxPasswordLen, HysteresisMax: config.HysteresisMax, MinOnMaxS: 3600}
+	want := Limits{MinHDDOverride: control.MinHDDOverride, CriticalMin: 30, CriticalMax: config.MaxCritical, CurvePointsMax: config.MaxCurvePts, DashboardSensorsMax: config.MaxDashboardSensors, PasswordMin: config.MinPasswordLen, PasswordMax: config.MaxPasswordLen, HysteresisMax: config.HysteresisMax, MinOnMaxS: 3600, CeilingMin: config.MinCeiling}
 	if v.Limits != want {
 		t.Fatalf("limits = %+v, want %+v", v.Limits, want)
 	}

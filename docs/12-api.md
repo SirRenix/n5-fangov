@@ -124,7 +124,7 @@ Basic auth only, never a token.
 | `GET` | `/api/about` | public | licence, repository, author, credits |
 | `GET` | `/api/session` | public | who the caller is: `authenticated`, `mode`, `user`, `via` (`cookie`/`basic`/`bearer`/`none`), `scope` and `token_id` for a token |
 | `GET` | `/api/openapi.json` | public | the OpenAPI document |
-| `GET` | `/api/state` | filtered | snapshot: status, channels (temperature, duty, target, RPM, mode; signed in also `held_temp`, `hold_until`, EC and watched temperatures, alert stamps) |
+| `GET` | `/api/state` | filtered | snapshot: status, channels (temperature, duty, target, RPM, mode; signed in also `held_temp`, `hold_until`, `ceiling`, `ceiling_hit`, EC and watched temperatures, alert stamps) |
 | `GET` | `/api/history` | filtered | history points (`minutes`, `since`; anonymous: without `extra`) |
 
 **Scope `read`**

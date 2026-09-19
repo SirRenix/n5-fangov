@@ -192,7 +192,7 @@ func serveDevice(st *serveState) bool {
 	}
 
 	st.factory = newSensorFactory(st.hw, dev)
-	ctrl, err := newController(st.cfg, dev, st.factory, st.alerter, controlOpts{DryRun: st.dryRun, RunDir: st.rdir, HistoryFile: historyPath(st.state)})
+	ctrl, err := newController(st.cfg, dev, st.factory, st.alerter, controlOpts{DryRun: st.dryRun, RunDir: st.rdir, HistoryFile: historyPath(st.state), DiskKind: diskKindResolver(st.hw)})
 	if err != nil {
 		log.Printf("controller: %v", err)
 		sendAlertCooled(st.rdir, st.alerter, "start", "n5-fangov could not start the controller: "+err.Error())

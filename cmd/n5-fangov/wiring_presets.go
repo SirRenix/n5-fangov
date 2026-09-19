@@ -167,6 +167,10 @@ func mergeChannelsByPWM(cfgChans, preset []config.Channel) []config.Channel {
 			if !pc.PostSet {
 				pc.Hysteresis, pc.MinOn, pc.PostSet = out[i].Hysteresis, out[i].MinOn, out[i].PostSet
 			}
+			if pc.Ceiling == 0 {
+				// a lowered ceiling is a host decision, presets rarely carry one
+				pc.Ceiling = out[i].Ceiling
+			}
 			out[i] = pc
 			continue
 		}

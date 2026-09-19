@@ -47,6 +47,11 @@ type ChannelState struct {
 	HeldTemp float64 `json:"held_temp,omitempty"`
 	// HoldUntil is the unix time a running min_on hold ends; 0 = no hold.
 	HoldUntil int64 `json:"hold_until,omitempty"`
+	// Ceiling is the effective ceiling in degrees C (the sensor's built-in
+	// one, lowered by [[channel]] ceiling); CeilingHit reports the ceiling
+	// state: 255 / mode critical until the reading is 3 degrees below it.
+	Ceiling    int  `json:"ceiling"`
+	CeilingHit bool `json:"ceiling_hit"`
 }
 
 // Snapshot is the daemon state exposed to CLI and web.

@@ -106,3 +106,28 @@ func TestPutConfigInlinePlaceholderRefused(t *testing.T) {
 		t.Fatalf("line form: saved %d", len(e.cfg.saved))
 	}
 }
+
+// TestPutConfigStrictCeiling: a [[channel]] ceiling above the sensor's
+// built-in ceiling is a channel warning like every other invalid channel
+// key — under ?strict=1 a 400, without it written with the warning.
+func TestPutConfigStrictCeiling(t *testing.T) {
+	e := newEnv(t, AuthConfig{})
+	e.validate = realValidate
+	raised := strings.Replace(sampleTOML, "critical = 88\n", "critical = 88\nceiling = 120\n", 1)
+	r := e.do(t, "PUT", "/api/config?strict=1", raised, csrf)
+	wantError(t, r, 400, "config rejected")
+	if !strings.Contains(r.body, `"channel.cpu.ceiling: 120 outside 30..100`) || len(e.cfg.saved) != 0 {
+		t.Fatalf("strict ceiling: %s (saved %d)", r.body, len(e.cfg.saved))
+	}
+	r = e.do(t, "PUT", "/api/config", raised, csrf)
+	wantCode(t, r, 200)
+	if !strings.Contains(r.body, `"channel.cpu.ceiling: 120 outside 30..100`) || len(e.cfg.saved) != 1 {
+		t.Fatalf("lenient ceiling: %s (saved %d)", r.body, len(e.cfg.saved))
+	}
+	lowered := strings.Replace(sampleTOML, "critical = 88\n", "critical = 88\nceiling = 80\n", 1)
+	r = e.do(t, "PUT", "/api/config?strict=1", lowered, csrf)
+	wantCode(t, r, 200)
+	if strings.Contains(r.body, "ceiling") {
+		t.Fatalf("lowered ceiling warned: %s", r.body)
+	}
+}

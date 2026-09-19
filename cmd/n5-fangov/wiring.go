@@ -337,6 +337,18 @@ func newSensorFactory(fs *hwmon.FS, dev profile.Device) sensorFactory {
 	return func(id string) (sensor.Source, error) { return sensor.Parse(id, fs, dev) }
 }
 
+// diskKindResolver classifies disk:<dev> ids for the built-in ceilings
+// (sensor.BuiltinCeiling): "ssd", "hdd" or "".
+func diskKindResolver(fs *hwmon.FS) func(dev string) string {
+	return func(dev string) string { return sensor.DiskKind(fs, dev) }
+}
+
+// builtinCeiling is the built-in ceiling of a channel sensor on this host
+// (composite: the lowest part), before any [[channel]] ceiling lowers it.
+func builtinCeiling(fs *hwmon.FS, id string) int {
+	return sensor.BuiltinCeiling(id, diskKindResolver(fs))
+}
+
 // controlFactory adapts sensorFactory to the controller's interface type.
 // A nil sensor.Source must not become a non-nil SensorReader, hence the
 // explicit error branch.
@@ -484,8 +496,9 @@ func failsafeDevice(dev profile.Device, cfg config.Config, logger *log.Logger) e
 // controlOpts is what serve passes to the controller besides config/device.
 type controlOpts struct {
 	DryRun      bool
-	RunDir      string // state.json, override.<name>, alert stamps
-	HistoryFile string // <state dir>/history.json; "" = memory only
+	RunDir      string                  // state.json, override.<name>, alert stamps
+	HistoryFile string                  // <state dir>/history.json; "" = memory only
+	DiskKind    func(dev string) string // disk:<dev> kinds for the built-in ceilings
 }
 
 func newController(cfg config.Config, dev profile.Device, f sensorFactory, a alert.Sink, o controlOpts) (*control.Controller, error) {
@@ -493,6 +506,7 @@ func newController(cfg config.Config, dev profile.Device, f sensorFactory, a ale
 		DryRun:      o.DryRun,
 		RunDir:      o.RunDir,
 		HistoryFile: o.HistoryFile,
+		DiskKind:    o.DiskKind,
 		Logger:      log.Default(),
 		Notify:      func() { noteNotify("WATCHDOG=1", sdnotify.Watchdog()) },
 		Status:      func(s string) { noteNotify("STATUS", sdnotify.Status(s)) },
@@ -820,7 +834,7 @@ func configJSON(cfg config.Config, warns []config.Warning) map[string]any {
 		chans = append(chans, map[string]any{
 			"name": c.Name, "pwm": c.PWM, "sensor": c.Sensor, "curve": c.Curve,
 			"critical": c.Critical, "stop": c.Stop,
-			"hysteresis": c.Hysteresis, "min_on": c.MinOn.String(),
+			"hysteresis": c.Hysteresis, "min_on": c.MinOn.String(), "ceiling": c.Ceiling,
 		})
 	}
 	scheds := make([]map[string]any, 0, len(cfg.Schedules))
@@ -834,6 +848,7 @@ func configJSON(cfg config.Config, warns []config.Warning) map[string]any {
 			"interval": d.Interval.String(), "step_up": d.StepUp, "step_down": d.StepDown,
 			"stall_min_duty": d.StallMinDuty, "stall_cycles": d.StallCycles, "stale_cycles": d.StaleCycles,
 			"alert_cooldown": d.AlertCooldown.String(), "log_every": d.LogEvery, "profile": d.Profile,
+			"emergency_command": d.EmergencyCommand, "emergency_cycles": d.EmergencyCycles,
 		},
 		"web": map[string]any{
 			"listen": cfg.Web.Listen, "auth": cfg.Web.Auth, "user": cfg.Web.User,

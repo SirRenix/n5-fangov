@@ -29,7 +29,7 @@ const UI = Object.freeze({
 	timing: { toast: 5000, toastErr: 12000, toastLong: 15000, toastNotice: 8000, alerts: 60000, system: 30000, log: 10000, schedules: 60000, fans: 30000, blobRevoke: 30000, subLock: 1000 },
 	toastMax: 3,
 	chart: { yMargin: .15, yRound: 5, minSpanTemp: 15, minSpanRpm: 1000, minSpan: 10, pad: { l: 40, r: 58, t: 8, b: 22 },
-		lineW: 2, fillAlpha: .08, dotR: 4.5, dotStroke: 2, labelH: 13, labelGap: 6, tipGap: 12, dash: { hover: [3, 3], crit: [4, 3], now: [2, 3] },
+		lineW: 2, fillAlpha: .08, dotR: 4.5, dotStroke: 2, labelH: 13, labelGap: 6, tipGap: 12, dash: { hover: [3, 3], crit: [4, 3], now: [2, 3] }, ceilAlpha: .55,
 		sparkPad: 2, sparkW: 1.5, sparkFill: .12, sparkDot: 2.5 },
 	curve: { pad: { l: 34, r: 12, t: 10, b: 22 }, xMin: 100, xPad: 10, xStep: 20, yStep: 51, hitR: 14, hitRTouch: 22, addStep: 5, addDefault: 40, fillAlpha: .1, labelGap: 8, keyT: 1, keyD: 5, keyShift: 5 },
 	limits: { min_hdd_override: 60, critical_min: 30, critical_max: 150, curve_points_min: 2, curve_points_max: 8, dashboard_sensors_max: 8, password_min: 8, password_max: 128, hysteresis_max: 10, min_on_max_s: 3600,
@@ -40,6 +40,7 @@ const UI = Object.freeze({
 const LIM = Object.assign({}, UI.limits);
 const TIP = { duty: 'duty = PWM value 0..255 written to the channel (100 % = 255)', stop: 'stop = duty left on the channel when the daemon stops; auto = driver/EC takes over',
 	critical: 'critical = temperature that forces 100 % at once', sensor: 'temperature source of this curve', slew: 'current → target: moved in step_up/step_down steps per cycle',
+	ceiling: 'ceiling = built-in floor below critical (HDD 65, SSD 85, CPU 100 °C, or lower if configured): 255 at once, whatever critical says',
 	hyst: 'hysteresis = the curve follows the reading only when it moved by at least this many °C (0 = off)', minOn: 'min_on = a rise of the curve target is held at least this long (off = no hold)',
 	held: 'the hysteresis-held temperature the curve is evaluated at', hold: 'min_on: the curve target is held for the remaining time' };
 const Q = new URLSearchParams(location.search), MOCK = Q.get('mock') === '1';
@@ -249,7 +250,13 @@ const secState = () => { const e = $('#h-cert'), on = tls === null ? location.pr
 	e.title = (on ? 'TLS connection' : 'plain HTTP off loopback — credentials travel unencrypted')
 		+ (cert ? `\ncertificate: ${cert.mode}` + (i ? ` · expires ${i.not_after.slice(0, 10)}${soon ? ' (soon!)' : ''}` : '') : '') + '\nclick for the certificate settings'; };
 let hist = [], lastTs = 0, fanMetric = 'rpm';
-const critOf = name => { const c = cfg && chList().find(x => x.name === name); return c && +c.critical > 0 ? +c.critical : null; };
+// the tile and live colours follow min(critical, ceiling): the daemon acts on whichever is lower (0.4.1)
+const ceilOf = name => { const c = snap && snap.channels.find(x => x.name === name); return c && c.ceiling > 0 ? c.ceiling : null; };
+const cfgCrit = name => { const c = cfg && chList().find(x => x.name === name); return c && +c.critical > 0 ? +c.critical : null; };
+const critOf = name => { const k = cfgCrit(name), l = ceilOf(name); return k && l ? Math.min(k, l) : k; };
+// tooltip of a temperature: the configured critical and the daemon's ceiling (with a hint when the ceiling is the lower one)
+const limitTip = name => { const k = cfgCrit(name), l = ceilOf(name); if (!k && !l) return null;
+	return (k ? `${TIP.critical}: ${fmtT(k, 0)} ${unit()}` : '') + (l ? `${k ? '\n' : ''}ceiling ${fmtT(l, 0)} ${unit()} (built-in floor below critical${k > l ? ' — acts first here' : ''})` : ''); };
 const chList = () => (cfg && (cfg.channel || cfg.channels)) || [];
 // colour by share of critical; without one (anonymous) neutral
 const tempClass = (t, crit) => { if (t === null || t <= -900) return 'na'; if (!crit) return '';
@@ -259,7 +266,7 @@ const profName = () => snap ? snap.profile : (profiles.find(p => p.active) || {}
 const stopN = s => s === undefined || s === null || /^\s*(auto)?\s*$/i.test(String(s)) ? 'auto' : String(s).trim();
 const minDuty = c => stopN(c.stop) !== 'auto' || profName() === 'n5pro' && +c.pwm === 3 ? LIM.min_hdd_override : 0;
 const seriesColor = i => SERIES[i % SERIES.length];
-const modeBadge = (el, m) => { el.className = 'mode m-' + (m || 'unknown'); el.textContent = m || 'unknown'; el.title = m === 'stall' ? 'stall: the fan reports 0 rpm, the channel is raised until it spins' : m === 'critical' ? TIP.critical : ''; };
+const modeBadge = (el, m, ceil) => { el.className = 'mode m-' + (m || 'unknown'); el.textContent = m || 'unknown'; el.title = m === 'stall' ? 'stall: the fan reports 0 rpm, the channel is raised until it spins' : m === 'critical' ? (ceil ? 'ceiling reached: ' + TIP.ceiling : TIP.critical) : ''; };
 const chanHead = (c, ...pre) => h('span', null, ...pre, h('span', { class: 'name' }, c.name), h('span', { class: 'sub' }, `pwm${c.pwm} · ${c.sensor || '?'}`));
 const act = async (fn, ok) => { try { const r = await fn(); if (ok) toast(typeof ok === 'function' ? ok(r) : ok, 'ok'); return r; } catch (e) { toast(e.message, 'err'); } };
 const verTxt = v => v ? 'verified on hardware' : 'from documentation · untested';
@@ -439,10 +446,10 @@ function renderCards() {
 		}
 		k.color = seriesColor(i);
 		const crit = critOf(c.name);
-		modeBadge(k.mode, c.mode);
+		modeBadge(k.mode, c.mode, c.ceiling_hit);
 		k.temp.className = 'temp ' + tempClass(c.temp, crit);
 		const held = c.held_temp !== undefined && c.held_temp !== null && c.held_temp !== c.temp;
-		clear(k.temp).append(fmtT(c.temp), h('small', { title: crit ? `${TIP.critical}: ${fmtT(crit, 0)} ${unit()}` : null }, unit()));
+		clear(k.temp).append(fmtT(c.temp), h('small', { title: limitTip(c.name) }, unit()));
 		if (held) k.temp.append(h('small', { class: 'held', title: TIP.held }, `held ${fmtT(c.held_temp)}`));
 		const left = c.hold_until > 0 ? Math.max(0, Math.round(c.hold_until - Date.now() / 1000)) : -1; k.hold.hidden = left < 0;
 		if (left >= 0) k.hold.textContent = 'hold ' + (left >= 60 ? `${Math.ceil(left / 60)} min` : `${left} s`);
@@ -589,7 +596,7 @@ const minOnSel = (c, onchange) => { const mo = h('select', { title: TIP.minOn, o
 // [[channel]] tables: sensor as an array for a composite, hysteresis / min_on omitted at their defaults
 const tomlChannel = c => { const ps = parts(c.sensor);
 	return `[[channel]]\nname = "${c.name}"\npwm = ${c.pwm}\nsensor = ${ps.length > 1 ? `[${ps.map(x => `"${x}"`).join(', ')}]` : `"${ps[0] || ''}"`}\ncurve = [${c.curve.map(p => `[${p[0]}, ${p[1]}]`).join(', ')}]\ncritical = ${c.critical}\nstop = ${stopN(c.stop) === 'auto' ? '"auto"' : stopN(c.stop)}\n`
-		+ (c.hysteresis > 0 ? `hysteresis = ${c.hysteresis}\n` : '') + (durS(c.min_on) ? `min_on = "${c.min_on}"\n` : ''); };
+		+ (c.hysteresis > 0 ? `hysteresis = ${c.hysteresis}\n` : '') + (durS(c.min_on) ? `min_on = "${c.min_on}"\n` : '') + (c.ceiling > 0 ? `ceiling = ${c.ceiling}\n` : ''); }; // ceiling: kept as configured (no editor field), the daemon can only lower it
 // every [[channel]] table is dropped as a block; the block ends at the next table header of ANY kind — [section] or [[other]], e.g. [[schedule]] —
 // so the other array tables survive the rewrite. A header carries a bare/quoted key path only: an array element line ("[45, 85],") has a comma and is no header.
 const TOML_HDR = /^\[\[?\s*[\w.\-"' ]+\s*\]\]?\s*(#.*)?$/, CH_HDR = /^\[\[\s*channel\s*\]\]/;
@@ -600,7 +607,7 @@ const stripChannels = raw => { const out = []; let skip = false;
 		if (!skip) out.push(ln); } return out.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd() + '\n\n'; };
 // a channel as the editors hold it (copied: the preset editor and the stash never share arrays with the config or a preset detail)
 const chCopy = c => ({ name: c.name, pwm: +c.pwm, sensor: parts(c.sensor).join(','), curve: (c.curve || []).map(p => [+p[0], +p[1]]), critical: +c.critical, stop: stopN(c.stop),
-	hysteresis: +c.hysteresis || 0, min_on: normDur(c.min_on) });
+	hysteresis: +c.hysteresis || 0, min_on: normDur(c.min_on), ceiling: +c.ceiling || 0 });
 const fromCfg = () => chList().map(chCopy);
 function loadEditor(keepNotice) { edState = fromCfg(); dirty(false); buildEditors(keepNotice); }
 // the channel selector below 700 px: one card at a time, the selected channel keeps across rebuilds; a resize across the breakpoint switches modes
@@ -677,7 +684,7 @@ function buildEditors(keepNotice) { // keepNotice: the 202 / warnings notice of 
 			h('div', { class: 'man' }, h('div', { class: 'rg' }, lv.range, lv.num, lv.pctEl), h('div', { class: 'actions' }, lv.set)), lv.warn);
 		lv.show(0);
 		ed.card = h('div', { class: 'card fan' },
-			h('div', { class: 'fh' }, h('h2', { class: 'name' }, c.name), h('span', { class: 'sub' }, `pwm${c.pwm} · ${c.sensor || '?'}`), h('span', { class: 'badges' }, lv.pre, lv.hmode)),
+			h('div', { class: 'fh' }, h('h2', { class: 'name' }, c.name), ed.sub = h('span', { class: 'sub' }, `pwm${c.pwm} · ${c.sensor || '?'}`), h('span', { class: 'badges' }, lv.pre, lv.hmode)),
 			h('div', { class: 'ed' },
 				h('div', { class: 'fields' }, h('label', null, 'sensor', sl), h('label', { title: TIP.critical }, 'critical °C', crit), h('label', { title: TIP.stop }, 'stop', stop),
 					h('label', { title: TIP.hyst }, 'hysteresis °C', hyst), h('label', { title: TIP.minOn }, 'min on', mo)),
@@ -707,12 +714,16 @@ function renderLive() { if (!snap) return;
 		// critical/stall leave the flag alone (the override persists underneath, the switch still turns it off)
 		const man = c.mode === 'manual', lag = lv.until > Date.now() && (man !== lv.on || man && c.target !== lv.want);
 		if (!lv.busy && !lag) { lv.until = 0; if (man) lv.on = true; else if (c.mode === 'auto') lv.on = false; }
-		lv.state(c.mode);
+		lv.state(c.mode); if (c.ceiling_hit) modeBadge(lv.mode, c.mode, true), modeBadge(lv.hmode, c.mode, true);
 		lv.tgt.textContent = (lv.on ? `held ${man && !lag ? c.target : lv.range.value}` : `curve target ${c.target !== undefined ? c.target : '—'}`) + ' · mode';
 		if (!lv.dirty && !lv.busy && !lag) { if (!lv.on) lv.show(c.duty); else if (man) lv.show(c.target); }
 		const mn = minDuty(chList().find(x => x.name === c.name) || ed.c); if (mn !== lv.min) { lv.min = mn; lv.range.min = lv.num.min = mn; lv.show(+lv.range.value, 1); } // profile known now
+		// the daemon's ceiling arrives with the snapshot: header tooltip, and the editor redraws its line once it is known
+		if (c.ceiling > 0 && ed.ceil !== c.ceiling) { ed.ceil = c.ceiling; ed.sub.title = `ceiling ${fmtT(c.ceiling, 0)} ${unit()} (built-in floor below critical)`; ed.draw(); }
 		ed.ref(); }
 }
+// a critical above the daemon's ceiling is accepted, the ceiling just acts first: one warning line per channel for the notice (never blocks)
+const ceilingWarnings = (chs = edState) => chs.flatMap(c => { const l = ceilOf(c.name); return l && +c.critical > l ? [`${c.name}: critical ${c.critical} above the built-in ceiling ${l} — the ceiling acts first`] : []; });
 function fillSensorSelects() {
 	// a composite id "a,b" is one option (never dropped by the editor); the catalogue's single ids follow
 	for (const k in ED) { const { c, sel } = ED[k]; const ids = new Set([c.sensor, ...concrete().map(s => s.id)]); clear(sel);
@@ -733,6 +744,10 @@ function drawCurve(ed) {
 	for (let t = 0; t <= g.xmax; t += K.xStep) { const x = Math.round(g.X(t)) + .5; seg(ctx, x, g.pad.t, x, g.H - g.pad.b); ctx.fillText(t + '°', x, g.H - g.pad.b + 5); }
 	if (c.critical) { const x = Math.round(g.X(c.critical)) + .5; ctx.strokeStyle = cssVar('--crit'); seg(ctx, x, g.pad.t, x, g.H - g.pad.b, C.dash.crit);
 		ctx.fillStyle = cssVar('--crit'); ctx.textAlign = 'right'; ctx.fillText('crit', x - 3, g.pad.t); }
+	// the daemon's ceiling (0.4.1): a second dashed line, dimmed, its label a row below crit; only when it is in range
+	const ceil = ceilOf(c.name);
+	if (ceil && ceil <= g.xmax) { const x = Math.round(g.X(ceil)) + .5; ctx.globalAlpha = C.ceilAlpha; ctx.strokeStyle = cssVar('--crit'); seg(ctx, x, g.pad.t, x, g.H - g.pad.b, C.dash.crit);
+		ctx.fillStyle = cssVar('--crit'); ctx.textAlign = 'right'; ctx.fillText('ceiling', x - 3, g.pad.t + C.labelH); ctx.globalAlpha = 1; } // label on the second row, left of the line (the line may sit on the right edge)
 	const col = cssVar(seriesColor(ed.i)), pts = c.curve.slice().sort((a, b) => a[0] - b[0]);
 	ctx.beginPath(); ctx.moveTo(g.X(0), g.Y(pts[0][1]));
 	for (const p of pts) ctx.lineTo(g.X(clamp(p[0], 0, g.xmax)), g.Y(clamp(p[1], 0, D)));
@@ -793,7 +808,7 @@ on('#cv-apply', 'click', async () => {
 	await loadConfig(); // fresh raw: [dashboard], [alert], [[schedule]] may have changed since the last read
 	const body = stripChannels(cfgRaw) + edState.map(tomlChannel).join('\n');
 	try { const r = await api('/api/config?strict=1', { method: 'PUT', body, headers: { 'Content-Type': 'application/toml' } });
-		const warn = r.body && Array.isArray(r.body.warnings) && r.body.warnings.length ? 'Config warnings outside the channel tables:\n' + r.body.warnings.join('\n') : '';
+		const cw = ceilingWarnings(), warn = (r.body && Array.isArray(r.body.warnings) && r.body.warnings.length ? 'Config warnings outside the channel tables:\n' + r.body.warnings.join('\n') + '\n' : '') + cw.join('\n');
 		cvNotice((r.status === 202 ? 'Written — restart required (channel set or profile changed): systemctl restart n5-fangov\n' : '') + warn, '');
 		toast(r.status === 202 ? 'Curves written — restart required' : warn ? 'Applied with warnings' : 'Curves applied', r.status === 202 || warn ? 'warn' : 'ok'); await loadConfig(); loadEditor(true); loadPresets();
 	} catch (e) { cvNotice(e.message, 'err'); } // notice is role=alert: no toast on top

@@ -49,10 +49,12 @@ touched by package scripts (purge removes them). The state directory
 `/var/lib/n5-fangov` is removed with the package (`apt remove` and `uninstall.sh`
 alike): sessions, the alert history and the chart history in it are disposable —
 **`tokens.json` is not**. It holds the hashes of the [API tokens](08-https-security.md#api-tokens)
-and is the only place they exist; the settings bundle never carries tokens. After a
-remove/reinstall every script and Home Assistant needs a new token, or copy
-`tokens.json` (0600) aside before and back afterwards. A package *upgrade* keeps the
-directory.
+and is the only place they exist; the settings bundle never carries tokens. Since
+0.4.1 `apt remove` / `apt purge` (the package `postrm`) and `uninstall.sh` copy it to
+`/var/backups/n5-fangov/tokens.json.<timestamp>` (0600, root) before the state
+directory goes and print one line naming the copy; after a reinstall put it back as
+`/var/lib/n5-fangov/tokens.json` (0600) and restart â otherwise every script and Home
+Assistant needs a new token. A package *upgrade* keeps the directory.
 
 ## Rollback
 
@@ -99,7 +101,7 @@ has both as buttons ([Backup](04-dashboard.md#backup)).
 install ran from:
 
 ```
-./deploy/uninstall.sh            # stops and removes the unit, binary, apt hook, PVE template, state (tokens, history)
+./deploy/uninstall.sh            # stops and removes the unit, binary, apt hook, PVE template, state (history; tokens.json is backed up first)
 ./deploy/uninstall.sh --purge    # additionally /etc/n5-fangov (config, presets, certificate) and /var/log/n5-fangov
 ```
 

@@ -83,8 +83,9 @@ Schedules, Log, About) and their group. Anonymous: Overview · More (About).
 
 The landing page. **Tiles**, one per channel: name, `pwmN · sensor`, mode badge (`AUTO`,
 `MANUAL`, `CRITICAL`, `STALL`, `SENSOR-ERROR`, `FAILSAFE`), the temperature (coloured by
-its share of the channel's critical value — neutral for an anonymous visitor, who does
-not get the config), `held …` next to it when a [hysteresis](06-configuration.md#hysteresis-and-minimum-on-time)
+its share of the lower of the channel's critical value and its built-in
+[ceiling](06-configuration.md#ceilings-and-the-emergency-action); the tooltip on the unit
+names both — neutral for an anonymous visitor, who does not get the config), `held …` next to it when a [hysteresis](06-configuration.md#hysteresis-and-minimum-on-time)
 holds the curve at another value, a `hold` badge with the remaining minimum on-time, a
 **sparkline** of the last 2 h (whatever range the charts show), the duty bar with the
 target marker while the slew is moving — `33 % (85 → 107)` — and the RPM (`no tach` on
@@ -172,7 +173,9 @@ page carries them under *More about duty, critical, stall, stop*):
 
 - **duty** — the PWM value 0..255 the daemon writes; shown as a percentage next to it.
 - **critical** — the temperature at which the channel goes to 255 at once, also under a
-  manual override.
+  manual override. Below it sits the **ceiling**, a built-in floor per sensor kind (HDD 65,
+  SSD 85, CPU 100 °C) that a configuration can only lower; a critical above the ceiling is
+  accepted, the notice after *Apply* says that the ceiling acts first.
 - **stop** — what the channel gets when the daemon stops: `auto` (or empty) hands it back
   to the chip's own regulation, a number is a fixed duty 60..255 (the N5 Pro HDD channel
   is always fixed, because the EC no longer regulates it after a write — see
@@ -199,7 +202,10 @@ them. The badge shows what the **daemon** runs, not the editor's unsaved values.
 a channel configured with several sensors appears as one option `a,b (max of 2)` so the
 editor never drops it — the array itself is edited in the file, [Sensor ids](06-configuration.md#sensor-ids)),
 *critical °C*, *stop*, *hysteresis °C*, *min on*; the canvas with the curve, the dashed
-`crit` line and the dotted `now` marker with `now 34.6 °C → 85`; the point table (`°C`,
+`crit` line, the dimmer dashed `ceiling` line (the daemon's built-in floor for this
+sensor kind, [Ceilings](06-configuration.md#ceilings-and-the-emergency-action); the
+`pwmN · sensor` line of the card names it in its tooltip) and the dotted `now` marker
+with `now 34.6 °C → 85`; the point table (`°C`,
 `duty`, *remove* — disabled at two points); *+ add point* opens a row prefilled with the
 middle of the widest temperature gap and the interpolated duty (*Add* / *Cancel*;
 disabled at eight points). Drag the points on the canvas (touch works) or edit the table;

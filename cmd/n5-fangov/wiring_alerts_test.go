@@ -201,9 +201,24 @@ func TestAlertManagerWebhook(t *testing.T) {
 	if !strings.Contains(out, "webhook:      "+hook.URL+"/hook (json)") || strings.Contains(out, "secret-key") {
 		t.Errorf("status output:\n%s", out)
 	}
-	// back to log: the URL is kept in the file for the next switch
-	if st, err := m.Configure(settings("log", "")); err != nil || st.WebhookURL != url || st.Effective != "log" {
+	// back to log: the URL is cleared from the file and from the status (a
+	// receiver key must not linger after the switch, 0.4.1); the format stays
+	if st, err := m.Configure(settings("log", "")); err != nil || st.WebhookURL != "" || st.Effective != "log" || st.WebhookFormat != "text" {
 		t.Errorf("back to log: %+v %v", st, err)
+	}
+	raw, _ = os.ReadFile(cfgPath)
+	if s := string(raw); !strings.Contains(s, "transport = \"log\"") || !strings.Contains(s, "webhook_url = \"\"") || strings.Contains(s, url) {
+		t.Errorf("file after the switch back:\n%s", raw)
+	}
+	if m.cur.WebhookURL != "" {
+		t.Errorf("URL still in effect: %q", m.cur.WebhookURL)
+	}
+	// a request that only changes mail_to leaves an existing URL alone
+	if _, err := m.Configure(web.AlertSettings{Transport: strp("webhook"), WebhookURL: strp(url)}); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := m.Configure(web.AlertSettings{MailTo: strp("ops")}); err != nil || st.WebhookURL != url || st.Transport != "webhook" {
+		t.Errorf("mail_to only: %+v %v", st, err)
 	}
 }
 

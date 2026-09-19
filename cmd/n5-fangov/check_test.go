@@ -388,3 +388,40 @@ func TestCheckLegacyHashAdvisory(t *testing.T) {
 		t.Fatal("pbkdf2 hash reported as legacy")
 	}
 }
+
+// A critical above the sensor's built-in ceiling is accepted, but check
+// says that the ceiling acts first (advisory, exit 0).
+func TestCheckCriticalAboveCeilingAdvisory(t *testing.T) {
+	fakeN5(t, false)
+	dir := t.TempDir()
+	hdd := cpuOnlyTOML + "\n[[channel]]\nname = \"hdd\"\npwm = 3\nsensor = \"drivetemp:max\"\ncurve = [[36, 105], [46, 255]]\ncritical = 70\nstop = 140\n"
+	res := runChecks(writeCfg(t, dir, hdd), dir)
+	if f := fatals(res); len(f) != 0 {
+		t.Fatalf("fatal results: %v", f)
+	}
+	var lines []string
+	for _, r := range res {
+		if r.name == "channel hdd" && !r.ok {
+			lines = append(lines, r.detail)
+			if !r.advisory {
+				t.Errorf("must be advisory: %+v", r)
+			}
+		}
+	}
+	if len(lines) != 1 || lines[0] != "critical 70 above the built-in ceiling 65 \u2014 the ceiling acts first" {
+		t.Errorf("ceiling advisory: %q", lines)
+	}
+	// cpu (k10temp, ceiling 100) with critical 88 gets no such line
+	for _, r := range res {
+		if r.name == "channel cpu" && strings.Contains(r.detail, "ceiling") {
+			t.Errorf("cpu flagged: %+v", r)
+		}
+	}
+	// at or below the ceiling: no line
+	res = runChecks(writeCfg(t, dir, strings.Replace(hdd, "critical = 70", "critical = 65", 1)), dir)
+	for _, r := range res {
+		if strings.Contains(r.detail, "ceiling") {
+			t.Errorf("flagged at the ceiling: %+v", r)
+		}
+	}
+}

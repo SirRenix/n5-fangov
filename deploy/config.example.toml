@@ -19,6 +19,12 @@ stall_cycles = 2        # ... after this many consecutive cycles (1..20)
 stale_cycles = 18       # first channel's sensor bit-identical this many cycles -> frozen (6..600); only checked when that sensor is k10temp
 alert_cooldown = "30m"  # minimum gap between alerts of the same kind (60s..24h)
 log_every = 30          # status line every N cycles (0 = never)
+emergency_command = ""  # optional emergency action, run by /bin/sh -c inside the unit's sandbox when a channel stays
+                        # at its ceiling for emergency_cycles cycles with the fan at 0 RPM, or 3x as long regardless
+                        # of RPM; once per episode, 60 s bound, output in the log, alert "emergency" with the exit
+                        # status. "" = off (the "ceiling" alert still goes out). Example with the env vars:
+                        # /usr/share/doc/n5-fangov/emergency.example.sh (logger line; commented systemctl poweroff)
+emergency_cycles = 6    # consecutive cycles at the ceiling before the action (1..60; x3 for the no-RPM rule)
 profile = "auto"        # auto | n5pro | nct67xx | it87xx | monitor
 
 [web]
@@ -78,6 +84,12 @@ sensor = "k10temp"      # k10temp | coretemp | nvme:max | drivetemp:max | disk:<
                         # (stored as "drivetemp:max,ec:hdd"; a part whose device is absent is skipped)
 curve = [[45, 85], [80, 255]]   # [temp_c, duty] points, ascending temp, 2..8 points, linear between
 critical = 88           # temp -> 255 immediately, no slew, even under manual override (judged on the raw reading)
+# ceiling = 90          # optional: LOWER the built-in ceiling of this sensor kind (CPU 100, SSD 85, HDD 65 C; a composite
+                        # takes the lowest of its parts). At/above the ceiling the channel goes to 255 whatever the curve,
+                        # override, hysteresis, min_on or critical say, until it is 3 C below; alert "ceiling". A value
+                        # above the built-in ceiling (or below 30) is a warning and the built-in one stays -- the key can
+                        # only lower it. A critical above the ceiling is accepted; `n5-fangov check` warns that the
+                        # ceiling acts first.
 stop = "auto"           # "auto" = hand the channel back to the EC/BIOS on stop, or a fixed duty 60..255 (n5pro pwm3: never "auto", forced to 140)
 hysteresis = 0          # 0..10 degrees C, integer; 0 = off. The curve follows a held temperature that moves only when the
                         # reading differs from it by >= this many degrees. Reload, no restart.

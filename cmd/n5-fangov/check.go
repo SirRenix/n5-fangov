@@ -153,6 +153,13 @@ func runChecks(cfgPath, dir string) []checkResult {
 		}
 		add(true, "channel "+c.Name, fmt.Sprintf("pwm%d writable, %s, sensor %s", c.PWM, rpm, c.Sensor))
 	}
+	// 3b. critical above the built-in ceiling: accepted, but the ceiling acts
+	// first (DESIGN "Ceilings and emergency") -- advisory, check passes.
+	for _, c := range chans {
+		if ceil := builtinCeiling(hw, c.Sensor); c.Critical > ceil {
+			adv(false, "channel "+c.Name, fmt.Sprintf("critical %d above the built-in ceiling %d — the ceiling acts first", c.Critical, ceil))
+		}
+	}
 
 	// 4. sensors resolve and read plausibly. Advisory: serve holds a
 	// channel whose sensor fails at its safe duty and regulates the rest.

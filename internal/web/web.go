@@ -1533,6 +1533,7 @@ type Limits struct {
 	PasswordMax         int `json:"password_max"`
 	HysteresisMax       int `json:"hysteresis_max"`
 	MinOnMaxS           int `json:"min_on_max_s"`
+	CeilingMin          int `json:"ceiling_min"`
 }
 
 // apiLimits are the current bounds (see Limits).
@@ -1547,6 +1548,7 @@ func apiLimits() Limits {
 		PasswordMax:         maxPasswordLen,
 		HysteresisMax:       config.HysteresisMax,
 		MinOnMaxS:           int(config.MinOnMax.Seconds()),
+		CeilingMin:          config.MinCeiling,
 	}
 }
 

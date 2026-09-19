@@ -1,16 +1,16 @@
 // n5-fangov dashboard mock — loaded by app.js only with ?mock=1, never referenced by index.html.
 // Publishes window.n5mock(path, opt) → Promise<{status, body, filename?}>; api() calls it instead of fetch.
-// Flags: &user=1 &auth=none &tls=off|file|soon|fallback &tab= &syserr=1 &reject=1 &restart=1 &expire=1 &schedfail=1 &pwm4=1 &lag=1 &down=1
+// Flags: &user=1 &auth=none &tls=off|file|soon|fallback &tab= &syserr=1 &reject=1 &restart=1 &expire=1 &schedfail=1 &pwm4=1 &lag=1 &down=1 &ceiling=1
 // Names and addresses are documentation values (n5host, 192.0.2.x, n5.lan, example.test).
 'use strict';
 window.n5mock = (() => {
-	const Q = new URLSearchParams(location.search), t0 = Date.now() / 1000, MV = '0.4.0', PRE = MV.split('-')[1] || '';
+	const Q = new URLSearchParams(location.search), t0 = Date.now() / 1000, MV = '0.4.1-rc1', PRE = MV.split('-')[1] || '';
 	const interp = (curve, t) => { if (!curve.length) return 0; if (t <= curve[0][0]) return curve[0][1];
 		for (let i = 1; i < curve.length; i++) if (t <= curve[i][0]) { const [t0, d0] = curve[i - 1], [t1, d1] = curve[i]; return t1 === t0 ? d1 : d0 + (d1 - d0) * (t - t0) / (t1 - t0); }
 		return curve[curve.length - 1][1]; };
 	const REF = { cpu: [[85, 2000], [140, 3120], [179, 3830], [217, 4445], [255, 5073]], ssd: [[74, 2130], [140, 3280], [179, 3790], [217, 4230], [255, 4687]], hdd: [[87, 1237], [105, 1650], [140, 2250], [179, 2725], [217, 3160], [255, 3540]] };
 	const M = { auth: Q.get('auth') === 'none' ? 'none' : 'basic', in: Q.get('user') === '1' || Q.get('auth') === 'none', user: 'admin', remember: false, exp: !!Q.get('expire') };
-	const cfg = { daemon: { interval: '10s', step_up: 40, step_down: 15, stall_min_duty: 60, stall_cycles: 2, profile: 'auto' },
+	const cfg = { daemon: { interval: '10s', step_up: 40, step_down: 15, stall_min_duty: 60, stall_cycles: 2, emergency_command: '', emergency_cycles: 6, profile: 'auto' },
 		web: { listen: '0.0.0.0:8010', auth: M.auth }, log: { file: '/var/log/n5-fangov/n5-fangov.log', max_size_mb: 10, max_files: 5 },
 		channel: [
 			{ name: 'cpu', pwm: 1, sensor: 'k10temp', curve: [[45, 85], [80, 255]], critical: 88, stop: 'auto', hysteresis: 0, min_on: '0s' },
@@ -52,7 +52,7 @@ window.n5mock = (() => {
 	const tomlV = v => typeof v === 'string' ? `"${v}"` : Array.isArray(v) ? `[${v.map(tomlV).join(', ')}]` : v;
 	const sec = n => `[${n}]\n` + Object.entries(cfg[n]).map(([k, v]) => `${k} = ${tomlV(v)}`).join('\n') + '\n\n';
 	const tomlCh = c => `[[channel]]\nname = "${c.name}"\npwm = ${c.pwm}\nsensor = ${c.sensor.includes(',') ? tomlV(c.sensor.split(',')) : tomlV(c.sensor)}\ncurve = [${c.curve.map(p => `[${p[0]}, ${p[1]}]`).join(', ')}]\ncritical = ${c.critical}\nstop = ${c.stop === 'auto' ? '"auto"' : c.stop}\n`
-		+ (c.hysteresis ? `hysteresis = ${c.hysteresis}\n` : '') + (c.min_on && c.min_on !== '0s' ? `min_on = "${c.min_on}"\n` : '');
+		+ (c.hysteresis ? `hysteresis = ${c.hysteresis}\n` : '') + (c.min_on && c.min_on !== '0s' ? `min_on = "${c.min_on}"\n` : '') + (c.ceiling ? `ceiling = ${c.ceiling}\n` : '');
 	const tomlSched = s => `[[schedule]]\npreset = "${s.preset}"\n` + (s.from ? `from = "${s.from}"\nto = "${s.to}"\n` : '') + (s.days.length ? `days = ${tomlV(s.days)}\n` : '');
 	const raw = () => sec('daemon') + sec('web') + sec('log') + cfg.channel.map(tomlCh).join('\n') + '\n' + cfg.schedule.map(tomlSched).join('\n');
 	// PUT /api/config: parse the [[channel]] and [[schedule]] tables back (strict: the daemon's rules, rule 8 would substitute defaults with a warning);
@@ -63,7 +63,7 @@ window.n5mock = (() => {
 	const parseChannels = body => tables(body, 'channel').map(b => { const s = kv(b, 'sensor'), mo = kv(b, 'min_on'), st = kv(b, 'stop');
 		return { name: kv(b, 'name').replace(/"/g, ''), pwm: +kv(b, 'pwm'), sensor: s.startsWith('[') ? [...s.matchAll(/"([^"]*)"/g)].map(x => x[1]).join(',') : s.replace(/"/g, ''),
 			curve: [...kv(b, 'curve').matchAll(/\[\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*\]/g)].map(x => [+x[1], +x[2]]), critical: +kv(b, 'critical'), stop: /^"auto"$/i.test(st) ? 'auto' : /^\d+$/.test(st) ? +st : st.replace(/"/g, ''),
-			hysteresis: +kv(b, 'hysteresis') || 0, min_on: mo ? mo.replace(/"/g, '') : '0s' }; });
+			hysteresis: +kv(b, 'hysteresis') || 0, min_on: mo ? mo.replace(/"/g, '') : '0s', ceiling: +kv(b, 'ceiling') || 0 }; });
 	// the daemon's channel rules (config.ValidateCurve, parser.stop, intField / durField): every warning is an error here
 	const durS = s => { const m = /^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/.exec(s); return m && m[0] ? (+m[1] || 0) * 3600 + (+m[2] || 0) * 60 + (+m[3] || 0) : -1; };
 	const check = chs => { const errs = [];
@@ -75,6 +75,7 @@ window.n5mock = (() => {
 				else if (i && p[0] <= pts[i - 1][0]) errs.push(`channel ${n}: point ${i} temp ${p[0]} not above previous ${pts[i - 1][0]}`);
 				else if (i && p[1] < pts[i - 1][1]) errs.push(`channel ${n}: point ${i} duty ${p[1]} below previous ${pts[i - 1][1]}`); });
 			const last = pts.length ? pts[pts.length - 1][0] : 0; if (!Number.isInteger(c.critical) || c.critical < last + 1 || c.critical > 150) errs.push(`channel ${n}: critical ${c.critical} out of range ${last + 1}..150`);
+			if (c.ceiling && (c.ceiling < 30 || c.ceiling > (CEIL[n] || 100))) errs.push(`channel.${n}.ceiling: ${c.ceiling} outside 30..${CEIL[n] || 100} (the built-in ceiling of ${c.sensor} can only be lowered), built-in ceiling ${CEIL[n] || 100} used`);
 			const st = c.stop === '' || /^auto$/i.test(String(c.stop)) ? 'auto' : +c.stop; if (st !== 'auto' && !(Number.isInteger(st) && st >= 60 && st <= 255)) errs.push(`channel ${n}: stop "${c.stop}" is neither auto nor a fixed duty 60..255`);
 			if (!Number.isInteger(c.hysteresis) || c.hysteresis < 0 || c.hysteresis > 10) errs.push(`channel ${n}: hysteresis ${c.hysteresis} out of range 0..10`);
 			const mo = durS(c.min_on); if (mo < 0) errs.push(`channel ${n}: min_on "${c.min_on}" is not a duration`); else if (mo > 3600) errs.push(`channel ${n}: min_on ${c.min_on} above 1h0m0s`); }
@@ -106,10 +107,13 @@ window.n5mock = (() => {
 	};
 	// alerts panel (webhook: effective only with a URL; the URL is returned as stored — the log redacts, the API does not)
 	const A = { transport: 'auto', mail_to: 'root', webhook_url: '', webhook_format: 'json', tpl: { installed: true, current: true, writable: true, path: '/etc/pve/notification-templates/default' } };
-	const KINDS = { sensor: 'sensor unreadable', stall: 'fan at 0 rpm', temp: 'critical temp', write: 'pwm write failed', device: 'hwmon device vanished', config: 'config replaced', 'config-channels': 'channel set changed', profile: 'profile changed',
+	const KINDS = { sensor: 'sensor unreadable', stall: 'fan at 0 rpm', temp: 'critical temp', ceiling: 'built-in ceiling reached (HDD 65, SSD 85, CPU 100 C)', emergency: 'emergency_command ran', write: 'pwm write failed', device: 'hwmon device vanished', config: 'config replaced', 'config-channels': 'channel set changed', profile: 'profile changed',
 		start: 'daemon started', restart: 'restarted', failed: 'unit failed', kernel: 'kernel/DKMS changed', tls: 'cert unreadable', web: 'web listener failed', schedule: 'scheduled preset switch failed', test: 'test alert' };
 	const recent = [[720, 'stall', 'hdd: rpm=0 at duty 105, raised to 255'], [5400, 'temp', 'cpu 91.5 °C ≥ critical 88, forced to 255', 'pve-notify: exit status 1'], [11220, 'sensor', 'drivetemp:max: no devices'], [93600, 'start', 'n5-fangov ' + MV + ' started'], [3 * 86400, 'tls', 'certificate unreadable']]
 		.map(([ago, kind, msg, error]) => Object.assign({ ts: Math.floor(t0 - ago), kind, msg }, error ? { error } : {}));
+	// &ceiling=1: the hdd reading sits above its ceiling (65): 255, mode critical, ceiling_hit, an alert at the head of the list
+	const CEIL = { cpu: 100, ssd: 85, hdd: 65, pcie: 100 }, ceilHit = Q.get('ceiling') === '1';
+	if (ceilHit) recent.unshift({ ts: Math.floor(t0 - 40), kind: 'ceiling', msg: 'hdd: drivetemp:max,disk:sda at 66.5C reached the ceiling 65C (critical 56C) -> 255' });
 	if (Q.get('schedfail')) recent.unshift({ ts: Math.floor(t0 - 3600), kind: 'schedule', msg: 'preset "night" not found (22:00–07:00 kept the previous curves)' });
 	const effective = () => A.transport === 'auto' || A.transport === 'pve' ? 'pve-notify' : A.transport === 'webhook' ? (A.webhook_url ? 'webhook' : 'log') : A.transport;
 	const alertStatus = () => ({ transport: A.transport, effective: effective(), mail_to: A.mail_to, webhook_url: A.webhook_url, webhook_format: A.webhook_format, pve_available: true, mail_available: false, template: Object.assign({}, A.tpl), cooldown: '30m0s', kinds: Object.entries(KINDS).map(([kind, description]) => ({ kind, description })) });
@@ -176,7 +180,7 @@ window.n5mock = (() => {
 			M.in = true; M.remember = !!j.remember; return ok({ ok: true, user: M.user, expires: Math.floor(now + (M.remember ? 30 : .5) * 86400), remember: M.remember }); }
 		if (p === '/api/logout') { M.in = M.auth === 'none'; return wait({ status: 204, body: null }); }
 		if (p === '/api/version') return ok({ name: 'n5-fangov', version: MV, prerelease: PRE, auth: M.auth, tls: T.mode !== 'off',
-			limits: { min_hdd_override: 60, critical_min: 30, critical_max: 150, curve_points_max: 8, dashboard_sensors_max: 8, password_min: 8, password_max: 128, hysteresis_max: 10, min_on_max_s: 3600 } });
+			limits: { min_hdd_override: 60, critical_min: 30, critical_max: 150, curve_points_max: 8, dashboard_sensors_max: 8, password_min: 8, password_max: 128, hysteresis_max: 10, min_on_max_s: 3600, ceiling_min: 30 } });
 		if (p === '/api/about') return ok({ name: 'n5-fangov', version: MV, prerelease: PRE, license: 'GPL-2.0-only', license_url: 'https://www.gnu.org/licenses/old-licenses/gpl-2.0.html',
 			repo: GH + 'SirRenix/n5-fangov', author: 'SirRenix', author_url: GH + 'SirRenix', go: M.in ? 'go1.25.1' : '',
 			credits: [['ltdstudio/minisforum-n5-it5571', 'the kernel driver'], ['Sl0thC0der/proxfansx', 'dashboard idea; nct67xx/it87xx profiles']].map(([name, note]) => ({ name, url: GH + name, note })) });
@@ -190,7 +194,9 @@ window.n5mock = (() => {
 				channels: cfg.channel.map(c => { const n = c.name, st = n === 'hdd' && stall, lg = ovLag[n], ov = lg && lg.left-- > 0 ? lg.ov : overrides[n]; if (lg && lg.left <= 0) delete ovLag[n];
 					const cd = Math.round(interp(c.curve, pt.temp[n])), duty = ov === undefined ? cd : ov; // curve duty while the lagged state says auto; rpm follows the (lagged) duty, as on the daemon
 					const ch = { name: n, pwm: c.pwm, sensor: c.sensor, temp: pt.temp[n], duty, target: ov === undefined ? n === 'cpu' ? cd + 22 : cd : ov, rpm: st ? 0 : rpmOf(n, duty),
-					mode: st ? 'stall' : ov !== undefined ? 'manual' : 'auto' };
+					mode: st ? 'stall' : ov !== undefined ? 'manual' : 'auto', ceiling: CEIL[n] || 100, ceiling_hit: false };
+					// the ceiling (0.4.1) wins over everything: 255, mode critical, ceiling_hit (&ceiling=1 puts the hdd reading above its 65)
+					if (ceilHit && n === 'hdd') Object.assign(ch, { temp: 66.5, duty: 255, target: 255, rpm: rpmOf(n, 255), mode: 'critical', ceiling_hit: true });
 					// hysteresis: the held reading lags the raw one; min_on: a running hold now and then
 					if (c.hysteresis) { const held = Math.round(pt.temp[n]) - 1; if (Math.abs(held - pt.temp[n]) >= .1) ch.held_temp = held; }
 					if (c.min_on !== '0s' && hold && n === 'hdd') ch.hold_until = Math.floor(now - (now | 0) % 300 + 90);

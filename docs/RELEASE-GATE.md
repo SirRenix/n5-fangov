@@ -93,3 +93,23 @@ re-tested on the host; rows 3 and 9 passed on rc2 and stand. 0.4.0 is rc5 withou
 suffix. Open from this gate: the public `curl` path of row 3 has run only in the
 private-phase form (assets copied to the host); it is exercised once after publication
 against the released assets.
+
+## Update re-test (rc iterations, from 0.4.1-rc1)
+
+For an rc that changes daemon behaviour without touching the boot chain or the install
+path, the full ten rows are not needed: a **package update without purge** plus the
+rows the change touches. Operator, on the PVE host, as root; the old binary kept as
+`/root/n5-fangov-<ver>.bak` for a rollback per the Updates page.
+
+| # | Step | Expected | Pass |
+|---|---|---|---|
+| U1 | `apt install ./n5-fangov_<debver>_amd64.deb` over the running version (no remove, no purge) | postinst restarts the unit; `n5-fangov version` prints the rc; config, presets, `tokens.json`, `history.json` untouched (`ls -l /var/lib/n5-fangov`); dashboard sign-in still works with the old cookie or after a fresh sign-in | ☐ |
+| U2 | `n5-fangov check` with the HDD channel's `critical` raised above 65 in the config (e.g. `critical = 70`), then back | the advisory line `channel hdd: critical 70 above the built-in ceiling 65 — the ceiling acts first`, check still says `all good`; without it the line is gone | ☐ |
+| U3 | **Ceiling, live:** set `ceiling = 30` on the HDD channel (`[[channel]] name = "hdd"`), *Apply* from the Fans page or `PUT /api/config` (reload, no restart) | within one cycle the channel runs at 255 in mode `critical`, `ceiling_hit: true` in `GET /api/state`, the Alerts page shows kind `ceiling` with the reading and "ceiling 30C"; the curve editor draws the `ceiling` line at 30 °C; the tile colours by the ceiling | ☐ |
+| U4 | **Emergency, logger form:** with U3 still in effect set `[daemon] emergency_command = "logger -t n5-fangov-emergency test"` and `emergency_cycles = 2`, reload | after 6 cycles (3 × 2, the fan spins) `journalctl -t n5-fangov-emergency` shows `test`, the daemon log shows `emergency[hdd]:` lines if any output and `emergency action after 6 cycles at the ceiling (cooling ineffective)`, the Alerts page kind `emergency` with `command exited 0` — this proves that the sandbox lets the command reach the journal | ☐ |
+| U5 | Values back (`ceiling` key removed, `emergency_command = ""`), `systemctl restart n5-fangov` | channel back on its curve within a few cycles, `ceiling` reads 65, `ceiling_hit` false, no further alerts; `n5-fangov check` all `[ok]` | ☐ |
+
+Not part of the re-test: the tokens backup on `apt purge` / `uninstall.sh --purge`
+(no purge on the host in an rc iteration — covered by the deploy tests only) and the
+`systemctl poweroff` form of the emergency command (to be verified on the host
+deliberately, see the configuration page).

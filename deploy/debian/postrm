@@ -2,18 +2,38 @@
 # n5-fangov postrm: remove the apt hook, reload systemd after the units are
 # gone; purge removes the config directory (incl. presets and the TLS
 # certificate), the log directory and the PVE templates. The state directory
-# (/var/lib/n5-fangov: sessions, alert history) goes with every removal.
+# (/var/lib/n5-fangov: sessions, alert history) goes with every removal --
+# except tokens.json, the only copy of the API token hashes: it is backed up
+# to /var/backups/n5-fangov/tokens.json.<timestamp> (0600, root) first and
+# one line says so. `apt purge` runs "remove" and then "purge", so the
+# backup happens in "remove" (the state directory is already gone by the
+# time "purge" runs).
 set -e
+
+backup_tokens() {
+    if [ -f /var/lib/n5-fangov/tokens.json ]; then
+        dest="/var/backups/n5-fangov/tokens.json.$(date +%Y%m%d-%H%M%S)"
+        mkdir -p -m 0700 /var/backups/n5-fangov
+        if cp -p /var/lib/n5-fangov/tokens.json "$dest" && chmod 0600 "$dest" && chown root:root "$dest"; then
+            echo "n5-fangov: API token store backed up to $dest (0600); restore it to /var/lib/n5-fangov/tokens.json after a reinstall"
+        else
+            echo "n5-fangov: WARNING: could not back up /var/lib/n5-fangov/tokens.json to $dest; the API tokens are lost with the state directory" >&2
+        fi
+    fi
+}
 
 case "$1" in
     remove)
         rm -f /etc/apt/apt.conf.d/90n5-fangov
         systemctl daemon-reload 2>/dev/null || true
-        # state dir: session cookies and alert history, nothing worth keeping
+        # state dir: session cookies and alert history, nothing worth
+        # keeping -- except the token store, backed up above
+        backup_tokens
         rm -rf /run/n5-fangov /var/lib/n5-fangov
         ;;
     purge)
         rm -f /etc/apt/apt.conf.d/90n5-fangov
+        backup_tokens
         rm -rf /etc/n5-fangov /run/n5-fangov /var/log/n5-fangov /var/lib/n5-fangov
         rm -f /etc/pve/notification-templates/default/n5-fangov-subject.txt.hbs \
               /etc/pve/notification-templates/default/n5-fangov-body.txt.hbs 2>/dev/null || true

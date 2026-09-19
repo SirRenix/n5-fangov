@@ -23,6 +23,8 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/SirRenix/n5-fangov/internal/sensor"
 )
 
 // Limits used by validation. Exported so the web UI and CLI can show them.
@@ -63,6 +65,12 @@ const (
 	// MaxSensorParts is how many sensor ids one channel may combine
 	// (sensor = ["a", "b"] → the maximum of the parts).
 	MaxSensorParts = 4
+	// MinCeiling / MaxEmergencyCycles bound [[channel]] ceiling (the upper
+	// bound is the sensor's built-in ceiling, sensor.BuiltinCeiling) and
+	// [daemon] emergency_cycles (DESIGN "Ceilings and emergency").
+	MinCeiling             = sensor.MinCeiling
+	MaxEmergencyCycles     = 60
+	DefaultEmergencyCycles = 6
 )
 
 // Profiles accepted in daemon.profile.
@@ -92,7 +100,12 @@ type Daemon struct {
 	StaleCycles   int           `toml:"stale_cycles"`
 	AlertCooldown time.Duration `toml:"alert_cooldown"`
 	LogEvery      int           `toml:"log_every"`
-	Profile       string        `toml:"profile"`
+	// EmergencyCommand runs (/bin/sh -c) once per ceiling episode after a
+	// channel spent EmergencyCycles cycles at its ceiling with 0 RPM, or
+	// three times as many regardless of RPM; "" = off.
+	EmergencyCommand string `toml:"emergency_command"`
+	EmergencyCycles  int    `toml:"emergency_cycles"`
+	Profile          string `toml:"profile"`
 }
 
 // Web holds the HTTP listener settings.
@@ -244,6 +257,9 @@ type Channel struct {
 	// off. Both are curve post-processing (DESIGN "Controller").
 	Hysteresis int           `toml:"hysteresis,omitzero"`
 	MinOn      time.Duration `toml:"min_on,omitzero"`
+	// Ceiling lowers the built-in ceiling of the sensor (sensor.BuiltinCeiling)
+	// when set; 0 = built-in. It can never raise it.
+	Ceiling int `toml:"ceiling,omitzero"`
 	// PostSet is true when the table carried a hysteresis or min_on key
 	// (parser only; Marshal ignores it). The preset merge keeps the config
 	// channel's post-processing when the preset channel says nothing about
@@ -305,15 +321,16 @@ func (w Warning) String() string { return w.Field + ": " + w.Msg }
 func Default() Config {
 	return Config{
 		Daemon: Daemon{
-			Interval:      10 * time.Second,
-			StepUp:        40,
-			StepDown:      15,
-			StallMinDuty:  60,
-			StallCycles:   2,
-			StaleCycles:   18,
-			AlertCooldown: 30 * time.Minute,
-			LogEvery:      30,
-			Profile:       "auto",
+			Interval:        10 * time.Second,
+			StepUp:          40,
+			StepDown:        15,
+			StallMinDuty:    60,
+			StallCycles:     2,
+			StaleCycles:     18,
+			AlertCooldown:   30 * time.Minute,
+			LogEvery:        30,
+			EmergencyCycles: DefaultEmergencyCycles,
+			Profile:         "auto",
 		},
 		Web: Web{
 			Listen: "127.0.0.1:8010",
@@ -625,7 +642,7 @@ func (p *parser) durRaw(prefix string, sec map[string]toml.Primitive, key string
 func (p *parser) daemon(sec map[string]toml.Primitive, d *Daemon) {
 	const pre = "daemon"
 	p.unknown(pre, sec, "interval", "step_up", "step_down", "stall_min_duty", "stall_cycles",
-		"stale_cycles", "alert_cooldown", "log_every", "profile")
+		"stale_cycles", "alert_cooldown", "log_every", "emergency_command", "emergency_cycles", "profile")
 	def := Default().Daemon
 	// interval: below the minimum -> default; above MaxInterval -> clamped
 	// (the operator wanted "slow", the watchdog window only allows 30 s).
@@ -647,6 +664,8 @@ func (p *parser) daemon(sec map[string]toml.Primitive, d *Daemon) {
 	d.StaleCycles = p.intField(pre, sec, "stale_cycles", def.StaleCycles, MinStaleCycle, MaxStaleCycle)
 	d.AlertCooldown = p.durField(pre, sec, "alert_cooldown", def.AlertCooldown, MinCooldown, MaxCooldown)
 	d.LogEvery = p.intField(pre, sec, "log_every", def.LogEvery, 0, 1000000)
+	d.EmergencyCommand, _ = p.strField(pre, sec, "emergency_command", def.EmergencyCommand)
+	d.EmergencyCycles = p.intField(pre, sec, "emergency_cycles", def.EmergencyCycles, 1, MaxEmergencyCycles)
 	prof, _ := p.strField(pre, sec, "profile", def.Profile)
 	prof = enumValue(prof)
 	if !contains(Profiles, prof) {
@@ -982,7 +1001,7 @@ func (p *parser) channels(secs []map[string]toml.Primitive) []Channel {
 		if ok && nameRe.MatchString(name) {
 			pre = "channel." + name
 		}
-		p.unknown(pre, sec, "name", "pwm", "sensor", "curve", "critical", "stop", "hysteresis", "min_on")
+		p.unknown(pre, sec, "name", "pwm", "sensor", "curve", "critical", "stop", "hysteresis", "min_on", "ceiling")
 		if !ok || !nameRe.MatchString(name) {
 			p.warn(pre+".name", "missing or not [a-z0-9_]{1,32}, channel dropped")
 			continue
@@ -1020,6 +1039,10 @@ func (p *parser) channels(secs []map[string]toml.Primitive) []Channel {
 		ch.Stop = p.stop(pre, sec, ch.Sensor)
 		ch.Hysteresis = p.intField(pre, sec, "hysteresis", 0, 0, HysteresisMax)
 		ch.MinOn = p.durField(pre, sec, "min_on", 0, 0, MinOnMax)
+		// ceiling may only lower the built-in one; the parser has no sysfs, so
+		// disk:<dev> ids validate against the default (the daemon applies
+		// min(configured, built-in) anyway)
+		ch.Ceiling = p.ceiling(pre, sec, ch.Sensor)
 		_, hasHyst := sec["hysteresis"]
 		_, hasMinOn := sec["min_on"]
 		ch.PostSet = hasHyst || hasMinOn
@@ -1342,4 +1365,27 @@ func (ch Channel) StopDuty() (int, bool) {
 		return 0, false
 	}
 	return n, true
+}
+
+// ceiling parses [[channel]] ceiling: MinCeiling..the sensor's built-in
+// ceiling (sensor.BuiltinCeiling without a sysfs resolver, so disk:<dev>
+// ids validate against the default). A value above it, or not an integer,
+// yields 0 (= built-in) with a warning: the key can only lower the
+// ceiling, never raise it.
+func (p *parser) ceiling(pre string, sec map[string]toml.Primitive, sensorID string) int {
+	prim, ok := sec["ceiling"]
+	if !ok {
+		return 0
+	}
+	built := sensor.BuiltinCeiling(sensorID, nil)
+	var v int64
+	if err := p.md.PrimitiveDecode(prim, &v); err != nil {
+		p.warn(pre+".ceiling", "not an integer, built-in ceiling %d used", built)
+		return 0
+	}
+	if v < MinCeiling || v > int64(built) {
+		p.warn(pre+".ceiling", "%d outside %d..%d (the built-in ceiling of %s can only be lowered), built-in ceiling %d used", v, MinCeiling, built, sensorID, built)
+		return 0
+	}
+	return int(v)
 }

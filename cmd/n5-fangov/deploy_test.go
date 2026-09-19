@@ -227,7 +227,7 @@ func TestDeployShellSyntax(t *testing.T) {
 	if err != nil {
 		t.Skip("bash not installed: shell syntax check skipped (runs in the bookworm image)")
 	}
-	for _, f := range []string{"install.sh", "uninstall.sh", "n5-fangov-onfailure"} {
+	for _, f := range []string{"install.sh", "uninstall.sh", "n5-fangov-onfailure", "emergency.example.sh"} {
 		path := filepath.Join(deployDir, f)
 		head, err := os.ReadFile(path)
 		if err != nil {
@@ -292,5 +292,54 @@ func TestDeployPackagePinsGateFindings(t *testing.T) {
 	}
 	if strings.Contains(wf, `make deb VERSION="$VERSION"`) {
 		t.Error("release.yml still rebuilds the binary for the .deb with the tag as version")
+	}
+}
+
+// TestDeployTokensBackupOnRemoval pins the 0.4.1 hardening: postrm (remove
+// and purge -- apt purge runs both, the state directory goes with remove)
+// and uninstall.sh back up tokens.json to /var/backups/n5-fangov before
+// the state directory is removed, and both installers ship the emergency
+// example script under /usr/share/doc/n5-fangov/.
+func TestDeployTokensBackupOnRemoval(t *testing.T) {
+	read := func(rel string) string {
+		b, err := os.ReadFile(filepath.Join(deployDir, "..", rel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	postrm := read("deploy/debian/postrm")
+	for _, want := range []string{"backup_tokens()", "/var/backups/n5-fangov/tokens.json.$(date", "chmod 0600", "mkdir -p -m 0700 /var/backups/n5-fangov"} {
+		if !strings.Contains(postrm, want) {
+			t.Errorf("postrm lacks %q", want)
+		}
+	}
+	// the backup call precedes the rm -rf of the state directory in both branches
+	for _, branch := range []string{"remove)", "purge)"} {
+		i := strings.Index(postrm, branch)
+		if i < 0 {
+			t.Fatalf("postrm: no %s branch", branch)
+		}
+		rest := postrm[i:]
+		b, r := strings.Index(rest, "backup_tokens\n"), strings.Index(rest, "/var/lib/n5-fangov\n")
+		if b < 0 || r < 0 || b > r {
+			t.Errorf("postrm %s: backup_tokens at %d, rm of the state dir at %d", branch, b, r)
+		}
+	}
+	un := read("deploy/uninstall.sh")
+	b, r := strings.Index(un, "/var/backups/n5-fangov/tokens.json.$(date"), strings.Index(un, "rm -rf /var/lib/n5-fangov")
+	if b < 0 || r < 0 || b > r || !strings.Contains(un, "chmod 0600") {
+		t.Errorf("uninstall.sh: backup at %d, rm of the state dir at %d", b, r)
+	}
+	for _, f := range []string{"deploy/install.sh", "Makefile"} {
+		if !strings.Contains(read(f), "emergency.example.sh") || !strings.Contains(read(f), "/usr/share/doc/n5-fangov/emergency.example.sh") {
+			t.Errorf("%s does not ship the emergency example", f)
+		}
+	}
+	ex := read("deploy/emergency.example.sh")
+	for _, want := range []string{"N5_CHANNEL", "N5_SENSOR", "N5_TEMP", "N5_CEILING", "N5_RPM", "N5_CYCLES", "logger -t n5-fangov-emergency", "# systemctl poweroff"} {
+		if !strings.Contains(ex, want) {
+			t.Errorf("emergency.example.sh lacks %q", want)
+		}
 	}
 }

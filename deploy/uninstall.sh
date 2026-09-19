@@ -33,7 +33,17 @@ rm -f /etc/apt/apt.conf.d/90n5-fangov
 rm -f /etc/pve/notification-templates/default/n5-fangov-subject.txt.hbs \
       /etc/pve/notification-templates/default/n5-fangov-body.txt.hbs 2>/dev/null || true
 rm -rf /run/n5-fangov
-# sessions.json (dashboard cookies) and alerts.json: nothing worth keeping
+# sessions.json (dashboard cookies) and alerts.json: nothing worth keeping --
+# tokens.json (the only copy of the API token hashes) is backed up first
+if [[ -f /var/lib/n5-fangov/tokens.json ]]; then
+    dest="/var/backups/n5-fangov/tokens.json.$(date +%Y%m%d-%H%M%S)"
+    mkdir -p -m 0700 /var/backups/n5-fangov
+    if cp -p /var/lib/n5-fangov/tokens.json "$dest" && chmod 0600 "$dest" && chown root:root "$dest"; then
+        echo "  API token store backed up to $dest (0600); restore it to /var/lib/n5-fangov/tokens.json after a reinstall"
+    else
+        echo "  WARNING: could not back up /var/lib/n5-fangov/tokens.json to $dest; the API tokens are lost" >&2
+    fi
+fi
 rm -rf /var/lib/n5-fangov
 if [[ $PURGE -eq 1 ]]; then
     rm -rf /etc/n5-fangov /var/log/n5-fangov
