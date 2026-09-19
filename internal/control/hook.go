@@ -32,9 +32,6 @@ func HookStatus(path string) HookState {
 	case !st.Mode().IsRegular():
 		return HookState{State: "refused: not a regular file"}
 	}
-	if uid, ok := fileOwner(st); ok && uid != 0 {
-		return HookState{State: fmt.Sprintf("refused: not owned by root (uid %d)", uid)}
-	}
 	perm := st.Mode().Perm()
 	switch {
 	case perm&0o002 != 0:
@@ -43,6 +40,11 @@ func HookStatus(path string) HookState {
 		return HookState{State: fmt.Sprintf("refused: group-writable (mode %04o)", perm)}
 	case perm&0o100 == 0:
 		return HookState{State: fmt.Sprintf("refused: not executable (mode %04o)", perm)}
+	}
+	// ownership last: the mode reasons are uid-independent and actionable, so tests and
+	// operators see them first; a non-root owner is refused all the same
+	if uid, ok := fileOwner(st); ok && uid != 0 {
+		return HookState{State: fmt.Sprintf("refused: not owned by root (uid %d)", uid)}
 	}
 	return HookState{OK: true, State: "ok"}
 }
