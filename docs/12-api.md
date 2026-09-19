@@ -1,20 +1,7 @@
 # API and integrations
 
-What this page covers: how a script, Home Assistant or an agent talks to the daemon —
-reaching the API, the three ways to authenticate, API tokens and their scopes, the
-OpenAPI document, an overview of every endpoint by scope, the history and CSV
-parameters, and the Home Assistant recipe (REST sensors, a preset command, an
-automation). Request and response bodies are in the OpenAPI document the daemon
-serves, not here.
-
-- [Reaching the API](#reaching-the-api)
-- [Authentication](#authentication)
-- [Scopes](#scopes)
-- [OpenAPI](#openapi)
-- [Endpoints](#endpoints)
-- [History and CSV](#history-and-csv)
-- [Home Assistant](#home-assistant)
-- [Other clients](#other-clients)
+How a script, Home Assistant or an agent talks to the daemon. Request and response
+bodies are in the OpenAPI document the daemon serves, not here.
 
 ## Reaching the API
 
@@ -22,21 +9,21 @@ Base URL = the dashboard's address: `http://127.0.0.1:8010` (scope `local`) or
 `https://n5host:8010` (`lan`, [Setup](03-setup.md)). Everything is under `/api/`;
 answers are JSON, errors `{"error": "…"}` (plus `"errors": [...]` where a list
 exists). The `Host` header must be an IP literal, `localhost`, the listen host or an
-`allowed_hosts` entry — a client that reaches the box by another name gets 421
+`allowed_hosts` entry; any other name gets 421
 ([Host header](08-https-security.md#host-header-and-csrf)).
 
-The automatic certificate is self-signed. Either trust it on the client (`n5-fangov
-cert export n5host.crt`, then `curl --cacert n5host.crt …`;
+The automatic certificate is self-signed. Either trust it on the client
+(`n5-fangov cert export n5host.crt`, then `curl --cacert n5host.crt …`;
 [The certificate](08-https-security.md#the-certificate)) or skip verification
 (`curl -k`, `verify_ssl: false`) on a LAN you trust.
 
-The CLI does not use this port: it talks over the root-only unix socket, without
+The CLI does not use this port; it talks over the root-only unix socket without
 credentials ([The socket](05-cli.md#the-socket)).
 
 ## Authentication
 
-With `auth = "none"` (loopback default) nothing is needed — every caller counts as
-signed in. With `auth = "basic"` there are three ways:
+With `auth = "none"` (loopback default) nothing is needed. With `auth = "basic"` there
+are three ways:
 
 | Caller | Sends | For |
 |---|---|---|
@@ -44,18 +31,16 @@ signed in. With `auth = "basic"` there are three ways:
 | Basic auth | `Authorization: Basic …` (`curl -u admin`) + `X-N5-Fangov-Csrf: 1` on writes | one-off shell commands with the admin password |
 | **API token** | `Authorization: Bearer n5t_...` — **no CSRF header** | scripts, Home Assistant, monitoring, agents |
 
-An API token is the intended way for anything that runs unattended: it has a scope,
-an expiry and can be revoked alone, and it never carries the admin password. Create
-one in the dashboard (Settings → *API tokens*) or with
+Use an API token for anything that runs unattended. Create one in the dashboard
+(Settings → *API tokens*) or with
 `n5-fangov token create NAME --scope read|control|admin [--ttl DAYS]`; the secret is
 shown once. Storage, expiry, revocation, rate limit and what a token can never do:
 [API tokens](08-https-security.md#api-tokens).
 
-In the examples `n5t_...` stands for the whole secret as `token create` printed it
-(`n5t_` plus the random part); a placeholder's angle brackets or dots are never part of
-the header — `Authorization: Bearer <token>` sent literally is a 401.
-`GET /api/session` with the token answers `"via": "bearer"` and the token's scope, the
-quickest proof that the header arrived intact.
+In the examples `n5t_...` stands for the whole secret as `token create` printed it;
+`Authorization: Bearer <token>` sent literally is a 401. `GET /api/session` with the
+token answers `"via": "bearer"` and the scope, the quickest proof that the header
+arrived intact.
 
 ```
 # read: the full snapshot (anonymous callers get the reduced one)
@@ -74,11 +59,11 @@ curl -X POST -H "Authorization: Bearer n5t_..." https://n5host:8010/api/presets/
 curl -u admin -X POST -H "X-N5-Fangov-Csrf: 1" https://n5host:8010/api/presets/n5pro-quiet/apply
 ```
 
-Answers a client has to expect: 401 (no or rejected credentials — an expired or
-revoked token is a 401 too), 403 (scope, or a token on a session-only endpoint),
-421 (Host), 429 (login throttling or the per-token rate limit `{"error":"token rate
-limit"}`), 202 on a config write that needs a restart. A token that is rejected is
-logged and counted like a wrong password ([Login throttling](08-https-security.md#login-throttling)).
+Answers to expect: 401 (no or rejected credentials, an expired or revoked token
+included), 403 (scope, or a token on a session-only endpoint), 421 (Host), 429 (login
+throttling or the per-token rate limit `{"error":"token rate limit"}`), 202 on a config
+write that needs a restart. A rejected token counts like a wrong password
+([Login throttling](08-https-security.md#login-throttling)).
 
 ## Scopes
 
@@ -90,18 +75,17 @@ Cumulative; `read` is the default when a token is created.
 | `control` | `read` + `PUT`/`DELETE /api/override/{name}`, `POST /api/presets/{name}/apply`, `PUT /api/dashboard` |
 | `admin` | everything the dashboard can do **except** token and account management |
 
-No token, `admin` included, can reach `/api/tokens*`, `/api/account/*`, `/api/login`
-or `/api/logout` (403): tokens are created, listed and revoked by a browser session or
+No token, `admin` included, can reach `/api/tokens*`, `/api/account/*`, `/api/login` or
+`/api/logout` (403): tokens are created, listed and revoked by a browser session or
 Basic auth only. Out of scope: 403
 `{"error":"token scope read does not allow PUT /api/override/cpu","scope":"read","required":"control"}`.
 
 ## OpenAPI
 
-`GET /api/openapi.json` (public, no credentials) is an OpenAPI 3.1 document rendered
-from the daemon's route table — the one place every route is declared, so the document
-cannot drift from the server (a test pins both directions). It carries `info.version`
-(the daemon version), the security schemes `bearer`, `basic` and `cookie`, and per
-operation the summary, parameters, request body schema, the response codes, `x-scope`
+`GET /api/openapi.json` (public) is an OpenAPI 3.1 document rendered from the daemon's
+route table, so it cannot drift from the server. It carries `info.version`, the
+security schemes `bearer`, `basic` and `cookie`, and per operation the summary,
+parameters, request body schema, response codes, `x-scope`
 (`read`/`control`/`admin`/session-only) and `x-class` (`public`, `filtered`,
 `protected`). Feed it to a generator, an API client or an agent:
 
@@ -180,15 +164,15 @@ Basic auth only, never a token.
 | `GET` | `/api/account` | user, mode, sessions |
 | `POST` | `/api/account/password`, `/api/account/user`, `/api/account/sessions/revoke` | credentials and sessions |
 
-Body limits: 256 KiB config/import and preset body, 64 KiB certificate upload, 4 KiB for
-override, login, account and token JSON (413 above). Every state-changing request from a
-cookie or Basic caller needs `X-N5-Fangov-Csrf: 1`.
+Body limits: 256 KiB config/import and preset body, 64 KiB certificate upload, 4 KiB
+for override, login, account and token JSON (413 above). Every state-changing request
+from a cookie or Basic caller needs `X-N5-Fangov-Csrf: 1`.
 
 ### Saving a preset with a body
 
 `PUT /api/presets/{name}` (scope `admin`) with an **empty body** stores the `[[channel]]`
-tables the daemon runs. With a JSON body it stores the channels of the body instead —
-the preset editor's path; **nothing is applied** to the daemon either way:
+tables the daemon runs. With a JSON body it stores the channels of the body instead,
+the preset editor's path. **Nothing is applied** to the daemon either way:
 
 ```json
 {"channels": [
@@ -198,19 +182,16 @@ the preset editor's path; **nothing is applied** to the daemon either way:
 ]}
 ```
 
-Schema `PresetSave` in the OpenAPI document: `channels[]` (at least one) of `name`,
-`pwm`, `sensor` (several ids joined by `,`), `curve` (`[temp_c, duty]` pairs) and
-`critical` — required —, `stop` (`auto`, empty = `auto`, or a fixed duty `60..255` as a
-string), `hysteresis` (`0..10`), `min_on` (Go duration, `0s` = off). Unknown keys, a
-point that is not exactly two values, and anything after the JSON object are 400. The
-body is rendered as `[[channel]]` TOML and parsed with the config's own channel rules
-([curve rules](06-configuration.md#curve-rules)); every warning the lenient parser
-would replace by a default is an error here — `400 {"error": "preset rejected",
-"errors": […]}` like `PUT /api/config?strict=1`. The channel set must be the running
-config's (`name@pwmN` per channel; a preset is applied to this host and merged by pwm,
-so other names or pwms would swap curves): 400 otherwise. A built-in name is 409, a body
-above 256 KiB 413, a write failure 500, no preset store 501. 200 `{"ok": true, "saved":
-"<name>"}`.
+Schema `PresetSave`: `channels[]` (at least one) of `name`, `pwm`, `sensor` (several
+ids joined by `,`), `curve` (`[temp_c, duty]` pairs) and `critical` (required), `stop`
+(`auto`, empty = `auto`, or a fixed duty `60..255` as a string), `hysteresis`
+(`0..10`), `min_on` (Go duration, `0s` = off). Unknown keys, a point that is not
+exactly two values, and anything after the JSON object are 400. The body is parsed with
+the config's own [curve rules](06-configuration.md#curve-rules); every warning the
+lenient parser would replace by a default is an error here: `400 {"error": "preset
+rejected", "errors": […]}`. The channel set must be the running config's (`name@pwmN`
+per channel): 400 otherwise. A built-in name is 409, a body above 256 KiB 413, a write
+failure 500, no preset store 501. 200 `{"ok": true, "saved": "<name>"}`.
 
 ```
 curl -u admin -H "X-N5-Fangov-Csrf: 1" -H "Content-Type: application/json" \
@@ -219,19 +200,20 @@ curl -u admin -H "X-N5-Fangov-Csrf: 1" -H "Content-Type: application/json" \
 
 ## History and CSV
 
-`GET /api/history?minutes=N&since=TS` returns `[{ts, temp{}, duty{}, rpm{}, extra{}}]`
-— maps by channel name, `extra` by watched sensor id (omitted when empty; anonymous
+`GET /api/history?minutes=N&since=TS` returns `[{ts, temp{}, duty{}, rpm{}, extra{}}]`:
+maps by channel name, `extra` by watched sensor id (omitted when empty; anonymous
 callers never get it). `minutes` is 1..10080 (7 days; default 120) and selects the
-tier: up to 2 h one point per cycle, up to 24 h one-minute means, above that five-minute
-means; `since` (unix seconds) returns only newer points — the dashboard's 2 h view polls
-this way every 30 s. Points are kept across restarts in
+tier: up to 2 h one point per cycle, up to 24 h one-minute means, above that
+five-minute means. `since` (unix seconds) returns only newer points; the dashboard's
+2 h view polls this way every 30 s. Points are kept across restarts in
 `/var/lib/n5-fangov/history.json`, saved every 10 minutes and at stop
-([Dashboard: Overview](04-dashboard.md#overview)).
+([Overview](04-dashboard.md#overview)).
 
 `GET /api/history.csv?minutes=N` (scope `read`) is the same as an attachment
-`n5-fangov-history-<host>-<YYYYMMDD-HHMMSS>.csv` (host local time): header `ts,time,<ch>_temp,<ch>_duty,<ch>_rpm,…`
-followed by one column per watched sensor id (channels in daemon order, then the ids
-sorted); `time` is RFC 3339 in the host's local time, an absent value is an empty cell.
+`n5-fangov-history-<host>-<YYYYMMDD-HHMMSS>.csv` (host local time): header
+`ts,time,<ch>_temp,<ch>_duty,<ch>_rpm,…` followed by one column per watched sensor id
+(channels in daemon order, then the ids sorted); `time` is RFC 3339 in the host's local
+time, an absent value is an empty cell.
 
 ```
 curl -H "Authorization: Bearer n5t_..." -o week.csv "https://n5host:8010/api/history.csv?minutes=10080"
@@ -243,8 +225,8 @@ Two files hold the complete recipe with documentation values:
 [`openapi/home-assistant-rest.yaml`](openapi/home-assistant-rest.yaml) (sensors and the
 preset command) and [`openapi/home-assistant-automation.yaml`](openapi/home-assistant-automation.yaml)
 (automations). Put the token into `secrets.yaml` as
-`n5_fangov_token: "Bearer n5t_..."` — a `control` token when the preset command is used;
-the sensors alone need `read` or no token at all, because the reduced `/api/state`
+`n5_fangov_token: "Bearer n5t_..."`: a `control` token when the preset command is used.
+The sensors alone need `read` or no token at all, because the reduced `/api/state`
 already carries temperature, RPM and mode per channel.
 
 **Sensors** — one `rest` resource polls `/api/state` every 30 s; each sensor picks its
@@ -274,13 +256,13 @@ rest:
         value_template: "{{ (value_json.channels | selectattr('name', 'eq', 'cpu') | first).mode }}"
 ```
 
-Repeat the three sensors per channel (`ssd`, `hdd`, …); `rpm` is −1 on a channel
-without a tachometer, `temp` −999 while the sensor is unknown — filter those in a
+Repeat the three sensors per channel (`ssd`, `hdd`, …). `rpm` is −1 on a channel
+without a tachometer, `temp` −999 while the sensor is unknown; filter those in a
 template if they should not reach the history.
 
 **On a dashboard** — a *sections* view with one `tile` card per sensor (the package form
 of the sensors above lives in `/config/packages/n5_fangov.yaml`, the card block in the
-dashboard YAML or the UI editor); a verified box, 2026-09-18, rest sensors polling every 30 s:
+dashboard YAML or the UI editor):
 
 ![Home Assistant, System view: heading N5 fans, tiles for controller status, temperature and rpm per channel, hdd mode](screenshots/28-home-assistant-tiles.png)
 
@@ -302,13 +284,12 @@ dashboard YAML or the UI editor); a verified box, 2026-09-18, rest sensors polli
 ```
 
 A `rest:` block that is new to the installation needs one Home Assistant Core restart;
-afterwards *Developer tools → YAML → REST entities and services* (`rest.reload`) picks up
-changes. The controller status sensor (`value_json.status`) is a cheap liveness check for
-an automation.
+afterwards *Developer tools → YAML → REST entities and services* (`rest.reload`) picks
+up changes. The controller status sensor (`value_json.status`) is a cheap liveness
+check for an automation.
 
 **Preset command** — a `rest_command` that applies a preset by name; needs a `control`
-token. A Bearer caller sends **no** `X-N5-Fangov-Csrf` header: that header guards
-cookie and Basic callers only, a token is exempt.
+token. A Bearer caller sends **no** `X-N5-Fangov-Csrf` header.
 
 ```yaml
 rest_command:
@@ -321,8 +302,8 @@ rest_command:
 ```
 
 **Automation** — a plain time-of-day switch belongs into `[[schedule]]` on the box
-([Schedules](06-configuration.md#schedules)); the automation is for triggers only
-Home Assistant knows about:
+([Schedules](06-configuration.md#schedules)); the automation is for triggers only Home
+Assistant knows about:
 
 ```yaml
 automation:
@@ -336,27 +317,25 @@ automation:
           preset: "{{ 'n5pro-quiet' if trigger.to_state.state == 'on' else 'n5pro-balanced' }}"
 ```
 
-**`verify_ssl: false`** skips the check of the daemon's self-signed automatic
-certificate — acceptable on a LAN you trust, and the only option on Home Assistant OS,
-where the container's CA store is not yours to extend. On a Core or Container install
-trust the certificate instead (`n5-fangov cert export`, then the Linux recipe in
-[The certificate](08-https-security.md#the-certificate)) and drop the flag; the same
-holds when the box serves a certificate from a CA Home Assistant already trusts
-(`tls = "file"`).
+**`verify_ssl: false`** skips the check of the self-signed certificate: acceptable on
+a LAN you trust, and the only option on Home Assistant OS, where the container's CA
+store is not yours to extend. On a Core or Container install trust the certificate
+instead (`n5-fangov cert export`, then the Linux recipe in
+[The certificate](08-https-security.md#the-certificate)) and drop the flag. The flag
+is also unnecessary when the box serves a certificate from a CA Home Assistant already
+trusts (`tls = "file"`).
 
-Alerts in the other direction — the daemon pushing to a Home Assistant webhook — are
-the webhook transport ([Alerts](07-alerts.md#webhook)).
+Alerts in the other direction, the daemon pushing to a Home Assistant webhook:
+[Webhook](07-alerts.md#webhook).
 
 ## Other clients
 
 - **Monitoring** — poll `/api/state` with a `read` token; `status` is `starting` (first
-  cycle not done yet), `ok`, `sensor-error`, `write-error` or `dry-run`, a channel
-  `mode` other than `auto`/`manual` is worth an alarm. `/api/system` adds per-disk temperatures.
+  cycle not done yet), `ok`, `sensor-error`, `write-error` or `dry-run`. A channel
+  `mode` other than `auto`/`manual` is worth an alarm. `/api/system` adds per-disk
+  temperatures.
 - **Agents** — hand them `/api/openapi.json` and a token with the smallest scope that
   does the job; `control` lets an agent apply presets and set overrides, never edit
   curves or credentials.
 - **Shell on the box itself** — `n5-fangov status|set|auto|…` over the socket needs no
   token ([CLI](05-cli.md)).
-
-Next: [HTTPS and security](08-https-security.md) · [Configuration](06-configuration.md) ·
-[Alerts](07-alerts.md)

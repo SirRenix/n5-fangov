@@ -53,6 +53,14 @@ token scopes). No design yet.
 
 ## [0.4.1] — 2026-09-19
 
+**Safety.** Every channel now has a hard temperature ceiling that no configuration can
+raise (HDD 65, NVMe/SSD 85, CPU 100 °C): at the ceiling the fan goes to full speed and an
+alert is raised, whatever curve, override or `critical` say. Optional emergency hook for a
+failed fan — a root-owned script at `/etc/n5-fangov/emergency.sh`, never writable through
+the API. `webhook_url` is cleared when you switch the transport away from webhook; `apt
+purge` backs up `tokens.json`. Tested on the reference host (update re-test U1–U5).
+
+### Background
 **Release gate.** The update re-test U1–U5 (`docs/RELEASE-GATE.md`) passed on the
 reference host on 2026-09-19: package update over 0.4.0 (U1), `check` advisory with
 `critical = 70` (U2), live `ceiling = 30` on the HDD channel → 255, mode `critical`,
@@ -202,6 +210,13 @@ root code execution for an admin token: fixed by design, "Security").
 
 ## [0.4.0] — 2026-09-19
 
+**Dashboard redesign — first public release.** Sidebar with eight pages instead of nine
+tabs, a Fans page per channel with curve editor, manual override switch and presets, an
+editable Schedules page, one Settings page, sparklines, new screenshots. One backend change:
+`PUT /api/presets/{name}` takes the preset's values as JSON. Tested on the reference host
+(release gate rc1–rc5).
+
+### Background
 The dashboard redesign: a sidebar shell with eight pages instead of nine tabs, a
 channel-centric Fans page with an explicit override switch and a preset editor, an
 editable Schedules page, one Settings page in place of the gear popover and the two
@@ -470,6 +485,12 @@ once after publication.
 
 ## [0.3.1] — 2026-09-18
 
+**The 0.3.x feature set.** API tokens with scopes, OpenAPI, webhook alerts, hysteresis and
+minimum on-time per channel, composite and per-disk sensors, optional pwm4, schedules,
+7-day history with CSV, and the dashboard for all of it. First release that went through
+the manual release gate on the reference host (all ten rows, including the reboot proof).
+
+### Background
 The 0.3.x feature set as a release: API tokens, OpenAPI, webhook alerts, curve
 post-processing, composite and per-disk sensors, pwm4, schedules, tiered history with CSV,
 the dashboard for all of it, the maintenance debt from the audit, and the findings of the

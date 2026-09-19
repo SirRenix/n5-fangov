@@ -7,24 +7,26 @@ systemd sandbox are welcome.
 
 ## Reporting a vulnerability
 
-- **Preferred:** GitHub private vulnerability reporting, enabled on this repository
-  since it went public with 0.4.0 — *Security → Report a vulnerability*. The report
-  stays private until a fix is out.
+- **Preferred:** GitHub private vulnerability reporting on this repository —
+  *Security → Report a vulnerability*. The report stays private until a fix is out.
 - Do **not** open a public issue or pull request for a security problem.
 - Include: version (`n5-fangov version`), how the daemon is reached (loopback /
   LAN, `auth`, `tls` mode), steps to reproduce, and what an attacker gains.
-  Please do not include your real addresses, host names or certificates —
+  Please do not include your real addresses, host names or certificates;
   replace them with documentation values (`192.0.2.x`, `n5host`).
 
-Expect an acknowledgement within 7 days and a fix or a workaround within 30 days
-for confirmed issues. Fixed versions are listed in `CHANGELOG.md`; the release
-notes name the report (credit optional, say if you prefer not to be named).
+This is a one-person project done in my spare time. I read reports as soon as I
+can and take confirmed problems seriously, but I cannot promise response or fix
+times. If a problem is serious and you do not hear back, stop the daemon
+(`systemctl stop n5-fangov`: the fans return to the safe state) until a fix is out.
+Fixed versions are listed in `CHANGELOG.md`; the release notes name the report
+(credit optional, say if you prefer not to be named).
 
 ## Supported versions
 
 | Version | Supported |
 |---|---|
-| latest release / pre-release on the releases page | yes |
+| latest release / pre-release on the releases page | fixes go here |
 | anything older | no — update |
 
 ## Scope notes

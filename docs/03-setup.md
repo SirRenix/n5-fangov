@@ -1,39 +1,28 @@
 # Setup
 
-What this page covers: `n5-fangov setup` — profile, dashboard scope, password rules,
-the non-interactive form — the first check and start, and how to change the user or
-password later.
+`n5-fangov setup` writes the config for this machine and asks three things. Run it as
+root after the install.
 
-- [What setup writes](#what-setup-writes)
-- [Non-interactive](#non-interactive)
-- [First check and start](#first-check-and-start)
-- [Change user or password later](#change-user-or-password-later)
+## What it asks
 
-## What setup writes
+```
+n5-fangov setup
+```
 
-`n5-fangov setup` writes `/etc/n5-fangov/config.toml` for this machine:
+1. **Profile** — detected. On the N5 Pro you get the three channels of the built-in
+   preset `n5pro-balanced` (the recommended one). On `nct67xx`/`it87xx` you get one
+   conservative channel per PWM output on the CPU sensor (`k10temp`, else `coretemp`,
+   else the first hwmon temperature); `monitor` writes no channels. No profile found
+   means the kernel driver is not loaded or `experimental_write=1` is missing — see
+   [Kernel driver](02-kernel-driver.md).
+2. **Scope** — `local` or `lan`.
+   - `local`: `127.0.0.1:8010`, no login, plain HTTP. Reach it with `ssh -L 8010:127.0.0.1:8010 n5host`.
+   - `lan`: your LAN address, login required, HTTPS with a self-signed certificate.
+3. **User and password** — password twice, no echo, 8 to 128 characters.
 
-1. **Profile**: detected on the box (`n5pro` → the three-channel set of the built-in preset
-   `n5pro-balanced`, the recommended one;
-   `nct67xx`/`it87xx` → one conservative channel per PWM output, sensor `k10temp` /
-   `coretemp` / first hwmon temperature; `monitor` → no channels). No detected profile
-   → `setup` refuses; on the N5 Pro that means the [kernel driver](02-kernel-driver.md)
-   is not loaded or lacks `experimental_write=1`.
-2. **Scope** of the web UI:
-   - `local` — `127.0.0.1:8010`, no auth, plain HTTP. Reach it with
-     `ssh -L 8010:127.0.0.1:8010 n5host` or put a reverse proxy in front
-     ([behind a reverse proxy](08-https-security.md#behind-a-reverse-proxy)).
-   - `lan` — the primary LAN address, **basic auth** (user + password asked twice
-     without echo) and **HTTPS** with an automatically created self-signed certificate.
-   - `HOST:PORT` — explicit address; non-loopback implies auth + HTTPS like `lan`. The
-     dialog asks only `scope (local|lan)`; an explicit address exists as the flag
-     `--listen HOST:PORT` ([Non-interactive](#non-interactive)).
-3. An existing config is backed up (`config.toml.bak-<timestamp>`) before it is replaced.
+An existing config is backed up as `config.toml.bak-<timestamp>` first.
 
-Passwords are 8..128 characters, user names `[A-Za-z0-9_.-]{1,32}`. The hash that lands
-in the file is described in [Password hashes](08-https-security.md#password-hashes).
-
-The dialog on an N5 Pro, scope `lan`:
+This is what it looks like on an N5 Pro with `lan`:
 
 ```
 profile: n5pro (Minisforum N5 Pro (IT5571 EC)) at /sys/class/hwmon/hwmon10  [verified on hardware]
@@ -51,36 +40,29 @@ repeat password:
 written: /etc/n5-fangov/config.toml
 ```
 
-The channel lines are the built-in preset `n5pro-balanced` (the recommended set), and that
-is what `setup` writes (since 0.3.1; before, a separate default set that matched no
-preset). `n5pro-quiet` and `n5pro-cool` are applied from the
-[Presets row of the Fans page](04-dashboard.md#presets); the values of all three are in
-[Presets](06-configuration.md#presets). The hwmon number (`hwmon10` here) is not stable
-across boots ([Verify](02-kernel-driver.md#verify)).
+The `hwmon10` number changes between boots. That is normal, the daemon finds the
+device by name.
 
-## Non-interactive
+## Without questions
 
 ```
 n5-fangov setup --yes --listen lan --user admin --password-file /root/pw
 ```
 
-`--yes` asks nothing and needs every flag. The password comes from `--password-file F`
-(first line, mode 0600 recommended) or `--password -` (one line on stdin); there is no
-literal form, so it never lands in `ps` or the shell history. `--profile` overrides the
-detection (`auto|n5pro|nct67xx|it87xx|monitor`); all flags in the [CLI reference](05-cli.md).
+`--yes` needs every flag. The password comes from a file (`--password-file`) or stdin
+(`--password -`), never from the command line — so it never shows up in `ps` or your
+shell history. All flags: [CLI](05-cli.md).
 
-## First check and start
+## Check and start
 
 ```
-n5-fangov check                  # what serve will do with this config
+n5-fangov check
 systemctl enable --now n5-fangov
 n5-fangov status
 ```
 
-`check` walks config, profile, pwm writability, sensors, tls, log and dkms and prints
-`[ok]`/failure per item; it is the same check the unit runs before every start. The
-tail of a good run before the first start (`socket` is skipped while the unit is not
-active — that is not a failure):
+`check` prints one line per item and ends with `check: all good`. The tail of a good
+run before the first start — `socket … unit not active` at this point is fine:
 
 ```
 [ok  ] web                    listen 192.0.2.20:8010, auth basic, tls auto
@@ -91,7 +73,7 @@ active — that is not a failure):
 check: all good
 ```
 
-`status` right after the start:
+`status` shows every channel with temperature, duty and mode:
 
 ```
 n5-fangov: ok  profile n5pro (verified)  uptime 0m00s  unit active
@@ -103,23 +85,18 @@ hwmon: /sys/class/hwmon/hwmon10
       hdd  drivetemp:max  42.0 C   195  76%  2253  auto
 ```
 
-Then open the [dashboard](04-dashboard.md) — `http://127.0.0.1:8010` (`local`) or
-`https://n5host:8010` (`lan`); the browser warning for the self-signed certificate is
-handled in [HTTPS](08-https-security.md#the-certificate).
+Now open the [dashboard](04-dashboard.md): `http://127.0.0.1:8010` for `local`,
+`https://n5host:8010` for `lan`. The browser will warn about the certificate once —
+[here is how to trust it](08-https-security.md#the-certificate).
 
 ## Change user or password later
 
-- In the dashboard: Settings → *Account & sessions* → *Change password…* / *Change user…*
-  ([Account & sessions](04-dashboard.md#account--sessions)); takes effect at once.
-- From the shell: `n5-fangov passwd` (same `--user` / `--password-file` / `--password -`
-  flags as `setup`) edits the file in place; `systemctl restart n5-fangov` applies it.
-  This is also the way back in for a forgotten password. A change made outside the
-  dashboard drops every persisted browser session at the next start.
+- Dashboard: Settings → *Account & sessions*.
+- Shell: `n5-fangov passwd`, then `systemctl restart n5-fangov`. This is also the way
+  back in if you forgot the password — root on the box is the recovery.
 
-The reference with every key explained is `/usr/share/doc/n5-fangov/config.example.toml`;
-the table is in [Configuration](06-configuration.md). Scripts and Home Assistant do
-not get the password: create an API token with the scope they need
-([API and integrations](12-api.md#authentication)).
+Scripts and Home Assistant should not use the password. Give them an
+[API token](12-api.md#authentication) with the scope they need.
 
-Next: [Dashboard](04-dashboard.md) · [Configuration](06-configuration.md) ·
-[HTTPS and security](08-https-security.md)
+Every config key is explained in `/usr/share/doc/n5-fangov/config.example.toml` and in
+[Configuration](06-configuration.md).
