@@ -36,19 +36,21 @@ clear).
 | Script gets `403` | the endpoint is outside the token's scope (`required` in the answer), or it is a token on a session-only endpoint (`/api/tokens*`, `/api/account/*`), or a cookie/Basic caller without `X-N5-Fangov-Csrf: 1` | create a token with the scope the answer names; tokens and account changes go through the dashboard or Basic auth ([Scopes](12-api.md#scopes)) |
 | Script gets `429` | per-token rate limit (20 req/s sustained, burst 40) or the login throttling after rejected credentials | poll less often; one `/api/state` call carries every channel |
 | Webhook alerts fail (`webhook: <status or error>` on *Send test alert*) | the receiver did not answer 2xx (wrong path or token, a redirect — n5-fangov follows none), the TLS certificate is not in the system CA pool (no insecure switch), or the box has no route | use the final URL; the receiver's own log; a self-signed receiver needs its CA under `/usr/local/share/ca-certificates/` + `update-ca-certificates`, or plain `http` on the LAN; the log shows the URL without its query ([Webhook](07-alerts.md#webhook)) |
-| A channel sits at 255 in mode `critical` although the reading is **below** its `critical` | the reading reached the sensor kind's built-in **ceiling** (HDD 65 / SSD 85 / CPU 100 Â°C, or a lower `[[channel]] ceiling`); it stays until the reading is 3 Â°C below | Alerts page: kind `ceiling`; `n5-fangov status` / `GET /api/state` (`ceiling`, `ceiling_hit`); `n5-fangov check` warns when `critical` is above the ceiling ([Ceilings](06-configuration.md#ceilings-and-the-emergency-action)) |
+| A channel sits at 255 in mode `critical` although the reading is **below** its `critical` | the reading reached the sensor kind's built-in **ceiling** (HDD 65 / SSD 85 / CPU 100 °C, or a lower `[[channel]] ceiling`); it stays until the reading is 3 °C below | Alerts page: kind `ceiling`; `n5-fangov status` / `GET /api/state` (`ceiling`, `ceiling_hit`); `n5-fangov check` warns when `critical` is above the ceiling ([Ceilings](06-configuration.md#ceilings-and-the-emergency-action)) |
 | Chart history has a gap after a restart | `history.json` is written every 10 minutes and at a clean stop — a crash, kill or watchdog restart loses up to 10 minutes; an unwritable state directory keeps the history in memory only (one journal line at start) | expected after a hard restart; otherwise `ls -l /var/lib/n5-fangov/history.json` and the journal line about the state dir |
 
 ## What check reports
 
 `n5-fangov check` walks the same list the unit runs as `ExecStartPre` before every
 start: config (invalid values that fell back to their default, the misconfigured
-`auth` field), profile detection, pwm writability, sensors, tls, log, dkms (module for
-the running kernel). Exit 1 means `serve` could not run with this config; `--quiet`
-prints failures only; `--after-update` is the apt hook's
-[kernel gate](02-kernel-driver.md#the-kernel-update-gate). It also warns about
-`auth = "none"` on a non-loopback listener and a degraded alert transport (including
-`webhook` without a usable URL).
+`auth` field), profile detection, pwm writability, sensors, the emergency hook
+(`/etc/n5-fangov/emergency.sh`: `ok`, `absent` or `refused: <why>` — a warning only
+with `emergency = true`), tls, log, dkms (module for the running kernel). Exit 1 means
+`serve` could not run with this config; `--quiet` prints failures only;
+`--after-update` is the apt hook's [kernel gate](02-kernel-driver.md#the-kernel-update-gate).
+It also warns about `auth = "none"` on a non-loopback listener, a `critical` above the
+channel's ceiling and a degraded alert transport (including `webhook` without a usable
+URL).
 
 ## Logs
 

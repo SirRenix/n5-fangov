@@ -49,8 +49,8 @@ unknown keys and ignores them.
 | `stale_cycles` | 6..600 — first channel's sensor bit-identical this many cycles = frozen (checked on `k10temp` only) | 18 | reload |
 | `alert_cooldown` | `60s`..`24h` per alert kind | `30m` | reload |
 | `log_every` | status line every N cycles, 0 = never | 30 | reload |
-| `emergency_command` | shell command run once per ceiling episode ([below](#ceilings-and-the-emergency-action)); `""` = off | `""` | reload |
-| `emergency_cycles` | 1..60 consecutive cycles at the ceiling before the action (Ã 3 when the fan still spins) | 6 | reload |
+| `emergency` | `true` runs the emergency hook `/etc/n5-fangov/emergency.sh` once per ceiling episode ([below](#ceilings-and-the-emergency-action)); the path is fixed, no key names a command | `false` | reload |
+| `emergency_cycles` | 1..60 consecutive cycles at the ceiling before the action (× 3 when the fan still spins) | 6 | reload |
 | `profile` | `auto` \| `n5pro` \| `nct67xx` \| `it87xx` \| `monitor` | `auto` | restart |
 | `[web] listen` | `host:port` | `127.0.0.1:8010` | restart |
 | `auth` | `none` \| `basic` (needs `user` + `password_hash`, otherwise `none` **and** loopback) | `none` | restart |
@@ -76,7 +76,7 @@ unknown keys and ignores them.
 | `stop` | `"auto"` (back to the chip) or a fixed duty 60..255 (`drivetemp:max` channels — and every composite that contains it — default to `140`; N5 Pro pwm3 never `auto`) | by sensor | reload |
 | `hysteresis` | 0..10 °C, integer; 0 = off ([below](#hysteresis-and-minimum-on-time)) | 0 | reload |
 | `min_on` | duration `0s`..`1h`; `0s` = off ([below](#hysteresis-and-minimum-on-time)) | `0s` | reload |
-| `ceiling` | 30..the sensor kind's built-in ceiling â may only **lower** it ([below](#ceilings-and-the-emergency-action)); above it â warning, built-in value; missing = built-in | built-in | reload |
+| `ceiling` | 30..the sensor kind's built-in ceiling — may only **lower** it ([below](#ceilings-and-the-emergency-action)); above it → warning, built-in value; missing or `0` = built-in; on a composite it lowers every part | built-in | reload |
 | `[[schedule]] preset` | preset name `[a-z0-9_-]{1,64}` (existence is checked when the switch happens, not when the file is read) | — | reload |
 | `from`, `to` | `HH:MM` (24 h, local time of the host), both or neither; `from == to` → entry dropped; `to < from` = the window crosses midnight | — | reload |
 | `days` | subset of `mon tue wed thu fri sat sun` (lower-cased, distinct); the day of a window is the day `from` falls in; missing = every day | all | reload |
@@ -159,55 +159,95 @@ disks do not.
 - The built-in ceiling follows the sensor kind: **CPU 100 °C** (`k10temp`, `coretemp`,
   `ec:cpu`, `hwmon:…cpu…`), **SSD 85 °C** (`nvme:max`, `disk:<dev>` of an NVMe or
   non-rotational device), **HDD 65 °C** (`drivetemp:max`, `disk:<dev>` of a rotational
-  device), everything else 100 °C. A composite sensor takes the **lowest** ceiling of its
-  parts.
-- `[[channel]] ceiling = N` may only **lower** it (30..built-in). A value above the built-in
-  ceiling is a warning and the built-in one stays — like every other invalid channel
-  key, a 400 for the curve editor's strict write. `GET /api/state` reports the effective
-  value per channel (`ceiling`) and whether the channel is in the ceiling state
-  (`ceiling_hit`); the Fans page draws it as the second dashed line of the curve editor.
+  device), everything else 100 °C.
+- A **composite** sensor is judged **per part**: each part against its own kind's
+  ceiling. `["nvme:max", "disk:sda"]` holds the NVMe to 85 and the HDD to 65 — an NVMe at
+  70 °C is not an episode, the HDD at 65 is. `GET /api/state` reports the **lowest** part
+  ceiling as the channel's `ceiling` (that is what the curve editor draws); the alert
+  names the part (`hdd: disk:sda of nvme:max,disk:sda at 66.0C reached the ceiling 65C`).
+- `[[channel]] ceiling = N` may only **lower** it (30..built-in; on a composite every
+  part). A value above the built-in ceiling is a warning and the built-in one stays —
+  like every other invalid channel key, a 400 for the curve editor's strict write. `GET
+  /api/state` reports the effective value per channel (`ceiling`) and whether the channel
+  is in the ceiling state (`ceiling_hit`); the Fans page draws it as the second dashed
+  line of the curve editor. A `disk:<dev>` whose device is absent at start (SATA missing
+  after a warm reboot) runs at 100 until the device is there; the daemon retries the
+  sensor every cycle and takes the kind — and the 65/85 — with it, no reload needed.
 - At or above the ceiling the channel goes to **255 at once**, mode `critical`, whatever
   the curve, a manual override, hysteresis, `min_on` or `critical` say — and stays
-  there until the raw reading is **3 °C below** the ceiling (so the fan does not flap at
-  the line). The alert `ceiling` is raised on the way in
-  ([Alerts](07-alerts.md#alert-kinds)).
+  there until the raw reading is **3 °C below** the ceiling (every part, for a composite;
+  so the fan does not flap at the line). A sensor that fails **inside** an episode does
+  not end it and does not drop the channel to its safe duty: it stays at 255 (mode
+  `sensor-error`) until a reading ends the episode. The alert `ceiling` is raised on the
+  way in ([Alerts](07-alerts.md#alert-kinds)).
 - A `critical` **above** the ceiling is accepted — it is meaningless, the ceiling acts
   first. `n5-fangov check` says so with an advisory line (`channel hdd: critical 70
-  above the built-in ceiling 65 — the ceiling acts first`) and still passes; the Fans
-  page repeats the warning in its notice after *Apply* and does not block.
+  above the built-in ceiling 65 — the ceiling acts first`; `configured ceiling 50` when
+  it is your own `ceiling` that sits below `critical`) and still passes; the Fans page
+  repeats the warning in its notice after *Apply* and does not block.
 
-**Emergency action.** `[daemon] emergency_command` (default `""` = off) is run by
-`/bin/sh -c` when a channel has stayed at its ceiling for `emergency_cycles`
-consecutive cycles (default 6, 1..60) **and** its fan reports 0 RPM — the fan has
-failed —, or for **3 ×** `emergency_cycles` cycles regardless of RPM — cooling is not
-working. It runs **once** per ceiling episode and re-arms only after the channel has
-left the ceiling state; the run is bounded to 60 s, its output goes to the daemon log
-(`emergency[<channel>]: …`), and the alert `emergency` carries the reason and the exit
-status (`command exited 0`, the exit code, `timeout after 1m0s`). With an empty command
-nothing runs and no `emergency` alert is raised — the `ceiling` alert already covers
-the episode. The daemon adds to the environment: `N5_CHANNEL`, `N5_SENSOR`, `N5_TEMP`
-(°C), `N5_CEILING` (°C), `N5_RPM` (`-1` without a tachometer), `N5_CYCLES`.
+**Emergency action.** `[daemon] emergency = true` (default `false`) makes the daemon run
+the **emergency hook** when a channel has stayed at its ceiling for `emergency_cycles`
+consecutive cycles (default 6, 1..60) **and** the stall detection reports its fan as
+stopped (`stall_cycles` zero readings at a duty it should turn at — the fan has failed;
+a single 0 RPM sample never counts), or for **3 ×** `emergency_cycles` cycles regardless
+of RPM — cooling is not working. The counter runs on every cycle in the ceiling state,
+the hysteresis zone included: a drive at 63 °C after one reading at 65 still counts.
 
-`/usr/share/doc/n5-fangov/emergency.example.sh` (from `deploy/`) logs the values through
-`logger -t n5-fangov-emergency` and carries a commented `systemctl poweroff` line. The
-command runs **inside the unit's sandbox**
-([Hardening](08-https-security.md#hardening)): what is known from the unit file is that
-`AF_UNIX` and the `@system-service` syscall set are allowed, so `logger` reaches the
-journal socket and `systemctl` reaches PID 1 over its private socket; the capability
-set is empty, but a poweroff is carried out by PID 1, not by the caller, and root needs
-no polkit for it. **Neither `systemctl poweroff` nor `logger` has been executed from
-inside the sandbox on the reference host as of 0.4.1-rc1** — the release-gate re-test
-runs the `logger` form; the poweroff form is *to be verified on the host*: set
-`emergency_cycles = 1` and a test ceiling on a channel you can heat safely (or `ceiling
-= 30` on the HDD channel for a moment), point `emergency_command` at a copy of the
-example with the line uncommented, and expect the box to go down cleanly. Start with the
-`logger` line.
+The hook is **one file at a fixed path**: `/etc/n5-fangov/emergency.sh`. There is no
+config key and no API field that names a command or a path — the file is root's, you
+install it by hand, and nothing the dashboard or a token can do creates or changes it
+([What no token can do](08-https-security.md#api-tokens)). The daemon runs it only when
+it is a regular file (not a symlink) owned by root, executable, and neither group- nor
+world-writable (`0700`, `0750` or `0755`); anything else is one log line per episode
+(`hook /etc/n5-fangov/emergency.sh refused: world-writable (mode 0777), nothing runs`)
+and no run. `n5-fangov check` prints the state — `emergency hook   /etc/n5-fangov/emergency.sh (ok)`,
+`(absent)` or `(refused: …)` — and warns when `emergency = true` and it is not `ok`.
+
+The hook runs **once** per ceiling episode and re-arms only after the channel has left
+the ceiling state; the run is bounded to 60 s (the hook's whole process group is
+killed at the timeout, so a child it left behind dies too), the first 4 KiB of its
+output go to the daemon log (`emergency[<channel>]: …`), and the alert `emergency`
+carries the reason and the exit status (`hook exited 0`, the exit code, `timeout after
+1m0s`). With `emergency = false` nothing runs and no `emergency` alert is raised — the
+`ceiling` alert already covers the episode. The daemon adds to the environment:
+`N5_CHANNEL`, `N5_SENSOR` (the channel's sensor id), `N5_PART` (the part at its
+ceiling; equal to `N5_SENSOR` unless the sensor is a composite), `N5_TEMP` (that part's
+reading, °C), `N5_CEILING` (that part's ceiling, °C), `N5_RPM` (`-1` without a
+tachometer), `N5_CYCLES`. A hook that powers the box off ends the daemon before the
+`emergency` alert can leave — the daemon's log line `running /etc/n5-fangov/emergency.sh`
+and what the hook itself wrote to the journal are the lasting evidence.
+
+`/usr/share/doc/n5-fangov/examples/emergency.example.sh` (from `deploy/`) is the
+template: it logs the values through `logger -t n5-fangov-emergency`, exits with the
+status of its last command (`set -eu`, no `exit 0` at the end, so a failed `logger`
+shows in the alert) and carries a commented `systemctl poweroff` line. Install it:
+
+```sh
+install -m 0750 -o root -g root /usr/share/doc/n5-fangov/examples/emergency.example.sh /etc/n5-fangov/emergency.sh
+n5-fangov check          # emergency hook   /etc/n5-fangov/emergency.sh (ok)
+```
 
 ```toml
 [daemon]
-emergency_command = "/usr/local/sbin/n5-fangov-emergency"   # a copy of the example, root-owned, 0755
-emergency_cycles = 6                                          # 60 s at 10 s interval with a dead fan, 180 s without
+emergency = true         # the hook above
+emergency_cycles = 6     # 60 s at 10 s interval with a stalled fan, 180 s without
 ```
+
+The hook runs **inside the unit's sandbox** ([Hardening](08-https-security.md#hardening)):
+what is known from the unit file is that `AF_UNIX` and the `@system-service` syscall
+set are allowed, so `logger` reaches the journal socket and `systemctl` reaches PID 1
+over its private socket; the capability set is empty, but a poweroff is carried out by
+PID 1, not by the caller, and root needs no polkit for it. `ProtectHome=yes` hides
+`/root` and `/home` (a script there is invisible to the daemon), the hook can write only
+under the unit's `ReadWritePaths` (`/etc/n5-fangov`, `/var/lib/n5-fangov`, …), and
+`TimeoutStopSec=20` ends a running hook when the unit stops. **Neither `systemctl
+poweroff` nor `logger` has been executed from inside the sandbox on the reference host
+as of 0.4.1-rc1** — the release-gate re-test runs the `logger` form; the poweroff form
+is *to be verified on the host*: set `emergency_cycles = 1` and a test ceiling on a
+channel you can heat safely (or `ceiling = 30` on the HDD channel for a moment),
+uncomment the line in your copy of the hook, and expect the box to go down cleanly.
+Start with the `logger` line.
 
 ## Sensor ids
 
@@ -341,8 +381,8 @@ default behind their back; the preset body of `PUT /api/presets/{name}` is check
 same way. The bounds the UI checks against come from `GET /api/version` as `limits`:
 `curve_points_max`, `critical_min`, `critical_max`, `min_hdd_override` (the lowest
 fixed `stop` and the manual-override floor for HDD-like channels), `hysteresis_max`,
-`min_on_max_s`, `password_min`, `password_max` and `dashboard_sensors_max` — nothing
-else; the temperature range, the duty scale and the name rules for users, presets and
+`min_on_max_s`, `password_min`, `password_max`, `dashboard_sensors_max` and
+`ceiling_min` (30) — nothing else; the temperature range, the duty scale and the name rules for users, presets and
 channels are client constants that mirror the parser. A hand-edited file goes through
 the lenient path: defaults plus a `config` alert.
 

@@ -17,7 +17,7 @@ drove the 0.3.1 work is `docs/AUDIT.md` (code) and `docs/DESIGN-AUDIT.md`
 ### Roadmap (operator decision 2026-09-19)
 
 **0.4.1 — safety** is in test as 0.4.1-rc1 (below). Open from its scope: the
-`systemctl poweroff` form of the emergency command has not been executed from inside
+`systemctl poweroff` form of the emergency hook has not been executed from inside
 the sandbox on the reference host (documented as "to be verified on the host").
 
 **0.4.2 — operations and polish.**
@@ -53,46 +53,71 @@ token scopes). No design yet.
 
 ## [0.4.1-rc1] — 2026-09-19
 
-Safety: the guard chain gets a floor that no configuration can lower, an optional
-emergency action for the case where a fan has failed, and two hardening fixes. Contract:
-DESIGN §6 "Ceilings and emergency" (cycle order, state, alert texts), §3 (keys), §9
-(state fields, `ceiling_min`), §11 (dashboard), §12 (sandbox, tokens backup). Verified
-in the Docker builder (`gofmt`, `go vet`, `go test`, `-race` on the controller); the
-host re-test is the "Update re-test" section of `docs/RELEASE-GATE.md`.
+Safety: the guard chain gets a floor that no configuration can raise, an optional
+emergency hook for the case where a fan has failed, and two hardening fixes. Contract:
+DESIGN §6 "Ceilings and emergency" (cycle order, state, alert texts), §3 (keys), §5
+(composite parts), §9 (state fields, `ceiling_min`), §11 (dashboard), §12 (sandbox,
+why the hook is a file, tokens backup). Verified in the Docker builder (`gofmt`, `go
+vet`, `go test`, `-race` on the controller and cmd); the host re-test is the "Update
+re-test" section of `docs/RELEASE-GATE.md`. The rc1 draft went through a code review
+before the host re-test; its findings `S01`…`S21` are folded in below (the review named
+`emergency_command` — a command string in the config, writable through the API — as
+root code execution for an admin token: fixed by design, "Security").
 
 ### Added
 
 - **Hard ceilings.** Every channel has a ceiling temperature derived from its sensor
   kind, independent of `critical`: CPU 100 °C (`k10temp`, `coretemp`, `ec:cpu`,
   `hwmon:…cpu…`), SSD 85 °C (`nvme:max`, `disk:<dev>` of kind ssd), HDD 65 °C
-  (`drivetemp:max`, `disk:<dev>` of kind hdd), everything else 100 °C; a composite takes
-  the lowest of its parts (`sensor.BuiltinCeiling`). `[[channel]] ceiling = N` may only
-  lower it (30..built-in; above → warning + built-in value, strict write → 400). Rule in
-  the cycle after critical and before the stall check: raw reading at/above the ceiling →
-  255 immediately, mode `critical`, whatever curve, override, hysteresis, `min_on` or
-  `critical` say; the channel stays there until the reading is 3 °C below the ceiling.
-  Alert kind `ceiling` on the transition (sensor, reading, ceiling and the configured
-  critical in the text; cooldown as every kind). `n5-fangov check` prints an advisory
-  `channel hdd: critical 70 above the built-in ceiling 65 — the ceiling acts first` when
-  `critical` is above the ceiling and still passes. `GET /api/state` channels carry
-  `ceiling` (°C) and `ceiling_hit`; `GET /api/version` limits carry `ceiling_min` (30);
-  OpenAPI schemas updated. Controller tests: ceiling forces 255 with a higher critical,
-  override ignored at the ceiling, recovery hysteresis, composite takes the lowest,
-  configured ceiling lowers but cannot raise, `disk:<dev>` kinds through the resolver;
-  config tests for the key; web tests for the state fields and the strict 400.
-- **Emergency action.** `[daemon] emergency_command = ""` (off by default) and
+  (`drivetemp:max`, `disk:<dev>` of kind hdd), everything else 100 °C. A **composite is
+  judged per part** (`sensor.PartCeilings`, `PartsReader`): each part against its own
+  kind's ceiling, so `["nvme:max", "disk:sda"]` holds the NVMe to 85 and the HDD to 65
+  — the rc1 draft compared the composite's maximum with its lowest ceiling, which put
+  an NVMe at 65 °C on 255 (review S02); the channel reports the lowest part ceiling as
+  `ceiling`, the alert names the part. `[[channel]] ceiling = N` may only lower it
+  (30..built-in, an explicit 0 = built-in without a warning — S10; on a composite every
+  part; above → warning + built-in value, strict write → 400). Rule in the cycle after
+  critical and before the stall check: a part at/above its ceiling → 255 immediately,
+  mode `critical`, whatever curve, override, hysteresis, `min_on` or `critical` say; the
+  channel stays there until every part is 3 °C below its ceiling. A sensor that fails
+  inside the episode keeps the channel at 255 (mode `sensor-error`) instead of dropping
+  it to the safe duty (S07). The ceiling is recomputed whenever the sensor is resolved
+  again, so a `disk:<dev>` that appears after start gets its kind without a reload
+  (S03). Alert kind `ceiling` on the transition (part, reading, ceiling and the
+  configured critical in the text; cooldown as every kind). `n5-fangov check` prints an
+  advisory `channel hdd: critical 70 above the built-in ceiling 65 — the ceiling acts
+  first` (`configured ceiling 50` when the operator's own ceiling is the lower one —
+  S16, the dashboard says the same) when `critical` is above the ceiling and still
+  passes. `GET /api/state` channels carry `ceiling` (°C) and `ceiling_hit`; `GET
+  /api/version` limits carry `ceiling_min` (30); OpenAPI schemas updated. Controller
+  tests: ceiling forces 255 with a higher critical, override ignored at the ceiling,
+  recovery hysteresis, 255 through a sensor error, composite per part (NVMe next to an
+  HDD, the alert names the part, exit needs every part below), configured ceiling lowers
+  but cannot raise, `disk:<dev>` kinds through the resolver and after a late resolve;
+  sensor tests for the parts and the per-part ceilings; config tests for the key; web
+  tests for the state fields and the strict 400.
+- **Emergency hook.** `[daemon] emergency = true` (default `false`) and
   `emergency_cycles = 6` (1..60): when a channel has been in the ceiling state for
-  `emergency_cycles` consecutive cycles and its fan reports 0 RPM, or for 3 × as many
-  cycles regardless of RPM, the daemon runs the command once per episode through
-  `/bin/sh -c` with `N5_CHANNEL`, `N5_SENSOR`, `N5_TEMP`, `N5_CEILING`, `N5_RPM`,
-  `N5_CYCLES` in the environment, bounded to 60 s, output to the log, on its own
-  goroutine; alert kind `emergency` with the reason and the exit status; re-armed only
-  after the channel has left the ceiling state; with an empty command nothing runs and
-  no alert is raised. `deploy/emergency.example.sh` (installed to
-  `/usr/share/doc/n5-fangov/`) logs through `logger -t n5-fangov-emergency` and carries
-  a commented `systemctl poweroff` line. Tests: fires after N cycles with 0 RPM, after
-  3 N without, once, re-arms after leaving, exit status and timeout through the real
-  shell, empty command does nothing.
+  `emergency_cycles` consecutive cycles and the stall detection reports its fan as
+  stopped (`stall_cycles` zero readings at a duty it should turn at — never a single
+  0 RPM sample, S04), or for 3 × as many cycles regardless of RPM, the daemon runs the
+  hook `/etc/n5-fangov/emergency.sh` once per episode — directly, no shell — with
+  `N5_CHANNEL`, `N5_SENSOR`, `N5_PART`, `N5_TEMP`, `N5_CEILING`, `N5_RPM`, `N5_CYCLES`
+  in the environment, bounded to 60 s (the hook's process group is killed at the
+  timeout, S08), the first 4 KiB of output to the log (S09), on its own goroutine;
+  alert kind `emergency` with the reason and the exit status; re-armed only after the
+  channel has left the ceiling state; with `emergency = false` nothing runs and no alert
+  is raised. The hook runs only when the file is root's, executable and neither group-
+  nor world-writable (`control.HookStatus`); otherwise one log line per episode and no
+  run. `n5-fangov check` prints `emergency hook   /etc/n5-fangov/emergency.sh (ok|absent|refused: …)`.
+  `deploy/emergency.example.sh` (installed to `/usr/share/doc/n5-fangov/examples/`,
+  S20) is the template (`install -m 0750 -o root -g root … /etc/n5-fangov/emergency.sh`):
+  `set -eu`, exits with the status of its last command (S12), logs through `logger -t
+  n5-fangov-emergency` and carries a commented `systemctl poweroff` line. Tests: fires
+  after N cycles with a stalled fan (not on one sample), after 3 N without, once,
+  re-arms after leaving, refused and absent hooks log and do not run, output cap, exit
+  status and timeout (incl. a backgrounded child) through the real exec, `HookStatus`
+  file rules, `check` line, `emergency = false` does nothing.
 - Dashboard: the curve editor draws the ceiling as a second dashed line (`--crit` at
   reduced opacity, label `ceiling`); the channel card's `pwmN · sensor` line names it in
   its tooltip; the Overview tiles and the live block colour by `min(critical, ceiling)`
@@ -115,12 +140,38 @@ host re-test is the "Update re-test" section of `docs/RELEASE-GATE.md`.
 - `[[channel]] ceiling` travels through the curve editor's *Apply* (no editor field, the
   value is kept as configured) and survives a preset apply (a preset without a ceiling
   keeps the host's, like hysteresis/min_on); `GET /api/config` carries `ceiling`,
-  `emergency_command` and `emergency_cycles`.
-- The emergency command's shell run closes orphaned pipes 2 s after the kill
-  (`WaitDelay`), so a script that backgrounds something cannot hold the run open.
+  `emergency` and `emergency_cycles`.
+- The emergency hook's run closes orphaned pipes 2 s after the kill (`WaitDelay`) and
+  kills the hook's whole process group at the timeout, so a script that backgrounds
+  something can neither hold the run open nor outlive it.
+- `postrm`: a failing `mkdir` of `/var/backups/n5-fangov` no longer aborts the script
+  under `set -e` (the copy fails and the WARNING line says so; S11).
+- Review leftovers of the rc1 draft: mojibake (double-encoded UTF-8 of the degree sign,
+  the dashes and the multiplication sign, written through an ANSI path) in the Fans
+  glossary and four documentation pages rewritten as UTF-8, with a test on `index.html`
+  (S05); the
+  mock clears `webhook_url` when the transport leaves `webhook`, like the daemon (S06);
+  DESIGN names the alert text `timeout after 1m0s` as the daemon prints it (S13); the
+  `limits` list on the configuration page names `ceiling_min` (S14); the ceiling of a
+  reloaded channel is computed outside the hardware lock (S19); the configuration page
+  says that the `emergency` alert cannot leave before a poweroff, that the counter runs
+  in the hysteresis zone (S18), that the cooldown is per kind (S17) and what the sandbox
+  hides from the hook (S21).
 
 ### Security
 
+- **The emergency hook is a root-owned file, never an API-writable value.** The rc1
+  draft had `[daemon] emergency_command`, a shell command in the config that
+  `PUT /api/config` and the bundle import could set and a reload would run as root
+  inside the sandbox — review finding S01: an admin token or the dashboard password was
+  root code execution on the host, and the very instance the ceilings guard against
+  could pin the fans at 0 through the hook. The key is gone (an unknown key now, a
+  warning); the daemon runs exactly one file, `/etc/n5-fangov/emergency.sh`, only when
+  `[daemon] emergency = true` **and** the file is a regular file (no symlink) owned by
+  root, executable and neither group- nor world-writable. No API path writes that file:
+  the API reaches `config.toml`, `presets/<validated name>.toml`, the daemon's TLS pair
+  under `tls/`, the state directory and the PVE template pair — nothing else (DESIGN
+  §12 lists them; the security page says so under "What no token can do").
 - `apt remove`/`apt purge` (postrm, both branches — `apt purge` runs `remove` first and
   the state directory goes with it) and `uninstall.sh` back up
   `/var/lib/n5-fangov/tokens.json` to `/var/backups/n5-fangov/tokens.json.<timestamp>`
@@ -132,6 +183,9 @@ host re-test is the "Update re-test" section of `docs/RELEASE-GATE.md`.
   does the work, empty capability set is not in the way); **neither the poweroff nor the
   `logger` form has been executed from inside the sandbox on the reference host** — the
   re-test runs the `logger` form, the poweroff form is to be verified on the host.
+  Measured by the rc1 review on a Debian 13 / systemd 257 box with the unit's property
+  set: `/dev/log` exists, `logger` writes to the journal, `systemctl` reaches PID 1 —
+  an indication, not the host proof.
 
 ## [0.4.0] — 2026-09-19
 

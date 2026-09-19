@@ -13,7 +13,10 @@ set -e
 backup_tokens() {
     if [ -f /var/lib/n5-fangov/tokens.json ]; then
         dest="/var/backups/n5-fangov/tokens.json.$(date +%Y%m%d-%H%M%S)"
-        mkdir -p -m 0700 /var/backups/n5-fangov
+        # under set -e a failing mkdir (read-only or full /var/backups) must
+        # not abort postrm and leave the package half removed: the cp below
+        # fails instead and the WARNING branch says so
+        mkdir -p -m 0700 /var/backups/n5-fangov 2>/dev/null || true
         if cp -p /var/lib/n5-fangov/tokens.json "$dest" && chmod 0600 "$dest" && chown root:root "$dest"; then
             echo "n5-fangov: API token store backed up to $dest (0600); restore it to /var/lib/n5-fangov/tokens.json after a reinstall"
         else

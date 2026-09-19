@@ -13,6 +13,7 @@ import (
 	"github.com/SirRenix/n5-fangov/internal/config"
 	"github.com/SirRenix/n5-fangov/internal/hwmon"
 	"github.com/SirRenix/n5-fangov/internal/profile"
+	"github.com/SirRenix/n5-fangov/internal/sensor"
 )
 
 // ---- fake profile / device -------------------------------------------------
@@ -247,11 +248,64 @@ func (f *fakeSensors) factory(id string) (SensorReader, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.resolves++
-	s, ok := f.sensors[id]
-	if !ok {
-		return nil, fmt.Errorf("unknown sensor %q", id)
+	if s, ok := f.sensors[id]; ok {
+		return s, nil
 	}
-	return s, nil
+	if strings.Contains(id, ",") {
+		// a composite of registered parts, like sensor.Parse builds it:
+		// the maximum of the parts, with the parts readable (PartsReader)
+		c := &fakeComposite{id: id}
+		for _, part := range strings.Split(id, ",") {
+			s, ok := f.sensors[strings.TrimSpace(part)]
+			if !ok {
+				return nil, fmt.Errorf("unknown sensor %q in %q", part, id)
+			}
+			c.parts = append(c.parts, s)
+		}
+		return c, nil
+	}
+	return nil, fmt.Errorf("unknown sensor %q", id)
+}
+
+// fakeComposite is the test double of sensor's composite: Read is the
+// maximum of the readable parts, Parts the readings of the last Read.
+type fakeComposite struct {
+	mu    sync.Mutex
+	id    string
+	parts []*fakeSensor
+	last  []sensor.Part
+}
+
+func (c *fakeComposite) ID() string { return c.id }
+func (c *fakeComposite) Read() (int, error) {
+	best, ok := 0, false
+	var last []sensor.Part
+	var firstErr error
+	for _, p := range c.parts {
+		v, err := p.Read()
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		last = append(last, sensor.Part{ID: p.id, Value: v})
+		if !ok || v > best {
+			best, ok = v, true
+		}
+	}
+	c.mu.Lock()
+	c.last = last
+	c.mu.Unlock()
+	if !ok {
+		return 0, fmt.Errorf("sensor %s: no readable part: %w", c.id, firstErr)
+	}
+	return best, nil
+}
+func (c *fakeComposite) Parts() []sensor.Part {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]sensor.Part(nil), c.last...)
 }
 
 func (f *fakeSensors) add(id string, milli int) {

@@ -13,12 +13,17 @@ import (
 	"time"
 
 	"github.com/SirRenix/n5-fangov/internal/alert"
+	"github.com/SirRenix/n5-fangov/internal/control"
 	"github.com/SirRenix/n5-fangov/internal/hwmon"
 )
 
 func init() {
 	register("check", command{run: cmdCheck})
 }
+
+// emergencyHookPath is the fixed path of the emergency hook `check`
+// reports on; a test overrides it.
+var emergencyHookPath = control.DefaultEmergencyHook
 
 // checkResult is one line of the self-check report.
 type checkResult struct {
@@ -153,12 +158,27 @@ func runChecks(cfgPath, dir string) []checkResult {
 		}
 		add(true, "channel "+c.Name, fmt.Sprintf("pwm%d writable, %s, sensor %s", c.PWM, rpm, c.Sensor))
 	}
-	// 3b. critical above the built-in ceiling: accepted, but the ceiling acts
-	// first (DESIGN "Ceilings and emergency") -- advisory, check passes.
+	// 3b. critical above the ceiling: accepted, but the ceiling acts first
+	// (DESIGN "Ceilings and emergency") -- advisory, check passes. The
+	// effective ceiling counts: a configured one that sits below critical
+	// is the same finding as a built-in one.
 	for _, c := range chans {
-		if ceil := builtinCeiling(hw, c.Sensor); c.Critical > ceil {
-			adv(false, "channel "+c.Name, fmt.Sprintf("critical %d above the built-in ceiling %d — the ceiling acts first", c.Critical, ceil))
+		built := builtinCeiling(hw, c.Sensor)
+		if ceil := effectiveCeiling(hw, c.Sensor, c.Ceiling); c.Critical > ceil {
+			which := "built-in"
+			if ceil < built {
+				which = "configured"
+			}
+			adv(false, "channel "+c.Name, fmt.Sprintf("critical %d above the %s ceiling %d — the ceiling acts first", c.Critical, which, ceil))
 		}
+	}
+	// 3c. emergency hook: the fixed path's state (DESIGN "Ceilings and
+	// emergency"); a missing or refused hook is a warning only when
+	// [daemon] emergency = true, otherwise an information line.
+	if st := control.HookStatus(emergencyHookPath); st.OK || !dspec.Emergency {
+		add(true, "emergency hook", emergencyHookPath+" ("+st.State+")")
+	} else {
+		adv(false, "emergency hook", emergencyHookPath+" ("+st.State+"); emergency = true but nothing would run")
 	}
 
 	// 4. sensors resolve and read plausibly. Advisory: serve holds a

@@ -723,7 +723,7 @@ function renderLive() { if (!snap) return;
 		ed.ref(); }
 }
 // a critical above the daemon's ceiling is accepted, the ceiling just acts first: one warning line per channel for the notice (never blocks)
-const ceilingWarnings = (chs = edState) => chs.flatMap(c => { const l = ceilOf(c.name); return l && +c.critical > l ? [`${c.name}: critical ${c.critical} above the built-in ceiling ${l} — the ceiling acts first`] : []; });
+const ceilingWarnings = (chs = edState) => chs.flatMap(c => { const l = ceilOf(c.name); return l && +c.critical > l ? [`${c.name}: critical ${c.critical} above the ${+c.ceiling > 0 && +c.ceiling <= l ? 'configured' : 'built-in'} ceiling ${l} — the ceiling acts first`] : []; }); // same wording as `check` (DESIGN §6)
 function fillSensorSelects() {
 	// a composite id "a,b" is one option (never dropped by the editor); the catalogue's single ids follow
 	for (const k in ED) { const { c, sel } = ED[k]; const ids = new Set([c.sensor, ...concrete().map(s => s.id)]); clear(sel);

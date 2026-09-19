@@ -282,12 +282,13 @@ func TestMarshalStopNumeric(t *testing.T) {
 
 // TestChannelCeilingKey: ceiling may only lower the sensor's built-in
 // ceiling (MinCeiling..built-in); above it, or not an integer, the
-// built-in value stays (0 = built-in) with a warning. [daemon]
-// emergency_command / emergency_cycles parse with their bounds.
+// built-in value stays (0 = built-in) with a warning; an explicit 0 is
+// the built-in value without a warning. [daemon] emergency /
+// emergency_cycles parse with their bounds.
 func TestChannelCeilingKey(t *testing.T) {
 	src := `
 [daemon]
-emergency_command = "logger -t n5 test"
+emergency = true
 emergency_cycles = 3
 
 [[channel]]
@@ -345,7 +346,7 @@ ceiling = 90
 	if len(cfg.Channels) != 6 {
 		t.Fatalf("channels: %d (%v)", len(cfg.Channels), warns)
 	}
-	if cfg.Daemon.EmergencyCommand != "logger -t n5 test" || cfg.Daemon.EmergencyCycles != 3 {
+	if !cfg.Daemon.Emergency || cfg.Daemon.EmergencyCycles != 3 {
 		t.Errorf("daemon: %+v", cfg.Daemon)
 	}
 	for name, want := range map[string]int{"hdd": 55, "raised": 0, "low": 0, "text": 0, "composite": 65, "disk": 90} {
@@ -364,17 +365,29 @@ ceiling = 90
 			t.Errorf("unexpected warning %v", w)
 		}
 	}
-	// defaults: no command, 6 cycles; bounds 1..60
+	// defaults: hook off, 6 cycles; bounds 1..60; emergency_command (rc1
+	// draft) is an unknown key now
 	d := Default().Daemon
-	if d.EmergencyCommand != "" || d.EmergencyCycles != DefaultEmergencyCycles {
+	if d.Emergency || d.EmergencyCycles != DefaultEmergencyCycles {
 		t.Errorf("defaults: %+v", d)
 	}
-	cfg, warns, _ = Parse([]byte("[daemon]\nemergency_cycles = 61\nemergency_command = 3\n"))
-	if cfg.Daemon.EmergencyCycles != DefaultEmergencyCycles || cfg.Daemon.EmergencyCommand != "" {
+	cfg, warns, _ = Parse([]byte("[daemon]\nemergency_cycles = 61\nemergency = 3\nemergency_command = \"x\"\n"))
+	if cfg.Daemon.EmergencyCycles != DefaultEmergencyCycles || cfg.Daemon.Emergency {
 		t.Errorf("out of range: %+v", cfg.Daemon)
 	}
 	hasWarn(t, warns, "daemon.emergency_cycles")
+	hasWarn(t, warns, "daemon.emergency")
 	hasWarn(t, warns, "daemon.emergency_command")
+	// an explicit ceiling = 0 is the built-in value, no warning
+	cfg, warns, _ = Parse([]byte("[[channel]]\nname = \"hdd\"\npwm = 3\nsensor = \"drivetemp:max\"\ncurve = [[30, 60], [50, 255]]\ncritical = 60\nceiling = 0\n"))
+	if cfg.Channel("hdd").Ceiling != 0 {
+		t.Errorf("ceiling = 0: %+v", cfg.Channel("hdd"))
+	}
+	for _, w := range warns {
+		if strings.Contains(w.Field, "ceiling") {
+			t.Errorf("ceiling = 0 warned: %v", w)
+		}
+	}
 	// Marshal writes the key only when set and it reads back
 	c2 := Default()
 	c2.Channels = N5ProChannels()

@@ -53,7 +53,7 @@ and is the only place they exist; the settings bundle never carries tokens. Sinc
 0.4.1 `apt remove` / `apt purge` (the package `postrm`) and `uninstall.sh` copy it to
 `/var/backups/n5-fangov/tokens.json.<timestamp>` (0600, root) before the state
 directory goes and print one line naming the copy; after a reinstall put it back as
-`/var/lib/n5-fangov/tokens.json` (0600) and restart â otherwise every script and Home
+`/var/lib/n5-fangov/tokens.json` (0600) and restart — otherwise every script and Home
 Assistant needs a new token. A package *upgrade* keeps the directory.
 
 ## Rollback

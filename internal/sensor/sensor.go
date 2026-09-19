@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/SirRenix/n5-fangov/internal/hwmon"
 	"github.com/SirRenix/n5-fangov/internal/profile"
@@ -58,13 +59,32 @@ const (
 	MaxParts = 4
 )
 
+// Part is the reading of one part of a composite source, as seen by its
+// last Read: the part's configured id and its value in millidegrees.
+type Part struct {
+	ID    string
+	Value int
+}
+
+// PartsReader is implemented by a source made of parts (the composite).
+// Parts returns the readable parts of the last Read in the configured
+// order — the controller judges each of them against its own kind's
+// ceiling (DESIGN "Ceilings and emergency"). Nil before the first Read.
+type PartsReader interface {
+	Parts() []Part
+}
+
 // composite reads several sources and returns the highest value. Parts
 // that could not be resolved at Parse time are absent (the controller
 // re-resolves the whole id every 60 cycles, so they are picked up later);
 // parts that fail to read now are ignored as long as one succeeds.
 type composite struct {
 	id    string
+	ids   []string // configured id of every resolved part, parallel to parts
 	parts []Source
+
+	mu   sync.Mutex
+	last []Part // readable parts of the last Read
 }
 
 func (m *composite) ID() string { return m.id }
@@ -73,7 +93,8 @@ func (m *composite) Read() (int, error) {
 	best := 0
 	ok := false
 	var firstErr error
-	for _, s := range m.parts {
+	last := make([]Part, 0, len(m.parts))
+	for i, s := range m.parts {
 		v, err := s.Read()
 		if err != nil {
 			if firstErr == nil {
@@ -81,14 +102,25 @@ func (m *composite) Read() (int, error) {
 			}
 			continue
 		}
+		last = append(last, Part{ID: m.ids[i], Value: v})
 		if !ok || v > best {
 			best, ok = v, true
 		}
 	}
+	m.mu.Lock()
+	m.last = last
+	m.mu.Unlock()
 	if !ok {
 		return 0, fmt.Errorf("sensor %s: no readable part: %w", m.id, firstErr)
 	}
 	return best, nil
+}
+
+// Parts implements PartsReader: the readable parts of the last Read.
+func (m *composite) Parts() []Part {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return slices.Clone(m.last)
 }
 
 // parseComposite resolves "a,b[,c[,d]]": every part is parsed on its own,
@@ -123,6 +155,7 @@ func parseComposite(id string, fs *hwmon.FS, dev profile.Device) (Source, error)
 			}
 			continue
 		}
+		c.ids = append(c.ids, part)
 		c.parts = append(c.parts, s)
 	}
 	if len(c.parts) == 0 {

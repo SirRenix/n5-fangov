@@ -50,12 +50,15 @@ type chanSpec struct {
 	// zero = off.
 	Hysteresis int
 	MinOn      time.Duration
+	// Ceiling is the configured [[channel]] ceiling (0 = built-in).
+	Ceiling int
 }
 
 // daemonSpec is the subset of [daemon] the commands need.
 type daemonSpec struct {
-	Interval time.Duration
-	Profile  string // auto | n5pro | nct67xx | it87xx | monitor
+	Interval  time.Duration
+	Profile   string // auto | n5pro | nct67xx | it87xx | monitor
+	Emergency bool   // the emergency hook is enabled
 }
 
 // webSpec is the subset of [web] the commands need.
@@ -248,6 +251,7 @@ func channelSpecs(cfg config.Config) []chanSpec {
 			Stop:       c.Stop,
 			Hysteresis: c.Hysteresis,
 			MinOn:      c.MinOn,
+			Ceiling:    c.Ceiling,
 		})
 	}
 	return out
@@ -270,6 +274,7 @@ func sanitizeChannelSpecs(profileName string, chans []chanSpec) (out []chanSpec,
 			Stop:       c.Stop,
 			Hysteresis: c.Hysteresis,
 			MinOn:      c.MinOn,
+			Ceiling:    c.Ceiling,
 		})
 	}
 	fixed, notes := control.SanitizeChannels(profileName, in)
@@ -295,8 +300,9 @@ func isLoopbackListen(listen string) bool { return config.IsLoopbackListen(liste
 
 func daemonOf(cfg config.Config) daemonSpec {
 	return daemonSpec{
-		Interval: cfg.Daemon.Interval,
-		Profile:  cfg.Daemon.Profile,
+		Interval:  cfg.Daemon.Interval,
+		Profile:   cfg.Daemon.Profile,
+		Emergency: cfg.Daemon.Emergency,
 	}
 }
 
@@ -347,6 +353,12 @@ func diskKindResolver(fs *hwmon.FS) func(dev string) string {
 // (composite: the lowest part), before any [[channel]] ceiling lowers it.
 func builtinCeiling(fs *hwmon.FS, id string) int {
 	return sensor.BuiltinCeiling(id, diskKindResolver(fs))
+}
+
+// effectiveCeiling is builtinCeiling lowered by a configured [[channel]]
+// ceiling (> 0) — the value the daemon runs with (its lowest part).
+func effectiveCeiling(fs *hwmon.FS, id string, configured int) int {
+	return sensor.EffectiveCeiling(id, configured, diskKindResolver(fs))
 }
 
 // controlFactory adapts sensorFactory to the controller's interface type.
@@ -848,7 +860,7 @@ func configJSON(cfg config.Config, warns []config.Warning) map[string]any {
 			"interval": d.Interval.String(), "step_up": d.StepUp, "step_down": d.StepDown,
 			"stall_min_duty": d.StallMinDuty, "stall_cycles": d.StallCycles, "stale_cycles": d.StaleCycles,
 			"alert_cooldown": d.AlertCooldown.String(), "log_every": d.LogEvery, "profile": d.Profile,
-			"emergency_command": d.EmergencyCommand, "emergency_cycles": d.EmergencyCycles,
+			"emergency": d.Emergency, "emergency_cycles": d.EmergencyCycles,
 		},
 		"web": map[string]any{
 			"listen": cfg.Web.Listen, "auth": cfg.Web.Auth, "user": cfg.Web.User,

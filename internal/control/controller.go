@@ -70,12 +70,18 @@ type Options struct {
 	// DiskKind resolves a disk:<dev> device name to "ssd", "hdd" or "" for
 	// the built-in ceilings (sensor.BuiltinCeiling); nil = unknown (100).
 	DiskKind func(dev string) string
-	// Exec runs the emergency command (DESIGN "Ceilings and emergency"):
-	// command through /bin/sh -c with env appended to the environment,
-	// bounded by ctx; combined output and the error (exit status, timeout).
-	// nil = the real shell. EmergencyTimeout bounds one run; 0 = 60 s.
-	Exec             func(ctx context.Context, command string, env []string) ([]byte, error)
+	// EmergencyHook is the path of the emergency hook (DESIGN "Ceilings and
+	// emergency"); "" = DefaultEmergencyHook. The daemon runs it only when
+	// HookStatus accepts the file. Exec runs the hook: the executable at
+	// path with env appended to the environment, bounded by ctx; combined
+	// output (capped, HookOutputMax) and the error (exit status, timeout).
+	// nil = the real exec. EmergencyTimeout bounds one run; 0 = 60 s.
+	EmergencyHook    string
+	Exec             func(ctx context.Context, path string, env []string) ([]byte, error)
 	EmergencyTimeout time.Duration
+	// HookCheck decides whether the hook may run; nil = HookStatus (tests
+	// inject a verdict, the ownership rule needs root-owned files).
+	HookCheck func(path string) HookState
 }
 
 // Limits on temperature plausibility in millidegrees; defined once in
@@ -136,8 +142,16 @@ const stallRecoverCycles = 3
 // channel leaves it when the raw reading is this far below the ceiling.
 const ceilingRecover = 3
 
-// emergencyTimeout bounds one run of the emergency command.
+// emergencyTimeout bounds one run of the emergency hook.
 const emergencyTimeout = 60 * time.Second
+
+// DefaultEmergencyHook is the fixed path of the emergency hook: a file the
+// operator installs by hand (root-owned, not group- or world-writable,
+// executable); nothing the API writes can create it.
+const DefaultEmergencyHook = "/etc/n5-fangov/emergency.sh"
+
+// HookOutputMax caps the hook output the daemon keeps and logs (bytes).
+const HookOutputMax = 4096
 
 // writeErrorsBeforeFailsafe consecutive cycles with a write error trigger
 // the all-channel failsafe.
@@ -168,12 +182,22 @@ type channel struct {
 	recov    int
 
 	// Ceiling state (DESIGN "Ceilings and emergency"): ceiling is the
-	// effective ceiling in degrees C (built-in lowered by cfg.Ceiling),
-	// ceilHit whether the channel is in the ceiling state, ceilCycles the
-	// consecutive cycles spent in it, emergencyFired whether the emergency
-	// command ran in this episode (re-armed when the state ends).
+	// lowest effective part ceiling in degrees C (reported; built-in
+	// lowered by cfg.Ceiling), partCeil the effective ceiling of every
+	// part of the sensor (a single id is one part), parts the readings of
+	// the parts from the last good read. ceilHit is whether the channel is
+	// in the ceiling state, ceilPart/ceilPartTemp/ceilPartCeil the part
+	// that is (or was last) at its ceiling with its reading and ceiling,
+	// ceilCycles the consecutive cycles spent in the state, emergencyFired
+	// whether the emergency hook ran (or was refused) in this episode
+	// (re-armed when the state ends).
 	ceiling        int
+	partCeil       []sensor.PartCeiling
+	parts          []sensor.Part
 	ceilHit        bool
+	ceilPart       string
+	ceilPartTemp   int
+	ceilPartCeil   int
 	ceilCycles     int
 	emergencyFired bool
 
@@ -284,7 +308,13 @@ func New(cfg config.Config, dev profile.Device, sensors SensorFactory, alerter A
 		alerter = alertLogger{opts.Logger}
 	}
 	if opts.Exec == nil {
-		opts.Exec = shellExec
+		opts.Exec = hookExec
+	}
+	if opts.EmergencyHook == "" {
+		opts.EmergencyHook = DefaultEmergencyHook
+	}
+	if opts.HookCheck == nil {
+		opts.HookCheck = HookStatus
 	}
 	if opts.EmergencyTimeout <= 0 {
 		opts.EmergencyTimeout = emergencyTimeout
@@ -357,7 +387,8 @@ func (c *Controller) buildChannels(cfg config.Config) (chans []*channel, dropped
 			dropped = append(dropped, fmt.Sprintf("channel %q uses pwm%d which the %s profile does not provide; channel ignored", cc.Name, cc.PWM, c.dev.Profile().Name()))
 			continue
 		}
-		ch := &channel{cfg: cc, hasTach: dc.HasTach, cur: 255, rpm: -1, mode: ModeAuto, target: 255, ceiling: c.ceilingOf(cc)}
+		ch := &channel{cfg: cc, hasTach: dc.HasTach, cur: 255, rpm: -1, mode: ModeAuto, target: 255}
+		ch.ceiling, ch.partCeil = c.ceilingOf(cc)
 		// The real duty at start; 255 only when unreadable. Slew starts from
 		// what the chip is actually doing, dry-run shows the real value.
 		switch v, err := c.dev.ReadDuty(cc.PWM); {
@@ -593,8 +624,12 @@ func (c *Controller) readSensors(cs *cycleState) {
 		ch.tempOK = false
 		ch.sensorErr = ""
 		if ch.sensor == nil {
-			// unresolved at start or after a reload: retry every cycle
-			ch.sensor = c.resolveSensor(ch.cfg)
+			// unresolved at start or after a reload: retry every cycle; a
+			// disk that appears later brings its kind, so the ceiling is
+			// computed again with it
+			if ch.sensor = c.resolveSensor(ch.cfg); ch.sensor != nil {
+				ch.ceiling, ch.partCeil = c.ceilingOf(ch.cfg)
+			}
 		}
 		if ch.sensor == nil {
 			ch.sensorErr = "unresolved"
@@ -608,6 +643,7 @@ func (c *Controller) readSensors(cs *cycleState) {
 			ch.sensorErr = fmt.Sprintf("implausible %d mdegC", v)
 		default:
 			ch.temp, ch.tempOK = v, true
+			ch.parts = partsOf(ch.sensor, ch.cfg.Sensor, v)
 		}
 		if ch.sensorErr != "" {
 			c.logOnce("read."+ch.cfg.Name, "sensor %s (%s): %s", ch.cfg.Sensor, ch.cfg.Name, ch.sensorErr)
@@ -645,9 +681,11 @@ func (c *Controller) readSensors(cs *cycleState) {
 			nBad++
 			if ch.sensor != nil {
 				// the device may have re-enumerated: resolve again (an
-				// unresolved sensor was already retried above)
+				// unresolved sensor was already retried above); a new
+				// device may carry a new kind, so the ceiling follows
 				if s := c.resolveSensor(ch.cfg); s != nil {
 					ch.sensor = s
+					ch.ceiling, ch.partCeil = c.ceilingOf(ch.cfg)
 				}
 			}
 			if !ch.sensorBad {
@@ -705,6 +743,12 @@ func (c *Controller) computeTargets(cs *cycleState) {
 			ch.heldOK, ch.haveCurve, ch.holding = false, false, false
 			ch.target = c.safeDuty(ch)
 			ch.mode = ModeSensor
+			if ch.ceilHit {
+				// a sensor that fails inside a ceiling episode does not
+				// end it: the last reading was at the ceiling, the safe
+				// duty would give the drive less air than it had
+				ch.target = 255
+			}
 			continue
 		}
 		ch.mode = ModeAuto
@@ -729,30 +773,90 @@ func (c *Controller) computeTargets(cs *cycleState) {
 	}
 }
 
-// ceilingOf is the effective ceiling of a channel config: the sensor's
-// built-in ceiling (composite: the lowest part), lowered by cfg.Ceiling.
-func (c *Controller) ceilingOf(cc config.Channel) int {
-	return sensor.EffectiveCeiling(cc.Sensor, cc.Ceiling, c.opts.DiskKind)
+// ceilingOf is the effective ceiling of a channel config: per part the
+// part's built-in ceiling lowered by cfg.Ceiling (sensor.PartCeilings),
+// and the lowest of them as the reported channel value. Reads sysfs for
+// disk:<dev> parts — never call it under hwMu.
+func (c *Controller) ceilingOf(cc config.Channel) (int, []sensor.PartCeiling) {
+	parts := sensor.PartCeilings(cc.Sensor, cc.Ceiling, c.opts.DiskKind)
+	low := 0
+	for _, pc := range parts {
+		if low == 0 || pc.Ceiling < low {
+			low = pc.Ceiling
+		}
+	}
+	if low == 0 {
+		low = sensor.CeilingDefault
+	}
+	return low, parts
+}
+
+// partsOf returns the readings the ceiling rule judges: the parts of a
+// composite (sensor.PartsReader) from the read that produced v, or the
+// sensor itself as its one part.
+func partsOf(s SensorReader, id string, v int) []sensor.Part {
+	if pr, ok := s.(sensor.PartsReader); ok {
+		if parts := pr.Parts(); len(parts) > 0 {
+			return parts
+		}
+	}
+	return []sensor.Part{{ID: id, Value: v}}
+}
+
+// partCeiling is the effective ceiling of one part of ch's sensor; the
+// channel value for a part the config did not name (cannot happen: the
+// parts come from the same id).
+func (ch *channel) partCeiling(id string) int {
+	for _, pc := range ch.partCeil {
+		if pc.ID == id {
+			return pc.Ceiling
+		}
+	}
+	return ch.ceiling
+}
+
+// hottestPart returns the part of the last reading that is at or above
+// its own ceiling, the one that exceeds it by most when several do, and
+// whether every part is below its ceiling minus ceilingRecover (the exit
+// condition of the ceiling state).
+func (ch *channel) hottestPart() (hot sensor.Part, hotCeil int, found, allBelow bool) {
+	allBelow = true
+	excess := 0
+	for _, p := range ch.parts {
+		limit := ch.partCeiling(p.ID) * 1000
+		if p.Value >= limit-ceilingRecover*1000 {
+			allBelow = false
+		}
+		if p.Value >= limit && (!found || p.Value-limit > excess) {
+			hot, hotCeil, found, excess = p, limit/1000, true, p.Value-limit
+		}
+	}
+	return hot, hotCeil, found, allBelow
 }
 
 // applyCeiling is the ceiling rule (DESIGN "Ceilings and emergency"),
 // run after critical and before the stall check for a channel with a
-// known temperature: at/above the ceiling the channel enters the ceiling
+// known temperature. Every part of the sensor is judged against its own
+// kind's ceiling: a part at/above it puts the channel into the ceiling
 // state — 255, mode critical, whatever curve, override, hysteresis, min_on
-// or critical say — and leaves it only ceilingRecover degrees below. The
-// alert goes out on the transition. While in the state the emergency
-// counter runs (emergency).
+// or critical say — and the channel leaves it only when every part is
+// ceilingRecover degrees below its ceiling. The alert goes out on the
+// transition and names the part. While in the state the emergency counter
+// runs (emergency).
 func (c *Controller) applyCeiling(ch *channel, d config.Daemon) {
-	limit := ch.ceiling * 1000
+	hot, hotCeil, found, allBelow := ch.hottestPart()
+	if found {
+		ch.ceilPart, ch.ceilPartTemp, ch.ceilPartCeil = hot.ID, hot.Value, hotCeil
+	}
 	switch {
-	case !ch.ceilHit && ch.temp >= limit:
+	case !ch.ceilHit && found:
 		ch.ceilHit = true
 		ch.ceilCycles = 0
 		c.raise("ceiling", fmt.Sprintf("%s: %s at %s reached the ceiling %dC (critical %dC) -> 255",
-			ch.cfg.Name, ch.cfg.Sensor, fmtTemp(ch.temp), ch.ceiling, ch.cfg.Critical))
-	case ch.ceilHit && ch.temp < limit-ceilingRecover*1000:
+			ch.cfg.Name, ch.partLabel(hot.ID), fmtTemp(hot.Value), hotCeil, ch.cfg.Critical))
+	case ch.ceilHit && allBelow:
+		c.log.Printf("%s: %s below the ceiling again (%s < %dC), regulation resumed", ch.cfg.Name, ch.partLabel(ch.ceilPart), fmtTemp(ch.temp), ch.ceilPartCeil-ceilingRecover)
 		ch.ceilHit, ch.ceilCycles, ch.emergencyFired = false, 0, false
-		c.log.Printf("%s: %s below the ceiling again (%s < %dC), regulation resumed", ch.cfg.Name, ch.cfg.Sensor, fmtTemp(ch.temp), ch.ceiling-ceilingRecover)
 	}
 	if !ch.ceilHit {
 		return
@@ -764,17 +868,30 @@ func (c *Controller) applyCeiling(ch *channel, d config.Daemon) {
 	c.emergency(ch, d)
 }
 
-// emergency runs the emergency command once per ceiling episode when the
-// channel spent emergency_cycles cycles at the ceiling with a fan that
-// reports 0 RPM, or three times as many cycles regardless of RPM; an
-// empty command means nothing runs and no alert is raised.
+// partLabel names a part in log and alert texts: the id alone for a
+// single sensor, "<part> of <composite>" for a composite.
+func (ch *channel) partLabel(id string) string {
+	if id == ch.cfg.Sensor || id == "" {
+		return ch.cfg.Sensor
+	}
+	return id + " of " + ch.cfg.Sensor
+}
+
+// emergency runs the emergency hook once per ceiling episode when the
+// channel spent emergency_cycles cycles at the ceiling with a fan the
+// stall detection reports as stopped (stall_cycles zero readings at a
+// duty it should turn at — never a single 0 RPM sample), or three times
+// as many cycles regardless of RPM. With [daemon] emergency = false
+// nothing runs and no alert is raised. A hook that HookStatus refuses is
+// logged once per episode and does not run; the ceiling alert covers the
+// episode.
 func (c *Controller) emergency(ch *channel, d config.Daemon) {
-	if ch.emergencyFired || d.EmergencyCommand == "" || d.EmergencyCycles <= 0 {
+	if ch.emergencyFired || !d.Emergency || d.EmergencyCycles <= 0 {
 		return
 	}
 	var reason string
 	switch {
-	case ch.hasTach && ch.rpm == 0 && ch.ceilCycles >= d.EmergencyCycles:
+	case ch.hasTach && ch.stalled && ch.ceilCycles >= d.EmergencyCycles:
 		reason = "fan reports 0 RPM"
 	case ch.ceilCycles >= 3*d.EmergencyCycles:
 		reason = "cooling ineffective"
@@ -782,25 +899,37 @@ func (c *Controller) emergency(ch *channel, d config.Daemon) {
 		return
 	}
 	ch.emergencyFired = true
-	env := []string{
-		"N5_CHANNEL=" + ch.cfg.Name,
-		"N5_SENSOR=" + ch.cfg.Sensor,
-		"N5_TEMP=" + strconv.FormatFloat(float64(ch.temp)/1000, 'f', 1, 64),
-		"N5_CEILING=" + strconv.Itoa(ch.ceiling),
-		"N5_RPM=" + strconv.Itoa(ch.rpm),
-		"N5_CYCLES=" + strconv.Itoa(ch.ceilCycles),
+	name, cycles, path := ch.cfg.Name, ch.ceilCycles, c.opts.EmergencyHook
+	if st := c.opts.HookCheck(path); !st.OK {
+		c.log.Printf("%s%s: emergency action after %d cycles at the ceiling (%s): hook %s %s, nothing runs", logfile.PrefixErr, name, cycles, reason, path, st.State)
+		return
 	}
-	name, cycles, cmd := ch.cfg.Name, ch.ceilCycles, d.EmergencyCommand
-	c.log.Printf("%s%s: emergency action after %d cycles at the ceiling (%s): running emergency_command", logfile.PrefixErr, name, cycles, reason)
+	part, partTemp, partCeil := ch.ceilPart, ch.ceilPartTemp, ch.ceilPartCeil
+	if part == "" {
+		part, partTemp, partCeil = ch.cfg.Sensor, ch.temp, ch.ceiling
+	}
+	env := []string{
+		"N5_CHANNEL=" + name,
+		"N5_SENSOR=" + ch.cfg.Sensor,
+		"N5_PART=" + part,
+		"N5_TEMP=" + strconv.FormatFloat(float64(partTemp)/1000, 'f', 1, 64),
+		"N5_CEILING=" + strconv.Itoa(partCeil),
+		"N5_RPM=" + strconv.Itoa(ch.rpm),
+		"N5_CYCLES=" + strconv.Itoa(cycles),
+	}
+	c.log.Printf("%s%s: emergency action after %d cycles at the ceiling (%s): running %s", logfile.PrefixErr, name, cycles, reason, path)
 	run := func() {
 		defer func() {
 			if r := recover(); r != nil {
-				c.log.Printf("%semergency command panicked: %v", logfile.PrefixErr, r)
+				c.log.Printf("%semergency hook panicked: %v", logfile.PrefixErr, r)
 			}
 		}()
 		ctx, cancel := context.WithTimeout(context.Background(), c.opts.EmergencyTimeout)
 		defer cancel()
-		out, err := c.opts.Exec(ctx, cmd, env)
+		out, err := c.opts.Exec(ctx, path, env)
+		if len(out) > HookOutputMax {
+			out = append(out[:HookOutputMax], []byte("\n... output truncated at 4 KiB\n")...)
+		}
 		for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
 			if line != "" {
 				c.log.Printf("emergency[%s]: %s", name, line)
@@ -819,7 +948,7 @@ func (c *Controller) emergency(ch *channel, d config.Daemon) {
 				status = err.Error()
 			}
 		}
-		c.raise("emergency", fmt.Sprintf("%s: emergency action after %d cycles at the ceiling (%s): command exited %s", name, cycles, reason, status))
+		c.raise("emergency", fmt.Sprintf("%s: emergency action after %d cycles at the ceiling (%s): hook exited %s", name, cycles, reason, status))
 	}
 	if c.opts.SyncAlerts {
 		run()
@@ -828,15 +957,47 @@ func (c *Controller) emergency(ch *channel, d config.Daemon) {
 	go run()
 }
 
-// shellExec is the production Options.Exec: /bin/sh -c command with env
-// on top of the daemon's environment, combined output, killed at ctx.
-func shellExec(ctx context.Context, command string, env []string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", command)
+// hookExec is the production Options.Exec: the executable at path with
+// env on top of the daemon's environment, in its own process group so the
+// timeout kills a hung child as well (setProcessGroup); combined output
+// capped at HookOutputMax (the rest is discarded).
+func hookExec(ctx context.Context, path string, env []string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, path)
 	cmd.Env = append(os.Environ(), env...)
+	setProcessGroup(cmd)
 	// children that inherit the pipes (a script that backgrounds something)
 	// must not hold the run open after the kill: 2 s, then the pipes close
 	cmd.WaitDelay = 2 * time.Second
-	return cmd.CombinedOutput()
+	buf := &cappedBuffer{max: HookOutputMax + 1}
+	cmd.Stdout, cmd.Stderr = buf, buf
+	err := cmd.Run()
+	return buf.bytes(), err
+}
+
+// cappedBuffer keeps the first max bytes written and discards the rest.
+type cappedBuffer struct {
+	mu  sync.Mutex
+	b   []byte
+	max int
+}
+
+func (w *cappedBuffer) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	n := len(p)
+	if room := w.max - len(w.b); room > 0 {
+		if len(p) > room {
+			p = p[:room]
+		}
+		w.b = append(w.b, p...)
+	}
+	return n, nil
+}
+
+func (w *cappedBuffer) bytes() []byte {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]byte(nil), w.b...)
 }
 
 // checkStall runs the stall detection and recovery on every channel with
@@ -1092,10 +1253,14 @@ func (c *Controller) readExtra() map[string]float64 {
 	return out
 }
 
+// reresolve resolves every channel sensor again and recomputes the
+// ceilings with it: a disk:<dev> whose device was absent at start gets
+// its kind (and its 65/85) once the device is there.
 func (c *Controller) reresolve(chans []*channel) {
 	for _, ch := range chans {
 		if s := c.resolveSensor(ch.cfg); s != nil {
 			ch.sensor = s
+			ch.ceiling, ch.partCeil = c.ceilingOf(ch.cfg)
 		}
 	}
 }
@@ -1494,6 +1659,7 @@ func (c *Controller) applyPendingLocked() {
 	for i, ch := range c.chans {
 		cc := byName[ch.cfg.Name]
 		ups[i].cfg = cc
+		ups[i].ceiling, ups[i].partCeil = c.ceilingOf(cc)
 		if cc.Sensor != ch.cfg.Sensor {
 			ups[i].sensor = c.resolveSensor(cc)
 			ups[i].newSensor = true
@@ -1521,6 +1687,10 @@ type chanUpdate struct {
 	cfg       config.Channel
 	sensor    SensorReader // resolved outside the hardware lock; nil = unresolved
 	newSensor bool         // sensor id changed: install sensor (even nil)
+	// ceiling and partCeil are computed outside the hardware lock too
+	// (disk:<dev> kinds come from sysfs).
+	ceiling  int
+	partCeil []sensor.PartCeiling
 	// oldMinOn is the min_on in effect before the swap (retimeHolds).
 	oldMinOn time.Duration
 }
@@ -1539,9 +1709,10 @@ func (c *Controller) swapChannelConfig(ups []chanUpdate) {
 			ch.heldOK, ch.haveCurve, ch.holding = false, false, false
 			// the ceiling state belongs to the old reading
 			ch.ceilHit, ch.ceilCycles, ch.emergencyFired = false, 0, false
+			ch.parts, ch.ceilPart = nil, ""
 		}
 		ch.cfg = ups[i].cfg
-		ch.ceiling = c.ceilingOf(ups[i].cfg)
+		ch.ceiling, ch.partCeil = ups[i].ceiling, ups[i].partCeil
 	}
 }
 

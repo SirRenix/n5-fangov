@@ -299,7 +299,7 @@ func TestDeployPackagePinsGateFindings(t *testing.T) {
 // and purge -- apt purge runs both, the state directory goes with remove)
 // and uninstall.sh back up tokens.json to /var/backups/n5-fangov before
 // the state directory is removed, and both installers ship the emergency
-// example script under /usr/share/doc/n5-fangov/.
+// example script under /usr/share/doc/n5-fangov/examples/.
 func TestDeployTokensBackupOnRemoval(t *testing.T) {
 	read := func(rel string) string {
 		b, err := os.ReadFile(filepath.Join(deployDir, "..", rel))
@@ -309,7 +309,7 @@ func TestDeployTokensBackupOnRemoval(t *testing.T) {
 		return string(b)
 	}
 	postrm := read("deploy/debian/postrm")
-	for _, want := range []string{"backup_tokens()", "/var/backups/n5-fangov/tokens.json.$(date", "chmod 0600", "mkdir -p -m 0700 /var/backups/n5-fangov"} {
+	for _, want := range []string{"backup_tokens()", "/var/backups/n5-fangov/tokens.json.$(date", "chmod 0600", "mkdir -p -m 0700 /var/backups/n5-fangov 2>/dev/null || true"} {
 		if !strings.Contains(postrm, want) {
 			t.Errorf("postrm lacks %q", want)
 		}
@@ -332,14 +332,20 @@ func TestDeployTokensBackupOnRemoval(t *testing.T) {
 		t.Errorf("uninstall.sh: backup at %d, rm of the state dir at %d", b, r)
 	}
 	for _, f := range []string{"deploy/install.sh", "Makefile"} {
-		if !strings.Contains(read(f), "emergency.example.sh") || !strings.Contains(read(f), "/usr/share/doc/n5-fangov/emergency.example.sh") {
-			t.Errorf("%s does not ship the emergency example", f)
+		if !strings.Contains(read(f), "emergency.example.sh") || !strings.Contains(read(f), "/usr/share/doc/n5-fangov/examples/emergency.example.sh") {
+			t.Errorf("%s does not ship the emergency example under examples/", f)
 		}
 	}
+	// the example names the fixed hook path and the install line, sets
+	// -eu and lets the last command's status through (no trailing exit 0)
 	ex := read("deploy/emergency.example.sh")
-	for _, want := range []string{"N5_CHANNEL", "N5_SENSOR", "N5_TEMP", "N5_CEILING", "N5_RPM", "N5_CYCLES", "logger -t n5-fangov-emergency", "# systemctl poweroff"} {
+	for _, want := range []string{"N5_CHANNEL", "N5_SENSOR", "N5_PART", "N5_TEMP", "N5_CEILING", "N5_RPM", "N5_CYCLES", "logger -t n5-fangov-emergency", "# systemctl poweroff",
+		"/etc/n5-fangov/emergency.sh", "install -m 0750 -o root -g root", "emergency = true", "\nset -eu\n"} {
 		if !strings.Contains(ex, want) {
 			t.Errorf("emergency.example.sh lacks %q", want)
 		}
+	}
+	if strings.Contains(ex, "\nexit 0") || strings.Contains(ex, "emergency_command") {
+		t.Errorf("emergency.example.sh masks the exit status or names the removed key")
 	}
 }

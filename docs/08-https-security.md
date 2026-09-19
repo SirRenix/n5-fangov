@@ -321,7 +321,16 @@ and a Bearer header is ignored.
 **What no token can do:** `/api/tokens*`, `/api/account/*`, `/api/login` and
 `/api/logout` answer 403 to every token, `admin` included — a leaked admin token
 cannot mint new tokens, change the password or rename the user. Those need a browser
-session or Basic auth. A request outside the scope answers 403
+session or Basic auth. Nor can any token, session or password **run a command on the
+host**: the emergency hook is one root-owned file at a fixed path
+(`/etc/n5-fangov/emergency.sh`, [Ceilings](06-configuration.md#ceilings-and-the-emergency-action))
+and no API field names a command or a path. The files the API can write are
+`/etc/n5-fangov/config.toml`, `/etc/n5-fangov/presets/<name>.toml` (`<name>` is
+`[a-z0-9_-]{1,64}`, no separators), the daemon's own TLS pair under `/etc/n5-fangov/tls/`,
+its state files under `/var/lib/n5-fangov/` and the PVE notification template pair —
+nothing else, and none of them is executed. The daemon also refuses a hook that is a
+symlink, not root's, or writable by group or others, so the file cannot be planted
+through another service's hole either (0.4.1-rc1 review finding). A request outside the scope answers 403
 `{"error":"token scope read does not allow PUT /api/override/cpu","scope":"read","required":"control"}`.
 `GET /api/alerts` is within `read`; a token caller gets `webhook_url` with query and
 userinfo redacted (the full URL is for browser sessions and Basic auth only), so a

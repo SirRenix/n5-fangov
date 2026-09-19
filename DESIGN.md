@@ -83,7 +83,7 @@ internal/sysinfo/    hardware inventory from /sys, /proc, SMBIOS table, lspci; l
 internal/fsutil/     WriteAtomic(path, data, perm): temp file in the target dir, sync, chmod, rename, clean-up
 internal/sdnotify/   READY=1, WATCHDOG=1
 internal/version/    Version (the only version literal), Prerelease()
-deploy/              systemd units, onfailure script, install/uninstall, apt hook, config example, emergency example, debian/, PVE templates
+deploy/              systemd units, onfailure script, install/uninstall, apt hook, config example, emergency hook example, debian/, PVE templates
 tools/remote-go.ps1  build/test in a Docker container on a Linux host over ssh (pwsh)
 testdata/sysfs/n5pro fake /sys tree mirroring the reference host (generic names)
 docs/                operator pages 01–11, AUDIT.md, DESIGN-AUDIT.md, RELEASE-GATE.md, REVIEW-TAGS.md,
@@ -131,7 +131,7 @@ a separate literal set that matched no preset; release-gate finding 5b).
 | `stale_cycles` | 6..600 (checked on `k10temp` only) | 18 | reload |
 | `alert_cooldown` | `60s`..`24h` | `30m` | reload |
 | `log_every` | 0..1000000 cycles (0 = never) | 30 | reload |
-| `emergency_command` | string, `""` = off; run by `/bin/sh -c` when a channel stays at its ceiling (section 6 "Ceilings and emergency"); not validated beyond being a string | `""` | reload |
+| `emergency` | `true`/`false`: run the emergency hook `/etc/n5-fangov/emergency.sh` when a channel stays at its ceiling (section 6 "Ceilings and emergency"); the path is fixed, no key names a command | `false` | reload |
 | `emergency_cycles` | 1..60 consecutive cycles at the ceiling before the emergency action | 6 | reload |
 | `profile` | `auto` \| `n5pro` \| `nct67xx` \| `it87xx` \| `monitor` | `auto` | restart |
 | `[web] listen` | `host:port`; forced to `127.0.0.1:8010` when auth is misconfigured (`H2`) | `127.0.0.1:8010` | restart |
@@ -158,7 +158,7 @@ a separate literal set that matched no preset; release-gate finding 5b).
 | `stop` | `"auto"` or fixed duty; below 60 raised to 60; invalid → `DefaultStop(sensor)` (`140` for `drivetemp:max` and for every composite that contains it, else `auto`) | by sensor | reload |
 | `hysteresis` | 0..10 °C (integer); 0 = off (section 6 "Curve post-processing") | 0 | reload |
 | `min_on` | `0s`..`1h` duration; `0s` = off | `0s` | reload |
-| `ceiling` | 30 .. the built-in ceiling of the sensor (section 6 "Ceilings and emergency"); may only **lower** it — above the built-in value → warning + built-in value (strict: 400), like every other invalid channel key; missing / 0 = built-in. `disk:<dev>` ids validate against 100 (the parser has no sysfs; the daemon applies `min(configured, built-in)` anyway) | 0 (built-in) | reload |
+| `ceiling` | 30 .. the built-in ceiling of the sensor (section 6 "Ceilings and emergency"); may only **lower** it — above the built-in value → warning + built-in value (strict: 400), like every other invalid channel key; missing / an explicit 0 = built-in, no warning. `disk:<dev>` ids validate against 100 (the parser has no sysfs; the daemon applies `min(configured, built-in)` anyway); for a composite the value lowers every part | 0 (built-in) | reload |
 | `[[schedule]] preset` | preset name `^[a-z0-9_-]{1,64}$` (existence is checked when the switch happens, not at parse) | — | reload |
 | `from`, `to` | `HH:MM` strings (24 h, local time of the host; a one-digit hour is accepted and stored as `HH:MM`), both or neither (empty strings count as absent; a value that is not a string — a bare TOML time literal `22:00:00`, an integer — drops the entry with a warning, it never reads as absent); `from == to` → entry dropped; `to < from` = the window crosses midnight | — | reload |
 | `days` | subset of `mon tue wed thu fri sat sun` (lower-cased, distinct); the day of the window is the day `from` falls in; missing = every day; on the fallback the key is ignored with a warning (`days ignored on the fallback`) and cleared | all | reload |
@@ -270,7 +270,11 @@ generic patterns that do not parse as ids. `Parse(id)` yields a `Source`; the co
   now is skipped, at least one must resolve (else the error of the first part); `Read` is the
   maximum of the readable parts (`maximum` semantics). Because the controller re-resolves
   every channel sensor every 60 cycles, a part whose device appears later is picked up then.
-  `ID()` is the canonical form (parts in the configured order, joined by `,`).
+  `ID()` is the canonical form (parts in the configured order, joined by `,`). The
+  composite also implements `PartsReader` — `Parts() []Part{ID, Value}`, the readable
+  parts of the last `Read` in configured order — so the controller can judge every part
+  against its own ceiling (section 6); `PartCeilings(id, configured, diskKind)` is the
+  matching per-part ceiling list (a single id is one part).
 
 ## 6. Controller (internal/control)
 
@@ -294,45 +298,85 @@ configuration can raise — the floor of the guard chain below `critical`:
   name), `ssd` 85 °C (`nvme:max`, `disk:<dev>` of kind `ssd`), `hdd` 65 °C
   (`drivetemp:max`, `disk:<dev>` of kind `hdd`), everything else 100 °C. `diskKind` is the
   resolver for `disk:<dev>` (`sensor.DiskKind` in cmd, `Options.DiskKind` in the
-  controller; nil or `""` → 100). A composite sensor takes the **lowest** ceiling of its
-  parts. `[[channel]] ceiling = N` may only lower it: the effective ceiling is
-  `min(built-in, N)` for `N > 0` (section 3 for the validation). The effective value is
-  computed when the channel is built and on every config swap (`channel.ceiling`), and
-  reported as `ChannelState.Ceiling`.
-- Rule, in `computeTargets` after critical and before the stall check: raw reading ≥
-  ceiling → target 255 immediately, mode `critical`, whatever curve, override, hysteresis,
-  `min_on` or `critical` say (no slew: mode `critical` is written directly). The channel
-  is then **in the ceiling state** (`ChannelState.CeilingHit`, `ceiling_hit`) until the raw
-  reading drops below **ceiling − 3 °C** (hysteresis, so the fan does not flap at the
-  line); while in the state the channel stays at 255 / `critical`. An unknown temperature
-  (`sensor-error`) leaves the state as it is and does not count. Alert kind **`ceiling`**
-  on the transition into the state, cooldown as every controller kind; message
-  `<name>: <sensor> at <reading> reached the ceiling <ceiling>C (critical <critical>C) -> 255`
-  (ASCII). Leaving the state is one log line (`… below the ceiling again, regulation resumed`).
+  controller; nil or `""` → 100). `[[channel]] ceiling = N` may only lower it: the
+  effective ceiling is `min(built-in, N)` for `N > 0` (section 3 for the validation).
+- **Composite sensors are judged per part.** `sensor.PartCeilings(id, N, diskKind)` yields
+  one effective ceiling per part (a single id is one part); the composite source exposes
+  the readings of its last `Read` as `sensor.PartsReader` (`Parts() []Part{ID, Value}`,
+  readable parts only, configured order), and the controller checks **every part against
+  its own kind's ceiling** — an NVMe part at 70 °C next to an HDD part is not an
+  episode, the HDD part at 65 is. `ChannelState.Ceiling` reports the **lowest** part
+  ceiling (informational: the value the curve editor draws and the tile colours by; for a
+  single sensor it is the sensor's ceiling). A part that does not read this cycle is
+  absent from the judgement.
+- The effective values (`channel.ceiling`, `channel.partCeil`) are computed when the
+  channel is built, on every config swap (outside the hardware lock — `DiskKind` reads
+  sysfs) and **whenever the sensor is resolved again**: the per-cycle retry of an
+  unresolved sensor and the 60-cycle re-resolve, so a `disk:<dev>` whose device was
+  absent at start gets its kind (and its 65/85) as soon as the device is there, without
+  a reload.
+- Rule, in `computeTargets` after critical and before the stall check: any part at or
+  above its ceiling → target 255 immediately, mode `critical`, whatever curve, override,
+  hysteresis, `min_on` or `critical` say (no slew: mode `critical` is written directly).
+  The channel is then **in the ceiling state** (`ChannelState.CeilingHit`, `ceiling_hit`)
+  until **every part** is below **its ceiling − 3 °C** (hysteresis, so the fan does not
+  flap at the line); while in the state the channel stays at 255 / `critical`. An unknown
+  temperature (`sensor-error`) leaves the state as it is, does not count towards the
+  emergency counter — and keeps **255** (mode `sensor-error`): the last reading was at
+  the ceiling, the safe duty would give the drive less air than it had; the ordinary
+  safe duty applies again only after a reading has ended the episode. Alert kind
+  **`ceiling`** on the transition into the state, cooldown as every controller kind;
+  message `<name>: <part> at <reading> reached the ceiling <ceiling>C (critical
+  <critical>C) -> 255` (ASCII) where `<part>` is the sensor id for a single sensor and
+  `<part id> of <composite id>` for a composite, `<reading>` and `<ceiling>` that part's.
+  Leaving the state is one log line (`… below the ceiling again, regulation resumed`).
   A `critical` above the ceiling is accepted by the parser (it is meaningless): `check`
   prints the advisory line `channel hdd: critical 70 above the built-in ceiling 65 — the
-  ceiling acts first` and still passes; the dashboard repeats it (section 11).
-- **Emergency action** (`[daemon] emergency_command`, `emergency_cycles = N`, section 3):
+  ceiling acts first` (`configured ceiling 50` when a `[[channel]] ceiling` is the one
+  below critical) and still passes; the dashboard repeats it (section 11).
+- **Emergency action** (`[daemon] emergency = true`, `emergency_cycles = N`, section 3):
   per channel the controller counts the consecutive cycles spent in the ceiling state
-  (`ceilCycles`, reset when the state ends). When `ceilCycles ≥ N` **and** the channel
-  has a tachometer that reports 0 RPM this cycle (the fan has failed), **or** when
-  `ceilCycles ≥ 3 × N` regardless of RPM (cooling is ineffective), and `emergency_command`
-  is not empty, the daemon runs the command **once** per ceiling episode
-  (`emergencyFired`, re-armed only when the channel leaves the ceiling state): `/bin/sh -c
-  <command>` with the daemon's environment plus `N5_CHANNEL`, `N5_SENSOR`, `N5_TEMP`
-  (°C, one decimal), `N5_CEILING` (°C), `N5_RPM` (`-1` without tach), `N5_CYCLES`;
-  timeout `Options.EmergencyTimeout` (60 s in production); combined output goes to the
-  log (one line per output line, prefix `emergency[<name>]:`). The command runs on its own
-  goroutine (a hung script must not starve the watchdog; `SyncAlerts` runs it inline for
-  tests); `Options.Exec` is the injection point (`func(ctx, command string, env []string)
-  (output []byte, err error)`, nil = the real `/bin/sh`). When the command has finished
-  the alert kind **`emergency`** is raised (cooldown as every kind):
-  `<name>: emergency action after <n> cycles at the ceiling (<reason>): command exited <status>`
+  (`ceilCycles`, reset when the state ends). When `ceilCycles ≥ N` **and** the channel's
+  fan is **stalled** by the stall detection (`channel.stalled`: `stall_cycles` zero
+  readings at a duty ≥ `stall_min_duty` after the daemon's own write — never a single
+  0 RPM sample, so a fan that legally stood still when the episode began does not
+  count), **or** when `ceilCycles ≥ 3 × N` regardless of RPM (cooling is ineffective),
+  the daemon runs the **emergency hook once** per ceiling episode (`emergencyFired`,
+  re-armed only when the channel leaves the ceiling state). The hook is the file at the
+  **fixed path** `control.DefaultEmergencyHook` = `/etc/n5-fangov/emergency.sh`
+  (`Options.EmergencyHook`, tests only): no config key and no API field names a command
+  or a path. Before every run `control.HookStatus(path)` decides: the path must exist
+  (else `absent`), be a regular file and not a symbolic link (`os.Lstat`), be owned by
+  root, be neither group- nor world-writable and be executable by its owner (`0700`,
+  `0750`, `0755`); anything else is `refused: <why>` (`world-writable (mode 0777)`,
+  `group-writable (mode 0775)`, `not executable (mode 0640)`, `not owned by root (uid
+  N)`, `symbolic link`, `not a regular file`). A refused or absent hook is **one log line
+  per episode** (`… hook /etc/n5-fangov/emergency.sh refused: …, nothing runs`), no run,
+  no `emergency` alert — the `ceiling` alert already covers the episode. `check` prints
+  the state as `emergency hook   /etc/n5-fangov/emergency.sh (ok|absent|refused: …)`, a
+  `[warn]` only when `emergency = true` and the state is not `ok`. An accepted hook is
+  executed directly (`exec.Command(path)`, no shell) with the daemon's environment plus
+  `N5_CHANNEL`, `N5_SENSOR` (the channel's id), `N5_PART` (the part at its ceiling; equal
+  to `N5_SENSOR` for a single sensor), `N5_TEMP` (that part's reading, °C, one decimal),
+  `N5_CEILING` (that part's ceiling, °C), `N5_RPM` (`-1` without tach), `N5_CYCLES`;
+  timeout `Options.EmergencyTimeout` (60 s in production) — the hook runs in its **own
+  process group** (`Setpgid`) and the timeout kills the group (`kill(-pid, SIGKILL)`), so
+  a child the script left behind dies with it; pipes are given 2 s more (`WaitDelay`).
+  Combined output is **capped at 4 KiB** (`HookOutputMax`; the rest is discarded, the log
+  gets `… output truncated at 4 KiB`) and goes to the log one line per output line, prefix
+  `emergency[<name>]:`. The hook runs on its own goroutine (a hung script must not starve
+  the watchdog; `SyncAlerts` runs it inline for tests); `Options.Exec` is the injection
+  point (`func(ctx, path string, env []string) (output []byte, err error)`, nil = the real
+  exec), `Options.HookCheck` the verdict's (nil = `HookStatus`). When the hook has
+  finished the alert kind **`emergency`** is raised (cooldown as every kind):
+  `<name>: emergency action after <n> cycles at the ceiling (<reason>): hook exited <status>`
   with `reason` = `fan reports 0 RPM` or `cooling ineffective`, `status` = `0`, the exit
-  code, `timeout after 60s` or the exec error. With an empty `emergency_command` nothing
-  runs and no `emergency` alert is raised — the `ceiling` alert already covers the
-  episode. The command runs inside the unit's sandbox (section 12: what is known about
-  `systemctl poweroff` and `logger` there).
+  code, `timeout after 1m0s` (`time.Duration.String()`) or the exec error. A hook that
+  powers the box off ends the daemon (SIGTERM) before that alert can leave — the log
+  line `… running /etc/n5-fangov/emergency.sh` and whatever the hook wrote to the journal
+  are the lasting evidence. With `emergency = false` nothing runs and no `emergency` alert
+  is raised. The hook runs inside the unit's sandbox (section 12: what is known about
+  `systemctl poweroff` and `logger` there, and why no API can create the file).
 
 **Curve post-processing** (0.3.1; only the curve output is touched — override, critical,
 stall, failsafe, slew and the safe duty are exactly as before):
@@ -445,9 +489,10 @@ Snapshot (`GET /api/state`, `/run/n5-fangov/state.json`):
 `duty` is the hardware `pwmN` value, `target` the computed one before slew; `held_temp`
 (optional) is the hysteresis-held temperature, `hold_until` (optional, unix ts) the end of
 a running `min_on` hold; `ceiling` (°C, int, always present) is the channel's effective
-ceiling and `ceiling_hit` (bool, always present) whether the channel is in the ceiling
-state (section 6 "Ceilings and emergency"; both signed-in fields, the filtered anonymous
-view does not carry them). History point:
+ceiling — for a composite sensor the **lowest** part ceiling, informational: the rule
+judges each part on its own — and `ceiling_hit` (bool, always present) whether the
+channel is in the ceiling state (section 6 "Ceilings and emergency"; both signed-in
+fields, the filtered anonymous view does not carry them). History point:
 `{ts, temp{}, duty{}, rpm{}, extra{}}` maps by channel name (`extra` by sensor id,
 omitted when empty).
 
@@ -459,8 +504,8 @@ noted):
 | `sensor` | controller | channel sensor unresolved/unreadable/implausible/frozen → channel at safe duty |
 | `stall` | controller | 0 RPM at duty ≥ `stall_min_duty` for `stall_cycles` → channel 255 |
 | `temp` | controller | critical temperature → 255 immediately |
-| `ceiling` | controller | raw reading at/above the channel's built-in ceiling (HDD 65 / SSD 85 / CPU 100 °C, or a lower configured one) → 255, mode `critical`, until the reading is 3 °C below the ceiling; raised on the transition |
-| `emergency` | controller | a channel stayed at its ceiling for `emergency_cycles` cycles with 0 RPM, or 3 × as long regardless → `emergency_command` ran once; the message carries the reason and the exit status; never raised with an empty command |
+| `ceiling` | controller | a part of the channel's sensor at/above its kind's ceiling (HDD 65 / SSD 85 / CPU 100 °C, or a lower configured one) → 255, mode `critical`, until every part is 3 °C below its ceiling; raised on the transition, names the part |
+| `emergency` | controller | a channel stayed at its ceiling for `emergency_cycles` cycles with a stalled fan, or 3 × as long regardless → the emergency hook ran once; the message carries the reason and the exit status; never raised with `emergency = false` or a refused/absent hook |
 | `write` | controller | repeated write/read-back errors → every channel 255 (failsafe) |
 | `config` | serve (start) | parse warnings → built-in defaults in effect |
 | `config-channels` | controller | channel set corrected (N5 Pro channel added, forced stop, pwm the device lacks) |
@@ -940,7 +985,8 @@ Every channel of the mock state carries `ceiling` (cpu 100, ssd 85, hdd 65) and
   0..`hysteresis_max`, min_on ≤ `min_on_max_s`; errors in the notice (no toast on top).
   A `critical` above the channel's ceiling is **not** an error: the notice carries the
   warning `<name>: critical N above the built-in ceiling M — the ceiling acts first`
-  (`ceilingWarnings`, shown with the apply result, never blocks). The channel card
+  (`configured ceiling M` when the editor's own `ceiling` is the one below critical — the
+  wording of `check`; `ceilingWarnings`, shown with the apply result, never blocks). The channel card
   header `pwmN · sensor` carries the tooltip `ceiling M °C (built-in floor below critical)`.
   Apply re-reads the config first (`loadConfig`: `[dashboard]`, `[alert]`,
   `[[schedule]]` may have changed), then `stripChannels(cfgRaw)` — every `[[channel]]`
@@ -1187,18 +1233,42 @@ from `-/sys/devices` in 0.3.1), `ProtectHome`, `PrivateTmp`, `PrivateDevices`,
 files, reads the DMI tables, runs `lspci`, writes into pmxcfs. The `mail(1)` path on
 non-PVE hosts additionally needs `CAP_DAC_OVERRIDE` (docs/08-https-security.md "Hardening").
 
-**Emergency command under the sandbox** (section 6): `emergency_command` runs as
-`/bin/sh -c` inside this unit. `deploy/emergency.example.sh` (installed to
-`/usr/share/doc/n5-fangov/`, never executed by the package) logs the environment through
-`logger -t n5-fangov-emergency` and carries a commented `systemctl poweroff` line. What is
+**Emergency hook under the sandbox** (section 6): `/etc/n5-fangov/emergency.sh` is
+executed directly inside this unit. `deploy/emergency.example.sh` (installed to
+`/usr/share/doc/n5-fangov/examples/`, mode 0644, never executed by the package — Debian
+policy 12.6 keeps examples out of the doc root) is the template the operator copies with
+`install -m 0750 -o root -g root … /etc/n5-fangov/emergency.sh`; it logs the environment
+through `logger -t n5-fangov-emergency`, is `set -eu` and lets the last command's status
+through (no trailing `exit 0`), and carries a commented `systemctl poweroff` line. What is
 known from the unit file: the sandbox allows `AF_UNIX` and `@system-service`, so
 `systemctl` can reach PID 1 over `/run/systemd/private` and `logger` the journal socket;
 `CapabilityBoundingSet=` is empty, but a poweroff request is carried out by PID 1, not by
 the caller, and uid 0 needs no polkit for it; `PrivateDevices` keeps the API pseudo
-devices (`/dev/log` is a symlink into `/run/systemd/journal/`). Neither `systemctl
-poweroff` nor `logger` from inside the sandbox has been **executed on the reference host**
-as of 0.4.1-rc1 — the release-gate re-test runs the `logger` form; the poweroff form
-stays "to be verified on the host" until an operator runs it (docs/06-configuration.md).
+devices (`/dev/log` is a symlink into `/run/systemd/journal/`); `ProtectHome` hides
+`/root` and `/home` (a hook there is `absent`), the hook may write only under
+`ReadWritePaths`, and `TimeoutStopSec=20` ends a running hook with the unit. Measured on a
+Debian 13 / systemd 257 box with the unit's property set (review of rc1): `/dev/log`
+exists, `logger` reaches the journal, `systemctl` answers. Neither `systemctl poweroff`
+nor `logger` from inside the sandbox has been **executed on the reference host** as of
+0.4.1-rc1 — the release-gate re-test runs the `logger` form; the poweroff form stays "to
+be verified on the host" until an operator runs it (docs/06-configuration.md).
+
+**Why the hook is a file and not a config value** (review finding S01 of 0.4.1-rc1): a
+command string in the config would be writable through `PUT /api/config` and the bundle
+import and would run as root inside the sandbox — an admin token or the dashboard
+password would be root code execution on the host, and the very instance the ceilings
+guard against could disable the fans. The hook is therefore a root-owned file at a fixed
+path that **no API path can create or change**. The writes the API can reach are, by
+path: `/etc/n5-fangov/config.toml` (config store, atomic rename), `/etc/n5-fangov/presets/
+<name>.toml` with `<name>` validated by `config.ValidPresetName` (`[a-z0-9_-]{1,64}`, so no
+separator reaches the path), `/etc/n5-fangov/tls/custom-cert.pem` and `custom-key.pem`
+(fixed names; `cert_file`/`key_file` are only read), the state directory files
+`/var/lib/n5-fangov/{sessions,tokens,alerts,history}.json` and `/etc/pve/notification-
+templates/default/n5-fangov-*.hbs` (fixed names, template install). Nothing writes
+`/etc/n5-fangov/emergency.sh`, nothing writes into `/usr/local/sbin` or any other place
+the ownership rule would accept. `HookStatus` additionally refuses a symbolic link and a
+file with a group- or world-writable bit, so a file planted through another service's
+hole still does not run unless it is root's and private.
 
 **Tokens backup on removal**: `postrm` (`remove` and `purge` — `apt purge` runs both, and
 the state directory goes with `remove`) and `uninstall.sh` copy
@@ -1229,7 +1299,7 @@ Install (`deploy/install.sh`, needs `dist/n5-fangov` or `./n5-fangov`; refuses o
 package is installed, as does `uninstall.sh` — apt maintains those): stops and disables
 `n5-fand.service`, installs binary, onfailure script (`/usr/libexec/n5-fangov/`), both
 units (`/etc/systemd/system/`), `/etc/n5-fangov/{,presets}`, the log directory, the config
-example, the emergency example script and the deploy README (`/usr/share/doc/n5-fangov/`), the PVE templates
+example and the deploy README (`/usr/share/doc/n5-fangov/`), the emergency hook example (`…/examples/`), the PVE templates
 (`/usr/share/n5-fangov/pve-notification/` and, when `/etc/pve` exists and pmxcfs is
 writable, `/etc/pve/notification-templates/default/`), the apt hook
 (`/etc/apt/apt.conf.d/90n5-fangov`), `daemon-reload`, enable; writes no config and starts

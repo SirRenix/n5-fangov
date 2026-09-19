@@ -77,7 +77,7 @@ Index of all pages: [docs/README.md](docs/README.md).
 Current release: **0.4.0** (2026-09-19) — the dashboard redesign, verified through the
 release gate on the reference host, and the first public release; the repository is
 public since this version. In test: **0.4.1-rc1** (safety: hard per-sensor-kind ceilings,
-an optional emergency action, two hardening fixes — [CHANGELOG](CHANGELOG.md)). A pre-release build shows its suffix in `n5-fangov version`
+an optional emergency hook (a root-owned file, never an API value), two hardening fixes — [CHANGELOG](CHANGELOG.md)). A pre-release build shows its suffix in `n5-fangov version`
 and as a badge in the dashboard. Changes per version: [CHANGELOG.md](CHANGELOG.md).
 Validation data, the measurement scripts and the Bash predecessor `n5-fand` live in
 [`minisforum-n5pro-fan-proxmox`](https://github.com/SirRenix/minisforum-n5pro-fan-proxmox);

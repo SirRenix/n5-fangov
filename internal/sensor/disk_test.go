@@ -137,10 +137,22 @@ func TestComposite(t *testing.T) {
 	if v, err := src.Read(); err != nil || v != 43850 {
 		t.Errorf("max = %d, %v; want 43850", v, err)
 	}
-	// the unreadable part is ignored while one part reads
+	// the parts of that read, in the configured order (PartsReader)
+	pr, ok := src.(sensor.PartsReader)
+	if !ok {
+		t.Fatal("composite must implement PartsReader")
+	}
+	if parts := pr.Parts(); len(parts) != 2 || parts[0] != (sensor.Part{ID: "drivetemp:max", Value: 38000}) || parts[1] != (sensor.Part{ID: "disk:nvme0n1", Value: 43850}) {
+		t.Errorf("parts: %+v", parts)
+	}
+	// the unreadable part is ignored while one part reads, and absent
+	// from the parts
 	writeUnder(t, root, "block/nvme0n1/device/hwmon3/temp1_input", "garbage")
 	if v, err := src.Read(); err != nil || v != 38000 {
 		t.Errorf("with a broken part: %d, %v; want 38000", v, err)
+	}
+	if parts := pr.Parts(); len(parts) != 1 || parts[0].ID != "drivetemp:max" {
+		t.Errorf("parts with a broken part: %+v", parts)
 	}
 	// a part that does not resolve now is skipped; a composite in which no
 	// part resolves carries the first part's error

@@ -1401,6 +1401,11 @@ func TestStaticIndex(t *testing.T) {
 	if strings.Contains(r.body, "<script>") || strings.Contains(r.body, "onclick=") || strings.Contains(r.body, "style=") {
 		t.Errorf("index.html carries inline script/style, which the CSP blocks")
 	}
+	if strings.Contains(r.body, "\u00c2") || strings.Contains(r.body, "\u00e2\u0080") || strings.Contains(r.body, "\u00c3") {
+		// double-encoded UTF-8 (a degree sign written through an ANSI path
+		// shows as "\u00c2\u00b0"), review finding S05 of 0.4.1-rc1
+		t.Errorf("index.html carries mojibake")
+	}
 	if csp := r.hdr.Get("Content-Security-Policy"); !strings.Contains(csp, "script-src 'self'") || !strings.Contains(csp, "default-src 'none'") {
 		t.Errorf("CSP = %q", csp)
 	}

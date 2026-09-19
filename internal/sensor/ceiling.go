@@ -17,23 +17,49 @@ const (
 // CPU ids (k10temp, coretemp, ec:cpu, hwmon:<name>:tempN with "cpu" in the
 // name), 85 for SSDs (nvme:max, disk:<dev> of kind ssd), 65 for HDDs
 // (drivetemp:max, disk:<dev> of kind hdd), 100 for everything else. A
-// composite id takes the lowest ceiling of its parts. diskKind resolves a
-// disk:<dev> device name to "ssd", "hdd" or "" (DiskKind bound to a
-// hwmon.FS); nil or "" yields the default — the config parser has no sysfs
-// and validates disk ids against 100, the daemon applies min(configured,
-// built-in) anyway, so a configured value can only lower the ceiling.
+// composite id reports the lowest ceiling of its parts (informational: the
+// controller judges every part against its own, PartCeilings). diskKind
+// resolves a disk:<dev> device name to "ssd", "hdd" or "" (DiskKind bound
+// to a hwmon.FS); nil or "" yields the default — the config parser has no
+// sysfs and validates disk ids against 100, the daemon applies
+// min(configured, built-in) anyway, so a configured value can only lower
+// the ceiling.
 func BuiltinCeiling(id string, diskKind func(dev string) string) int {
 	best := 0
-	for _, part := range strings.Split(id, ",") {
-		c := singleCeiling(strings.TrimSpace(part), diskKind)
-		if best == 0 || c < best {
-			best = c
+	for _, pc := range PartCeilings(id, 0, diskKind) {
+		if best == 0 || pc.Ceiling < best {
+			best = pc.Ceiling
 		}
 	}
 	if best == 0 {
 		return CeilingDefault
 	}
 	return best
+}
+
+// PartCeiling is the effective ceiling of one part of a channel sensor.
+type PartCeiling struct {
+	ID      string
+	Ceiling int
+}
+
+// PartCeilings splits id into its parts (a single id is one part) and
+// returns each part's effective ceiling: its own kind's built-in value,
+// lowered to configured when that is set (> 0) and lower. The controller
+// checks every part against its own entry, so a composite of an NVMe and
+// an HDD holds the NVMe to 85 and the HDD to 65 — not both to 65.
+func PartCeilings(id string, configured int, diskKind func(dev string) string) []PartCeiling {
+	raw := strings.Split(id, ",")
+	out := make([]PartCeiling, 0, len(raw))
+	for _, part := range raw {
+		part = strings.TrimSpace(part)
+		c := singleCeiling(part, diskKind)
+		if configured > 0 && configured < c {
+			c = configured
+		}
+		out = append(out, PartCeiling{ID: part, Ceiling: c})
+	}
+	return out
 }
 
 func singleCeiling(id string, diskKind func(dev string) string) int {

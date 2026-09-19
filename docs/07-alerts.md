@@ -26,8 +26,8 @@ journal), the PVE side, cooldowns, the test alert and the alert history.
 | Somebody else writes to `/sys` | set-point re-asserted every minute, warning |
 | Broken config | built-in defaults + warning + alert; daemon still starts |
 | Critical temperature | 255 immediately, also in manual mode |
-| Reading at the built-in **ceiling** of the sensor kind (HDD 65 / SSD 85 / CPU 100 Â°C, or a lower configured one) â whatever `critical` says | 255 immediately, mode `critical`, alert `ceiling`, until the reading is 3 Â°C below ([Ceilings](06-configuration.md#ceilings-and-the-emergency-action)) |
-| Channel stays at its ceiling with a fan at 0 RPM (`emergency_cycles`), or 3 Ã as long regardless | `emergency_command` runs once (off by default), alert `emergency` with the exit status |
+| Reading at the built-in **ceiling** of the sensor kind (HDD 65 / SSD 85 / CPU 100 °C, or a lower configured one; a composite per part) — whatever `critical` says | 255 immediately, mode `critical`, alert `ceiling`, until the reading is 3 °C below ([Ceilings](06-configuration.md#ceilings-and-the-emergency-action)) |
+| Channel stays at its ceiling with a stalled fan (`emergency_cycles`), or 3 × as long regardless | the emergency hook `/etc/n5-fangov/emergency.sh` runs once (`emergency = true`, off by default), alert `emergency` with the exit status |
 | Fan controller vanishes (driver reload) | daemon exits after 6 failed cycles, systemd restarts it with a fresh detection |
 | Scheduled preset switch fails | previous curves stay, alert, retry at the next transition |
 
@@ -143,8 +143,8 @@ is the alternative that keeps the routing in one place.
 | `sensor` | channel sensor unresolved, unreadable, implausible or frozen | that channel at its safe duty, mode `sensor-error`; the others keep regulating | `alert_cooldown`, sent on the transition only |
 | `stall` | 0 RPM at duty ≥ `stall_min_duty` for `stall_cycles` | channel 255 until RPM is back for 3 cycles | `alert_cooldown` |
 | `temp` | critical temperature reached | 255 immediately, also under a manual override | `alert_cooldown` |
-| `ceiling` | raw reading at/above the channel's ceiling (HDD 65 / SSD 85 / CPU 100 Â°C, or a lower `[[channel]] ceiling`) | 255, mode `critical`, until 3 Â°C below the ceiling; the message names sensor, reading, ceiling and the configured critical | `alert_cooldown`, sent on the transition only |
-| `emergency` | a channel stayed at its ceiling for `emergency_cycles` cycles with 0 RPM, or 3 Ã as long regardless, and `emergency_command` is set | the command ran once for this episode; the message carries the reason and its exit status (never raised with an empty command) | `alert_cooldown` |
+| `ceiling` | a part of the channel's sensor at/above its kind's ceiling (HDD 65 / SSD 85 / CPU 100 °C, or a lower `[[channel]] ceiling`) | 255, mode `critical`, until every part is 3 °C below its ceiling; the message names the part, reading, ceiling and the configured critical | `alert_cooldown`, sent on the transition only — per kind, so a second channel entering its episode inside the cooldown is a log line only |
+| `emergency` | a channel stayed at its ceiling for `emergency_cycles` cycles with a stalled fan, or 3 × as long regardless, and `emergency = true` | the hook `/etc/n5-fangov/emergency.sh` ran once for this episode; the message carries the reason and its exit status (never raised with `emergency = false` or a hook the daemon refused — that is a log line) | `alert_cooldown` (per kind, like `ceiling`; the hook itself runs for every channel) |
 | `write` | pwm write or read-back failed in 2 consecutive cycles | every channel 255 (failsafe) | `alert_cooldown` |
 | `config` | config file has problems | built-in defaults for those values, daemon runs | 30 min (start alert) |
 | `config-channels` | channel set corrected (N5 Pro channel added, forced stop duty, pwm the device lacks) | corrected set in effect | `alert_cooldown` |

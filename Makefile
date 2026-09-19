@@ -88,7 +88,8 @@ deb-only:
 	install -m 0644 deploy/n5-fangov.service           $(PKGDIR)/lib/systemd/system/n5-fangov.service
 	install -m 0644 deploy/n5-fangov-onfailure.service $(PKGDIR)/lib/systemd/system/n5-fangov-onfailure.service
 	install -m 0644 deploy/config.example.toml         $(PKGDIR)/usr/share/doc/n5-fangov/config.example.toml
-	install -m 0644 deploy/emergency.example.sh        $(PKGDIR)/usr/share/doc/n5-fangov/emergency.example.sh
+	install -d -m 0755 $(PKGDIR)/usr/share/doc/n5-fangov/examples
+	install -m 0644 deploy/emergency.example.sh        $(PKGDIR)/usr/share/doc/n5-fangov/examples/emergency.example.sh
 	install -m 0644 deploy/apt-90n5-fangov.conf        $(PKGDIR)/usr/share/n5-fangov/apt-90n5-fangov.conf
 	install -m 0644 deploy/pve-notification/*.hbs      $(PKGDIR)/usr/share/n5-fangov/pve-notification/
 	install -d -m 0755 $(PKGDIR)/usr/share/doc/n5-fangov/docs

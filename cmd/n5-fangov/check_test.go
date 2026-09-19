@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SirRenix/n5-fangov/internal/control"
 	"github.com/SirRenix/n5-fangov/internal/hwmon/hwmontest"
 )
 
@@ -420,8 +421,73 @@ func TestCheckCriticalAboveCeilingAdvisory(t *testing.T) {
 	// at or below the ceiling: no line
 	res = runChecks(writeCfg(t, dir, strings.Replace(hdd, "critical = 70", "critical = 65", 1)), dir)
 	for _, r := range res {
-		if strings.Contains(r.detail, "ceiling") {
+		if strings.Contains(r.detail, "ceiling") && r.name != "emergency hook" {
 			t.Errorf("flagged at the ceiling: %+v", r)
 		}
+	}
+	// a configured ceiling below critical is the same finding
+	res = runChecks(writeCfg(t, dir, strings.Replace(hdd, "critical = 70", "critical = 55\nceiling = 50", 1)), dir)
+	lines = nil
+	for _, r := range res {
+		if r.name == "channel hdd" && !r.ok {
+			lines = append(lines, r.detail)
+		}
+	}
+	if len(lines) != 1 || lines[0] != "critical 55 above the configured ceiling 50 \u2014 the ceiling acts first" {
+		t.Errorf("configured ceiling advisory: %q", lines)
+	}
+}
+
+// TestCheckEmergencyHookLine: check reports the hook path's state; absent
+// or refused is a warning only with [daemon] emergency = true.
+func TestCheckEmergencyHookLine(t *testing.T) {
+	fakeN5(t, false)
+	dir := t.TempDir()
+	hook := filepath.Join(dir, "emergency.sh")
+	emergencyHookPath = hook
+	t.Cleanup(func() { emergencyHookPath = control.DefaultEmergencyHook })
+	find := func(res []checkResult) checkResult {
+		for _, r := range res {
+			if r.name == "emergency hook" {
+				return r
+			}
+		}
+		t.Fatalf("no emergency hook line in %+v", res)
+		return checkResult{}
+	}
+	// off + absent: ok line
+	r := find(runChecks(writeCfg(t, dir, cpuOnlyTOML), dir))
+	if !r.ok || r.detail != hook+" (absent)" {
+		t.Errorf("off+absent: %+v", r)
+	}
+	// on + absent: advisory warning, still no fatal
+	res := runChecks(writeCfg(t, dir, strings.Replace(cpuOnlyTOML, "[daemon]\n", "[daemon]\nemergency = true\n", 1)), dir)
+	if f := fatals(res); len(f) != 0 {
+		t.Fatalf("fatal results: %v", f)
+	}
+	if r = find(res); r.ok || !r.advisory || !strings.HasPrefix(r.detail, hook+" (absent); emergency = true") {
+		t.Errorf("on+absent: %+v", r)
+	}
+	// on + world-writable: refused
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\n"), 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(hook, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if r = find(runChecks(writeCfg(t, dir, strings.Replace(cpuOnlyTOML, "[daemon]\n", "[daemon]\nemergency = true\n", 1)), dir)); r.ok || !strings.Contains(r.detail, "(refused: world-writable (mode 0777))") {
+		t.Errorf("world-writable: %+v", r)
+	}
+	// 0750: ok when root owns it (the test user may not be root)
+	if err := os.Chmod(hook, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	r = find(runChecks(writeCfg(t, dir, strings.Replace(cpuOnlyTOML, "[daemon]\n", "[daemon]\nemergency = true\n", 1)), dir))
+	if os.Getuid() == 0 {
+		if !r.ok || r.detail != hook+" (ok)" {
+			t.Errorf("root 0750: %+v", r)
+		}
+	} else if r.ok || !strings.Contains(r.detail, "refused: not owned by root") {
+		t.Errorf("non-root 0750: %+v", r)
 	}
 }

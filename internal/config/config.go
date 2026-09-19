@@ -100,12 +100,13 @@ type Daemon struct {
 	StaleCycles   int           `toml:"stale_cycles"`
 	AlertCooldown time.Duration `toml:"alert_cooldown"`
 	LogEvery      int           `toml:"log_every"`
-	// EmergencyCommand runs (/bin/sh -c) once per ceiling episode after a
-	// channel spent EmergencyCycles cycles at its ceiling with 0 RPM, or
-	// three times as many regardless of RPM; "" = off.
-	EmergencyCommand string `toml:"emergency_command"`
-	EmergencyCycles  int    `toml:"emergency_cycles"`
-	Profile          string `toml:"profile"`
+	// Emergency enables the emergency hook (/etc/n5-fangov/emergency.sh,
+	// a root-owned file the daemon never writes): run once per ceiling
+	// episode after a channel spent EmergencyCycles cycles at its ceiling
+	// with a stalled fan, or three times as many regardless of RPM.
+	Emergency       bool   `toml:"emergency"`
+	EmergencyCycles int    `toml:"emergency_cycles"`
+	Profile         string `toml:"profile"`
 }
 
 // Web holds the HTTP listener settings.
@@ -642,7 +643,7 @@ func (p *parser) durRaw(prefix string, sec map[string]toml.Primitive, key string
 func (p *parser) daemon(sec map[string]toml.Primitive, d *Daemon) {
 	const pre = "daemon"
 	p.unknown(pre, sec, "interval", "step_up", "step_down", "stall_min_duty", "stall_cycles",
-		"stale_cycles", "alert_cooldown", "log_every", "emergency_command", "emergency_cycles", "profile")
+		"stale_cycles", "alert_cooldown", "log_every", "emergency", "emergency_cycles", "profile")
 	def := Default().Daemon
 	// interval: below the minimum -> default; above MaxInterval -> clamped
 	// (the operator wanted "slow", the watchdog window only allows 30 s).
@@ -664,7 +665,7 @@ func (p *parser) daemon(sec map[string]toml.Primitive, d *Daemon) {
 	d.StaleCycles = p.intField(pre, sec, "stale_cycles", def.StaleCycles, MinStaleCycle, MaxStaleCycle)
 	d.AlertCooldown = p.durField(pre, sec, "alert_cooldown", def.AlertCooldown, MinCooldown, MaxCooldown)
 	d.LogEvery = p.intField(pre, sec, "log_every", def.LogEvery, 0, 1000000)
-	d.EmergencyCommand, _ = p.strField(pre, sec, "emergency_command", def.EmergencyCommand)
+	d.Emergency = p.boolField(pre, sec, "emergency", def.Emergency)
 	d.EmergencyCycles = p.intField(pre, sec, "emergency_cycles", def.EmergencyCycles, 1, MaxEmergencyCycles)
 	prof, _ := p.strField(pre, sec, "profile", def.Profile)
 	prof = enumValue(prof)
@@ -1381,6 +1382,10 @@ func (p *parser) ceiling(pre string, sec map[string]toml.Primitive, sensorID str
 	var v int64
 	if err := p.md.PrimitiveDecode(prim, &v); err != nil {
 		p.warn(pre+".ceiling", "not an integer, built-in ceiling %d used", built)
+		return 0
+	}
+	if v == 0 {
+		// explicit 0 = built-in (DESIGN section 3), like a missing key
 		return 0
 	}
 	if v < MinCeiling || v > int64(built) {

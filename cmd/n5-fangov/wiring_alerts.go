@@ -29,7 +29,7 @@ var alertKinds = []web.AlertKind{
 	{Kind: "stall", Description: "a fan reports 0 RPM at a duty that should turn it; the channel goes to 255"},
 	{Kind: "temp", Description: "a channel reached its critical temperature; 255 immediately"},
 	{Kind: "ceiling", Description: "a channel reached the built-in ceiling of its sensor kind (HDD 65, SSD 85, CPU 100 C, or a lower configured one); 255 until it is 3 C below, whatever critical says"},
-	{Kind: "emergency", Description: "a channel stayed at its ceiling for emergency_cycles cycles with 0 RPM (or 3x as long regardless) and emergency_command ran; the message carries the exit status"},
+	{Kind: "emergency", Description: "a channel stayed at its ceiling for emergency_cycles cycles with a stalled fan (or 3x as long regardless) and the emergency hook ran; the message carries the exit status"},
 	{Kind: "write", Description: "repeated pwm write or read-back errors; every channel at 255 (failsafe)"},
 	{Kind: "config", Description: "the config file has problems; built-in defaults are in effect for those values"},
 	{Kind: "config-channels", Description: "the channel set was corrected (N5 Pro channel added, forced stop duty, pwm the device lacks)"},

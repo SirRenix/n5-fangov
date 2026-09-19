@@ -19,11 +19,12 @@ stall_cycles = 2        # ... after this many consecutive cycles (1..20)
 stale_cycles = 18       # first channel's sensor bit-identical this many cycles -> frozen (6..600); only checked when that sensor is k10temp
 alert_cooldown = "30m"  # minimum gap between alerts of the same kind (60s..24h)
 log_every = 30          # status line every N cycles (0 = never)
-emergency_command = ""  # optional emergency action, run by /bin/sh -c inside the unit's sandbox when a channel stays
-                        # at its ceiling for emergency_cycles cycles with the fan at 0 RPM, or 3x as long regardless
-                        # of RPM; once per episode, 60 s bound, output in the log, alert "emergency" with the exit
-                        # status. "" = off (the "ceiling" alert still goes out). Example with the env vars:
-                        # /usr/share/doc/n5-fangov/emergency.example.sh (logger line; commented systemctl poweroff)
+emergency = false       # run the emergency hook /etc/n5-fangov/emergency.sh (a root-owned executable you install
+                        # by hand -- the daemon never writes it, no API can) when a channel stays at its ceiling for
+                        # emergency_cycles cycles with a stalled fan, or 3x as long regardless of RPM; once per
+                        # episode, 60 s bound, output in the log, alert "emergency" with the exit status. false =
+                        # off (the "ceiling" alert still goes out). Template with the env vars:
+                        # /usr/share/doc/n5-fangov/examples/emergency.example.sh (logger line; commented poweroff)
 emergency_cycles = 6    # consecutive cycles at the ceiling before the action (1..60; x3 for the no-RPM rule)
 profile = "auto"        # auto | n5pro | nct67xx | it87xx | monitor
 

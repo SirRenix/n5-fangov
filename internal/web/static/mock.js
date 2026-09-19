@@ -10,7 +10,7 @@ window.n5mock = (() => {
 		return curve[curve.length - 1][1]; };
 	const REF = { cpu: [[85, 2000], [140, 3120], [179, 3830], [217, 4445], [255, 5073]], ssd: [[74, 2130], [140, 3280], [179, 3790], [217, 4230], [255, 4687]], hdd: [[87, 1237], [105, 1650], [140, 2250], [179, 2725], [217, 3160], [255, 3540]] };
 	const M = { auth: Q.get('auth') === 'none' ? 'none' : 'basic', in: Q.get('user') === '1' || Q.get('auth') === 'none', user: 'admin', remember: false, exp: !!Q.get('expire') };
-	const cfg = { daemon: { interval: '10s', step_up: 40, step_down: 15, stall_min_duty: 60, stall_cycles: 2, emergency_command: '', emergency_cycles: 6, profile: 'auto' },
+	const cfg = { daemon: { interval: '10s', step_up: 40, step_down: 15, stall_min_duty: 60, stall_cycles: 2, emergency: false, emergency_cycles: 6, profile: 'auto' },
 		web: { listen: '0.0.0.0:8010', auth: M.auth }, log: { file: '/var/log/n5-fangov/n5-fangov.log', max_size_mb: 10, max_files: 5 },
 		channel: [
 			{ name: 'cpu', pwm: 1, sensor: 'k10temp', curve: [[45, 85], [80, 255]], critical: 88, stop: 'auto', hysteresis: 0, min_on: '0s' },
@@ -107,7 +107,7 @@ window.n5mock = (() => {
 	};
 	// alerts panel (webhook: effective only with a URL; the URL is returned as stored — the log redacts, the API does not)
 	const A = { transport: 'auto', mail_to: 'root', webhook_url: '', webhook_format: 'json', tpl: { installed: true, current: true, writable: true, path: '/etc/pve/notification-templates/default' } };
-	const KINDS = { sensor: 'sensor unreadable', stall: 'fan at 0 rpm', temp: 'critical temp', ceiling: 'built-in ceiling reached (HDD 65, SSD 85, CPU 100 C)', emergency: 'emergency_command ran', write: 'pwm write failed', device: 'hwmon device vanished', config: 'config replaced', 'config-channels': 'channel set changed', profile: 'profile changed',
+	const KINDS = { sensor: 'sensor unreadable', stall: 'fan at 0 rpm', temp: 'critical temp', ceiling: 'built-in ceiling reached (HDD 65, SSD 85, CPU 100 C)', emergency: 'emergency hook ran', write: 'pwm write failed', device: 'hwmon device vanished', config: 'config replaced', 'config-channels': 'channel set changed', profile: 'profile changed',
 		start: 'daemon started', restart: 'restarted', failed: 'unit failed', kernel: 'kernel/DKMS changed', tls: 'cert unreadable', web: 'web listener failed', schedule: 'scheduled preset switch failed', test: 'test alert' };
 	const recent = [[720, 'stall', 'hdd: rpm=0 at duty 105, raised to 255'], [5400, 'temp', 'cpu 91.5 °C ≥ critical 88, forced to 255', 'pve-notify: exit status 1'], [11220, 'sensor', 'drivetemp:max: no devices'], [93600, 'start', 'n5-fangov ' + MV + ' started'], [3 * 86400, 'tls', 'certificate unreadable']]
 		.map(([ago, kind, msg, error]) => Object.assign({ ts: Math.floor(t0 - ago), kind, msg }, error ? { error } : {}));
@@ -246,7 +246,7 @@ window.n5mock = (() => {
 				if (j.webhook_url !== undefined && j.webhook_url !== '' && !/^https?:\/\/[^\s/@]+/.test(j.webhook_url)) return fail('webhook_url: absolute http(s) URL with a host, no userinfo', 400);
 				if (j.webhook_format !== undefined && !/^(json|text)$/.test(j.webhook_format)) return fail('webhook_format: json or text', 400);
 				if (j.transport === 'webhook' && !(j.webhook_url === undefined ? A.webhook_url : j.webhook_url)) return fail('webhook_url required for transport webhook', 400);
-				A.transport = j.transport; if (j.mail_to !== undefined) A.mail_to = j.mail_to || 'root'; if (j.webhook_url !== undefined) A.webhook_url = j.webhook_url; if (j.webhook_format !== undefined) A.webhook_format = j.webhook_format;
+				A.transport = j.transport; if (j.mail_to !== undefined) A.mail_to = j.mail_to || 'root'; if (j.webhook_url !== undefined) A.webhook_url = j.webhook_url; if (j.webhook_format !== undefined) A.webhook_format = j.webhook_format; if (j.transport !== 'webhook') A.webhook_url = '';
 				return ok({ ok: true, status: alertStatus() }); }
 			const last = {}; for (const r of recent) if (!(r.kind in last)) last[r.kind] = r.ts; return ok(Object.assign(alertStatus(), { last, recent: recent.slice(0, 50) })); }
 		if (p === '/api/alerts/test') { const e = effective(); if (e === 'mail') return fail('mail: exit status 127', 502, { transport: e });

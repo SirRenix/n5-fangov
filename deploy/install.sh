@@ -56,7 +56,8 @@ install -d -m 0755 /etc/n5-fangov /etc/n5-fangov/presets
 install -d -m 0750 "$LOG_DIR"
 install -d -m 0755 /usr/share/doc/n5-fangov
 install -m 0644 "$DEPLOY/config.example.toml" /usr/share/doc/n5-fangov/config.example.toml
-install -m 0644 "$DEPLOY/emergency.example.sh" /usr/share/doc/n5-fangov/emergency.example.sh
+install -d -m 0755 /usr/share/doc/n5-fangov/examples
+install -m 0644 "$DEPLOY/emergency.example.sh" /usr/share/doc/n5-fangov/examples/emergency.example.sh
 if [[ -f /etc/n5-fangov/config.toml ]]; then
     echo "  /etc/n5-fangov/config.toml exists, not touched"
 else
