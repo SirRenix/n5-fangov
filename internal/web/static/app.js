@@ -314,9 +314,10 @@ function buildNav() {
 	const nav = clear($('#nav')), forced = navForced(), rail = navRail(); $('#shell').classList.toggle('rail', rail);
 	const tg = (rail ? 'Expand sidebar' : 'Collapse sidebar'), tip = tg + ' · [', forcedTip = 'Sidebar collapses below 1100 px';
 	const tog = () => h('button', { class: 'btn icon link tog', title: tip, 'aria-label': tg, 'aria-expanded': String(!rail), 'aria-keyshortcuts': '[', onclick: toggleNav }, ico('panel'));
-	// brand row: logo, name, toggle; the rail shows the logo alone (tooltip: the expand hint) and the toggle under it, set apart by a group separator
-	nav.append(h('div', { class: 'brand-row' }, h('span', { class: 'logo', title: forced ? forcedTip : rail ? tip : null }, ico('fan')), h('span', { class: 'brand' }, 'n5-fangov'), rail ? null : tog()));
-	if (rail && !forced) nav.append(tog(), h('div', { class: 'grp-sep' }));
+	// brand row: logo, name, toggle; the rail shows the logo alone — it is the expand control there (one trigger in the rail: the logo, one in the page header)
+	const logo = rail && !forced ? h('button', { class: 'logo', type: 'button', title: tip, 'aria-label': tg, 'aria-expanded': 'false', onclick: toggleNav }, ico('fan')) : h('span', { class: 'logo', title: forced ? forcedTip : null }, ico('fan'));
+	nav.append(h('div', { class: 'brand-row' }, logo, h('span', { class: 'brand' }, 'n5-fangov'), rail ? null : tog()));
+	if (rail) nav.append(h('div', { class: 'grp-sep' }));
 	const pt = $('#ph-tog'); pt.hidden = !rail; pt.disabled = forced; pt.title = forced ? forcedTip : tip; pt.setAttribute('aria-label', forced ? forcedTip : tg); pt.setAttribute('aria-expanded', 'false');
 	let lastG = null;
 	for (const p of visible()) {

@@ -46,10 +46,18 @@ each: [Alerts and guards](docs/07-alerts.md#what-the-daemon-guards-against).
 
 | Platform | Status |
 |---|---|
-| Proxmox VE 9.2 / Debian 13 (trixie), kernel 7.0.12-1-pve (DKMS module also built for 7.0.0-2/7.0.0-3-pve), driver `minisforum-n5-it5571` 0.2.0, Minisforum N5 Pro BIOS 1.05 | **verified** (channel mapping, stop behaviour, load tests, multi-hour runs; every release is verified on this box before it is tagged) |
+| Minisforum N5 Pro, BIOS 1.05 — Proxmox VE 9.2.20 on Debian 13.7 (trixie), kernel **7.0.14-17-pve** (running) and 7.0.12-1-pve (fallback), DKMS driver `minisforum-n5-it5571` 0.2.0, lm-sensors 3.6.2; binary built with Go 1.26 (static, `golang:1.26-alpine`) | **verified** 2026-09-19 with the 0.4.0 release gate (channel mapping, stop behaviour, load tests, multi-hour runs, reboot); every release is verified on this box before it drops its `-rc` |
 | Debian/Ubuntu with NCT67xx (`nct6775`) or IT87xx (`it87`) | from documentation, untested — please report |
 | Any Linux with hwmon, no PWM | monitoring only |
 | Unraid, TrueNAS, non-systemd | binary runs; the guard chain relies on systemd |
+
+This is a one-person project. The tested column is what was measured on one machine on
+the date given; other boards, kernels and driver versions may behave differently, and
+mistakes in the documentation or the code are possible despite the release gate. Read
+the guard chain before trusting the daemon with hardware you care about, keep the
+fans' BIOS defaults reachable (failsafe, `uninstall.sh`), and report what you find as an
+issue — security findings through the repository's private vulnerability reporting.
+The licence's warranty disclaimer ([LICENSE](LICENSE), GPL-2.0-only §11–12) applies.
 
 ## Documentation
 
@@ -67,7 +75,7 @@ Index of all pages: [docs/README.md](docs/README.md).
 ## Status
 
 Current release: **0.3.1** (2026-09-18), verified through the release gate on the reference
-host; **0.4.0-rc3** (the dashboard redesign, the release that goes public) is the current
+host; **0.4.0-rc4** (the dashboard redesign, the release that goes public) is the current
 release candidate. A pre-release build shows its suffix in `n5-fangov version` and as a
 badge in the dashboard. Changes per version: [CHANGELOG.md](CHANGELOG.md).
 Validation data, the measurement scripts and the Bash predecessor `n5-fand` live in

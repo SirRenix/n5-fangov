@@ -1045,8 +1045,8 @@ optional body of `PUT /api/presets/{name}`, section 9).
   default, collapsible to the icon rail — no top-bar variant; the toggle in the brand row
   (rc1 gate G4, not in the footer), since rc3 the admin-tool pattern (rc2 re-test: "must
   be integrated more nicely and be unmistakable"): panel-left icon at the right end of the
-  brand row, under the logo in the rail, the same icon at the left edge of the page header
-  while the rail is active, `[` as the shortcut; sparklines on the tiles:
+  brand row; in the rail the logo is the expand control (no second button — rc3 re-test)
+  and the same icon sits at the left edge of the page header while the rail is active, `[` as the shortcut; sparklines on the tiles:
   yes; Fans stacked on desktop, a channel selector below 700 px (a breakpoint, not a
   setting); Compatibility folded into About (`#about/compat`) — eight sidebar entries.
 - **Page model:** Monitor / Control / Operate / Settings / Info; Curves, Manual and

@@ -37,6 +37,19 @@ drove the 0.3.1 work is `docs/AUDIT.md` (code) and `docs/DESIGN-AUDIT.md`
 **Not planned**: MQTT/discovery (REST + token is enough and smaller), a German UI
 (audience is GitHub), multi-host management, a frontend framework.
 
+## [0.4.0-rc4] — 2026-09-19
+
+### Changed
+
+- Icon rail: one expand control instead of two — the logo expands the sidebar (tooltip,
+  `aria-label`), the page-header panel icon stays; the extra button under the logo is gone
+  (operator re-test of rc3).
+- README *Tested hardware* names the measured combination of the 0.4.0 gate (kernel
+  7.0.14-17-pve running, 7.0.12-1-pve fallback, PVE 9.2.20 / Debian 13.7, driver 0.2.0,
+  lm-sensors 3.6.2, Go 1.26) and states plainly that this is a one-person project whose
+  text and code can contain mistakes despite the gate; the kernel-driver page carries the
+  same verified combination.
+
 ## [0.4.0-rc3] — 2026-09-19
 
 The operator's rc2 re-test of gate row 6 (`docs/RELEASE-GATE.md`): the sidebar toggle

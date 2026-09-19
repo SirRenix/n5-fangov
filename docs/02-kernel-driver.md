@@ -4,6 +4,12 @@ What this page covers: why the N5 Pro needs an out-of-tree kernel module, what D
 with it, how to install and verify it, the kernel-update gate, and how to remove it.
 Other boards skip to [Other boards](#other-boards).
 
+Verified combination (2026-09-19, the 0.4.0 release gate): driver `minisforum-n5-it5571`
+0.2.0 built by DKMS for Proxmox kernels **7.0.14-17-pve** (running) and 7.0.12-1-pve
+(kept as fallback), Proxmox VE 9.2.20 / Debian 13.7, BIOS 1.05, lm-sensors 3.6.2. Other
+kernel or driver versions are untested — the [gate](#the-kernel-update-gate) tells you
+when a kernel has no module.
+
 - [Why an out-of-tree module](#why-an-out-of-tree-module)
 - [What DKMS does for you](#what-dkms-does-for-you)
 - [Install](#install)

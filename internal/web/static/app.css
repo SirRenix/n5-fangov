@@ -89,7 +89,7 @@ main{padding:var(--sp-5);max-width:var(--content-max);margin:0 auto;width:100%}
 /* sidebar toggle (panel-left icon): a 32 px ghost icon button at the right end of the brand row; in the rail under the logo (centred), and once more at the left edge of the page header */
 .tog{width:var(--tog);height:var(--tog);min-width:var(--tog);min-height:var(--tog);padding:0;color:var(--fg3)}
 .nav .brand-row .tog{margin-left:auto}
-.rail .nav>.tog{margin:0 auto}
+button.logo{border:0;cursor:pointer;font:inherit}
 .ph-l .tog{margin-left:calc(-1*var(--sp-1))}
 .nav .grp{font-size:var(--fs-11);font-weight:var(--fw-semibold);color:var(--fg3);text-transform:uppercase;letter-spacing:var(--ls-caps);padding:var(--sp-3) var(--sp-25) var(--sp-1)}
 .nav ul{list-style:none;margin:0;padding:0;display:grid;gap:var(--sp-05)}

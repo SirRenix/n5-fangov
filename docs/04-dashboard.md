@@ -49,11 +49,11 @@ marked (`aria-current="page"`, accent bar). The toggle switches to the 56 px **i
 rail** (icons with the page name as tooltip) and back; the `[` key does the same
 whenever the focus is not in a field or a dialog; the same choice is *Navigation* in
 Settings → Display, stored in this browser. In the rail the logo stands alone at the top
-(hovering it names the expand), the toggle sits directly under it, and the same icon
+and is itself the expand control (click, tooltip, `aria-label`), and the panel icon
 appears at the **left edge of the page header** before the title — the place where every
-such app expands its sidebar. Between 700 and 1099 px the rail is forced (the sidebar
-would leave the header no room): the toggle in the rail is gone and the header icon is
-disabled with the tooltip *Sidebar collapses below 1100 px*; the stored choice applies
+such app expands its sidebar; there is no second button in the rail. Between 700 and
+1099 px the rail is forced (the sidebar would leave the header no room): the logo does
+not expand and the header icon is disabled with the tooltip *Sidebar collapses below 1100 px*; the stored choice applies
 from 1100 px. The footer shows the daemon's version.
 
 ![Sidebar collapsed to the icon rail](screenshots/05-sidebar-rail.png)
