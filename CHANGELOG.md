@@ -14,6 +14,15 @@ drove the 0.3.1 work is `docs/AUDIT.md` (code) and `docs/DESIGN-AUDIT.md`
 
 ## [Unreleased]
 
+### Docs
+
+- `drivetemp` is a prerequisite for every `drivetemp:max` / `disk:<dev>` channel and
+  nothing loads it by default — now in [Prerequisites](docs/01-install.md#prerequisites),
+  a *Drive temperatures* section on the [kernel driver page](docs/02-kernel-driver.md#drive-temperatures)
+  (`modprobe` + `modules-load.d`), the verify block and the `sensor-error` row in
+  troubleshooting. Reported by the first external N5 Pro user: the `hdd` channel sat in
+  `sensor-error` at 140 until the module was loaded by hand.
+
 ### Roadmap (operator decision 2026-09-19)
 
 **0.4.1 — safety** released (below). Open from its scope: the

@@ -67,6 +67,20 @@ and only the regulator writes.
 `/etc/modules-load.d/minisforum-n5-it5571.conf` holds the module name so it loads at
 boot. The daemon's sandbox cannot load modules itself.
 
+## Drive temperatures
+
+SATA drive temperatures come from the in-tree `drivetemp` module, which reads them via
+SMART and exposes one hwmon device per drive. Nothing loads it by default. The N5 Pro
+preset's `hdd` channel uses `drivetemp:max`; without the module the channel reports
+`sensor-error` and sits at its stop duty (140).
+
+```
+modprobe drivetemp
+echo drivetemp > /etc/modules-load.d/drivetemp.conf   # load at boot
+```
+
+NVMe drives need nothing extra: the `nvme` driver has its own hwmon device (`nvme:max`).
+
 ## Verify
 
 ```
@@ -74,6 +88,7 @@ dkms status minisforum-n5-it5571        # "installed" for the running kernel
 lsmod | grep minisforum                 # module loaded
 ls /sys/class/hwmon/*/pwm1              # pwm nodes visible (experimental_write=1)
 sensors                                 # lm-sensors: the EC's fans and temperatures
+grep -l drivetemp /sys/class/hwmon/*/name   # one line per SATA drive (hdd channel)
 n5-fangov detect                        # after the n5-fangov install: profile n5pro detected
 ```
 
