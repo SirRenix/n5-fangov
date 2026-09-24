@@ -56,12 +56,16 @@ func cmdCheck(args []string) int {
 	}
 	results := runChecks(*cfgPath, runDir())
 	rc := exitOK
+	warnings := 0
 	for _, r := range results {
 		mark := "ok  "
 		switch {
 		case r.ok:
 		case r.advisory:
 			mark = "warn"
+			if strings.TrimSpace(r.name) != "" { // the indented detail lines of one finding count once
+				warnings++
+			}
 		default:
 			mark = "FAIL"
 			rc = exitFail
@@ -72,9 +76,13 @@ func cmdCheck(args []string) int {
 		fmt.Printf("[%s] %-22s %s\n", mark, r.name, r.detail)
 	}
 	if !*quiet {
-		if rc == exitOK {
+		switch {
+		case rc == exitOK && warnings == 0:
 			fmt.Println("check: all good")
-		} else {
+		case rc == exitOK:
+			// exit 0 all the same: serve starts on what it can (DESIGN rule 8)
+			fmt.Printf("check: passed with %d warning(s), serve starts — read the [warn] lines\n", warnings)
+		default:
 			fmt.Println("check: FAILED")
 		}
 	}

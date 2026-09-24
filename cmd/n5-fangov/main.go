@@ -52,7 +52,7 @@ var order = []string{
 
 // helpText is the usage line per subcommand.
 var helpText = map[string]string{
-	"setup":    "[--listen local|lan|HOST:PORT] [--user U] [--password-file F | --password -] [--yes]  write the config for this machine",
+	"setup":    "[--listen local|lan|HOST:PORT] [--user U] [--password-file F | --password -] [--yes] [--fresh]  write the config for this machine (keeps alerts, schedules, hysteresis …; --fresh: defaults)",
 	"serve":    "[--config PATH] [--dry-run] [--run-dir DIR] [--state-dir DIR] [--listen ADDR]  run the daemon",
 	"status":   "                       show channels, temperatures, duty, rpm, mode",
 	"set":      "<ch> <duty|NN%>        manual override for one channel",

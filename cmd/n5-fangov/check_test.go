@@ -48,6 +48,21 @@ func fatals(res []checkResult) []string {
 	return out
 }
 
+// TestCheckSummaryCountsWarnings: a config with a TOML syntax error is
+// advisory (serve starts on the defaults, exit 0), but the summary no
+// longer says "all good" — 0.4.1 did, while the web UI fell back to
+// loopback without auth.
+func TestCheckSummaryCountsWarnings(t *testing.T) {
+	fakeN5(t, false)
+	dir := t.TempDir()
+	t.Setenv("N5FANGOV_RUN_DIR", dir)
+	cfg := writeCfg(t, dir, "[daemon]\nprofile = \"n5pro\"\n[web\n")
+	out, _, rc := captureOutput(t, func() int { return cmdCheck([]string{"--config", cfg}) })
+	if rc != exitOK || strings.Contains(out, "check: all good") || !strings.Contains(out, "check: passed with ") || !strings.Contains(out, "syntax error") {
+		t.Errorf("rc=%d\n%s", rc, out)
+	}
+}
+
 func find(res []checkResult, name string) (checkResult, bool) {
 	for _, r := range res {
 		if r.name == name {

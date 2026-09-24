@@ -14,7 +14,34 @@ drove the 0.3.1 work is `docs/AUDIT.md` (code) and `docs/DESIGN-AUDIT.md`
 
 ## [Unreleased]
 
+### Changed
+
+- **`setup` keeps your settings.** Run over an existing config, setup writes the
+  profile, the profile's channel set and the web settings it asked for, and carries the
+  rest over: `[alert]`, `[dashboard]`, `[log]`, `[[schedule]]`, the other `[daemon]`
+  keys, `hysteresis` / `min_on` (and `ceiling` with an unchanged sensor) of a channel with
+  the same name and pwm, channels on other pwm outputs, `allowed_hosts`,
+  `behind_tls_proxy`, `tls = "file"`. One `kept:` line per item; `--fresh` keeps
+  nothing, as does an old file with a syntax error. The 0.4.0 release gate lost the HDD
+  hysteresis this way. Contract: DESIGN §3 "Setup over an existing file".
+- `n5-fangov check` ends with `check: passed with N warning(s), serve starts — read the
+  [warn] lines` when advisory findings are left; `all good` only without any. Exit code
+  unchanged (0). 0.4.1 said `all good` over a config with a TOML syntax error, while
+  the daemon started on the defaults — web UI on `127.0.0.1` without login.
+- `n5-fangov curve` shows `hysteresis`, `min_on` and `ceiling` of a channel where set.
+
+### Fixed
+
+- `n5-fangov curve` printed `warning: web.password_hash: not a 64-char sha256 hex digest
+  …` and `web.listen: auth misconfigured — web bound to loopback` for every running
+  daemon with a login: it parsed the redacted text of `GET /api/config`. The placeholder
+  is replaced by a valid stand-in before parsing; the daemon was never affected.
+
 ### Docs
+
+- Release gate: the update re-test is a standing checklist — rows for every update
+  (A1 package update with config backup, Z1–Z3 `check` / `status` / `curve`, journal,
+  config diff) around the rows of the release.
 
 - `drivetemp` is a prerequisite for every `drivetemp:max` / `disk:<dev>` channel and
   nothing loads it by default — now in [Prerequisites](docs/01-install.md#prerequisites),
@@ -25,25 +52,24 @@ drove the 0.3.1 work is `docs/AUDIT.md` (code) and `docs/DESIGN-AUDIT.md`
 
 ### Roadmap (operator decision 2026-09-19)
 
-**0.4.1 — safety** released (below). Open from its scope: the
-`systemctl poweroff` form of the emergency hook has not been executed from inside
-the sandbox on the reference host (documented as "to be verified on the host").
+**0.4.1 — safety** released (below). The `systemctl poweroff` form of the emergency
+hook stays documented and is not executed on the reference host (operator decision
+2026-09-24).
 
-**0.4.2 — operations and polish.**
+**0.4.2 — operations and polish** (scope confirmed 2026-09-24): `setup` keeps settings,
+the review leftovers (rail height jump at 1100 px with `nav: rail`; Schedules status
+card next/last switch in the host's timezone; `app.css` cleanup under the 48 KiB
+budget), the update re-test checklist, upstream issues (driver validation data to the
+driver author, ProxFansX compatibility note).
 
-- `setup` on an existing config keeps hysteresis / `min_on`, the dashboard sensors and
-  the alert transport instead of discarding them (the 0.4.0 gate lost the HDD hysteresis
-  this way).
-- Review leftovers: rail height jump when the window crosses 1100 px with `nav: rail`;
-  the Schedules status card shows next/last switch in the host's timezone like its clock;
-  `app.css` cleanup to regain headroom under the 48 KiB budget.
-- Certificate-trust walkthrough with screenshots of an **English** Windows wizard — 0.4.0
-  carries the German dialogs with both labels in the captions; swap the images when an
-  English Windows is at hand.
-- Upstream issues (driver validation data to the driver author, ProxFansX compatibility
-  note); DKMS `.deb` in the sibling repository with the header meta-package as dependency
-  (user path: two `apt install` + `setup`) — the driver is the step first-time users
-  stumble over.
+**Separate release, after 0.4.2**: DKMS `.deb` in the sibling repository with the header
+meta-package as dependency (user path: two `apt install` + `setup`) — the driver is the
+step first-time users stumble over. It touches the kernel-update gate, so it gets its
+own cycle.
+
+**No version**: certificate-trust walkthrough with screenshots of an **English** Windows
+wizard — 0.4.0 carries the German dialogs with both labels in the captions; swap the
+images when an English Windows is at hand.
 
 **0.4.5 — multiple dashboard users** (more than the one `[web] user`; roles map to the
 token scopes). No design yet.

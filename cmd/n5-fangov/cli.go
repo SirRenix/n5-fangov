@@ -200,6 +200,12 @@ func cmdCurve(args []string) int {
 		fmt.Fprintln(os.Stderr, "curve:", err)
 		return exitFail
 	}
+	if source == "daemon" {
+		// GET /api/config redacts the hash; parsed as is, the placeholder
+		// reads as an invalid hash and [web] falls back to auth none on
+		// loopback — warnings about a config the daemon does not run with.
+		raw = []byte(restoreHash(string(raw), redactedHashStandIn))
+	}
 	cfg, warns := parseConfig(raw)
 	for _, w := range warns {
 		fmt.Fprintf(os.Stderr, "warning: %s\n", w)
@@ -207,7 +213,17 @@ func cmdCurve(args []string) int {
 	d := daemonOf(cfg)
 	fmt.Printf("config from %s; interval %s\n\n", source, d.Interval)
 	for _, c := range channelSpecs(cfg) {
-		fmt.Printf("%-8s pwm%d  sensor %-16s critical %d C  stop %s\n", c.Name, c.PWM, c.Sensor, c.Critical, c.Stop)
+		post := ""
+		if c.Hysteresis != 0 {
+			post += fmt.Sprintf("  hysteresis %d C", c.Hysteresis)
+		}
+		if c.MinOn != 0 {
+			post += "  min_on " + c.MinOn.String()
+		}
+		if c.Ceiling != 0 {
+			post += fmt.Sprintf("  ceiling %d C", c.Ceiling)
+		}
+		fmt.Printf("%-8s pwm%d  sensor %-16s critical %d C  stop %s%s\n", c.Name, c.PWM, c.Sensor, c.Critical, c.Stop, post)
 		pts := make([]string, 0, len(c.Curve))
 		for _, p := range c.Curve {
 			pts = append(pts, fmt.Sprintf("%d C -> %d (%d%%)", p[0], p[1], pct(p[1])))
@@ -216,6 +232,11 @@ func cmdCurve(args []string) int {
 	}
 	return exitOK
 }
+
+// redactedHashStandIn is a syntactically valid (legacy sha256) hash put in
+// place of the redaction placeholder before a daemon config is parsed for
+// display; it never verifies a password and is never written.
+var redactedHashStandIn = strings.Repeat("0", 64)
 
 // currentConfigRaw returns the TOML text the daemon runs with, falling back
 // to the config file when the daemon does not answer.

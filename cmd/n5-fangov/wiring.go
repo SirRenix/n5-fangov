@@ -15,6 +15,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -195,7 +197,7 @@ func renderConfig(profileName string, chans []chanSpec, w webSpec) []byte {
 		cfg.Channels = append(cfg.Channels, config.Channel{
 			Name: c.Name, PWM: c.PWM, Sensor: c.Sensor,
 			Curve: append([][2]int(nil), c.Curve...), Critical: c.Critical, Stop: c.Stop,
-			Hysteresis: c.Hysteresis, MinOn: c.MinOn,
+			Hysteresis: c.Hysteresis, MinOn: c.MinOn, Ceiling: c.Ceiling,
 		})
 	}
 	cfg.Web = config.Web{
@@ -205,6 +207,106 @@ func renderConfig(profileName string, chans []chanSpec, w webSpec) []byte {
 		BehindTLSProxy: w.BehindTLSProxy,
 	}
 	return config.Marshal(cfg)
+}
+
+// renderConfigKeep is renderConfig over an existing config (prior, raw
+// TOML that parses): setup decides the profile, the profile's channel set
+// and [web] listen/auth/user/password_hash/tls; everything else comes from
+// prior — [daemon] (but profile), [log], [alert], [dashboard],
+// [[schedule]], [web] allowed_hosts/behind_tls_proxy/cert_file/key_file,
+// tls = "file" on a non-loopback listener, and per channel (same name and
+// pwm) hysteresis and min_on, the ceiling when the sensor is the same.
+// Channels on a pwm outside the new set stay when the profile is the same.
+// kept names what differs from the built-in defaults, one line each.
+func renderConfigKeep(prior []byte, profileName string, chans []chanSpec, w webSpec) (raw []byte, kept []string) {
+	old, _ := parseConfig(prior)
+	def := config.Default()
+	cfg := old.Clone()
+	cfg.Daemon.Profile = profileName
+	if d := diffKeys(def.Daemon, old.Daemon, "profile"); len(d) > 0 {
+		kept = append(kept, "[daemon] "+strings.Join(d, ", "))
+	}
+	for _, s := range []struct {
+		name     string
+		def, old any
+	}{{"log", def.Log, old.Log}, {"alert", def.Alert, old.Alert}, {"dashboard", def.Dashboard, old.Dashboard}} {
+		if d := diffKeys(s.def, s.old); len(d) > 0 {
+			kept = append(kept, "["+s.name+"] "+strings.Join(d, ", "))
+		}
+	}
+	if n := len(old.Schedules); n > 0 {
+		kept = append(kept, fmt.Sprintf("[[schedule]] %d entries", n))
+	}
+
+	cfg.Web.Listen, cfg.Web.Auth, cfg.Web.User, cfg.Web.PasswordHash, cfg.Web.TLS = w.Listen, w.Auth, w.User, w.PasswordHash, w.TLS
+	if old.Web.TLS == "file" && !isLoopbackListen(w.Listen) {
+		cfg.Web.TLS = "file"
+		kept = append(kept, "[web] tls = \"file\" with cert_file/key_file")
+	}
+	if d := diffKeys(config.Web{}, config.Web{AllowedHosts: old.Web.AllowedHosts, BehindTLSProxy: old.Web.BehindTLSProxy}); len(d) > 0 {
+		kept = append(kept, "[web] "+strings.Join(d, ", "))
+	}
+
+	cfg.Channels = nil
+	used := map[int]bool{}
+	for _, c := range chans {
+		ch := config.Channel{
+			Name: c.Name, PWM: c.PWM, Sensor: c.Sensor,
+			Curve: append([][2]int(nil), c.Curve...), Critical: c.Critical, Stop: c.Stop,
+			Hysteresis: c.Hysteresis, MinOn: c.MinOn, Ceiling: c.Ceiling,
+		}
+		used[c.PWM] = true
+		if o := old.Channel(c.Name); o != nil && o.PWM == c.PWM {
+			var parts []string
+			if o.Hysteresis != 0 {
+				ch.Hysteresis = o.Hysteresis
+				parts = append(parts, fmt.Sprintf("hysteresis %d", o.Hysteresis))
+			}
+			if o.MinOn != 0 {
+				ch.MinOn = o.MinOn
+				parts = append(parts, "min_on "+o.MinOn.String())
+			}
+			if o.Ceiling != 0 && o.Sensor == c.Sensor {
+				ch.Ceiling = o.Ceiling
+				parts = append(parts, fmt.Sprintf("ceiling %d", o.Ceiling))
+			}
+			if len(parts) > 0 {
+				kept = append(kept, "channel "+c.Name+": "+strings.Join(parts, ", "))
+			}
+		}
+		cfg.Channels = append(cfg.Channels, ch)
+	}
+	if old.Daemon.Profile == profileName || old.Daemon.Profile == "auto" {
+		for _, o := range old.Channels {
+			if !used[o.PWM] && (&config.Config{Channels: cfg.Channels}).Channel(o.Name) == nil {
+				cfg.Channels = append(cfg.Channels, o)
+				kept = append(kept, fmt.Sprintf("channel %s (pwm%d) unchanged", o.Name, o.PWM))
+			}
+		}
+	}
+	return config.Marshal(cfg), kept
+}
+
+// diffKeys lists the TOML keys (struct tag names) of two values of the
+// same struct type whose fields differ; empty slices count as equal to
+// nil. skip names keys to leave out.
+func diffKeys(a, b any, skip ...string) []string {
+	va, vb := reflect.ValueOf(a), reflect.ValueOf(b)
+	var out []string
+	for i := 0; i < va.NumField(); i++ {
+		name, _, _ := strings.Cut(va.Type().Field(i).Tag.Get("toml"), ",")
+		if name == "" || name == "-" || slices.Contains(skip, name) {
+			continue
+		}
+		fa, fb := va.Field(i), vb.Field(i)
+		if fa.Kind() == reflect.Slice && fa.Len() == 0 && fb.Len() == 0 {
+			continue
+		}
+		if !reflect.DeepEqual(fa.Interface(), fb.Interface()) {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 func warningStrings(warns []config.Warning) []string {

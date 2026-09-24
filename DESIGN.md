@@ -122,6 +122,19 @@ refused). `Default()` has **no channels**; `N5ProChannels()` is the built-in pre
 added by `control.SanitizeChannels` on the N5 Pro when the file lacks them (until 0.3.1
 a separate literal set that matched no preset; release-gate finding 5b).
 
+**Setup over an existing file** (0.4.2, `renderConfigKeep`): the file is backed up
+(`config.toml.bak-<timestamp>`); when it parses, setup owns only `[daemon] profile`, the
+profile's channel set (name, pwm, sensor, curve, critical, stop) and `[web]` listen /
+auth / user / password_hash / tls. Everything else is carried over from the parsed old
+file: the other `[daemon]` keys, `[log]`, `[alert]`, `[dashboard]`, `[[schedule]]`,
+`[web]` allowed_hosts / behind_tls_proxy / cert_file / key_file, `tls = "file"` on a
+non-loopback listener; per channel with the same name and pwm `hysteresis` and
+`min_on`, `ceiling` when the sensor is unchanged; channels on a pwm outside the new set
+(and with a name not in it) when the profile is the same or was `auto`. One `kept:` line
+per carried-over item that differs from `Default()`. `--fresh` or a TOML syntax error in
+the old file: nothing carried over (0.4.0 gate: setup dropped the HDD hysteresis). The
+generated text must parse without warnings, else nothing is written.
+
 | Key | Range / values | Default | Applies |
 |---|---|---|---|
 | `[daemon] interval` | `2s`..`30s`; below → default, above → clamped to 30 s (WatchdogSec=60 needs two cycles) | `10s` | reload |

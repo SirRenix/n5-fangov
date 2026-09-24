@@ -52,25 +52,34 @@ release. Otherwise: fix the documentation or the code, new `-rc`, repeat the fai
 ## Update re-test (rc iterations)
 
 For an rc that changes daemon behaviour without touching the boot chain or the install
-path, the full ten rows are not needed: a **package update without purge** plus the
-rows the change touches. Operator, on the PVE host, as root; the old binary kept as
-`/root/n5-fangov-<ver>.bak` for a rollback per the Updates page.
+path, the full ten rows are not needed: a **package update without purge**, the rows
+the change touches, and the closing rows. Operator, on the PVE host, as root; the old
+binary kept as `/root/n5-fangov-<ver>.bak` for a rollback per the Updates page.
+
+### Every update
 
 | # | Step | Expected | Pass |
 |---|---|---|---|
-| U1 | `apt install ./n5-fangov_<debver>_amd64.deb` over the running version (no remove, no purge) | postinst restarts the unit; `n5-fangov version` prints the rc; config, presets, `tokens.json`, `history.json` untouched (`ls -l /var/lib/n5-fangov`); dashboard sign-in works with the old cookie or after a fresh sign-in | ☐ |
-| U2 | `n5-fangov check` with the HDD channel's `critical` raised above 65 in the config (e.g. `critical = 70`), then back | the advisory line `channel hdd: critical 70 above the built-in ceiling 65 — the ceiling acts first`, check still says `all good`; without it the line is gone. The line `[ok  ] emergency hook   /etc/n5-fangov/emergency.sh (absent)` is there in both runs (`emergency` still `false`) | ☐ |
-| U3 | **Ceiling, live:** set `ceiling = 30` on the HDD channel (`[[channel]] name = "hdd"`): edit the file, then Fans → *Revert* (re-reads the file) → *Apply to daemon*; or `systemctl restart n5-fangov` | within one cycle the channel runs at 255 in mode `critical`, `ceiling_hit: true` in `GET /api/state`, the Alerts page shows kind `ceiling` with the reading and "ceiling 30C"; the curve editor draws the `ceiling` line at 30 °C; the tile colours by the ceiling | ☐ |
-| U4 | **Emergency hook, logger form:** with U3 still in effect install the template — `install -m 0750 -o root -g root /usr/share/doc/n5-fangov/examples/emergency.example.sh /etc/n5-fangov/emergency.sh` (the `logger` line is active, the poweroff line stays commented) —, `n5-fangov check`, then set `[daemon] emergency = true` and `emergency_cycles = 2`, reload | `check` prints `[ok  ] emergency hook   /etc/n5-fangov/emergency.sh (ok)`; after 6 cycles in the ceiling state (3 × 2; the fan spins, so the 3N rule fires) the daemon log shows `hdd: emergency action after 6 cycles at the ceiling (cooling ineffective): running /etc/n5-fangov/emergency.sh`, `journalctl -t n5-fangov-emergency` shows `channel hdd (drivetemp:max) at NN.N C, ceiling 30 C, … 6 cycles at the ceiling`, the Alerts page kind `emergency` with `hook exited 0`. This proves that the sandbox lets the hook reach the journal. Then `chmod 0777 /etc/n5-fangov/emergency.sh` and `n5-fangov check`: `[warn] emergency hook   … (refused: world-writable (mode 0777)); emergency = true but nothing would run`; `chmod 0750` back | ☐ |
-| U5 | Values back (`ceiling` key removed, `emergency = false`, `rm /etc/n5-fangov/emergency.sh`, or keep the hook if it is wanted), `systemctl restart n5-fangov` | channel back on its curve within a few cycles, `ceiling` reads 65, `ceiling_hit` false, no further alerts; `n5-fangov check` all `[ok]` (the hook line reads `(absent)` or `(ok)`) | ☐ |
+| A1 | `cp -p /etc/n5-fangov/config.toml /root/config.toml.pre-<rc>.bak`, then `apt install ./n5-fangov_<debver>_amd64.deb` over the running version (no remove, no purge) | postinst restarts the unit; `n5-fangov version` prints the rc; config, presets, `tokens.json`, `history.json` untouched (`ls -l /etc/n5-fangov /var/lib/n5-fangov`); dashboard sign-in works with the old cookie or after a fresh sign-in | ☐ |
+| Z1 | After the release rows: `n5-fangov check`, `n5-fangov status`, `n5-fangov curve` | `check: all good`; every channel `auto` (or the override you left on purpose); `curve` prints no `warning:` line and shows the live config (`hysteresis` / `min_on` where set) | ☐ |
+| Z2 | `journalctl -u n5-fangov --since "<time of A1>" -p warning` | nothing but lines the release rows provoked on purpose | ☐ |
+| Z3 | `diff /root/config.toml.pre-<rc>.bak /etc/n5-fangov/config.toml` | no difference, unless a row changed the config on purpose and you reverted it by hand | ☐ |
 
-Not part of the re-test: the tokens backup on `apt purge` / `uninstall.sh --purge`
-(no purge on the host in an rc iteration; covered by the deploy tests) and the
-`systemctl poweroff` form of the emergency hook (to be verified on the host
-deliberately, see the configuration page). Also not on the host: `PUT /api/config`
-with `emergency_command = "…"`; the daemon answers with the unknown-key warning and
-nothing runs (config tests cover the parser; the deploy tests that no installer
-touches `/etc/n5-fangov/emergency.sh`).
+### Rows for 0.4.2
+
+| # | Step | Expected | Pass |
+|---|---|---|---|
+| U1 | **Setup keeps**, on a copy: `cp /etc/n5-fangov/config.toml /root/gate.toml`, a throw-away password in `/root/gate-pw` (mode 0600), `n5-fangov setup --config /root/gate.toml --yes --listen lan --user admin --password-file /root/gate-pw` | `backup: /root/gate.toml.bak-…`, `kept:` lines for what the live config sets (on the reference host: `[dashboard] sensors`, `channel hdd: hysteresis 2, min_on 1m0s`, and `[alert] …` if the transport is not `auto`), `written: /root/gate.toml`; `n5-fangov check --config /root/gate.toml` all `[ok]`; the live daemon is not touched | ☐ |
+| U2 | Same command with `--fresh` added | no `kept:` line; `grep -c hysteresis /root/gate.toml` prints `0`. Afterwards delete `/root/gate.toml*` and `/root/gate-pw` | ☐ |
+| U3 | **Check summary**: `cp /etc/n5-fangov/config.toml /root/gate.toml; echo '[web' >> /root/gate.toml; n5-fangov check --config /root/gate.toml; echo $?` | the `[warn] config … syntax error` line, last line `check: passed with N warning(s), serve starts — read the [warn] lines`, exit `0`; `n5-fangov check` on the live file still ends with `check: all good`. Afterwards delete `/root/gate.toml` | ☐ |
+| U4 | **Dashboard, navigation**: Settings → Navigation *icon rail*; drag the browser window across 1100 px width both ways | the rail keeps its height and position at the crossing; above 1100 px the preference applies, below it the rail is forced | ☐ |
+| U5 | **Dashboard, schedules**: add a window, *Save*; compare the status card's *next* and *last switch* with its clock; remove the window, *Save* | *next* / *last switch* read in the same zone as the clock; after the removal the card shows no next switch | ☐ |
+| U6 | **Dashboard, look**: Overview, Fans, Schedules, Alerts, Settings, About in dark and light, wide window and phone width | nothing looks different from 0.4.1 (0.4.2 only removed unused CSS) | ☐ |
+
+Not part of the re-test: the `systemctl poweroff` form of the emergency hook (operator
+decision 2026-09-24: documented, not executed on the reference host; see the
+configuration page); the tokens backup on `apt purge` / `uninstall.sh --purge` (covered
+by the deploy tests).
 
 ## Results
 

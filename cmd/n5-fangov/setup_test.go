@@ -115,6 +115,130 @@ func TestSetupConfigGeneric(t *testing.T) {
 	}
 }
 
+// TestSetupKeepsExisting: setup over an existing config rewrites the
+// profile, the channel set and the asked [web] keys and carries the rest
+// over (the 0.4.0 release gate lost the HDD hysteresis this way); --fresh
+// and a file with a syntax error start from the defaults. A backup is
+// written in every case.
+func TestSetupKeepsExisting(t *testing.T) {
+	fakeN5(t, false)
+	dir := t.TempDir()
+	prior := `[daemon]
+profile = "n5pro"
+interval = "15s"
+emergency = true
+
+[web]
+listen = "127.0.0.1:8010"
+auth = "none"
+allowed_hosts = ["fans.example.test"]
+
+[alert]
+transport = "mail"
+mail_to = "ops@example.test"
+
+[dashboard]
+sensors = ["ec:ambient"]
+
+[[channel]]
+name = "cpu"
+pwm = 1
+sensor = "k10temp"
+curve = [[40, 100], [80, 255]]
+critical = 90
+
+[[channel]]
+name = "hdd"
+pwm = 3
+sensor = "drivetemp:max"
+curve = [[30, 65], [55, 255]]
+critical = 60
+stop = 140
+hysteresis = 2
+min_on = "60s"
+ceiling = 55
+
+[[channel]]
+name = "aux"
+pwm = 4
+sensor = "k10temp"
+curve = [[45, 85], [80, 255]]
+critical = 88
+
+[[schedule]]
+preset = "n5pro-balanced"
+from = "22:00"
+to = "07:00"
+`
+	run := func(t *testing.T, content string, extra ...string) (string, string) {
+		t.Helper()
+		cfg := writeCfg(t, dir, content)
+		out, errOut, rc := captureOutput(t, func() int {
+			return cmdSetup(append([]string{"--config", cfg, "--yes", "--listen", "local"}, extra...))
+		})
+		if rc != exitOK {
+			t.Fatalf("rc=%d\n%s\n%s", rc, out, errOut)
+		}
+		raw, _ := os.ReadFile(cfg)
+		return string(raw), out
+	}
+
+	raw, out := run(t, prior)
+	c, warns, err := parseConfigErr([]byte(raw))
+	if err != nil || len(warns) != 0 {
+		t.Fatalf("rewritten config: %v %v\n%s", err, warns, raw)
+	}
+	if c.Daemon.Interval.String() != "15s" || !c.Daemon.Emergency || c.Daemon.Profile != "n5pro" {
+		t.Errorf("[daemon] not kept: %+v", c.Daemon)
+	}
+	if c.Alert.Transport != "mail" || c.Alert.MailTo != "ops@example.test" {
+		t.Errorf("[alert] not kept: %+v", c.Alert)
+	}
+	if len(c.Dashboard.Sensors) != 1 || len(c.Schedules) != 1 || len(c.Web.AllowedHosts) != 1 {
+		t.Errorf("dashboard/schedule/allowed_hosts not kept: %+v %+v %+v", c.Dashboard, c.Schedules, c.Web)
+	}
+	hdd, cpu, aux := c.Channel("hdd"), c.Channel("cpu"), c.Channel("aux")
+	if hdd == nil || hdd.Hysteresis != 2 || hdd.MinOn.String() != "1m0s" || hdd.Ceiling != 55 {
+		t.Errorf("hdd post-processing not kept: %+v", hdd)
+	}
+	// the curve is the profile's again (setup's job), the critical too
+	if cpu == nil || cpu.Critical == 90 || cpu.Curve[0][0] == 40 {
+		t.Errorf("cpu not reset to the profile set: %+v", cpu)
+	}
+	if aux == nil || aux.PWM != 4 {
+		t.Errorf("channel on pwm4 dropped: %+v", c.Channels)
+	}
+	for _, want := range []string{"backup: ", "kept: [daemon] interval, emergency", "kept: [alert] transport, mail_to", "kept: [dashboard] sensors",
+		"kept: [[schedule]] 1 entries", "kept: [web] allowed_hosts", "kept: channel hdd: hysteresis 2, min_on 1m0s, ceiling 55", "kept: channel aux (pwm4) unchanged"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output lacks %q:\n%s", want, out)
+		}
+	}
+	if !strings.Contains(raw, "rewritten by `n5-fangov setup`") {
+		t.Errorf("header:\n%s", raw)
+	}
+
+	// --fresh: defaults everywhere
+	raw, out = run(t, prior, "--fresh")
+	c, _ = parseConfig([]byte(raw))
+	if c.Alert.Transport != "auto" || c.Daemon.Emergency || len(c.Schedules) != 0 || c.Channel("hdd").Hysteresis != 0 || c.Channel("aux") != nil {
+		t.Errorf("--fresh kept something:\n%s", raw)
+	}
+	if strings.Contains(out, "kept:") || !strings.Contains(out, "backup: ") {
+		t.Errorf("--fresh output:\n%s", out)
+	}
+
+	// syntax error: nothing carried over, the file is still replaced
+	raw, out = run(t, prior+"\n[broken\n")
+	c, _ = parseConfig([]byte(raw))
+	if c.Alert.Transport != "auto" || !strings.Contains(out, "syntax error: nothing is carried over") {
+		t.Errorf("syntax error case:\n%s\n%s", out, raw)
+	}
+	if bak, _ := filepath.Glob(filepath.Join(dir, "config.toml"+setupBakStem+"*")); len(bak) == 0 {
+		t.Error("no backup written")
+	}
+}
+
 // passwd edits the three keys in place and leaves the rest of the file alone.
 func TestSetWebAuth(t *testing.T) {
 	src := "# keep me\n[daemon]\nprofile = \"n5pro\"\n\n[web]\nlisten = \"127.0.0.1:8010\"  # local\nauth = \"none\"\n\n[[channel]]\nname = \"cpu\"\npwm = 1\nsensor = \"k10temp\"\ncurve = [[45, 85], [80, 255]]\ncritical = 88\n"

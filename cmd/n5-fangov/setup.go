@@ -51,12 +51,13 @@ func cmdSetup(args []string) int {
 	password := fs.String("password", "", passwordFlagHelp)
 	passwordFile := fs.String("password-file", "", passwordFileFlagHelp)
 	yes := fs.Bool("yes", false, "non-interactive: no questions, all needed flags required, existing config overwritten (backup kept)")
+	fresh := fs.Bool("fresh", false, "ignore an existing config: built-in defaults for everything setup does not ask (backup kept)")
 	prof := fs.String("profile", "auto", "profile to detect (auto | n5pro | nct67xx | it87xx | monitor)")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
 	if fs.NArg() != 0 {
-		fmt.Fprintln(os.Stderr, "usage: n5-fangov setup [--listen local|lan|HOST:PORT] [--user U] [--password-file F | --password -] [--yes]")
+		fmt.Fprintln(os.Stderr, "usage: n5-fangov setup [--listen local|lan|HOST:PORT] [--user U] [--password-file F | --password -] [--yes] [--fresh]")
 		return exitUsage
 	}
 	pwArg, err := passwordFromArgs(*password, *passwordFile, os.Stdin)
@@ -159,10 +160,26 @@ func cmdSetup(args []string) int {
 		w.PasswordHash = passwordHash(w.User, pw)
 	}
 
-	// 3. existing file
-	if _, err := os.Stat(*cfgPath); err == nil {
+	// 3. existing file: backed up, and unless --fresh everything setup does
+	// not decide is carried over (DESIGN "Setup").
+	var prior []byte // nil: nothing carried over
+	old, rerr := os.ReadFile(*cfgPath)
+	if rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
+		fmt.Fprintln(os.Stderr, "setup:", rerr)
+		return exitFail
+	}
+	if rerr == nil {
+		q := *cfgPath + " exists; replace it (a backup is kept)"
+		switch _, _, perr := parseConfigErr(old); {
+		case *fresh:
+		case perr != nil:
+			fmt.Printf("%s has a syntax error: nothing is carried over (%v)\n", *cfgPath, perr)
+		default:
+			prior = old
+			q = *cfgPath + " exists; rewrite it, keeping alerts, dashboard, log, schedules and per-channel hysteresis/min_on/ceiling (a backup is kept)"
+		}
 		if !*yes {
-			ok, err := pr.askYesNo(*cfgPath+" exists; replace it (a backup is kept)", false)
+			ok, err := pr.askYesNo(q, false)
 			if err != nil || !ok {
 				fmt.Println("nothing written")
 				return exitFail
@@ -177,10 +194,25 @@ func cmdSetup(args []string) int {
 	}
 
 	// 4. write
-	raw := setupConfigText(p.Name(), chans, w)
+	var raw []byte
+	if prior != nil {
+		var kept []string
+		raw, kept = setupConfigTextKeep(prior, p.Name(), chans, w)
+		if len(kept) == 0 {
+			fmt.Println("kept: nothing beyond the defaults")
+		}
+		for _, k := range kept {
+			fmt.Println("kept: " + k)
+		}
+	} else {
+		raw = setupConfigText(p.Name(), chans, w)
+	}
 	if _, warns, err := parseConfigErr(raw); err != nil || len(warns) != 0 {
 		// The text may carry the password hash: only the redacted form leaves the process.
 		fmt.Fprintf(os.Stderr, "setup: generated config does not validate (%v %v):\n%s", err, warns, redactConfigText(string(raw)))
+		if prior != nil {
+			fmt.Fprintln(os.Stderr, "setup: --fresh writes the built-in defaults instead of carrying the old values over")
+		}
 		return exitFail
 	}
 	if err := saveConfig(*cfgPath, raw); err != nil {
@@ -246,6 +278,20 @@ func setupConfigText(profileName string, chans []chanSpec, w webSpec) []byte {
 		"# (or deploy/config.example.toml in the checkout). Invalid values fall back to\n" +
 		"# built-in defaults with a warning; the daemon always starts.\n\n"
 	return append([]byte(head), renderConfig(profileName, chans, w)...)
+}
+
+// setupConfigTextKeep is setupConfigText over an existing config (prior,
+// which parses): the profile, the profile's channel set and what setup asked
+// for in [web] are new, everything else is carried over. kept names what
+// differs from the built-in defaults, one line each, for the operator.
+func setupConfigTextKeep(prior []byte, profileName string, chans []chanSpec, w webSpec) (raw []byte, kept []string) {
+	body, kept := renderConfigKeep(prior, profileName, chans, w)
+	head := "# n5-fangov configuration, rewritten by `n5-fangov setup` on " + time.Now().Format("2006-01-02 15:04") + "\n" +
+		"# (settings setup does not ask for were carried over from the previous file; --fresh resets them).\n" +
+		"# Reference with every key explained: /usr/share/doc/n5-fangov/config.example.toml\n" +
+		"# (or deploy/config.example.toml in the checkout). Invalid values fall back to\n" +
+		"# built-in defaults with a warning; the daemon always starts.\n\n"
+	return append([]byte(head), body...), kept
 }
 
 func printSetupNext(w webSpec, profileName string) {

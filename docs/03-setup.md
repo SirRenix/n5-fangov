@@ -20,8 +20,6 @@ n5-fangov setup
    - `lan`: your LAN address, login required, HTTPS with a self-signed certificate.
 3. **User and password** — password twice, no echo, 8 to 128 characters.
 
-An existing config is backed up as `config.toml.bak-<timestamp>` first.
-
 This is what it looks like on an N5 Pro with `lan`:
 
 ```
@@ -53,6 +51,32 @@ n5-fangov setup --yes --listen lan --user admin --password-file /root/pw
 (`--password -`), never from the command line — so it never shows up in `ps` or your
 shell history. All flags: [CLI](05-cli.md).
 
+## Running setup again
+
+An existing config is backed up as `config.toml.bak-<timestamp>` first. Setup then
+writes the profile, the channel curves and the web settings new and keeps the rest:
+
+- `[alert]`, `[dashboard]`, `[log]`, `[[schedule]]` and the other `[daemon]` keys
+- `hysteresis`, `min_on` and `ceiling` of a channel with the same name and PWM
+- channels on other PWM outputs, `allowed_hosts`, `behind_tls_proxy`, `tls = "file"`
+
+It prints one `kept:` line per item:
+
+```
+backup: /etc/n5-fangov/config.toml.bak-20260924-221500
+kept: [alert] transport, mail_to
+kept: [dashboard] sensors
+kept: channel hdd: hysteresis 2, min_on 1m0s
+written: /etc/n5-fangov/config.toml
+```
+
+Your curves are reset to the profile's. Apply your preset again afterwards
+(Fans → Presets). `--fresh` keeps nothing. A config with a TOML syntax error keeps
+nothing either; setup says so.
+
+To change only the password, use `n5-fangov passwd` instead
+([below](#change-user-or-password-later)).
+
 ## Check and start
 
 ```
@@ -61,8 +85,11 @@ systemctl enable --now n5-fangov
 n5-fangov status
 ```
 
-`check` prints one line per item and ends with `check: all good`. The tail of a good
-run before the first start — `socket … unit not active` at this point is fine:
+`check` prints one line per item and ends with `check: all good`. With `[warn]` lines it
+ends with `check: passed with N warning(s)` — the daemon still starts, but read them: a
+syntax error in the config, for example, starts the web UI on `127.0.0.1` without login.
+The tail of a good run before the first start — `socket … unit not active` at this
+point is fine:
 
 ```
 [ok  ] web                    listen 192.0.2.20:8010, auth basic, tls auto

@@ -372,6 +372,25 @@ func TestCLIAuto(t *testing.T) {
 	}
 }
 
+// TestCLICurveRedactedHash: the daemon's text carries the redacted hash
+// (GET /api/config); curve must not report it as an invalid hash and a
+// loopback fallback (0.4.1 printed both), and it shows the post-processing
+// keys of a channel.
+func TestCLICurveRedactedHash(t *testing.T) {
+	d := startFakeDaemon(t)
+	d.mu.Lock()
+	d.configRaw = strings.Replace(d.configRaw, "stop = 140\n", "stop = 140\nhysteresis = 2\nmin_on = \"60s\"\nceiling = 55\n", 1) +
+		"\n[web]\nlisten = \"192.0.2.10:8010\"\nauth = \"basic\"\nuser = \"admin\"\npassword_hash = \"" + redactedHash + "\"\ntls = \"auto\"\n"
+	d.mu.Unlock()
+	out, errOut, code := captureOutput(t, func() int { return cmdCurve(nil) })
+	if code != exitOK || errOut != "" {
+		t.Fatalf("curve: %d stderr %q", code, errOut)
+	}
+	if want := "critical 56 C  stop 140  hysteresis 2 C  min_on 1m0s  ceiling 55 C"; !strings.Contains(out, want) {
+		t.Errorf("curve output lacks %q:\n%s", want, out)
+	}
+}
+
 func TestCLICurve(t *testing.T) {
 	d := startFakeDaemon(t)
 	out, errOut, code := captureOutput(t, func() int { return cmdCurve(nil) })

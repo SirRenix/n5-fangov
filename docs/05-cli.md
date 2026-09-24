@@ -9,7 +9,7 @@ the running daemon and fall back to the files or `state.json` when it is down
 
 | Subcommand | Flags | Does |
 |---|---|---|
-| `setup` | `--listen local\|lan\|HOST:PORT`, `--user U`, `--password-file F` \| `--password -`, `--profile auto\|n5pro\|nct67xx\|it87xx\|monitor`, `--yes` | write the config for this machine; interactive when flags are missing, `--yes` asks nothing and needs every flag; an existing file is backed up — [Setup](03-setup.md) |
+| `setup` | `--listen local\|lan\|HOST:PORT`, `--user U`, `--password-file F` \| `--password -`, `--profile auto\|n5pro\|nct67xx\|it87xx\|monitor`, `--yes`, `--fresh` | write the config for this machine; interactive when flags are missing, `--yes` asks nothing and needs every flag; an existing file is backed up and everything setup does not ask for is kept (`--fresh`: nothing) — [Setup](03-setup.md#running-setup-again) |
 | `serve` | `--dry-run`, `--run-dir DIR`, `--state-dir DIR`, `--listen ADDR` (`none` = no TCP listener) | run the daemon (the unit's `ExecStart`); `--dry-run` reads sensors and logs decisions without writing pwm |
 | `status` | — | channels, temperatures, duty, RPM, mode (*socket*, else `state.json`) |
 | `set <ch> <duty\|NN%>` | — | manual override for one channel (*socket*; limits and stall guard still apply) |
