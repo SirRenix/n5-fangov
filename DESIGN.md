@@ -890,7 +890,8 @@ Every channel of the mock state carries `ceiling` (cpu 100, ssd 85, hdd 65) and
   Settings → Display; the `[` key toggles when the focus is not in a field or a dialog).
   In the rail the brand row holds the logo alone and the toggle stands directly under it
   as the first item, set apart by a `grp-sep` — the trigger never leaves the sidebar.
-  700–1099 px force the rail (`RAIL_MQ`): no toggle, the logo's tooltip reads *Sidebar
+  700–1099 px force the rail (`RAIL_MQ`): no toggle, an empty slot of its size keeps the
+  entries in place across 1100 px, the logo's tooltip reads *Sidebar
   collapses below 1100 px*; the stored preference applies from 1100 px. Below 700 px the sidebar is `display:none`
   and `#bnav` is a fixed bottom bar with Overview · Fans · Alerts · Settings · *More*
   (`BOTTOM`; the rest in the `<dialog class="sheet">` *More* with the group as
@@ -1046,8 +1047,10 @@ Every channel of the mock state carries `ceiling` (cpu 100, ssd 85, hdd 65) and
   every day) → `PUT /api/config?strict=1`; 200 toast, 202 restart notice, 400 the
   server's errors (`TestScheduleEditorKeepsOtherTables`; the strip regexps are run in Go
   against sample TOML). Status card: active entry, next switch (`<time>` absolute +
-  `in …` + preset, `no preset (no fallback)`, `none within 8 days`), last switch with
-  `ok` or its error in `--crit` (also as a warn notice); first row **now** = the daemon's
+  `in …` + preset, `no preset (no fallback)`, `none within 8 days`), last switch (relative,
+  absolute on hover) with `ok` or its error in `--crit` (also as a warn notice); both
+  absolutes in the host zone + abbreviation (`hostAbs`, the clock's offset `hostOff`; the
+  browser zone while `timezone` is unknown); first row **now** = the daemon's
   local clock `HH:MM:SS · <timezone>` (`scTick`, every second while current: browser
   time + `clkOff`, the largest `state.ts − Date.now()` seen — the snapshot `ts` is up
   to one cycle old —, shifted by the offset parsed from `timezone` `"CEST +02:00"`;
