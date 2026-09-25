@@ -50,13 +50,24 @@ token scopes). No design yet.
 **Not planned**: MQTT/discovery (REST + token is enough and smaller), a German UI
 (audience is GitHub), multi-host management, a frontend framework.
 
-## [0.4.2-rc1] — 2026-09-25
+## [0.4.2] — 2026-09-25
 
 **Operations and polish.** `setup` keeps your settings when it rewrites an existing config
 and lists what it keeps; `check` no longer says `all good` over warnings; `curve` shows
 the live config without false warnings. Dashboard: the rail no longer jumps at 1100 px,
 the Schedules card shows host time, `app.css` is 4 kB smaller. The update re-test in the
 release gate is a standing checklist.
+
+### Background
+
+**Release gate.** Update re-test on the reference host on 2026-09-25, package update
+over 0.4.1: A1, U1–U6 and Z1–Z3 of `docs/RELEASE-GATE.md` passed — `setup` on a copy of
+the live config kept `[alert] webhook_url`, `[dashboard] sensors` and the HDD channel's
+hysteresis and `min_on`, `--fresh` kept nothing; `check` over an appended `[web` ended
+with `passed with 4 warning(s)` and exit 0; the rail, the Schedules card and the pages
+checked in the dashboard by the operator. The rc1 draft went through a code review
+(findings `R1`…`R7`, folded in below); R7 — a TOML syntax error quoting an unquoted
+`password_hash` — dates back before 0.4.2.
 
 ### Changed
 

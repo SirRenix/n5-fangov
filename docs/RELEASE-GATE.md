@@ -88,6 +88,7 @@ by the deploy tests).
 | 2026-09-18 | v0.3.1-rc1 | all 10 rows passed, including the reboot proof; every deviation was a documentation finding, fixed in rc2/rc3 and re-verified; 0.3.1 tagged from rc3 |
 | 2026-09-18/19 | v0.4.0-rc1 … rc5 | rows 1–7, 9, 10 passed on rc1; row 8 skipped (boot chain unchanged since 0.3.1); rc2–rc5 carried the dashboard findings from the row 6 re-tests, each re-tested on the host; 0.4.0 tagged from rc5 |
 | 2026-09-19 | v0.4.1-rc1 | U1–U5 passed (package update over 0.4.0; `check` advisory; `ceiling = 30` → 255, mode `critical`, alert `ceiling`; emergency hook in the `logger` form fired from inside the sandbox, exit 0); two findings fixed in 0.4.1 (see CHANGELOG) |
+| 2026-09-25 | v0.4.2 (rc1 build) | A1, U1–U6, Z1–Z3 passed (package update over 0.4.1; `setup` keeps on a copy of the live config, `--fresh` keeps nothing; `check` summary with warnings, exit 0; rail, Schedules card and pages in the dashboard); tagged as 0.4.2 without a published rc |
 
 Still not exercised on the host: the public `curl` path of row 3 against the released
 assets, the `systemctl poweroff` form of the hook, the tokens backup on purge.
