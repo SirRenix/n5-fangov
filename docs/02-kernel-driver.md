@@ -4,10 +4,12 @@ The N5 Pro needs an out-of-tree kernel module for its fans. This page covers the
 module, DKMS, install, verify, the kernel-update gate and removal. Other boards:
 [Other boards](#other-boards).
 
-Verified 2026-09-19 (the 0.4.0 release gate): driver `minisforum-n5-it5571` 0.2.0,
-built by DKMS for Proxmox kernels **7.0.14-17-pve** (running) and 7.0.12-1-pve
-(fallback), Proxmox VE 9.2.20 / Debian 13.7, BIOS 1.05, lm-sensors 3.6.2. The reboot
-proof dates from the 0.3.1 gate of 2026-09-18; the boot chain is unchanged since.
+Verified 2026-09-26: package `minisforum-n5-it5571-dkms` 0.2.1-1 (upstream v0.2.1, same
+driver source as the 0.2.0 build verified in the 0.4.0 release gate), built by DKMS for
+Proxmox kernels **7.0.14-17-pve** (running) and 7.0.12-1-pve (fallback), Proxmox VE
+9.2.20 / Debian 13.7, BIOS 1.05, lm-sensors 3.6.2; installed over a hand installation
+and reloaded with the regulator stopped. The reboot proof dates from the 0.3.1 gate of
+2026-09-18; the module name and the autoload entry are unchanged since.
 Other kernel or driver versions are untested. The [gate](#the-kernel-update-gate)
 tells you when a kernel has no module.
 
@@ -31,7 +33,7 @@ The DKMS package, validation data and measurement scripts:
 A kernel module loads only into the kernel it was built against. DKMS keeps the driver
 source under `/usr/src/` and rebuilds the module for every kernel apt installs
 (`AUTOINSTALL="yes"`), as long as that kernel's headers are present — the package
-depends on the header meta-package, so every new kernel brings its headers. The DKMS
+pulls the header meta-package, so every new kernel brings its headers. The DKMS
 module is `minisforum-n5-it5571/<ver>`. When DKMS cannot
 build (headers missing, build error), the next boot has no `pwm*` files; the
 [kernel-update gate](#the-kernel-update-gate) catches that before the reboot.
@@ -47,9 +49,11 @@ sha256sum -c minisforum-n5-it5571-dkms_*_all.deb.sha256
 apt install ./minisforum-n5-it5571-dkms_*_all.deb
 ```
 
-apt pulls `dkms` and `proxmox-default-headers` (Debian: `linux-headers-amd64`). The
-package builds the module for every kernel that has headers, sets the driver option and
-the autoload entry below and loads the module. Expected output, among apt's lines:
+apt pulls `dkms` and, on Proxmox VE, `proxmox-default-headers` — it follows the default
+kernel series the way `proxmox-default-kernel` does, so a new kernel series brings its
+headers too (on Debian: `linux-headers-amd64`). The package builds the module for every
+kernel that has headers, sets the driver option and the autoload entry below and loads
+the module. Expected output, among apt's lines:
 
 ```
 minisforum-n5-it5571: built and installed for 7.0.12-1-pve

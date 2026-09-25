@@ -52,7 +52,7 @@ All pages: [docs/README.md](docs/README.md). Changes per version: [CHANGELOG.md]
 
 | Platform | Status |
 |---|---|
-| Minisforum N5 Pro, BIOS 1.05 — Proxmox VE 9.2.20 on Debian 13.7 (trixie), kernel **7.0.14-17-pve** (running) and 7.0.12-1-pve (fallback), DKMS driver `minisforum-n5-it5571` 0.2.0, lm-sensors 3.6.2; binary built with Go 1.26 (static, `golang:1.26-alpine`) | **verified** 2026-09-19 with the [release gate](docs/RELEASE-GATE.md) of 0.4.0: channel mapping, stop behaviour, multi-hour runs; the reboot proof dates from the 0.3.1 gate of 2026-09-18, the boot chain is unchanged since |
+| Minisforum N5 Pro, BIOS 1.05 — Proxmox VE 9.2.20 on Debian 13.7 (trixie), kernel **7.0.14-17-pve** (running) and 7.0.12-1-pve (fallback), DKMS package `minisforum-n5-it5571-dkms` 0.2.1-1 (upstream v0.2.1), lm-sensors 3.6.2; binary built with Go 1.26 (static, `golang:1.26-alpine`) | **verified** 2026-09-19 with the [release gate](docs/RELEASE-GATE.md) of 0.4.0: channel mapping, stop behaviour, multi-hour runs; the reboot proof dates from the 0.3.1 gate of 2026-09-18, the boot chain is unchanged since |
 | Debian/Ubuntu with NCT67xx (`nct6775`) or IT87xx (`it87`) | from documentation, untested — please report |
 | Any Linux with hwmon, no PWM | monitoring only |
 | Unraid, TrueNAS, non-systemd | binary runs; the guard chain relies on systemd |

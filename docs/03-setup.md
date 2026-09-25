@@ -100,7 +100,7 @@ point is fine:
 [ok  ] log                    /var/log/n5-fangov/n5-fangov.log
 [ok  ] alerts                 transport auto (pve-notify)
 [ok  ] socket                 unit not active, socket check skipped
-[ok  ] dkms                   minisforum-n5-it5571/0.2.0, 7.0.14-17-pve, x86_64: installed
+[ok  ] dkms                   minisforum-n5-it5571/0.2.1, 7.0.14-17-pve, x86_64: installed
 check: all good
 ```
 

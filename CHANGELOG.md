@@ -14,6 +14,18 @@ drove the 0.3.1 work is `docs/AUDIT.md` (code) and `docs/DESIGN-AUDIT.md`
 
 ## [Unreleased]
 
+### Docs
+
+- Kernel driver: installed from the DKMS package `minisforum-n5-it5571-dkms` (release
+  asset of the sibling repository): `apt install`, it pulls `dkms` and the header
+  meta-package, builds for every kernel with headers, takes over a hand installation.
+  Options and autoload live under `/usr/lib/modprobe.d/` and `/usr/lib/modules-load.d/`;
+  removal is `apt remove`. The prerequisites no longer list `dkms` and headers
+  separately. Verified on the reference host on 2026-09-26 (installed over the hand
+  installation, module reloaded with the regulator stopped).
+- The installers' hint for removing `n5-fand` points to the sibling repository's
+  `legacy/uninstall.sh`.
+
 ### Roadmap (operator decision 2026-09-19)
 
 **0.4.1 — safety** released (below). The `systemctl poweroff` form of the emergency
@@ -26,10 +38,8 @@ card next/last switch in the host's timezone; `app.css` cleanup under the 48 KiB
 budget), the update re-test checklist, upstream issues (driver validation data to the
 driver author, ProxFansX compatibility note).
 
-**Separate release, after 0.4.2**: DKMS `.deb` in the sibling repository with the header
-meta-package as dependency (user path: two `apt install` + `setup`) — the driver is the
-step first-time users stumble over. It touches the kernel-update gate, so it gets its
-own cycle.
+**DKMS `.deb`**: done in the sibling repository as `minisforum-n5-it5571-dkms` 0.2.1-1
+(user path: two `apt install` + `setup`); see Docs above.
 
 **No version**: certificate-trust walkthrough with screenshots of an **English** Windows
 wizard — 0.4.0 carries the German dialogs with both labels in the captions; swap the
