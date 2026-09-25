@@ -130,8 +130,10 @@ file: the other `[daemon]` keys, `[log]`, `[alert]`, `[dashboard]`, `[[schedule]
 `[web]` allowed_hosts / behind_tls_proxy / cert_file / key_file, `tls = "file"` on a
 non-loopback listener; per channel with the same name and pwm `hysteresis` and
 `min_on`, `ceiling` when the sensor is unchanged; channels on a pwm outside the new set
-(and with a name not in it) when the profile is the same or was `auto`. One `kept:` line
-per carried-over item that differs from `Default()`. `--fresh` or a TOML syntax error in
+(and with a name not in it) when the profile is the same or was `auto`. Printed before
+the confirmation: one `kept:` line per carried-over item that differs from `Default()`,
+one `not carried over:` line per warning field of the old file (its default is what gets
+written; field names only, never values). `--fresh` or a TOML syntax error in
 the old file: nothing carried over (0.4.0 gate: setup dropped the HDD hysteresis). The
 generated text must parse without warnings, else nothing is written.
 

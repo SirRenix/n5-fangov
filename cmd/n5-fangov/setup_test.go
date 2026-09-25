@@ -209,7 +209,7 @@ to = "07:00"
 		t.Errorf("channel on pwm4 dropped: %+v", c.Channels)
 	}
 	for _, want := range []string{"backup: ", "kept: [daemon] interval, emergency", "kept: [alert] transport, mail_to", "kept: [dashboard] sensors",
-		"kept: [[schedule]] 1 entries", "kept: [web] allowed_hosts", "kept: channel hdd: hysteresis 2, min_on 1m0s, ceiling 55", "kept: channel aux (pwm4) unchanged"} {
+		"kept: [[schedule]] 1 entries", "kept: [web] allowed_hosts", "kept: channel hdd: hysteresis 2, min_on 1m0s, ceiling 55", "kept: channel aux (pwm4)"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)
 		}
@@ -236,6 +236,19 @@ to = "07:00"
 	}
 	if bak, _ := filepath.Glob(filepath.Join(dir, "config.toml"+setupBakStem+"*")); len(bak) == 0 {
 		t.Error("no backup written")
+	}
+
+	// invalid values and typos of the old file are named, not silently lost (review R1)
+	_, out = run(t, strings.Replace(prior, "hysteresis = 2", "hysterese = 2", 1)+"\n")
+	if !strings.Contains(out, "not carried over (invalid in the old file, default written): channel.hdd.hysterese") {
+		t.Errorf("typo not reported:\n%s", out)
+	}
+
+	// a syntax error that quotes a bare hash must not print it (review R7)
+	hash := strings.Repeat("ab", 32)
+	_, out = run(t, "[web]\npassword_hash = "+hash+"\n")
+	if strings.Contains(out, hash[:16]) {
+		t.Errorf("hash in the syntax error message:\n%s", out)
 	}
 }
 

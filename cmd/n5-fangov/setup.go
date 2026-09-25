@@ -168,6 +168,10 @@ func cmdSetup(args []string) int {
 		fmt.Fprintln(os.Stderr, "setup:", rerr)
 		return exitFail
 	}
+	// The new text is built before the question: the operator sees every
+	// kept: and not carried over: line before confirming.
+	raw := setupConfigText(p.Name(), chans, w)
+	tlsMode := w.TLS
 	if rerr == nil {
 		q := *cfgPath + " exists; replace it (a backup is kept)"
 		switch _, _, perr := parseConfigErr(old); {
@@ -176,7 +180,19 @@ func cmdSetup(args []string) int {
 			fmt.Printf("%s has a syntax error: nothing is carried over (%v)\n", *cfgPath, perr)
 		default:
 			prior = old
-			q = *cfgPath + " exists; rewrite it, keeping alerts, dashboard, log, schedules and per-channel hysteresis/min_on/ceiling (a backup is kept)"
+			var r keepResult
+			raw, r = setupConfigTextKeep(prior, p.Name(), chans, w)
+			tlsMode = r.TLS
+			if len(r.Kept) == 0 {
+				fmt.Println("kept: nothing beyond the defaults")
+			}
+			for _, k := range r.Kept {
+				fmt.Println("kept: " + k)
+			}
+			for _, d := range r.Dropped {
+				fmt.Println("not carried over (invalid in the old file, default written): " + d)
+			}
+			q = *cfgPath + " exists; rewrite it as listed above (a backup is kept)"
 		}
 		if !*yes {
 			ok, err := pr.askYesNo(q, false)
@@ -194,19 +210,6 @@ func cmdSetup(args []string) int {
 	}
 
 	// 4. write
-	var raw []byte
-	if prior != nil {
-		var kept []string
-		raw, kept = setupConfigTextKeep(prior, p.Name(), chans, w)
-		if len(kept) == 0 {
-			fmt.Println("kept: nothing beyond the defaults")
-		}
-		for _, k := range kept {
-			fmt.Println("kept: " + k)
-		}
-	} else {
-		raw = setupConfigText(p.Name(), chans, w)
-	}
 	if _, warns, err := parseConfigErr(raw); err != nil || len(warns) != 0 {
 		// The text may carry the password hash: only the redacted form leaves the process.
 		fmt.Fprintf(os.Stderr, "setup: generated config does not validate (%v %v):\n%s", err, warns, redactConfigText(string(raw)))
@@ -220,6 +223,7 @@ func cmdSetup(args []string) int {
 		return exitFail
 	}
 	fmt.Printf("written: %s\n\n", *cfgPath)
+	w.TLS = tlsMode // a kept tls = "file" is not self-signed
 	printSetupNext(w, p.Name())
 	return exitOK
 }
@@ -284,14 +288,14 @@ func setupConfigText(profileName string, chans []chanSpec, w webSpec) []byte {
 // which parses): the profile, the profile's channel set and what setup asked
 // for in [web] are new, everything else is carried over. kept names what
 // differs from the built-in defaults, one line each, for the operator.
-func setupConfigTextKeep(prior []byte, profileName string, chans []chanSpec, w webSpec) (raw []byte, kept []string) {
-	body, kept := renderConfigKeep(prior, profileName, chans, w)
+func setupConfigTextKeep(prior []byte, profileName string, chans []chanSpec, w webSpec) ([]byte, keepResult) {
+	body, r := renderConfigKeep(prior, profileName, chans, w)
 	head := "# n5-fangov configuration, rewritten by `n5-fangov setup` on " + time.Now().Format("2006-01-02 15:04") + "\n" +
 		"# (settings setup does not ask for were carried over from the previous file; --fresh resets them).\n" +
 		"# Reference with every key explained: /usr/share/doc/n5-fangov/config.example.toml\n" +
 		"# (or deploy/config.example.toml in the checkout). Invalid values fall back to\n" +
 		"# built-in defaults with a warning; the daemon always starts.\n\n"
-	return append([]byte(head), body...), kept
+	return append([]byte(head), body...), r
 }
 
 func printSetupNext(w webSpec, profileName string) {
@@ -303,7 +307,11 @@ func printSetupNext(w webSpec, profileName string) {
 		fmt.Printf("  web UI: http://%s (this machine only; from elsewhere: ssh -L %s:%s <host>)\n", w.Listen, setupPort, w.Listen)
 	} else {
 		fmt.Printf("  web UI: https://%s  user %s\n", w.Listen, w.User)
-		fmt.Println("  the certificate is self-signed; trust it once:  n5-fangov cert export > n5-fangov.pem")
+		if w.TLS == "file" {
+			fmt.Println("  the certificate is your own (tls = \"file\", cert_file/key_file kept)")
+		} else {
+			fmt.Println("  the certificate is self-signed; trust it once:  n5-fangov cert export > n5-fangov.pem")
+		}
 	}
 	if profileName == "n5pro" {
 		fmt.Println("  kernel updates: `n5-fangov check --after-update` runs from the apt hook and alerts when the DKMS module is missing")

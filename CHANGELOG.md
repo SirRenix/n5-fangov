@@ -14,57 +14,6 @@ drove the 0.3.1 work is `docs/AUDIT.md` (code) and `docs/DESIGN-AUDIT.md`
 
 ## [Unreleased]
 
-### Changed
-
-- **`setup` keeps your settings.** Run over an existing config, setup writes the
-  profile, the profile's channel set and the web settings it asked for, and carries the
-  rest over: `[alert]`, `[dashboard]`, `[log]`, `[[schedule]]`, the other `[daemon]`
-  keys, `hysteresis` / `min_on` (and `ceiling` with an unchanged sensor) of a channel with
-  the same name and pwm, channels on other pwm outputs, `allowed_hosts`,
-  `behind_tls_proxy`, `tls = "file"`. One `kept:` line per item; `--fresh` keeps
-  nothing, as does an old file with a syntax error. The 0.4.0 release gate lost the HDD
-  hysteresis this way. Contract: DESIGN §3 "Setup over an existing file".
-- `n5-fangov check` ends with `check: passed with N warning(s), serve starts — read the
-  [warn] lines` when advisory findings are left; `all good` only without any. Exit code
-  unchanged (0). 0.4.1 said `all good` over a config with a TOML syntax error, while
-  the daemon started on the defaults — web UI on `127.0.0.1` without login.
-- `n5-fangov curve` shows `hysteresis`, `min_on` and `ceiling` of a channel where set.
-
-### Fixed
-
-- `n5-fangov curve` printed `warning: web.password_hash: not a 64-char sha256 hex digest
-  …` and `web.listen: auth misconfigured — web bound to loopback` for every running
-  daemon with a login: it parsed the redacted text of `GET /api/config`. The placeholder
-  is replaced by a valid stand-in before parsing; the daemon was never affected.
-- Dashboard: between 700 and 1099 px (rail forced) the sidebar showed the text `null`
-  where the toggle sits, and the entries jumped by 12 px when the window crossed
-  1100 px with `nav: rail`. An empty slot of the toggle's size keeps them in place.
-- Schedules status card: *next switch* and the hover of *last switch* are in the host's
-  zone with its abbreviation (`… 7:00:00 AM CEST`), like the card's clock; they were in
-  the browser's zone. A DST change before the next switch shows 1 h off, as the clock
-  does.
-
-### Internal
-
-- `app.css` 48.2 → 44.2 kB (budget 48 KiB): two dead selectors, rules a base rule
-  already covers, the tinted badges and mode pills on one rule with `--tc`, shorter
-  comments. Computed styles identical in 134 views (every page, both themes, three
-  widths, dialogs, warning states); hover and focus states are covered by the base
-  rules.
-
-### Docs
-
-- Release gate: the update re-test is a standing checklist — rows for every update
-  (A1 package update with config backup, Z1–Z3 `check` / `status` / `curve`, journal,
-  config diff) around the rows of the release.
-
-- `drivetemp` is a prerequisite for every `drivetemp:max` / `disk:<dev>` channel and
-  nothing loads it by default — now in [Prerequisites](docs/01-install.md#prerequisites),
-  a *Drive temperatures* section on the [kernel driver page](docs/02-kernel-driver.md#drive-temperatures)
-  (`modprobe` + `modules-load.d`), the verify block and the `sensor-error` row in
-  troubleshooting. Reported by the first external N5 Pro user: the `hdd` channel sat in
-  `sensor-error` at 140 until the module was loaded by hand.
-
 ### Roadmap (operator decision 2026-09-19)
 
 **0.4.1 — safety** released (below). The `systemctl poweroff` form of the emergency
@@ -100,6 +49,69 @@ token scopes). No design yet.
 
 **Not planned**: MQTT/discovery (REST + token is enough and smaller), a German UI
 (audience is GitHub), multi-host management, a frontend framework.
+
+## [0.4.2-rc1] — 2026-09-25
+
+**Operations and polish.** `setup` keeps your settings when it rewrites an existing config
+and lists what it keeps; `check` no longer says `all good` over warnings; `curve` shows
+the live config without false warnings. Dashboard: the rail no longer jumps at 1100 px,
+the Schedules card shows host time, `app.css` is 4 kB smaller. The update re-test in the
+release gate is a standing checklist.
+
+### Changed
+
+- **`setup` keeps your settings.** Run over an existing config, setup writes the
+  profile, the profile's channel set and the web settings it asked for, and carries the
+  rest over: `[alert]`, `[dashboard]`, `[log]`, `[[schedule]]`, the other `[daemon]`
+  keys, `hysteresis` / `min_on` (and `ceiling` with an unchanged sensor) of a channel with
+  the same name and pwm, channels on other pwm outputs (same profile), `allowed_hosts`,
+  `behind_tls_proxy`, `tls = "file"`. Before the question: one `kept:` line per item and
+  one `not carried over:` line per invalid or unknown key of the old file (names only);
+  `--fresh` keeps nothing, as does an old file with a syntax error. The 0.4.0 release gate lost the HDD
+  hysteresis this way. Contract: DESIGN §3 "Setup over an existing file".
+- `n5-fangov check` ends with `check: passed with N warning(s), serve starts — read the
+  [warn] lines` when advisory findings are left; `all good` only without any. Exit code
+  unchanged (0). 0.4.1 said `all good` over a config with a TOML syntax error, while
+  the daemon started on the defaults — web UI on `127.0.0.1` without login.
+- `n5-fangov curve` shows `hysteresis`, `min_on` and `ceiling` of a channel where set.
+
+### Fixed
+
+- `n5-fangov curve` printed `warning: web.password_hash: not a 64-char sha256 hex digest
+  …` and `web.listen: auth misconfigured — web bound to loopback` for every running
+  daemon with a login: it parsed the redacted text of `GET /api/config`. The placeholder
+  is replaced by a valid stand-in before parsing; the daemon was never affected.
+- A TOML syntax error on an unquoted `password_hash` quoted the hash in the error text —
+  in `check`, `setup`, the journal and the dashboard. The quoted excerpts of such an
+  error are now `"<redacted>"`; line and key stay.
+- Dashboard: between 700 and 1099 px (rail forced) the sidebar showed the text `null`
+  where the toggle sits, and the entries jumped by 12 px when the window crossed
+  1100 px with `nav: rail`. An empty slot of the toggle's size keeps them in place.
+- Schedules status card: *next switch* and the hover of *last switch* are in the host's
+  zone with its abbreviation (`… 7:00:00 AM CEST`), like the card's clock; they were in
+  the browser's zone. Known limit: the card uses the zone offset of *now*, so a switch
+  on the other side of a DST change reads 1 h off until the change has passed.
+
+### Internal
+
+- `app.css` 48.2 → 44.2 kB (budget 48 KiB): two dead selectors, rules a base rule
+  already covers, the tinted badges and mode pills on one rule with `--tc`, shorter
+  comments. Computed styles identical in 134 views (every page, both themes, three
+  widths, dialogs, warning states); hover and focus states are covered by the base
+  rules.
+
+### Docs
+
+- Release gate: the update re-test is a standing checklist — rows for every update
+  (A1 package update with config backup, Z1–Z3 `check` / `status` / `curve`, journal,
+  config diff) around the rows of the release.
+
+- `drivetemp` is a prerequisite for every `drivetemp:max` / `disk:<dev>` channel and
+  nothing loads it by default — now in [Prerequisites](docs/01-install.md#prerequisites),
+  a *Drive temperatures* section on the [kernel driver page](docs/02-kernel-driver.md#drive-temperatures)
+  (`modprobe` + `modules-load.d`), the verify block and the `sensor-error` row in
+  troubleshooting. Reported by the first external N5 Pro user: the `hdd` channel sat in
+  `sensor-error` at 140 until the module was loaded by hand.
 
 ## [0.4.1] — 2026-09-19
 

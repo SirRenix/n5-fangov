@@ -218,8 +218,21 @@ func renderConfig(profileName string, chans []chanSpec, w webSpec) []byte {
 // pwm) hysteresis and min_on, the ceiling when the sensor is the same.
 // Channels on a pwm outside the new set stay when the profile is the same.
 // kept names what differs from the built-in defaults, one line each.
-func renderConfigKeep(prior []byte, profileName string, chans []chanSpec, w webSpec) (raw []byte, kept []string) {
-	old, _ := parseConfig(prior)
+type keepResult struct {
+	Kept    []string // carried over, differs from the defaults
+	Dropped []string // fields of the old file that were invalid: the parser's default is written (names only, no values)
+	TLS     string   // the [web] tls written
+}
+
+func renderConfigKeep(prior []byte, profileName string, chans []chanSpec, w webSpec) ([]byte, keepResult) {
+	old, warns, _ := config.Parse(prior)
+	var dropped []string
+	for _, wn := range warns {
+		if !slices.Contains(dropped, wn.Field) {
+			dropped = append(dropped, wn.Field)
+		}
+	}
+	var kept []string
 	def := config.Default()
 	cfg := old.Clone()
 	cfg.Daemon.Profile = profileName
@@ -280,11 +293,11 @@ func renderConfigKeep(prior []byte, profileName string, chans []chanSpec, w webS
 		for _, o := range old.Channels {
 			if !used[o.PWM] && (&config.Config{Channels: cfg.Channels}).Channel(o.Name) == nil {
 				cfg.Channels = append(cfg.Channels, o)
-				kept = append(kept, fmt.Sprintf("channel %s (pwm%d) unchanged", o.Name, o.PWM))
+				kept = append(kept, fmt.Sprintf("channel %s (pwm%d)", o.Name, o.PWM))
 			}
 		}
 	}
-	return config.Marshal(cfg), kept
+	return config.Marshal(cfg), keepResult{Kept: kept, Dropped: dropped, TLS: cfg.Web.TLS}
 }
 
 // diffKeys lists the TOML keys (struct tag names) of two values of the

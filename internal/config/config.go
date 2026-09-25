@@ -458,7 +458,8 @@ func Parse(raw []byte) (Config, []Warning, error) {
 	var top map[string]toml.Primitive
 	md, err := toml.Decode(string(raw), &top)
 	if err != nil {
-		return Default(), []Warning{{Field: "toml", Msg: err.Error()}}, fmt.Errorf("config: %w", err)
+		msg := redactSyntaxError(err.Error())
+		return Default(), []Warning{{Field: "toml", Msg: msg}}, fmt.Errorf("config: %s", msg)
 	}
 	p := &parser{md: md}
 	cfg := Default()
@@ -503,6 +504,25 @@ func Parse(raw []byte) (Config, []Warning, error) {
 		}
 	}
 	return cfg, p.warns, nil
+}
+
+// quotedToken matches a quoted excerpt in a TOML error ("… but found "…" instead").
+var quotedToken = regexp.MustCompile(`"[^"]*"`)
+
+// redactSyntaxError keeps a TOML syntax error's line and key but drops the
+// quoted excerpts when the error is about password_hash: the decoder quotes
+// the offending token, which for an unquoted hash is the hash itself (the
+// message reaches check, setup, the journal and the dashboard).
+func redactSyntaxError(msg string) string {
+	if !strings.Contains(msg, "password_hash") {
+		return msg
+	}
+	return quotedToken.ReplaceAllStringFunc(msg, func(q string) string {
+		if strings.Contains(q, "password_hash") {
+			return q // the key name ("web.password_hash") stays
+		}
+		return `"<redacted>"`
+	})
 }
 
 // ParseChannels decodes a file containing only [[channel]] tables (presets).

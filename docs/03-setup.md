@@ -58,21 +58,25 @@ writes the profile, the channel curves and the web settings new and keeps the re
 
 - `[alert]`, `[dashboard]`, `[log]`, `[[schedule]]` and the other `[daemon]` keys
 - `hysteresis`, `min_on` and `ceiling` of a channel with the same name and PWM
-- channels on other PWM outputs, `allowed_hosts`, `behind_tls_proxy`, `tls = "file"`
+- channels on other PWM outputs, as long as the profile stays the same
+- `allowed_hosts`, `behind_tls_proxy`, `tls = "file"`
 
-It prints one `kept:` line per item:
+Before it asks, setup prints one `kept:` line per item, and one `not carried over:` line
+per value that was invalid in the old file (typos included) — the default is written
+for those:
 
 ```
-backup: /etc/n5-fangov/config.toml.bak-20260924-221500
 kept: [alert] transport, mail_to
 kept: [dashboard] sensors
 kept: channel hdd: hysteresis 2, min_on 1m0s
+not carried over (invalid in the old file, default written): channel.hdd.hysterese
+backup: /etc/n5-fangov/config.toml.bak-20260924-221500
 written: /etc/n5-fangov/config.toml
 ```
 
-Your curves are reset to the profile's. Apply your preset again afterwards
-(Fans → Presets). `--fresh` keeps nothing. A config with a TOML syntax error keeps
-nothing either; setup says so.
+Curves, `critical` and `stop` are reset to the profile's. Apply your preset again
+afterwards (Fans → Presets). `--fresh` keeps nothing. A config with a TOML syntax error
+keeps nothing either; setup says so.
 
 To change only the password, use `n5-fangov passwd` instead
 ([below](#change-user-or-password-later)).
