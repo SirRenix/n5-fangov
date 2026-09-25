@@ -36,6 +36,21 @@ drove the 0.3.1 work is `docs/AUDIT.md` (code) and `docs/DESIGN-AUDIT.md`
   …` and `web.listen: auth misconfigured — web bound to loopback` for every running
   daemon with a login: it parsed the redacted text of `GET /api/config`. The placeholder
   is replaced by a valid stand-in before parsing; the daemon was never affected.
+- Dashboard: between 700 and 1099 px (rail forced) the sidebar showed the text `null`
+  where the toggle sits, and the entries jumped by 12 px when the window crossed
+  1100 px with `nav: rail`. An empty slot of the toggle's size keeps them in place.
+- Schedules status card: *next switch* and the hover of *last switch* are in the host's
+  zone with its abbreviation (`… 7:00:00 AM CEST`), like the card's clock; they were in
+  the browser's zone. A DST change before the next switch shows 1 h off, as the clock
+  does.
+
+### Internal
+
+- `app.css` 48.2 → 44.2 kB (budget 48 KiB): two dead selectors, rules a base rule
+  already covers, the tinted badges and mode pills on one rule with `--tc`, shorter
+  comments. Computed styles identical in 134 views (every page, both themes, three
+  widths, dialogs, warning states); hover and focus states are covered by the base
+  rules.
 
 ### Docs
 
