@@ -23,37 +23,48 @@ The IT5571 **does not resume automatic regulation of the HDD channel after any
 write**; only a cold boot brings it back. So n5-fangov never sets that channel to
 `auto` and stops it to a fixed safe duty instead ([Curve rules](06-configuration.md#curve-rules)).
 
-Validation data, measurement scripts and the Bash predecessor `n5-fand`:
+The DKMS package, validation data and measurement scripts:
 [`SirRenix/minisforum-n5pro-fan-proxmox`](https://github.com/SirRenix/minisforum-n5pro-fan-proxmox).
 
 ## What DKMS does for you
 
 A kernel module loads only into the kernel it was built against. DKMS keeps the driver
 source under `/usr/src/` and rebuilds the module for every kernel apt installs
-(`AUTOINSTALL="yes"`), as long as that kernel's headers are present. The sibling
-repository packages it as DKMS module `minisforum-n5-it5571/<ver>`. When DKMS cannot
+(`AUTOINSTALL="yes"`), as long as that kernel's headers are present — the package
+depends on the header meta-package, so every new kernel brings its headers. The DKMS
+module is `minisforum-n5-it5571/<ver>`. When DKMS cannot
 build (headers missing, build error), the next boot has no `pwm*` files; the
 [kernel-update gate](#the-kernel-update-gate) catches that before the reboot.
 
 ## Install
 
-Install `build-essential git dkms proxmox-headers-$(uname -r)` (Debian:
-`linux-headers-$(uname -r)`). Then, as root:
+Download the package and its checksum from the
+[latest release](https://github.com/SirRenix/minisforum-n5pro-fan-proxmox/releases/latest)
+of the sibling repository, then as root:
 
 ```
-git clone https://github.com/SirRenix/minisforum-n5pro-fan-proxmox.git
-cd minisforum-n5pro-fan-proxmox && ./scripts/02-build-tools.sh   # fetches the upstream driver source
-./deploy/install.sh
+sha256sum -c minisforum-n5-it5571-dkms_*_all.deb.sha256
+apt install ./minisforum-n5-it5571-dkms_*_all.deb
 ```
 
-`install.sh` registers, builds and installs the DKMS module for the running kernel and
-writes the two autoload files below. It also installs the Bash regulator `n5-fand`;
-n5-fangov's installer stops and disables it again, so this order is fine
-([What the installer does](01-install.md#what-the-installer-does)).
+apt pulls `dkms` and `proxmox-default-headers` (Debian: `linux-headers-amd64`). The
+package builds the module for every kernel that has headers, sets the driver option and
+the autoload entry below and loads the module. Expected output, among apt's lines:
+
+```
+minisforum-n5-it5571: built and installed for 7.0.12-1-pve
+minisforum-n5-it5571: built and installed for 7.0.14-17-pve
+minisforum-n5-it5571: module loaded
+```
+
+A driver installed earlier with the sibling repository's `deploy/install.sh` is taken
+over: the package unregisters the old DKMS version and removes the two `/etc` files when
+they are unchanged. If the module was already loaded, the new build takes effect after
+the next boot or a reload ([Rebuild the module by hand](#rebuild-the-module-by-hand)).
 
 ## Driver options and autoload
 
-`/etc/modprobe.d/minisforum-n5-it5571.conf`:
+`/usr/lib/modprobe.d/minisforum-n5-it5571.conf`:
 
 ```
 options minisforum_n5_it5571 experimental_write=1
@@ -64,8 +75,9 @@ Without this option the driver loads but keeps the `pwm*` nodes invisible:
 the EC. Loading the module writes nothing, `pwm*_enable` starts at `2` (EC automatic),
 and only the regulator writes.
 
-`/etc/modules-load.d/minisforum-n5-it5571.conf` holds the module name so it loads at
-boot. The daemon's sandbox cannot load modules itself.
+`/usr/lib/modules-load.d/minisforum-n5-it5571.conf` holds the module name so it loads at
+boot. The daemon's sandbox cannot load modules itself. A file of the same name under
+`/etc/modprobe.d/` or `/etc/modules-load.d/` replaces the package's file.
 
 ## Drive temperatures
 
@@ -141,23 +153,22 @@ When the gate reports a missing module, or the fans run the BIOS curve after a r
 dkms status
 apt install proxmox-headers-$(uname -r)              # if the headers are missing
 dkms install minisforum-n5-it5571/<ver> -k $(uname -r)
-modprobe minisforum_n5_it5571
-systemctl restart n5-fangov
+systemctl stop n5-fangov
+modprobe -r minisforum_n5_it5571; modprobe minisforum_n5_it5571
+systemctl start n5-fangov
 ```
 
 `<ver>` is the version `dkms status` prints. For a kernel that is not running yet, give
-its version with `-k`.
+its version with `-k` and skip the reload. Stopping the daemon first puts the fans into
+their safe state while the module is out.
 
 ## Remove
 
-Stop the regulator first. The sibling repository's `deploy/uninstall.sh` removes
-`n5-fand`, the autoload files and the DKMS module, and sets every channel back to
-`pwm*_enable = 2`. By hand:
+Stop the regulator first:
 
 ```
 systemctl stop n5-fangov
-dkms remove minisforum-n5-it5571/<ver> --all
-rm /etc/modprobe.d/minisforum-n5-it5571.conf /etc/modules-load.d/minisforum-n5-it5571.conf
+apt remove minisforum-n5-it5571-dkms
 modprobe -r minisforum_n5_it5571
 ```
 

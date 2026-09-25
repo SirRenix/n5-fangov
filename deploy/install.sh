@@ -41,7 +41,7 @@ if systemctl list-unit-files n5-fand.service >/dev/null 2>&1 \
         echo "  n5-fand.service was enabled: disabling it. n5-fangov replaces it."
         systemctl disable n5-fand.service
     fi
-    echo "  n5-fand files stay installed; remove with n5pro-ec/deploy/uninstall.sh when n5-fangov is proven."
+    echo "  n5-fand files stay installed; remove with minisforum-n5pro-fan-proxmox/legacy/uninstall.sh when n5-fangov is proven."
 else
     echo "  not installed, nothing to do"
 fi

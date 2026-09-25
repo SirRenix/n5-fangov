@@ -16,7 +16,7 @@ case "$1" in
                 systemctl stop n5-fand.service || true
             fi
             if systemctl is-enabled --quiet n5-fand.service 2>/dev/null; then
-                echo "n5-fangov: disabling n5-fand.service; remove it with n5pro-ec/deploy/uninstall.sh later"
+                echo "n5-fangov: disabling n5-fand.service; remove it with minisforum-n5pro-fan-proxmox/legacy/uninstall.sh later"
                 systemctl disable n5-fand.service || true
             fi
         fi

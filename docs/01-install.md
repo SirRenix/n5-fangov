@@ -8,8 +8,8 @@ from a checkout, or the `.deb`. All end with `n5-fangov setup` ([Setup](03-setup
 | | |
 |---|---|
 | OS | Proxmox VE 9.x (Debian 13 "trixie") or Debian 13 with systemd. Everything runs as root. The tested platform: [Tested hardware](../README.md#tested-hardware). |
-| Packages | N5 Pro: `dkms` and the headers for the running kernel (`proxmox-headers-$(uname -r)` on PVE, `linux-headers-$(uname -r)` on Debian). Optional: `pciutils` (`lspci`, device names on the System page), `lm-sensors` (`sensors` for cross-checks). |
-| Fan driver | A hwmon driver that exposes the `pwm*` files. **N5 Pro:** the out-of-tree EC module, install it first — [Kernel driver](02-kernel-driver.md). **Other boards:** `nct6775` / `it87` from the distribution kernel. |
+| Packages | Optional: `pciutils` (`lspci`, device names on the System page), `lm-sensors` (`sensors` for cross-checks). |
+| Fan driver | A hwmon driver that exposes the `pwm*` files. **N5 Pro:** the out-of-tree EC module as package `minisforum-n5-it5571-dkms` (brings `dkms` and the kernel headers), install it first — [Kernel driver](02-kernel-driver.md). **Other boards:** `nct6775` / `it87` from the distribution kernel. |
 | Drive temperatures | The `drivetemp` kernel module (in-tree, not loaded by default) for every channel on `drivetemp:max` or `disk:<dev>` — on the N5 Pro that is the `hdd` channel of the preset. Without it the channel sits in `sensor-error` at its stop duty. Load it and make it stick: `modprobe drivetemp && echo drivetemp > /etc/modules-load.d/drivetemp.conf` — [Drive temperatures](02-kernel-driver.md#drive-temperatures). NVMe needs nothing, the `nvme` driver has its own hwmon. |
 | Check | `n5-fangov detect` (after the install) lists the hwmon devices and the profile it would use. |
 
@@ -101,7 +101,7 @@ unit. It writes **no** config and starts nothing — that is `setup`. An existin
 ```
 n5-fangov: OK
 --- predecessor n5-fand ---
-  n5-fand files stay installed; remove with n5pro-ec/deploy/uninstall.sh when n5-fangov is proven.
+  n5-fand files stay installed; remove with minisforum-n5pro-fan-proxmox/legacy/uninstall.sh when n5-fangov is proven.
 --- files ---
   /etc/n5-fangov/config.toml absent: n5-fangov setup writes it (reference: /usr/share/doc/n5-fangov/config.example.toml)
   PVE notification template installed (alerts -> Proxmox notifications, template 'n5-fangov')
