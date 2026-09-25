@@ -75,7 +75,7 @@ const fmtDur = s => { const m = /^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+(?:\.\d+)?)s)?$/.
 	const t = (+m[1] || 0) * 3600 + (+m[2] || 0) * 60 + (+m[3] || 0); return t && t % 3600 === 0 ? t / 3600 + ' h' : t && t % 60 === 0 ? t / 60 + ' min' : t + ' s'; };
 const toTs = v => typeof v === 'number' ? v : Date.parse(v) / 1000; // unix seconds or RFC 3339
 const abs = ts => new Date(ts * 1000).toLocaleString();
-const tm = (v, future) => { const ts = toTs(v); return !(ts > 0) ? '—' : h('time', { datetime: new Date(ts * 1000).toISOString(), title: future ? null : abs(ts) }, future ? abs(ts) : rel(ts)); };
+const tm = (v, future, fa = abs) => { const ts = toTs(v); return !(ts > 0) ? '—' : h('time', { datetime: new Date(ts * 1000).toISOString(), title: future ? null : fa(ts) }, future ? fa(ts) : rel(ts)); };
 const notice = id => (msg, kind) => { const n = $(id); n.hidden = !msg; if (kind !== undefined) n.className = 'notice ' + (kind || ''); n.textContent = msg || ''; };
 const kv = (el, rows) => { clear(el); for (const [k, v] of rows) el.append(h('dt', null, k), v && v.nodeType ? v : h('dd', null, v)); return el; };
 const interp = (curve, t) => {
@@ -320,9 +320,10 @@ function buildNav() {
 	const tg = (rail ? 'Expand sidebar' : 'Collapse sidebar'), tip = tg + ' · [', forcedTip = 'Sidebar collapses below 1100 px';
 	const tog = () => h('button', { class: 'btn icon link tog', title: tip, 'aria-label': tg, 'aria-expanded': String(!rail), 'aria-keyshortcuts': '[', onclick: toggleNav }, ico('panel'));
 	// brand row: logo, name, toggle at the right; in the rail the same toggle sits directly under the logo — one trigger, always in the
-	// sidebar (operator decision rc4: nothing in the page header). 700–1099 px: no toggle, the logo's tooltip says why.
+	// sidebar (operator decision rc4: nothing in the page header). 700–1099 px: no toggle, the logo's tooltip says why; an empty slot of
+	// the toggle's size keeps the entries in place when the window crosses 1100 px (append(null) would insert the text "null")
 	nav.append(h('div', { class: 'brand-row' }, h('span', { class: 'logo', title: forced ? forcedTip : null }, ico('fan')), h('span', { class: 'brand' }, 'n5-fangov'), rail ? null : tog()));
-	if (rail) nav.append(forced ? null : tog(), h('div', { class: 'grp-sep' }));
+	if (rail) nav.append(forced ? h('span', { class: 'tog', 'aria-hidden': 'true' }) : tog(), h('div', { class: 'grp-sep' }));
 	let lastG = null;
 	for (const p of visible()) {
 		if (p.g !== lastG) { const gid = 'grp-' + p.g.toLowerCase(); if (lastG) nav.append(h('div', { class: 'grp-sep' })); nav.append(h('div', { class: 'grp', id: gid }, p.g), h('ul', { 'aria-labelledby': gid })); lastG = p.g; }
@@ -965,13 +966,16 @@ function scBuild(focus) { // focus: [row, selector] after a structural change
 // the daemon's clock: /api/state carries the snapshot's unix ts (up to one cycle old), so the largest ts − browser-now seen is the skew; the offset of the
 // host zone comes from the schedules' timezone ("CEST +02:00"); ticks every second while the page is current, "browser time" before the first snapshot
 let clkOff = null;
-const scTick = () => { const el = $('#sc-now'); if (!el || cur !== 'schedules') return; const tz = scStat && scStat.timezone || '', m = /([+-])(\d\d):(\d\d)$/.exec(tz), s = Date.now() / 1000 + (clkOff || 0);
-	el.textContent = (m ? new Date((s + (m[1] === '-' ? -1 : 1) * (m[2] * 3600 + m[3] * 60)) * 1000).toISOString().slice(11, 19) : new Date(s * 1000).toTimeString().slice(0, 8)) + ' · ' + (clkOff === null ? 'browser time' : tz || '—'); };
+const hostOff = () => { const m = /([+-])(\d\d):(\d\d)$/.exec(scStat && scStat.timezone || ''); return m ? (m[1] === '-' ? -1 : 1) * (m[2] * 3600 + m[3] * 60) : null; };
+// next / last switch: absolute in the host zone + its abbreviation ("CEST"), the browser's zone while the timezone is unknown
+const hostAbs = ts => { const o = hostOff(); return o === null ? abs(ts) : new Date((ts + o) * 1000).toLocaleString(undefined, { timeZone: 'UTC' }) + ' ' + scStat.timezone.split(' ')[0]; };
+const scTick = () => { const el = $('#sc-now'); if (!el || cur !== 'schedules') return; const tz = scStat && scStat.timezone || '', o = hostOff(), s = Date.now() / 1000 + (clkOff || 0);
+	el.textContent = (o !== null ? new Date((s + o) * 1000).toISOString().slice(11, 19) : new Date(s * 1000).toTimeString().slice(0, 8)) + ' · ' + (clkOff === null ? 'browser time' : tz || '—'); };
 function renderScStatus() { const s = scStat; if (!s) return; const es = s.entries || [], a = es[s.active], n = s.next, l = s.last;
 	kv($('#sc-kv'), [['now', h('dd', { id: 'sc-now', title: 'the daemon\'s local time — windows are compared against this clock' })],
 		['active', a ? a.fallback ? `${a.preset} (fallback)` : `${a.preset} ${a.from}–${a.to}${a.days && a.days.length ? ' · ' + a.days.join(' ') : ''}` : es.length ? 'none (outside every window)' : 'none'],
-		['next switch', n ? h('dd', null, h('time', { datetime: new Date(n.ts * 1000).toISOString() }, abs(n.ts)), ` (${inRel(n.ts)}) → ${n.preset || 'no preset (no fallback)'}`) : es.length ? 'none within 8 days' : '—'],
-		['last switch', l ? h('dd', null, `${l.preset} · `, tm(l.ts), l.ok ? ' · ok' : h('span', { class: 't-crit' }, ` — failed: ${l.error || 'unknown error'}`)) : 'none yet']]); scTick();
+		['next switch', n ? h('dd', null, tm(n.ts, 1, hostAbs), ` (${inRel(n.ts)}) → ${n.preset || 'no preset (no fallback)'}`) : es.length ? 'none within 8 days' : '—'],
+		['last switch', l ? h('dd', null, `${l.preset} · `, tm(l.ts, 0, hostAbs), l.ok ? ' · ok' : h('span', { class: 't-crit' }, ` — failed: ${l.error || 'unknown error'}`)) : 'none yet']]); scTick();
 	scNotice(l && !l.ok ? `Last switch failed: ${l.error || 'unknown error'} — the previous curves stay; retried at the next transition.` : '', ''); }
 async function loadSchedules() { if (!signedIn()) return; // the 60 s poll never rebuilds a dirty editor
 	try { const [s, ps] = await Promise.all([api('/api/schedules'), api('/api/presets').catch(() => ({ body: [] }))]);
