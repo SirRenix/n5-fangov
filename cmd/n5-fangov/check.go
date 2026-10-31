@@ -159,9 +159,7 @@ func runChecks(cfgPath, dir string) []checkResult {
 	hs := hardwareStatus(hw, p.Name())
 	adv(hs.Status.Verified(), "hardware status", hs.Describe())
 	if p.Name() == "n5pro" {
-		for _, r := range driverChecks(n5driver.Read(hw.Root), expectedModuleVersion(installedPackageVersion(), dkmsSourceVersion(defaultDKMSSrcRoot))) {
-			res = append(res, r)
-		}
+		res = append(res, driverChecks(n5driver.Read(hw.Root), expectedModuleVersion(installedPackageVersion(), dkmsSourceVersion(defaultDKMSSrcRoot)))...)
 	}
 
 	// 3. channels: the set serve will actually manage (the same
