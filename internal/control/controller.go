@@ -100,9 +100,11 @@ const (
 
 // MinHDDOverride is the lowest duty a manual override may set on a channel
 // that n5-fangov does not hand back to the chip (see hddLike): a channel with
-// a fixed stop duty, or pwm3 on the N5 Pro. Rationale: on the N5 Pro the HDD
-// channel leaves the written value after the hand-back to EC automatic, but
-// whether the EC curve then regulates it is unproven, so n5-fangov never
+// a fixed stop duty, or pwm3 on the N5 Pro. Rationale: on the N5 Pro the EC
+// regulates the HDD channel after the hand-back to a target speed from an
+// EC table keyed on EC 0x06 (stepping measured 2026-10-17, table derived
+// from firmware 0.14), but
+// whether that follows disk temperature is open, so n5-fangov never
 // relies on it; a low manual duty is then a lasting low duty for spinning
 // disks whose temperature reacts with a lag of many minutes; 60 (~900 RPM)
 // keeps some airflow.
@@ -447,10 +449,13 @@ func (c *Controller) reportNotes(what string, notes []string) {
 // the detected profile). For n5pro:
 //   - pwm1..3 (CPU, SSD, HDD) must be managed: a missing channel is added
 //     from config.N5ProChannels. A channel that was written once and is
-//     then ignored stays wherever the last write left it (the EC does not
-//     regulate pwm3 after a write at all), and `n5-fangov failsafe` would skip
-//     it as well.
-//   - pwm3 with stop="auto" is forced to config.HDDStop for the same reason.
+//     then ignored stays wherever the last write left it (the driver keeps
+//     the manual mode until enable=2 is written), and `n5-fangov failsafe`
+//     would skip it as well.
+//   - pwm3 with stop="auto" is forced to config.HDDStop: after the hand-back
+//     the EC regulates pwm3 to a target speed from an EC table keyed on
+//     EC 0x06 (derived from firmware), whether that follows disk
+//     temperature is open.
 //
 // It returns the corrected list and one note per correction. Other
 // profiles are returned unchanged.
@@ -479,7 +484,7 @@ func SanitizeChannels(profileName string, chans []config.Channel) ([]config.Chan
 			continue
 		}
 		if def.PWM == 3 && out[i].Stop == "auto" {
-			notes = append(notes, fmt.Sprintf("n5pro: channel %q (pwm3) has stop=\"auto\", but whether the EC regulates pwm3 after the hand-back is unproven; fixed stop=%s used",
+			notes = append(notes, fmt.Sprintf("n5pro: channel %q (pwm3) has stop=\"auto\", but whether the EC's pwm3 regulation after the hand-back follows disk temperature is open; fixed stop=%s used",
 				out[i].Name, config.HDDStop))
 			out[i].Stop = config.HDDStop
 		}
@@ -1838,9 +1843,9 @@ func sameChannelSet(a, b []config.Channel) bool {
 
 // hddLike reports whether a channel must never run at a low manual duty:
 // it has a fixed stop duty (n5-fangov does not rely on the chip to regulate
-// it), or it is pwm3 on the N5 Pro (EC regulation after the hand-back is
-// unproven, so the channel is treated as unregulated regardless of the
-// configured stop).
+// it), or it is pwm3 on the N5 Pro (whether the EC's regulation after the
+// hand-back follows disk temperature is open, so the channel is treated as
+// not regulated by the chip regardless of the configured stop).
 func (c *Controller) hddLike(cc config.Channel) bool {
 	if _, fixed := cc.StopDuty(); fixed {
 		return true

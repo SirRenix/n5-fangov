@@ -3,8 +3,8 @@ package main
 import "testing"
 
 // The verification run must not hand pwm3 back to the EC on the N5 Pro:
-// after the hand-back the channel leaves the written value, but whether the
-// EC curve then regulates it is unproven (2026-09-14 data). The stop value
+// after the hand-back the EC regulates the channel to a target speed from
+// an EC table keyed on EC 0x06 (derived from firmware), but whether that follows disk temperature is open. The stop value
 // therefore comes from the sanitized channel list, not from the raw config.
 func TestTestStopPolicy(t *testing.T) {
 	hdd := chanSpec{Name: "hdd", PWM: 3, Sensor: "drivetemp:max", Curve: [][2]int{{36, 105}, {46, 255}}, Critical: 56, Stop: "auto"}

@@ -53,8 +53,9 @@ const (
 	MaxCooldown = 24 * time.Hour
 	// MinFixedStop is the lowest fixed stop duty. A fixed stop is used
 	// exactly where n5-fangov does not rely on the chip to regulate the
-	// channel after the hand-back (N5 Pro pwm3: the channel leaves the
-	// written value, whether the EC curve regulates it is unproven): a stop
+	// channel after the hand-back (N5 Pro pwm3: the EC regulates it to a
+	// target speed from an EC table keyed on EC 0x06, derived from
+	// firmware; whether that follows disk temperature is open): a stop
 	// duty of 0 could leave those fans off until something writes again.
 	MinFixedStop = 60
 	// HDDStop is the stop duty used when a channel fed by drivetemp:max has

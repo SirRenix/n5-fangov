@@ -24,8 +24,9 @@ behaviour is described in [docs/](docs/README.md), the deploy file layout in
 5. **Critical temperature → 255 immediately, no slew, even in manual override.**
 6. **Stall (RPM 0 at duty ≥ stall_min_duty for N cycles) → 255, alert, auto-recovery.**
 7. **On stop: profile-defined safe state** (N5 Pro: CPU/SSD → EC auto, HDD → fixed stop duty,
-   because after the hand-back the HDD channel leaves the written value but EC regulation
-   is unproven — data of 14.09.2026).
+   because after the hand-back the EC regulates the HDD channel to a target speed from an
+   EC table keyed on EC 0x06 (stepping measured 17.10.2026, table derived from firmware 0.14), but whether it
+   follows the disk temperature is open).
 8. **Config errors never prevent start**: invalid values → built-in defaults + warning + alert.
 9. Go toolchain as pinned in `go.mod`, `CGO_ENABLED=0`, dependencies:
    `github.com/BurntSushi/toml` only. No cgo, no systemd library (sd_notify is a 20-line
@@ -44,7 +45,7 @@ cmd/n5-fangov/
   scheduler.go       preset schedules ([[schedule]]): ticker, transition → preset apply, `schedule` alert
   setup.go           setup, passwd (interactive prompts, password from file/stdin)
   cli.go             status, set, auto, curve, log (socket client, state.json fallback)
-  check.go           check [--quiet] [--after-update]   (ExecStartPre, apt hook)
+  check.go           check [--quiet] [--after-update] [--unit-start]   (ExecStartPre, apt hook)
   detect.go          detect
   testrun.go         test <ch> [--force]
   failsafe.go        failsafe (ExecStopPost)
@@ -258,7 +259,9 @@ Detection: `n5pro` = hwmon name `minisforum_n5_it5571` (DMI check log only); `nc
 `^nct67\d\d$`, auto mode value 5 (SmartFan IV), the original `pwmN_enable` captured at
 start is restored; `it87xx` = `^it8[67]\d\d$`, restore original; `monitor` = no pwm.
 `hwmon.FS.FindByName` returns `[]Device` (may be empty). On the N5 Pro pwm3 is never
-`auto` (EC regulation after the hand-back is unproven) — enforced in `control.SanitizeChannels`.
+`auto` (after the hand-back the EC regulates it to a target speed from an EC table keyed on EC 0x06,
+derived from firmware; whether that follows
+the disk temperature is open) — enforced in `control.SanitizeChannels`.
 
 ## 5. Sensors (internal/sensor)
 
@@ -1231,7 +1234,10 @@ optional body of `PUT /api/presets/{name}`, section 9).
 ## 12. Deploy
 
 `deploy/n5-fangov.service`: `Type=notify`, `NotifyAccess=main`, `WatchdogSec=60`,
-`ExecStartPre=/usr/bin/n5-fangov check --quiet`, `ExecStopPost=/usr/bin/n5-fangov failsafe`,
+`Environment=N5FANGOV_UNIT_START=1`, `ExecStartPre=/usr/bin/n5-fangov check --quiet` (only with
+`N5FANGOV_UNIT_START=1` or `--unit-start` does `check` send the start alert; `INVOCATION_ID` is set
+for every process systemd starts; a variable and not a flag, so a rolled-back older binary still
+starts under this unit; `serve` removes it from its environment), `ExecStopPost=/usr/bin/n5-fangov failsafe`,
 `Restart=always`, `RestartSec=5`, `StartLimitBurst=5` / `StartLimitIntervalSec=300`,
 `OnFailure=n5-fangov-onfailure.service`, `Conflicts=n5-fand.service`,
 `After=systemd-modules-load.service`, `TimeoutStopSec=20`, `Nice=-5`. Directories:

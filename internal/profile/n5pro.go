@@ -67,8 +67,8 @@ func (n5pro) Title() string { return "Minisforum N5 Pro (IT5571 EC)" }
 func (n5pro) Notes() string {
 	return "Channels: pwm1 CPU, pwm2 SSD, pwm3 HDD, pwm4 PCIe (no tachometer); mapping measured 2026-09-14 " +
 		"on an N5 Pro (F8NAA, BIOS 1.05). Writing pwmN_enable=1 makes the driver set the duty to 255 first. " +
-		"After the hand-back to EC automatic the HDD channel (pwm3) leaves the written value; whether the EC " +
-		"curve then regulates it is unproven, so n5-fangov keeps a fixed HDD stop duty. " +
+		"After the hand-back to EC automatic the EC regulates the HDD channel (pwm3) to a target speed from an EC table keyed on EC 0x06 (derived from firmware); " +
+		"whether that follows disk temperature is open, so n5-fangov keeps a fixed HDD stop duty. " +
 		"The driver's pwmN is a cache, not the EC register."
 }
 

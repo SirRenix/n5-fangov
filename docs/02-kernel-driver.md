@@ -21,14 +21,19 @@ exposes the EC's fan channels as a normal hwmon device (`pwm1..4`, `fan*_input`,
 temperatures), which the `n5pro` profile regulates. The package is a Debian/Proxmox
 fork of upstream v0.2.1 with a patch series on top.
 
-After the hand-back to EC automatic the HDD channel **leaves the written value** (on
-the reference N5 Pro, BIOS 1.05: written 140, register 87 afterwards). Whether the EC
-curve then regulates it is **unproven**: it did not react to a disk read load, which
-may not have moved the curve's input. So n5-fangov never sets that channel to `auto`
-and stops it at a fixed safe duty instead ([Curve rules](06-configuration.md#curve-rules)).
+After the hand-back to EC automatic the EC **regulates the HDD channel again**: on the
+reference N5 Pro (BIOS 1.05) it steps DCR3 and DCR4 down in turn from the written value
+(measured 2026-10-17: 0xb4 → 0x72/0x6a within 15 s, fan3 2736 → 2039 RPM, not yet
+settled). According to EC firmware 0.14 (derived, not measured) it regulates to a target
+speed ±100 RPM taken from a table on EC 0x06: 1200 RPM below 34 °C, 1600 RPM from 34 to
+99 °C. Whether and how that follows the disk temperature is **open**. So n5-fangov never
+sets that channel to `auto` and stops it at a fixed safe duty instead
+([Curve rules](06-configuration.md#curve-rules)).
 TESTSPEC T2/T3 measure this (`n5-fangov validate` or `n5-ectest handback`; [TESTSPEC](#hardware-status-and-validation)).
 Driver `0.2.1+sr1` and later set HDD and PCIe to 255 (CPU/SSD to EC automatic) on reboot
-and power-off, so the stop duty does not survive a reboot there.
+and power-off, so the stop duty does not survive a reboot there. During the next boot
+BIOS/EC set HDD to 100 (0x64; measured 2026-10-17 after one cold and one warm start), below
+the stop duty 140, until n5-fangov takes over; PCIe keeps its last value over a warm start.
 
 The DKMS package, validation data and measurement scripts:
 [`SirRenix/minisforum-n5pro-fan-proxmox`](https://github.com/SirRenix/minisforum-n5pro-fan-proxmox).
@@ -232,7 +237,8 @@ modprobe -r minisforum_n5_it5571
 ```
 
 Unloading sends every channel the module touched back to EC automatic; the HDD channel
-then leaves the stop duty, whether the EC regulates it is unproven (see above).
+then leaves the stop duty and the EC regulates it to its own target; whether that target
+follows the disk temperature is open (see above).
 n5-fangov's own uninstall does not touch the module ([Uninstall](09-updates.md#uninstall)).
 
 ## Other boards

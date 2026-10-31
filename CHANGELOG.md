@@ -26,6 +26,36 @@ is on hold, feature ideas move to 0.6.
   has passed on the reference host; until then `validate` gets no new features beyond
   what a TESTSPEC version requires (0.4 in rc4: it is the second implementation of the D4
   cross-check). `identify` and `test` stay.
+- `check` sends its start alert (`driver`/`profile`) only when
+  `N5FANGOV_UNIT_START=1` is set, which the unit sets with `Environment=` for its
+  `ExecStartPre` (`serve` removes it from its own environment); `--unit-start` does the
+  same for a manual run. It no longer keys on `INVOCATION_ID`, which systemd sets for
+  every process it starts, other units and their scripts included (audit G6). The unit
+  passes no new flag, so a [rollback](docs/09-updates.md#rollback) that puts back only an
+  older binary still starts (the older binary ignores the variable). A unit file older
+  than this binary starts `check` without the variable: no start alert from `check`, the
+  onfailure alert after the start limit stays.
+- Hardware status table: `tools/gen-hwstatus.sh` hashes only the table between the
+  `hwstatus` markers of `RESULTS.md` (the lines between the marker lines, a trailing CR
+  removed, each terminated by LF), not the whole file. The header field is now `source-table-sha256`, `identify --json`
+  reports it as `hw_status_table.source_table_sha256`. A text change outside the table no longer
+  makes `results.tsv` stale; the driver repository's generator (`go/n5`) uses the same
+  definition.
+
+### Added
+
+- `internal/debver`: differential test against `dpkg --compare-versions` (every pair of
+  74 real and edge-case versions; skipped where dpkg is missing, runs in the Debian
+  build container).
+
+### Fixed
+
+- The N5 Pro HDD channel is no longer described as "EC regulation after the hand-back
+  is unproven" (profile notes, `stop=auto` correction note, code comments, presets, the
+  example config, the dashboard mock, the docs). Measured 2026-10-17: after `0x2b` the EC
+  steps DCR3/DCR4 down from the written value; according to EC firmware 0.14 (derived) it
+  regulates to a target speed from an EC table keyed on EC 0x06. Open is whether that follows
+  the disk temperature, so the fixed HDD stop duty (140) stays, with that reason.
 
 ### Still open, no version
 

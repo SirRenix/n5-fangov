@@ -79,7 +79,7 @@ pwm = 3
 sensor = "drivetemp:max"
 curve = [[36,105],[46,255]]
 critical = 56
-stop = 140            # fixed stop duty: EC regulation after the hand-back is unproven
+stop = 140            # fixed stop duty: whether the EC's HDD regulation follows disk temperature is open
 hysteresis = 2        # the curve follows the reading in 2 °C steps
 min_on = "60s"        # a rise in the curve target is held for at least a minute
 ```

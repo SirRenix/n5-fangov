@@ -142,7 +142,7 @@ func cmdTest(args []string) int {
 // testStopPolicy picks the stop value the verification run restores pwm to.
 // It is the stop of the channel that owns the pwm after
 // control.SanitizeChannels: on the n5pro profile pwm3 is never "auto"
-// (EC regulation after the hand-back is unproven, stop "140" from the
+// (whether the EC's HDD regulation follows disk temperature is open, stop "140" from the
 // built-in defaults) and pwm1..3 missing from the config get their built-in stop.
 // A pwm no channel owns falls back to "auto".
 func testStopPolicy(profileName string, chans []chanSpec, pwm int) string {

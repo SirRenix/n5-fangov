@@ -375,8 +375,10 @@ func channelSpecs(cfg config.Config) []chanSpec {
 
 // sanitizeChannelSpecs applies control.SanitizeChannels to a channel list:
 // on the n5pro profile pwm1..3 missing from the config are added with the
-// built-in defaults and pwm3 never keeps stop="auto" (the EC does not
-// regulate it after a write). Other profiles come back unchanged. notes
+// built-in defaults and pwm3 never keeps stop="auto" (after the hand-back the
+// EC regulates it to a target speed from an EC table keyed on EC 0x06,
+// derived from firmware; whether that follows disk
+// temperature is open). Other profiles come back unchanged. notes
 // carries one line per correction (what serve logs and alerts).
 func sanitizeChannelSpecs(profileName string, chans []chanSpec) (out []chanSpec, notes []string) {
 	in := make([]config.Channel, 0, len(chans))
