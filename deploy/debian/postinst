@@ -1,16 +1,21 @@
 #!/bin/sh
-# n5-fangov postinst: reload systemd, enable the unit, install the PVE
-# templates and the apt kernel-gate hook. Never starts the daemon on a fresh
-# install (run `n5-fangov setup` first); on upgrade a running daemon is
-# restarted so the new binary takes over.
+# n5-fangov postinst: reload systemd, enable the unit on a fresh install
+# (also a new install after `apt remove`; an upgrade keeps the enable state),
+# install the PVE templates and the apt kernel-gate hook. Never starts the
+# daemon on a fresh install (run `n5-fangov setup` first); on upgrade a
+# running daemon is restarted so the new binary takes over. Paths are
+# prefixed with DPKG_ROOT (empty on a normal install; the package tests run
+# the script against a temporary root with a stub systemctl).
 set -e
 
-APT_HOOK=/etc/apt/apt.conf.d/90n5-fangov
+R="$DPKG_ROOT"
+APT_HOOK="$R/etc/apt/apt.conf.d/90n5-fangov"
+FRESH="$R/var/lib/n5-fangov/.fresh-install"
 
 case "$1" in
     configure)
         # The Bash predecessor must not regulate in parallel.
-        if [ -f /etc/systemd/system/n5-fand.service ] || [ -f /lib/systemd/system/n5-fand.service ]; then
+        if [ -f "$R/etc/systemd/system/n5-fand.service" ] || [ -f "$R/lib/systemd/system/n5-fand.service" ]; then
             if systemctl is-active --quiet n5-fand.service 2>/dev/null; then
                 echo "n5-fangov: stopping n5-fand.service (predecessor); two regulators must never run at once"
                 systemctl stop n5-fand.service || true
@@ -23,19 +28,19 @@ case "$1" in
         # Best effort like install.sh: /etc/pve is pmxcfs and read-only
         # without quorum; a failed mkdir must not leave the package
         # half-configured (daemon-reload/enable below would be skipped).
-        if [ -d /etc/pve ]; then
-            if mkdir -p /etc/pve/notification-templates/default 2>/dev/null; then
-                cp /usr/share/n5-fangov/pve-notification/n5-fangov-subject.txt.hbs /etc/pve/notification-templates/default/ 2>/dev/null || true
-                cp /usr/share/n5-fangov/pve-notification/n5-fangov-body.txt.hbs    /etc/pve/notification-templates/default/ 2>/dev/null || true
+        if [ -d "$R/etc/pve" ]; then
+            if mkdir -p "$R/etc/pve/notification-templates/default" 2>/dev/null; then
+                cp "$R/usr/share/n5-fangov/pve-notification/n5-fangov-subject.txt.hbs" "$R/etc/pve/notification-templates/default/" 2>/dev/null || true
+                cp "$R/usr/share/n5-fangov/pve-notification/n5-fangov-body.txt.hbs"    "$R/etc/pve/notification-templates/default/" 2>/dev/null || true
             else
                 echo "n5-fangov: /etc/pve/notification-templates not writable (no quorum?); install the template later: n5-fangov alerts template"
             fi
         fi
-        mkdir -p /etc/n5-fangov/presets
-        mkdir -p /var/log/n5-fangov
-        chmod 0750 /var/log/n5-fangov || true
-        if [ -d /etc/apt/apt.conf.d ]; then
-            cp /usr/share/n5-fangov/apt-90n5-fangov.conf "$APT_HOOK"
+        mkdir -p "$R/etc/n5-fangov/presets"
+        mkdir -p "$R/var/log/n5-fangov"
+        chmod 0750 "$R/var/log/n5-fangov" || true
+        if [ -d "$R/etc/apt/apt.conf.d" ]; then
+            cp "$R/usr/share/n5-fangov/apt-90n5-fangov.conf" "$APT_HOOK"
             chmod 0644 "$APT_HOOK"
         fi
         # install.sh puts the units under /etc/systemd/system, where they would
@@ -43,11 +48,33 @@ case "$1" in
         # An identical copy is the installer's and goes; a differing one is the
         # operator's and stays (named, so it can be looked at). Drop-ins under
         # n5-fangov.service.d/ are never touched.
+        # Enable state (Debian convention): a fresh install enables the unit,
+        # and so does a new install after `apt remove` (preinst "install"
+        # leaves $FRESH; prerm disabled the unit on the removal, which was
+        # not the operator's choice; BACKLOG #40). Only an upgrade ($2 =
+        # previous version, no marker) or a package install over an
+        # install.sh deployment keeps what the operator chose -- a unit
+        # disabled for a maintenance window stays disabled (maintenance
+        # window 1, 2026-10-17: every configure used to enable it again).
+        # Read before the installer copy goes: its symlink dangles afterwards.
+        fresh=0
+        if [ -z "$2" ] || [ -f "$FRESH" ]; then
+            fresh=1
+        fi
+        rm -f "$FRESH"
+        was_enabled=0
+        if systemctl is-enabled --quiet n5-fangov.service 2>/dev/null; then
+            was_enabled=1
+        fi
+        had_unit=0
+        if [ "$fresh" = 0 ] || [ -f "$R/etc/systemd/system/n5-fangov.service" ]; then
+            had_unit=1
+        fi
         relink=0
         for u in n5-fangov.service n5-fangov-onfailure.service; do
-            if [ -f "/etc/systemd/system/$u" ]; then
-                if cmp -s "/etc/systemd/system/$u" "/lib/systemd/system/$u"; then
-                    rm -f "/etc/systemd/system/$u"
+            if [ -f "$R/etc/systemd/system/$u" ]; then
+                if cmp -s "$R/etc/systemd/system/$u" "$R/lib/systemd/system/$u"; then
+                    rm -f "$R/etc/systemd/system/$u"
                     relink=1
                     echo "n5-fangov: removed /etc/systemd/system/$u (installer copy, identical to the packaged unit)"
                 else
@@ -56,11 +83,15 @@ case "$1" in
             fi
         done
         systemctl daemon-reload || true
-        if [ "$relink" = 1 ]; then
+        state=enabled
+        if [ "$had_unit" = 0 ]; then
+            systemctl enable n5-fangov.service || true
+        elif [ "$was_enabled" = 1 ] && [ "$relink" = 1 ]; then
             # the installer's enable symlink pointed at the removed copy
             systemctl reenable n5-fangov.service || true
-        else
-            systemctl enable n5-fangov.service || true
+        elif [ "$was_enabled" = 0 ]; then
+            state=disabled
+            echo "n5-fangov: n5-fangov.service stays disabled as before (enable it with: systemctl enable n5-fangov)"
         fi
         # A running daemon still executes the previous binary (dpkg replaced the
         # file on disk): restart it on a package upgrade and equally on the first
@@ -68,10 +99,10 @@ case "$1" in
         if systemctl is-active --quiet n5-fangov.service 2>/dev/null; then
             echo "n5-fangov: daemon is running (${2:-installer deployment}), restarting it so the new binary takes over"
             systemctl restart n5-fangov.service || true
-        elif [ -f /etc/n5-fangov/config.toml ]; then
-            echo "n5-fangov: installed and enabled. Next: n5-fangov check && systemctl start n5-fangov"
+        elif [ -f "$R/etc/n5-fangov/config.toml" ]; then
+            echo "n5-fangov: installed ($state). Next: n5-fangov check && systemctl start n5-fangov"
         else
-            echo "n5-fangov: installed and enabled. Next: n5-fangov setup"
+            echo "n5-fangov: installed ($state). Next: n5-fangov setup"
         fi
         ;;
 esac

@@ -6,15 +6,31 @@
 # alert path as the daemon (PVE::Notify -> mail -> log).
 set -u
 UNIT=n5-fangov
-RUN=/run/n5-fangov
+RUN=${N5FANGOV_RUN_DIR:-/run/n5-fangov}
 BIN=/usr/bin/n5-fangov
 COOLDOWN=1800
 mkdir -p "$RUN"
+
+# failed_cmd PROPERTY: the first command of ExecStartPre/ExecStopPost whose
+# last run did not succeed, as "<argv> (exited with code N)" or "<argv>
+# (killed by signal N/NAME)"; empty when all succeeded or none ran. systemctl
+# prints one "{ path=... ; argv[]=... ; ... ; code=exited ; status=1 }" per
+# command.
+failed_cmd() {
+    systemctl show -p "$1" --value "$UNIT" 2>/dev/null | sed -n \
+        -e 's/.*argv\[\]=\([^;]*\) ;.*code=exited ; status=\([1-9][0-9]*\).*/\1 (exited with code \2)/p' \
+        -e 's/.*argv\[\]=\([^;]*\) ;.*code=\(killed\|dumped\) ; status=\([0-9A-Z/]*\).*/\1 (\2 by signal \3)/p' | head -n 1
+}
 
 # Read the cause IMMEDIATELY: after the restart, Result reflects the new process.
 result="$(systemctl show -p Result --value "$UNIT" 2>/dev/null)"
 code="$(systemctl show -p ExecMainCode --value "$UNIT" 2>/dev/null)"
 status="$(systemctl show -p ExecMainStatus --value "$UNIT" 2>/dev/null)"
+# Result=exit-code also covers a failed ExecStartPre (n5-fangov check): the
+# main process then never ran and ExecMainStatus says 0 (maintenance window
+# 1, 2026-10-17: "process exited with code 0" for a check that exited 1).
+pre_fail="$(failed_cmd ExecStartPre)"
+post_fail="$(failed_cmd ExecStopPost)"
 sleep 8    # RestartSec=5: the restart has begun by now
 # The restarted unit is "activating" while ExecStartPre (check) and the
 # first cycle run (READY=1 waits for it, up to 2x interval + 5 s). Poll up
@@ -31,7 +47,16 @@ nrest="$(systemctl show -p NRestarts --value "$UNIT" 2>/dev/null)"
 case "$result" in
     watchdog)        why="watchdog: the loop did not answer for 60 s (hung sensor read?)";;
     signal)          why="process ended by signal (status $status, e.g. kill/OOM)";;
-    exit-code)       why="process exited with code $status";;
+    exit-code)
+        if [[ -n "$pre_fail" ]]; then
+            why="start check failed: ExecStartPre ${pre_fail}; the daemon was not started (see n5-fangov check)"
+        elif [[ "$status" != "0" && -n "$status" ]]; then
+            why="process exited with code $status"
+        elif [[ -n "$post_fail" ]]; then
+            why="ExecStopPost ${post_fail} (failsafe)"
+        else
+            why="result 'exit-code' (main process code $code, status $status)"
+        fi;;
     start-limit-hit) why="start limit reached: 5 failed starts within 5 min";;
     *)               why="result '$result' (code $code, status $status)";;
 esac

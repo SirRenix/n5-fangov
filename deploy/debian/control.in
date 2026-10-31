@@ -5,12 +5,16 @@ Priority: optional
 Architecture: amd64
 Depends: lm-sensors, systemd
 Recommends: smartmontools
+Suggests: minisforum-n5-it5571-dkms (>= 0.2.1+sr1~rc1)
 Conflicts: n5-fand
 Maintainer: SirRenix <sirrenix@users.noreply.github.com>
 Homepage: https://github.com/SirRenix/n5-fangov
 Description: guarded fan control for Proxmox VE and Debian
  Single static daemon that regulates hwmon pwm channels from temperature
  curves with slew limiting, critical override, stall detection, read-back
- verification and a profile-defined safe state on stop. Hardware-verified on
- the Minisforum N5 Pro (IT5571 EC via minisforum_n5_it5571); generic NCT67xx
- and IT87xx profiles ship untested. Includes CLI, HTTP API and web UI.
+ verification and a profile-defined safe state on stop. The n5pro profile
+ drives the Minisforum N5 Pro EC (IT5571) through the minisforum_n5_it5571
+ driver (package minisforum-n5-it5571-dkms, suggested; install it only on the
+ N5 Pro); its hardware status per
+ board, BIOS and EC firmware is shown by `n5-fangov identify`. Generic
+ NCT67xx and IT87xx profiles ship untested. Includes CLI, HTTP API and web UI.

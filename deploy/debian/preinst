@@ -1,0 +1,23 @@
+#!/bin/sh
+# n5-fangov preinst: tell postinst whether this is an upgrade or an install.
+# dpkg calls "install <old-version>" when the package was removed before
+# (config files left: `apt remove`, then a new install) and "upgrade
+# <old-version>" for an upgrade. postinst gets the old version in both
+# cases and cannot tell them apart, so the install case leaves a marker:
+# a new install after `apt remove` enables the unit like a first install;
+# only an upgrade keeps the enable state the operator chose (BACKLOG #40,
+# operator 2026-10-17). DPKG_ROOT is empty on a normal install.
+set -e
+
+FRESH="$DPKG_ROOT/var/lib/n5-fangov/.fresh-install"
+
+case "$1" in
+    install)
+        mkdir -p "$DPKG_ROOT/var/lib/n5-fangov"
+        : > "$FRESH"
+        ;;
+    upgrade)
+        rm -f "$FRESH"
+        ;;
+esac
+exit 0

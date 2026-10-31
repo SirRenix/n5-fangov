@@ -54,4 +54,4 @@ fi
 
 echo
 echo "Done. Fans are in the configured safe state; on the N5 Pro the HDD channel"
-echo "returns to full EC control only after a cold boot."
+echo "stays at its fixed stop duty until something writes it again or the host reboots."

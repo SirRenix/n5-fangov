@@ -108,8 +108,9 @@ stop = "auto"
 
 # HDD group (pwm3) <- max drivetemp (WD: critical 60 C). Deliberately sharper than the EC:
 # rises from 36 C, 40 C -> ~165 (~2600 RPM), 46 C -> full. Goal: disks <= 39 C.
-# stop = 140: the EC no longer regulates this channel after the first manual write
-# (measured 14.09.2026), so "auto" would leave the disks at whatever duty was last set.
+# stop = 140: after the hand-back to EC automatic this channel leaves the written value,
+# but whether the EC curve then regulates it is unproven (2026-09-14 data), so the
+# daemon never hands it back and stops it at a fixed duty instead.
 [[channel]]
 name = "hdd"
 pwm = 3

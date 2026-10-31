@@ -98,7 +98,7 @@ deb-only:
 	install -m 0644 deploy/debian/copyright            $(PKGDIR)/usr/share/doc/n5-fangov/copyright
 	sed -e 's/@VERSION@/$(DEBVER)/' -e 's/^Architecture: .*/Architecture: $(ARCH)/' \
 	    deploy/debian/control.in > $(PKGDIR)/DEBIAN/control
-	install -m 0755 deploy/debian/postinst deploy/debian/prerm deploy/debian/postrm $(PKGDIR)/DEBIAN/
+	install -m 0755 deploy/debian/preinst deploy/debian/postinst deploy/debian/prerm deploy/debian/postrm $(PKGDIR)/DEBIAN/
 	cd $(PKGDIR) && find . -type f -not -path "./DEBIAN/*" | sed 's|^\./||' | LC_ALL=C sort | xargs md5sum > DEBIAN/md5sums && test -s DEBIAN/md5sums && chmod 0644 DEBIAN/md5sums
 	dpkg-deb --build --root-owner-group $(PKGDIR) $(DEB)
 	@echo built $(DEB)
