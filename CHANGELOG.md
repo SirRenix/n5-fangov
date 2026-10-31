@@ -14,39 +14,18 @@ drove the 0.3.1 work is `docs/AUDIT.md` (code) and `docs/DESIGN-AUDIT.md`
 
 ## [Unreleased]
 
-### Docs
+0.5.0 is the validation release (operator decision 2026-10-08): the 0.4.3–0.4.6 roadmap
+is on hold, feature ideas move to 0.6.
 
-- Kernel driver: installed from the DKMS package `minisforum-n5-it5571-dkms` (release
-  asset of the sibling repository): `apt install`, it pulls `dkms` and the header
-  meta-package, builds for every kernel with headers, takes over a hand installation.
-  Options and autoload live under `/usr/lib/modprobe.d/` and `/usr/lib/modules-load.d/`;
-  removal is `apt remove`. The prerequisites no longer list `dkms` and headers
-  separately. Verified on the reference host on 2026-09-26 (installed over the hand
-  installation, module reloaded with the regulator stopped).
-- The installers' hint for removing `n5-fand` points to the sibling repository's
-  `legacy/uninstall.sh`.
+### Changed
 
-### Roadmap (operator decision 2026-09-19)
-
-**0.4.1 — safety** released (below). The `systemctl poweroff` form of the emergency
-hook stays documented and is not executed on the reference host (operator decision
-2026-09-24).
-
-**0.4.2 — operations and polish** (scope confirmed 2026-09-24): `setup` keeps settings,
-the review leftovers (rail height jump at 1100 px with `nav: rail`; Schedules status
-card next/last switch in the host's timezone; `app.css` cleanup under the 48 KiB
-budget), the update re-test checklist, upstream issues (driver validation data to the
-driver author, ProxFansX compatibility note).
-
-**DKMS `.deb`**: done in the sibling repository as `minisforum-n5-it5571-dkms` 0.2.1-1
-(user path: two `apt install` + `setup`); see Docs above.
-
-**No version**: certificate-trust walkthrough with screenshots of an **English** Windows
-wizard — 0.4.0 carries the German dialogs with both labels in the captions; swap the
-images when an English Windows is at hand.
-
-**0.4.5 — multiple dashboard users** (more than the one `[web] user`; roles map to the
-token scopes). No design yet.
+- `validate` is frozen and moves to **n5-ectest**, the test toolset of the driver
+  repository (`ectest/`, operator decision 2026-10-10). The shared packages `n5driver`,
+  `hwstatus` and the writer lock live there as module `go/n5`. n5-fangov switches to
+  that module and drops `validate` (prints "moved to n5-ectest", exit 2) once n5-ectest
+  has passed on the reference host; until then `validate` gets no new features beyond
+  what a TESTSPEC version requires (0.4 in rc4: it is the second implementation of the D4
+  cross-check). `identify` and `test` stay.
 
 ### Still open, no version
 
@@ -54,11 +33,256 @@ token scopes). No design yet.
   and the configuration page); re-measured only if a use case for pwm4 comes up (operator
   decision 2026-09-18). Measured 2026-09-17 on the reference host: the driver refuses a
   `pwm4` write while `pwm4_enable = 2` (EBUSY); after `enable = 1`, duty 100 and
-  `enable = 2` again the EC left 100 in place for 90 s — pwm4 behaves like pwm3. Whether
-  `auto` on pwm4 should be forced to a fixed stop like pwm3 is an open operator decision.
+  `enable = 2` again the EC left 100 in place for 90 s. Whether `auto` on pwm4 should be
+  forced to a fixed stop like pwm3 is an open operator decision. The restore of
+  `validate`/`test` on pwm4 also writes `pwm4_enable = 2`; 255 results only from driver
+  `0.2.1+sr1~rc2` and later (PCIe hand-back at 255, operator decision 2026-10-16), with an
+  older driver DCR5 keeps the last test duty. `validate` is frozen, so this stays
+  documented, not changed (rc2 review R3).
 
 **Not planned**: MQTT/discovery (REST + token is enough and smaller), a German UI
 (audience is GitHub), multi-host management, a frontend framework.
+
+## [0.5.0-rc4] — 2026-10-17
+
+`validate` on TESTSPEC 0.4 (operator approval 2026-10-17, every open point as
+recommended), package and test fixes. Not yet run on the reference host.
+
+### Changed
+
+- `validate` implements TESTSPEC **0.4**; `spec_version` in every bundle is `0.4` and
+  `spec_deviations` stays empty: the two deviations #27 (a) names for a `validate` frozen
+  at 0.3 (G4, settle time) are not needed. `meta.json` → `result_role` states that the
+  bundle is the second implementation of the D4 cross-check (§1 rule 4, §9); the tool of
+  record is n5-ectest.
+  - **G4 (#20 a):** stable over 5 min are EC 0x04, EC 0x06 and HDD (each < 1 °C); Tctl is
+    no stability criterion any more (a limit of §4 only), its span is reported. Under 0.3
+    G4 failed on the reference host with a Tctl span of 13.5 °C at EC/HDD 0.0 °C
+    (maintenance window 1, D1).
+  - **Settle time (#21 a):** a DCR sample due less than 10 s (pwm1–pwm3) or 1 s (pwm4)
+    after a write is recorded, not judged; T1 lists such samples per step
+    (`verdict.json` → `not_judged`); T2 hold-phase samples after the settle time that
+    differ from the written value are listed (`hold_deviations`), not judged; a restore is
+    read back until the same settle time has passed. `meta.json` → `settle_time_s`.
+  - **5-s grid (#11 a):** samples are due at anchor + k·5 s (anchor: the start of the
+    phase, the write of a T1 step, the auto command of T2/T3); a read within ±0.5 s is
+    judged at its due time (`samples.csv` → `t_s` = due time, `t_iso` = real time), one
+    further off and a slot skipped after an overrun are gaps (`events.log`,
+    `meta.json` → `grid.gaps`), not judged.
+  - **Table-input crossings (#17, #24):** T1 records the table inputs of the other
+    channels (EC 0x09, EC 0x05, EC 0x06); another tach that follows is `FAIL` only without
+    a crossing (≥ 2 °C beyond a step), with one `INCONCLUSIVE` ("table input of pwmN
+    crossed a step"). T2/T3: a sub-run whose own table input crosses a step between the
+    write and the end of its log is `INCONCLUSIVE`, every sub-run when it crosses in the
+    window of A.
+  - **G7 (#7, #12):** board in the driver's write table with the measured `sys_vendor`,
+    module loaded and not with `force`; a failed G7 makes the writing tests
+    `INCONCLUSIVE` ("not run: gate G7"), G3/G4 `SKIPPED`, nothing written.
+  - **G1 (#5):** besides the systemd state, processes of the known regulators by
+    `comm`/`argv[0]` (`n5-fangov` only as `serve`), open file descriptors on the driver's
+    `pwm*` files, the pwm cache against what the run left there and the writer-lock inode,
+    at the gate and at every sample.
+  - **G6 (#9):** with the driver's debugfs `ecram` (0.2.1+sr2) the curve tables are read
+    and recorded (`meta.json` → `ec_ram_tables`), G6 `PASS`; without it `PARTIAL`. C1 stays
+    `INCONCLUSIVE`: decided with f8a mode A (§5.3), `ecram` is no C1 path before the
+    byte-compare (#9-C1 a).
+  - **Third refusal (#10 a):** `validate` writes `/run/n5-fangov/validate-restore.json`
+    before its first write and removes it when every channel is restored; a file still
+    there, an open `/run/n5-ectest/restore.json` of n5-ectest, or one that cannot be read
+    refuses the next run without a bundle.
+  - **Restore after a temperature abort (#13):** in a run that wrote, the channel of the
+    sensor that tripped (Tctl → pwm1, NVMe → pwm2, HDD → pwm3) is set to 255 and left
+    there; `restore_values` names it. `--restore pwmN=auto|D` (D ≥ 100) overrides the
+    configured stop values (§4).
+  - **Redaction (#8 a):** every bundle file is redacted before it is hashed: host name →
+    `n5host`, DMI serials and UUID, MAC/IPv4/IPv6/mail addresses, user names, `SSH_*`
+    values; the rule set is in `meta.json` → `redaction`.
+  - **Output directory (#23):** checked before any gate (rc3: before the gates, after G1).
+  - T0 includes `sys_vendor`; T4/T5 say they are evaluated by `n5-ectest report` (§5.5).
+- postinst: a new install after `apt remove` enables the unit again like a first install;
+  only an upgrade keeps the previous enable state (BACKLOG #40, operator 2026-10-17). A
+  new `preinst` marks dpkg's `install` case; the maintainer scripts take `DPKG_ROOT` and
+  are tested against a temporary root with a stub `systemctl`.
+- Hardware-status table regenerated from `befunde/RESULTS.md` of 2026-10-17 (BACKLOG
+  #43).
+
+### Added
+
+- `TestStallAlarmChainSimulated`: TESTSPEC 0.4 §5a stall detection (b), the alarm chain
+  with a simulated sensor — the real daemon against a fake sysfs tree
+  (`N5FANGOV_SYSFS`) with `fan2_input` = 0 must write 255 and deliver the `stall` alert
+  through the configured webhook. Not a hardware result (docs/07-alerts.md).
+
+### Fixed
+
+- Data race in `TestHistoryCSV` (`internal/web`): the test set `time.Local` while server
+  goroutines ran; the export zone is now injected (BACKLOG #39).
+- gofmt of `internal/control/controller.go` and `fakes_test.go` (rc3 left two struct
+  blocks unaligned).
+
+## [0.5.0-rc3] — 2026-10-17
+
+Fixes for the findings of rc2 on the reference host (maintenance window 1, 2026-10-17).
+No new features.
+
+### Fixed
+
+- `validate` creates `--out` with its parents and checks that it is writable before the
+  gates; when it cannot, the run stops there with exit 1 and nothing written. rc2 created
+  the bundle directory only after the run, without parents, and lost the bundle
+  ("mkdir … no such file or directory", maintenance window 1, D1).
+- EC register comparison (`debug_regs=1`) after the EC had time to take the value: the
+  register lags behind a write (PCIe within 0.22 s, the HDD channel ramps DCR3 and DCR4 one
+  after the other over about 4.6 s, CPU/SSD read 116 instead of 188 right after the write;
+  maintenance window 1, C6/E3/Z1/Z2). rc2 read it right after the write and warned
+  `EC register deviation` for every channel in the first cycle. The daemon now compares in a
+  later cycle, 5 s (pwm3) or 2 s (other channels) after the write, without waiting in the
+  write path; the `failsafe` command and `validate`'s restore read the register after all
+  writes until it matches or the settle time has passed; `test` compares after each hold.
+- postinst: an upgrade keeps the enable state of `n5-fangov.service`; only a fresh install
+  enables it. rc2 ran `systemctl enable` on every configure and re-enabled a unit disabled
+  for the maintenance window (maintenance window 1, C1).
+- onfailure alert: a failed `ExecStartPre` (`check`) is named as such ("start check failed:
+  ExecStartPre … (exited with code 1)"); rc2 said "process exited with code 0" because it
+  only read `ExecMainStatus` of the main process that never ran (maintenance window 1, C4).
+
+## [0.5.0-rc2] — 2026-10-16
+
+**Validation release, candidate.** The hardware status of a board replaces the
+"verified" flag, the false statement about the HDD channel is corrected everywhere, the
+N5 Pro driver's state is checked instead of assumed, and two new commands identify the
+machine and run the test specification. Not yet tested on the reference host. rc1
+(2026-10-09) was not published; rc2 adds the fixes of the code audit of 2026-10-16
+(signal handling of `validate`/`test`, register deviation, read-only boards, writer lock,
+hardware-status warning).
+
+### Added
+
+- `n5-fangov identify [--json]`: DMI product, board, board version, vendor, BIOS and
+  date, EC firmware (`/sys/class/dmi/id/ec_firmware_release`), kernel, taint, boot id,
+  uptime, driver version/srcversion/taint/parameters, hwmon attributes, the driver's
+  register dump when present, detected profile, hardware status. Read-only.
+- `n5-fangov validate <pwmN>`: TESTSPEC 0.3 of the driver repository — gates G1–G6,
+  T0, T6, T1 (mapping), T2/T3 (hand-back and settling, H and M sub-runs, 3 runs); C1,
+  T4, T5 report `INCONCLUSIVE` with the reason (T4/T5 are run by hand; pwm3 "HDD input
+  EC 0x06 below 34 C"). pwm3 is judged on DCR3 and DCR4, a disagreement is reported and
+  never PASS; pwm4 T2–T5 are `N/A` (no EC automatic on DCR5), so on pwm4 only T1 is a
+  writing test (`pwm4 --tests T2,T3` asks no confirmation and samples no gate window). G4: Tctl span < 5 °C,
+  EC system and HDD < 1 °C. Refuses while the daemon runs or is
+  (re)starting, while another writer holds the writer lock, when standard input is not a
+  terminal, in a remote session (`SSH_*` or an `sshd`/`termproxy`/… ancestor, so also
+  through `sudo`) or without a local console in the process chain unless
+  `--i-am-at-the-console` is given, and without the typed confirmation. G1 is checked at
+  every sample; G4 needs every limit sensor (Tctl, NVMe, HDD). Aborts at the limits of
+  TESTSPEC §4 and when a limit sensor stays unreadable; never writes a duty below 100,
+  also not when restoring (a stop duty below 100 is restored as 100); restores every
+  touched channel on exit, abort, signal and panic before any further output, also with
+  a closed stdout pipe. SIGINT, SIGTERM, SIGHUP and SIGQUIT (Ctrl-\) end the run with a
+  restore and a bundle; SIGTSTP/SIGTTIN/SIGTTOU (Ctrl-Z) and SIGPIPE are ignored. The same
+  signal handling applies to `test`. T2/T3 sub-runs log 1020 s after the auto
+  command (15 min plus the 120-s T3 window), so T3 can reach FAIL; a sub-run within 16
+  counts of A is `INCONCLUSIVE`. Exit 1 also when a gate kept the writing tests from
+  running or a channel could not be restored (printed on stdout and stderr). Writes
+  `meta.json` (with `spec_deviations`, `restore_values`, `restore_failed`,
+  `limit_sensors`, `session`), `samples.csv`, `events.log`, `verdict.json`,
+  `SHA256SUMS`. `--dry-run` runs the procedure against a built-in EC
+  model; `--replay` evaluates raw logs of the pre-TESTSPEC script.
+- Hardware status `validated` / `tested` / `experimental` / `unknown` per product,
+  board, BIOS and EC firmware, from `befunde/RESULTS.md` of the driver repository
+  (embedded as `internal/hwstatus/results.tsv`, generated by `tools/gen-hwstatus.sh`).
+- `check`: `hardware status` line (warning below `tested`) and `driver` lines for the N5
+  Pro (loaded version against the installed package, `force`, `debug_regs`).
+- Alert `driver`: on a board the driver writes on (N5 PRO/F8NAA, N5/F8NAA), the driver is
+  loaded read-only (pwm nodes hidden) or missing (not installed, not built for this kernel,
+  not loaded). Under the unit `check` (`ExecStartPre`)
+  sends it, because `serve` never starts then; the 30-min start-alert cooldown is shared.
+- Writer lock `/run/n5-fangov/writer.lock`: `serve`, `test` and `validate` write pwm only
+  while they hold it; `failsafe` writes nothing while `validate` or `test` holds it. `serve`
+  refuses to start only next to a running `validate`/`test`; any other lock error lets it
+  start without the lock, with a journal warning and the alert `start`.
+- Journal warning `driver read error: <source>: <errno>` for `ETIMEDOUT`, `EAGAIN`,
+  `ENODATA`, `ENODEV` on temperature and tach reads, one per source per 5 minutes with
+  the count of the suppressed ones; when the errors stop, `driver read recovered` logs
+  the count still pending.
+- With driver `0.2.1+sr1` and `debug_regs=1` a duty write is also checked against the
+  EC duty register (optional; without the register dump nothing changes). In the daemon a
+  difference is the journal warning `EC register deviation: <channel>`, at most one per
+  channel per 5 minutes, not a write error (no failsafe, no `write` alert, no pause in the
+  write path); `validate` records it and reads a differing restore once more after 1 s.
+  A read of the register dump is abandoned after 5 s.
+
+### Changed
+
+- `GET /api/state` and `GET /api/profiles` carry `hw_status`; `verified` stays for
+  compatibility and is true for `validated` and `tested` only, which need a TESTSPEC
+  result of this project (origin `eigen`); the table refuses them for an upstream
+  statement or a user report, so N5/F8NAA (validated by the driver author) is
+  `experimental`. The reference N5 Pro is `experimental` until its TESTSPEC run, so
+  `verified` is now `false` there. `status`,
+  `detect`, `setup`, `test`, the start log line and the dashboard (profile tooltip,
+  Compatibility card) show the hardware status. `serve` logs a status below `tested` as a
+  journal warning only on the first start and when it changed since the last start (record
+  `hwstatus.last` in the state directory), otherwise at info level, so a restart adds no
+  warning line.
+- `profile = "auto"` on a board the driver writes on (N5 PRO/F8NAA, N5/F8NAA, each with
+  the DMI `sys_vendor` the driver compares exactly) with the driver loaded but its pwm
+  nodes hidden, or without the driver, no longer falls back to `monitor`: `check` fails
+  with the reason and alerts `driver`. Boards the driver keeps read-only (N5 Air,
+  N5 PRO/F8NAB, another vendor string) run as `monitor` as in 0.4.2. An explicit
+  `profile = "monitor"` still runs sensors only.
+- Kernel gate (`check --after-update`): compares the `modinfo` version of each kernel's
+  module with the version the installed driver package builds; an old build on a
+  bootable kernel is an alert like a missing module. The OK line names a version only when
+  at least one module version was read and compared.
+- The repair hint of the kernel gate and of `check` is `apt install --reinstall
+  minisforum-n5-it5571-dkms` (or installing the `.deb`), not `dkms install <version>`.
+- Debian package: `Suggests: minisforum-n5-it5571-dkms (>= 0.2.1+sr1~rc1)`; not a
+  dependency, other boards never pull it in.
+- `n5-fangov test` no longer calls a tach mismatch after 20 s a failed hand-back proof;
+  it takes the writer lock (`--force` skips only the daemon check) and counts a unit in
+  `activating`/`deactivating` as running.
+
+### Fixed
+
+- The HDD channel of the N5 Pro was described as "the EC does not resume regulation
+  after a write" in profile notes, code comments, presets, the example config, the
+  dashboard mock, `uninstall.sh` and the docs. After the hand-back the channel leaves
+  the written value; whether the EC curve then regulates it is unproven. The fixed HDD
+  stop duty stays, with that reason.
+- Version comparison follows dpkg (`0.2.1+sr1~rc1` < `0.2.1+sr1` < `0.2.1+sr2~rc1`);
+  `0.2.1+sr1` sorted below `0.2.1` before.
+- The read-back after a pwm write is documented as what it is on the N5 Pro: the
+  driver's cache, not the EC register.
+- A held driver package (`dpkg` status `hi`) counts as installed: the hint says
+  `reinstall`, not `install`.
+- Flags after a positional argument are accepted: `test pwm3 --force` stopped at the
+  channel and exited with a usage error. The same applies to `log`, `alerts`, `cert`
+  (also `--config` after the subcommand), `export`, `import` and `token create`, as in
+  `validate`; `--` ends the flags.
+
+### Security
+
+- Writes only on checked boards: the suggested driver package `0.2.1+sr1~rc1` enables
+  PWM writes only on boards in its allowlist (N5 PRO / F8NAA, measured DMI vendor) and
+  never on a force-loaded system; n5-fangov reports such a read-only driver instead of
+  running silently without regulation.
+
+### Docs
+
+- Kernel driver: installed from the DKMS package `minisforum-n5-it5571-dkms` (release
+  asset of the sibling repository): `apt install`, it pulls `dkms` and the header
+  meta-package, builds for every kernel with headers, takes over a hand installation.
+  Options and autoload live under `/usr/lib/modprobe.d/` and `/usr/lib/modules-load.d/`;
+  removal is `apt remove`. The prerequisites no longer list `dkms` and headers
+  separately. Tested on the reference host on 2026-09-26 with 0.2.1-1.
+- The installers' hint for removing `n5-fand` points to the sibling repository's
+  `legacy/uninstall.sh`.
+- Kernel driver: hardware status and validation, driver parameters (`experimental_write`
+  allowlist, `force` read-only, `debug_regs` validation only), the pwm cache, version
+  check of the gate, reinstall instead of `dkms install`. CLI: `identify`, `validate`.
+  Alerts: `driver`, read-error warnings. Troubleshooting: read-only driver, old module,
+  hardware-status warning, read errors. README: hardware status instead of "tested
+  hardware". Release gate: both components, F8a/F8b, rows for 0.5.0.
 
 ## [0.4.2] — 2026-09-25
 

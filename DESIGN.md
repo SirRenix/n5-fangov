@@ -2,9 +2,10 @@
 
 Guarded fan control for Proxmox VE and Debian. One static Go binary: daemon (regulation
 loop + HTTP API + embedded dashboard), CLI over a unix socket, hardware profiles.
-Hardware-verified on the Minisforum N5 Pro (IT5571 EC via `minisforum_n5_it5571`); the
-generic hwmon profiles (NCT67xx, IT87xx, monitoring-only) ship as "from documentation,
-untested".
+Built and run on the Minisforum N5 Pro (IT5571 EC via `minisforum_n5_it5571`); its hardware
+status per board, BIOS and EC firmware comes from the driver repository's TESTSPEC results
+(`internal/hwstatus`). The generic hwmon profiles (NCT67xx, IT87xx, monitoring-only) ship
+as "from documentation, untested".
 
 This file is the contract between packages as it stands for the current release
 (`n5-fangov version`; history in [CHANGELOG.md](CHANGELOG.md)). Every builder follows it;
@@ -23,7 +24,8 @@ behaviour is described in [docs/](docs/README.md), the deploy file layout in
 5. **Critical temperature → 255 immediately, no slew, even in manual override.**
 6. **Stall (RPM 0 at duty ≥ stall_min_duty for N cycles) → 255, alert, auto-recovery.**
 7. **On stop: profile-defined safe state** (N5 Pro: CPU/SSD → EC auto, HDD → fixed stop duty,
-   because the EC no longer regulates the HDD channel after a write — measured 14.09.2026).
+   because after the hand-back the HDD channel leaves the written value but EC regulation
+   is unproven — data of 14.09.2026).
 8. **Config errors never prevent start**: invalid values → built-in defaults + warning + alert.
 9. Go toolchain as pinned in `go.mod`, `CGO_ENABLED=0`, dependencies:
    `github.com/BurntSushi/toml` only. No cgo, no systemd library (sd_notify is a 20-line
@@ -236,7 +238,6 @@ type Channel struct { Index int; Label string; HasTach bool }
 type Profile interface {
     Name() string                      // "n5pro"
     Title() string                     // "Minisforum N5 Pro (IT5571 EC)"
-    Verified() bool                    // true only for n5pro
     Notes() string
     Detect(fs *hwmon.FS) (Device, error)
 }
@@ -257,7 +258,7 @@ Detection: `n5pro` = hwmon name `minisforum_n5_it5571` (DMI check log only); `nc
 `^nct67\d\d$`, auto mode value 5 (SmartFan IV), the original `pwmN_enable` captured at
 start is restored; `it87xx` = `^it8[67]\d\d$`, restore original; `monitor` = no pwm.
 `hwmon.FS.FindByName` returns `[]Device` (may be empty). On the N5 Pro pwm3 is never
-`auto` (the EC does not regulate it after a write) — enforced in `control.SanitizeChannels`.
+`auto` (EC regulation after the hand-back is unproven) — enforced in `control.SanitizeChannels`.
 
 ## 5. Sensors (internal/sensor)
 
@@ -424,7 +425,7 @@ may carry `[[channel]] pwm = 4` (any name, any sensor; `stop = "auto"` writes
 enable 2, duty 255, fan4 0 RPM. **Measured 17.09.2026:** the driver refuses a `pwm4`
 write while `pwm4_enable = 2` (EBUSY, so the regulator's enable-first order is required);
 after `enable = 1`, duty 100 and `enable = 2` again the EC left duty 100 in place for
-90 s — like pwm3, the EC does not reassert its own duty after a write. `stop = "auto"` on
+90 s (unlike pwm3, which leaves the written value after the hand-back). `stop = "auto"` on
 pwm4 therefore means "the last written duty stays"; an operator who wants a defined state
 sets a fixed `stop`);
 `SanitizeChannels` neither adds nor corrects it; a channel without tach has `rpm = -1`
@@ -492,7 +493,7 @@ file `state.json` is unchanged.
 Snapshot (`GET /api/state`, `/run/n5-fangov/state.json`):
 
 ```json
-{"ts":1789500000,"status":"ok","profile":"n5pro","verified":true,"hwmon_path":"/sys/class/hwmon/hwmon14",
+{"ts":1789500000,"status":"ok","profile":"n5pro","verified":false,"hw_status":"experimental","hwmon_path":"/sys/class/hwmon/hwmon14",
  "dry_run":false,"uptime_s":435723,
  "channels":[{"name":"cpu","pwm":1,"sensor":"k10temp","temp":36.0,"duty":85,"target":85,"rpm":2000,"mode":"auto"}],
  "extra_temps":{"ec:system":32.0},"watched":{"hwmon:amdgpu:temp1":48.5},"alerts":{"stall":1789490000}}
@@ -764,7 +765,7 @@ counts as signed in, `via: "none"`):
 | Class | Anonymous | Signed in (cookie, Basic or token within scope) |
 |---|---|---|
 | public | full | full |
-| public, filtered | reduced (`state`: `ts, status, profile, verified, uptime_s, dry_run, channels[name,pwm,sensor,temp,duty,target,rpm,mode]`; `history`: points without `extra`) | full |
+| public, filtered | reduced (`state`: `ts, status, profile, verified, hw_status, uptime_s, dry_run, channels[name,pwm,sensor,temp,duty,target,rpm,mode]`; `history`: points without `extra`) | full |
 | protected | 401 | full |
 | static (`/`, `app.js`, `app.css`, `mock.js`) | full | full |
 
@@ -797,7 +798,7 @@ counts as signed in, `via: "none"`):
 | `DELETE /api/presets/{name}` | protected | — | 200; 409 built-in; 404 |
 | `GET /api/sensors` | protected | — | `[{id, description, temp?, kind?}]` (catalogue with live readings; `kind` `ssd`/`hdd` for `disk:*`, section 5) |
 | `GET /api/dashboard` / `PUT /api/dashboard` | protected | `{sensors[]}` | `{sensors}` / `{ok, sensors, warnings[]}`; 400 above 8 or unparsable id |
-| `GET /api/profiles` | protected | — | `[{name, title, verified, notes, active}]` |
+| `GET /api/profiles` | protected | — | `[{name, title, verified, hw_status, notes, active}]` (`hw_status` of this machine per profile, `verified` = validated or tested) |
 | `GET /api/log?lines=N` | protected | 1..5000 | `{lines[], source: file\|journal}` |
 | `GET /api/log/export` | protected | — | text attachment `n5-fangov-<host>-<ts>.log` (current file; journal: newest 100000 lines) |
 | `DELETE /api/log` | protected | — | `{cleared:true, note}`; 501 without a file |

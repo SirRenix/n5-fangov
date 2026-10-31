@@ -13,8 +13,8 @@ n5-fangov setup
    preset `n5pro-balanced` (the recommended one). On `nct67xx`/`it87xx` you get one
    conservative channel per PWM output on the CPU sensor (`k10temp`, else `coretemp`,
    else the first hwmon temperature); `monitor` writes no channels. No profile found
-   means the kernel driver is not loaded or `experimental_write=1` is missing — see
-   [Kernel driver](02-kernel-driver.md).
+   means the kernel driver is not loaded, or the N5 Pro driver runs read-only (no write
+   permission: `experimental_write`, allowlist) — see [Kernel driver](02-kernel-driver.md#driver-options-and-autoload).
 2. **Scope** — `local` or `lan`.
    - `local`: `127.0.0.1:8010`, no login, plain HTTP. Reach it with `ssh -L 8010:127.0.0.1:8010 n5host`.
    - `lan`: your LAN address, login required, HTTPS with a self-signed certificate.
@@ -23,7 +23,7 @@ n5-fangov setup
 This is what it looks like on an N5 Pro with `lan`:
 
 ```
-profile: n5pro (Minisforum N5 Pro (IT5571 EC)) at /sys/class/hwmon/hwmon10  [verified on hardware]
+profile: n5pro (Minisforum N5 Pro (IT5571 EC)) at /sys/class/hwmon/hwmon10  [hardware status: experimental (N5 PRO / F8NAA / BIOS 1.05 / EC 0.14: experimental on the reference device)]
   channel cpu    pwm1  sensor k10temp          curve [[35 60] [60 150] [80 255]]  critical 88  stop auto
   channel ssd    pwm2  sensor nvme:max         curve [[35 74] [55 160] [68 255]]  critical 72  stop auto
   channel hdd    pwm3  sensor drivetemp:max    curve [[30 87] [42 140] [50 200] [55 255]]  critical 60  stop 140
@@ -107,7 +107,7 @@ check: all good
 `status` shows every channel with temperature, duty and mode:
 
 ```
-n5-fangov: ok  profile n5pro (verified)  uptime 0m00s  unit active
+n5-fangov: ok  profile n5pro (hw experimental)  uptime 0m00s  unit active
 hwmon: /sys/class/hwmon/hwmon10
 
   channel         sensor    temp  duty    %   rpm  mode

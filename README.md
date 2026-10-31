@@ -48,19 +48,37 @@ The `.deb` is the other way: [The Debian package](docs/01-install.md#the-debian-
 
 All pages: [docs/README.md](docs/README.md). Changes per version: [CHANGELOG.md](CHANGELOG.md).
 
-## Tested hardware
+## Hardware status
 
-| Platform | Status |
+Two separate things: the **software** release (`-rcN` until the [release
+gate](docs/RELEASE-GATE.md) passed on the reference host) and the **hardware status**
+of a board, BIOS and EC firmware, measured with the N5 Pro test specification
+(TESTSPEC of the driver repository):
+
+| Status | Meaning |
 |---|---|
-| Minisforum N5 Pro, BIOS 1.05 — Proxmox VE 9.2.20 on Debian 13.7 (trixie), kernel **7.0.14-17-pve** (running) and 7.0.12-1-pve (fallback), DKMS package `minisforum-n5-it5571-dkms` 0.2.1-1 (upstream v0.2.1), lm-sensors 3.6.2; binary built with Go 1.26 (static, `golang:1.26-alpine`) | **verified** 2026-09-19 with the [release gate](docs/RELEASE-GATE.md) of 0.4.0: channel mapping, stop behaviour, multi-hour runs; the reboot proof dates from the 0.3.1 gate of 2026-09-18, the boot chain is unchanged since |
-| Debian/Ubuntu with NCT67xx (`nct6775`) or IT87xx (`it87`) | from documentation, untested — please report |
-| Any Linux with hwmon, no PWM | monitoring only |
-| Unraid, TrueNAS, non-systemd | binary runs; the guard chain relies on systemd |
+| `validated` | TESTSPEC T1–T3 PASS on at least two devices |
+| `tested` | one TESTSPEC run on one device, result bundle published |
+| `experimental` | the driver loads, no TESTSPEC run; writes only on boards in the driver's write allowlist |
+| `unknown` | not in the table; read-only |
+
+The table lives in `befunde/RESULTS.md` of
+[`minisforum-n5pro-fan-proxmox`](https://github.com/SirRenix/minisforum-n5pro-fan-proxmox)
+and is built into n5-fangov. Your box: `n5-fangov identify`.
+
+| Platform | Hardware status | Software |
+|---|---|---|
+| Minisforum N5 Pro, board F8NAA, BIOS 1.05, EC 0.14 — Proxmox VE 9.2 on Debian 13, kernel 7.0.14-pve, driver package `minisforum-n5-it5571-dkms` | `experimental` (TESTSPEC run pending) | 0.4.x release gates passed on this machine: channel mapping, stop behaviour, multi-hour runs, reboot |
+| Minisforum N5, board F8NAA | `validated` by the driver author, not by this project | untested |
+| Minisforum N5 Air / N5 Pro, board F8NAB | `experimental`, read-only | untested |
+| Debian/Ubuntu with NCT67xx (`nct6775`) or IT87xx (`it87`) | `unknown` (profiles from documentation) | untested — please report |
+| Any Linux with hwmon, no PWM | — | monitoring only |
+| Unraid, TrueNAS, non-systemd | — | binary runs; the guard chain relies on systemd |
 
 ## No warranty
 
-I run this on one machine, and the tested column is what I measured there on the date
-given. Other boards, kernels and driver versions may behave differently, and mistakes
+I run this on one machine, and the tables above say what was measured there. Other
+boards, kernels and driver versions may behave differently, and mistakes
 in the code or these pages are possible. Read the guard chain before you trust the
 daemon with hardware you care about, keep the fans' BIOS defaults reachable (failsafe,
 `uninstall.sh`), and report what you find as an issue. Security findings go through the
@@ -70,9 +88,9 @@ warranty disclaimer applies ([LICENSE](LICENSE), GPL-2.0-only §11–12).
 ## Credits
 
 This started on top of two community projects. The EC driver
-[`ltdstudio/minisforum-n5-it5571`](https://github.com/ltdstudio/minisforum-n5-it5571) is used
-as is — its experimental N5 Pro profile is validated on my box, the measurements and the
-Bash predecessor `n5-fand` are in
+[`ltdstudio/minisforum-n5-it5571`](https://github.com/ltdstudio/minisforum-n5-it5571) is packaged
+as a Debian/Proxmox fork with a patch series (not affiliated with upstream); the package,
+the measurements and the Bash predecessor `n5-fand` are in
 [`minisforum-n5pro-fan-proxmox`](https://github.com/SirRenix/minisforum-n5pro-fan-proxmox).
 The dashboard idea comes from
 [`Sl0thC0der/proxfansx`](https://github.com/Sl0thC0der/proxfansx); the generic

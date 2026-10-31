@@ -79,7 +79,7 @@ pwm = 3
 sensor = "drivetemp:max"
 curve = [[36,105],[46,255]]
 critical = 56
-stop = 140            # fixed stop duty: the EC won't regulate this channel after a write
+stop = 140            # fixed stop duty: EC regulation after the hand-back is unproven
 hysteresis = 2        # the curve follows the reading in 2 °C steps
 min_on = "60s"        # a rise in the curve target is held for at least a minute
 ```
@@ -261,9 +261,9 @@ Duty → RPM on the N5 Pro (measured): CPU 85→2000, 140→3120, 255→5073; SS
 The PCIe fan header (`pwm4`) has **no tachometer**. It is an optional fourth channel:
 add `[[channel]] pwm = 4` with any name and sensor. The daemon neither adds nor corrects
 it, `rpm` is reported as −1 (`no tach` on the Overview) and the channel never enters
-the stall check. `stop = "auto"` writes `pwm4_enable = 2` like pwm1/pwm2, but **the EC
-does not take pwm4 back after a write**: `auto` leaves the last written duty in place,
-like pwm3. For a defined state after a stop set a fixed `stop`.
+the stall check. `stop = "auto"` writes `pwm4_enable = 2` like pwm1/pwm2, but **on the
+reference N5 Pro the PCIe duty register kept the last written duty after the auto
+command** (one observation). For a defined state after a stop set a fixed `stop`.
 
 ```toml
 [[channel]]
@@ -272,7 +272,7 @@ pwm = 4
 sensor = "k10temp"
 curve = [[45,85],[80,255]]
 critical = 88
-stop = 140            # fixed: the EC does not take pwm4 back after a write (like pwm3)
+stop = 140            # fixed: the PCIe register kept the last written duty after "auto"
 ```
 
 A changed channel set needs a restart; after that the built-in presets leave the

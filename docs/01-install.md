@@ -7,7 +7,7 @@ from a checkout, or the `.deb`. All end with `n5-fangov setup` ([Setup](03-setup
 
 | | |
 |---|---|
-| OS | Proxmox VE 9.x (Debian 13 "trixie") or Debian 13 with systemd. Everything runs as root. The tested platform: [Tested hardware](../README.md#tested-hardware). |
+| OS | Proxmox VE 9.x (Debian 13 "trixie") or Debian 13 with systemd. Everything runs as root. The tested platform: [Hardware status](../README.md#hardware-status). |
 | Packages | Optional: `pciutils` (`lspci`, device names on the System page), `lm-sensors` (`sensors` for cross-checks). |
 | Fan driver | A hwmon driver that exposes the `pwm*` files. **N5 Pro:** the out-of-tree EC module as package `minisforum-n5-it5571-dkms` (brings `dkms` and the kernel headers), install it first — [Kernel driver](02-kernel-driver.md). **Other boards:** `nct6775` / `it87` from the distribution kernel. |
 | Drive temperatures | The `drivetemp` kernel module (in-tree, not loaded by default) for every channel on `drivetemp:max` or `disk:<dev>` — on the N5 Pro that is the `hdd` channel of the preset. Without it the channel sits in `sensor-error` at its stop duty. Load it and make it stick: `modprobe drivetemp && echo drivetemp > /etc/modules-load.d/drivetemp.conf` — [Drive temperatures](02-kernel-driver.md#drive-temperatures). NVMe needs nothing, the `nvme` driver has its own hwmon. |
@@ -61,10 +61,16 @@ The postinst does what the installer does, including stopping `n5-fand`, and end
 one of three lines:
 
 ```
-n5-fangov: installed and enabled. Next: n5-fangov setup
-n5-fangov: installed and enabled. Next: n5-fangov check && systemctl start n5-fangov
+n5-fangov: installed (enabled). Next: n5-fangov setup
+n5-fangov: installed (enabled). Next: n5-fangov check && systemctl start n5-fangov
 n5-fangov: daemon is running (installer deployment), restarting it so the new binary takes over
 ```
+
+A fresh install enables `n5-fangov.service`, and so does a new install after `apt remove`
+(the removal disabled the unit, not you). An upgrade, or a package install over an
+`install.sh` deployment, keeps the enable state: a unit you disabled stays disabled, the
+postinst says `n5-fangov.service stays disabled as before` and the lines above read
+`installed (disabled)`.
 
 The first on a fresh box, the second when `/etc/n5-fangov/config.toml` exists, the
 third when a daemon is running (on an upgrade the bracket names the previous package

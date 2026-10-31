@@ -377,7 +377,9 @@ the credits: [`ltdstudio/minisforum-n5-it5571`](https://github.com/ltdstudio/min
 (the dashboard idea and the generic NCT67xx/IT87xx handling; no code shared). Signed
 in, the line *built with* (the Go version) appears and the **Compatibility** card
 lists the profiles this build knows: name with `ACTIVE`,
-title, *verified on hardware* / *from documentation · untested*, notes; deep link
+title, the hardware status of this machine for the profile (*hardware validated*,
+*tested*, *experimental*, *unknown*; [Hardware status](../README.md#hardware-status)),
+notes; deep link
 `#about/compat`.
 
 ![About with the Compatibility card](screenshots/20-about-compatibility.png)

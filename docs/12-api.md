@@ -108,7 +108,7 @@ Basic auth only, never a token.
 | `GET` | `/api/about` | public | licence, repository, author, credits |
 | `GET` | `/api/session` | public | who the caller is: `authenticated`, `mode`, `user`, `via` (`cookie`/`basic`/`bearer`/`none`), `scope` and `token_id` for a token |
 | `GET` | `/api/openapi.json` | public | the OpenAPI document |
-| `GET` | `/api/state` | filtered | snapshot: status, channels (temperature, duty, target, RPM, mode; signed in also `held_temp`, `hold_until`, `ceiling`, `ceiling_hit`, EC and watched temperatures, alert stamps) |
+| `GET` | `/api/state` | filtered | snapshot: status, `hw_status` (`validated`/`tested`/`experimental`/`unknown`; `verified` = validated or tested, kept for compatibility), channels (temperature, duty, target, RPM, mode; signed in also `held_temp`, `hold_until`, `ceiling`, `ceiling_hit`, EC and watched temperatures, alert stamps) |
 | `GET` | `/api/history` | filtered | history points (`minutes`, `since`; anonymous: without `extra`) |
 
 **Scope `read`**
@@ -118,7 +118,7 @@ Basic auth only, never a token.
 | `GET` | `/api/history.csv` | the same points as CSV attachment (`minutes`) |
 | `GET` | `/api/system` | hardware inventory with live disk temperatures |
 | `GET` | `/api/sensors` | sensor catalogue with live readings and `kind` |
-| `GET` | `/api/profiles` | profiles with the active one |
+| `GET` | `/api/profiles` | profiles with the active one; `hw_status` per profile on this machine |
 | `GET` | `/api/presets`, `/api/presets/{name}` | preset list, one preset's channel tables |
 | `GET` | `/api/schedules` | `[[schedule]]` entries, active, next and last switch, timezone (501 without a scheduler) |
 | `GET` | `/api/alerts` | transport status (`webhook_url` full for a session or Basic auth, query and userinfo redacted for a token caller), kinds with last delivery, recent alerts |

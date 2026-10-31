@@ -50,7 +50,7 @@ manual test before a release: [RELEASE-GATE.md](RELEASE-GATE.md).
   references `mock.js`, that every page has a nav entry and a handler
   (`TestNavHasPages`), the CSP and the contrast of the primary buttons. Everything else is checked by hand against the mock.
 - Before a tag the release is verified on the reference N5 Pro
-  ([Tested hardware](../README.md#tested-hardware)); before an `-rc` becomes a
+  ([Hardware status](../README.md#hardware-status)); before an `-rc` becomes a
   release, the operator runs [RELEASE-GATE.md](RELEASE-GATE.md).
 
 ## Dashboard mock

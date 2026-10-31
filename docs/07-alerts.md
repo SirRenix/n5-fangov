@@ -9,10 +9,15 @@ the box.
 |---|---|
 | Controller hangs | systemd watchdog (60 s) → kill → failsafe → restart |
 | Controller dies (crash, OOM, kill) | `ExecStopPost=n5-fangov failsafe` → profile-defined safe state |
-| Kernel update without the DKMS module | apt hook `check --after-update` alerts before the reboot; `ExecStartPre=n5-fangov check` fails loudly after it; fans stay in EC/BIOS mode ([kernel gate](02-kernel-driver.md#the-kernel-update-gate)) |
+| Kernel update without the DKMS module, or with an old build of it | apt hook `check --after-update` alerts before the reboot; `ExecStartPre=n5-fangov check` fails loudly after it; fans stay in EC/BIOS mode ([kernel gate](02-kernel-driver.md#the-kernel-update-gate)) |
 | Sensor unreadable, implausible, frozen or absent | that channel at its safe duty (fixed stop duty, else 255), alert naming it, re-resolve; the other channels keep regulating |
 | Fan stalls (0 RPM at duty ≥ threshold) | channel 255, alert, auto-recovery |
 | Write fails or read-back differs | 255, alert |
+| EC duty register differs from the written duty (only with the driver option `debug_regs=1`) | no write error: regulation continues, journal warning `EC register deviation: <channel>`, at most one per channel per 5 minutes with the count of the suppressed ones |
+| N5 driver loaded read-only (pwm nodes hidden: `force`, no `experimental_write`, board not in the write allowlist), or missing (not installed, not built for this kernel, not loaded), on a board the driver writes on (N5 PRO/F8NAA, N5/F8NAA) | no start, also with `profile = "auto"`: `check` (`ExecStartPre`) fails with the reason and alerts `driver`; after 5 failed starts the unit stays `failed` and the onfailure unit alerts `failed`; fans stay under EC control ([Driver options](02-kernel-driver.md#driver-options-and-autoload)) |
+| The same on a board the driver keeps read-only (N5 Air, N5 PRO/F8NAB, or a DMI `sys_vendor` other than the driver's) | `profile = "auto"` runs as `monitor` (sensors only), as in 0.4.2; no alert |
+| Writer lock cannot be taken for another reason than a running `validate`/`test` (run directory not writable) | the daemon starts without it (cooling first), journal warning and alert `start`; a `validate` or `test` started then is not refused |
+| Driver read error (`ETIMEDOUT`, `EAGAIN`, `ENODATA`, `ENODEV` on a temperature or tach) | journal warning `driver read error: <source>: <errno>`, at most one per source per 5 minutes with the count of the suppressed ones (when the errors stop, `driver read recovered: <source>: N more error(s)` after the 5 minutes); the sensor rules above decide what happens to the channel |
 | Somebody else writes to `/sys` | set-point re-asserted every minute, warning |
 | Broken config | built-in defaults + warning + alert; daemon still starts |
 | Critical temperature | 255 immediately, also in manual mode |
@@ -22,7 +27,7 @@ the box.
 | Scheduled preset switch fails | previous curves stay, alert, retry at the next transition |
 
 This is what the daemon does; it was exercised on one machine
-([Tested hardware](../README.md#tested-hardware)).
+([Hardware status](../README.md#hardware-status)).
 
 Every alert is written to the journal, whatever the transport: `ALERT[<kind>]: <text>`
 when the daemon raises it (priority err), then `ALERT[<kind>] sent via <transport>:
@@ -142,11 +147,12 @@ the routing in one place; the PVE stack has its own webhook and Gotify targets.
 | `config` | config file has problems | built-in defaults for those values, daemon runs | 30 min (start alert) |
 | `config-channels` | channel set corrected (N5 Pro channel added, forced stop duty, pwm the device lacks) | corrected set in effect | `alert_cooldown` |
 | `device` | fan controller unreachable for 6 cycles (driver reload) | daemon exits, systemd restarts it with a fresh detection | `alert_cooldown` |
-| `profile` | no fan controller detected at start | no regulation, fans stay with EC/BIOS | 30 min (start alert) |
-| `start` | controller could not start | see message | 30 min (start alert) |
+| `profile` | no fan controller detected at start (sent by `check` in `ExecStartPre`, by `serve` outside the unit) | no regulation, fans stay with EC/BIOS | 30 min (start alert) |
+| `driver` | on a board the driver writes on (N5 PRO/F8NAA, N5/F8NAA), the driver is loaded read-only (pwm nodes hidden; the message names the reason from `/sys/module/minisforum_n5_it5571/parameters`) or missing (module not installed, not built for this kernel, or not loaded). Sent by `check` in `ExecStartPre` (under the unit `serve` never starts then), by `serve` outside the unit | no regulation, fans stay with the EC; the daemon does not fall back to monitoring | 30 min (start alert, shared by `check` and `serve`) |
+| `start` | controller could not start, or the daemon started without its pwm writer lock (lock error other than a running `validate`/`test`) | see message; without the lock regulation runs | 30 min (start alert) |
 | `web` | TLS set-up or listener failed | dashboard disabled, regulation continues | 30 min (start alert) |
 | `tls` | `tls = "file"` pair unreadable | automatic certificate served, mode `auto (fallback from file)` | 30 min (start alert) |
-| `kernel` | DKMS module missing for a bootable kernel (`check --after-update`) | printed on the apt output; nothing changes until the reboot | 30 min (own stamp) |
+| `kernel` | DKMS module missing for a bootable kernel, or its version differs from the installed package (`check --after-update`) | printed on the apt output; nothing changes until the reboot | 30 min (own stamp) |
 | `restart` / `failed` | unit failed and came back / stayed down (onfailure unit) | — | 30 min (own stamp) |
 | `schedule` | a scheduled preset switch failed: preset missing or invalid, write or reload error ([Schedules](06-configuration.md#schedules)) | previous curves stay; retried at the next transition | 30 min (own stamp) |
 | `test` | *Send test alert*, `n5-fangov alerts test` | — | none; one at a time, 20 s bound |
@@ -156,8 +162,27 @@ kind. Start alerts are cooled 30 minutes regardless; `kernel`, `restart`, `faile
 `schedule` are raised outside the controller and keep their own 30-minute stamps
 (`alert.<kind>` under `/run/n5-fangov/`). `restart` and `failed` come from
 `n5-fangov-onfailure.service`: when the main unit fails, it reads
-`Result`/`ExecMainStatus`, waits 8 s and reports `restart` (daemon back) or `failed`
-(still down) with the real cause.
+`Result`/`ExecMainStatus` and the status of the `ExecStartPre` (`check`) and
+`ExecStopPost` commands, waits 8 s and reports `restart` (daemon back) or `failed`
+(still down) with the real cause: a failed `check` is named as `start check failed:
+ExecStartPre … (exited with code N)`, not as an exit of the daemon.
+
+### Stall alarm chain, simulated sensor
+
+TESTSPEC 0.4 §5a (#26): a hardware stall cannot be produced on a closed, running host
+(`N/A`, "not testable without intervention"). What can be tested is the chain
+detection → 255 → notification against a simulated sensor:
+`TestStallAlarmChainSimulated` (`cmd/n5-fangov/stall_chain_test.go`, part of `go test`)
+runs the real daemon against a fake sysfs tree (`N5FANGOV_SYSFS`) with `fan2_input` = 0
+at a duty ≥ `stall_min_duty`; it passes when the daemon writes 255 to the fake `pwm2`
+after `stall_cycles` cycles and the `stall` alert arrives at the configured webhook. By
+hand, with your own `[alert]` path: copy `testdata/sysfs/n5pro` to a temporary
+directory, set its `class/hwmon/hwmon14/fan2_input` to `0`, and start
+`N5FANGOV_SYSFS=<copy> n5-fangov serve --config <copy of your config> --run-dir <tmp>
+--state-dir <tmp>` with `[web] listen` on a free port; the running daemon is not
+touched (own run dir, own writer lock). Report the result as "alarm chain, simulated
+sensor" — **it is not a hardware result**: it says nothing about whether the EC reports
+0 rpm for a stopped fan or which HDD fan carries fan3.
 
 ## The Alerts page and the transport section
 

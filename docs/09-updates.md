@@ -96,7 +96,8 @@ as buttons ([Backup](04-dashboard.md#backup)).
 When the **package** is installed (`dpkg -s n5-fangov` says so), use `apt remove
 n5-fangov` / `apt purge n5-fangov` instead; `uninstall.sh` refuses on such a host.
 `ExecStopPost=failsafe` leaves the fans in the profile's safe state (N5 Pro: CPU/SSD
-back to EC automatic, HDD at the fixed stop duty until the next cold boot). The kernel
+back to EC automatic, HDD at the fixed stop duty until something writes the channel
+again or the host reboots, see [Kernel driver](02-kernel-driver.md#why-an-out-of-tree-module)). The kernel
 module is not touched ([Kernel driver: Remove](02-kernel-driver.md#remove)).
 
 What `./deploy/uninstall.sh --purge` prints on the N5 Pro:
@@ -112,7 +113,7 @@ failsafe: safe state set on n5pro
   --purge: /etc/n5-fangov and /var/log/n5-fangov removed
 
 Done. Fans are in the configured safe state; on the N5 Pro the HDD channel
-returns to full EC control only after a cold boot.
+stays at its fixed stop duty until something writes it again or the host reboots.
 ```
 
 Verify: `systemctl status n5-fangov` → `Unit n5-fangov.service could not be found.`;
