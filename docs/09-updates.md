@@ -54,6 +54,11 @@ Put the old binary back and restart:
 install -m0755 /root/n5-fangov-<version>.bak /usr/bin/n5-fangov && systemctl restart n5-fangov
 ```
 
+The unit file can stay as it is. It marks the self-check with the environment variable
+`N5FANGOV_UNIT_START=1`, not with a flag, so an older binary runs `ExecStartPre` without
+error (it ignores the variable); the reverse, an older unit file with a newer binary,
+starts too and only loses the start alert from `check`.
+
 A newer daemon reads an older file; an older daemon warns about unknown keys and
 ignores them. Going back to a release that predates a key makes it a warning
 (`hysteresis`, `min_on`, `ceiling`, `[[schedule]]`, the `[alert]` webhook keys). A

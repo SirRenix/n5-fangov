@@ -165,6 +165,11 @@ func TestDeployUnitFile(t *testing.T) {
 			t.Errorf("%s uses unregistered subcommand %q", key, sub)
 		}
 	}
+	// ExecStartPre is marked through the environment, not a flag an older
+	// binary (rollback) would reject
+	if one("Environment") != unitStartEnv+"=1" {
+		t.Errorf("Environment=%q, want %s=1", one("Environment"), unitStartEnv)
+	}
 	// restart policy: the failsafe runs after every end, systemd restarts
 	if one("Restart") != "always" || one("KillSignal") != "SIGTERM" {
 		t.Errorf("Restart=%s KillSignal=%s", one("Restart"), one("KillSignal"))

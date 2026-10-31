@@ -136,7 +136,7 @@ read-only, the installer warns, and `n5-fangov alerts template` installs the pai
 | Path | Purpose |
 |---|---|
 | `/usr/bin/n5-fangov` | daemon + CLI, one static binary |
-| `/etc/systemd/system/n5-fangov.service` (deb: `/lib/systemd/system/`) | `Type=notify`, watchdog 60 s, `ExecStartPre=check --quiet`, `ExecStopPost=failsafe`, sandboxed ([Hardening](08-https-security.md#hardening)) |
+| `/etc/systemd/system/n5-fangov.service` (deb: `/lib/systemd/system/`) | `Type=notify`, watchdog 60 s, `Environment=N5FANGOV_UNIT_START=1` (marks `check` as ExecStartPre: it sends the start alert), `ExecStartPre=check --quiet`, `ExecStopPost=failsafe`, sandboxed ([Hardening](08-https-security.md#hardening)) |
 | `n5-fangov-onfailure.service` + `/usr/libexec/n5-fangov/n5-fangov-onfailure` | alert with the real cause when the unit fails ([Alert kinds](07-alerts.md#alert-kinds)) |
 | `/etc/n5-fangov/config.toml` | written by `n5-fangov setup`, never by the installer |
 | `/etc/n5-fangov/presets/`, `/etc/n5-fangov/tls/` | user presets; the automatic TLS certificate, created at the first HTTPS start |

@@ -12,7 +12,11 @@ OnFailure=n5-fangov-onfailure.service
 [Service]
 Type=notify
 NotifyAccess=main
-# Self-check fails LOUDLY when config/profile/sysfs are not usable
+# Self-check fails LOUDLY when config/profile/sysfs are not usable.
+# N5FANGOV_UNIT_START=1 tells check it runs as ExecStartPre (start alert); an
+# environment variable and not a flag, so an older binary put back by a rollback
+# still starts (it ignores the variable)
+Environment=N5FANGOV_UNIT_START=1
 ExecStartPre=/usr/bin/n5-fangov check --quiet
 ExecStart=/usr/bin/n5-fangov serve
 # Runs after EVERY end, also after SIGKILL, watchdog kill or crash

@@ -18,7 +18,7 @@ func TestEmbeddedTableParses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(m.Source, "RESULTS.md") || len(m.SourceSHA256) != 64 || len(m.Generated) != len("2026-10-09") {
+	if !strings.Contains(m.Source, "RESULTS.md") || len(m.SourceTableSHA256) != 64 || len(m.Generated) != len("2026-10-09") {
 		t.Fatalf("meta = %+v", m)
 	}
 	found := false
@@ -38,17 +38,66 @@ func TestEmbeddedTableParses(t *testing.T) {
 	}
 }
 
+// tableSHA256 hashes the hwstatus table of RESULTS.md the way
+// tools/gen-hwstatus.sh does: the lines after the line holding the begin
+// marker up to the line before the line holding the end marker, markers
+// excluded, a CR at the line end removed, each line terminated by LF. The
+// driver repository uses the same definition.
+func tableSHA256(md []byte) (string, bool) {
+	h := sha256.New()
+	on := false
+	for _, line := range strings.Split(string(md), "\n") {
+		switch {
+		case strings.Contains(line, "<!-- hwstatus:end -->"):
+			if !on {
+				return "", false
+			}
+			return hex.EncodeToString(h.Sum(nil)), true
+		case on:
+			h.Write([]byte(strings.TrimSuffix(line, "\r") + "\n"))
+		case strings.Contains(line, "<!-- hwstatus:begin -->"):
+			on = true
+		}
+	}
+	return "", false
+}
+
+func TestTableSHA256(t *testing.T) {
+	table := "| a | b |\n|---|---|\n"
+	want := sha256.Sum256([]byte(table))
+	md := "intro\n<!-- hwstatus:begin -->\n" + table + "<!-- hwstatus:end -->\nnotes\n"
+	got, ok := tableSHA256([]byte(md))
+	if !ok || got != hex.EncodeToString(want[:]) {
+		t.Fatalf("tableSHA256 = %s, %v; want %x", got, ok, want)
+	}
+	// text outside the markers does not change the hash
+	if got2, _ := tableSHA256([]byte("other intro\n" + md + "more notes\n")); got2 != got {
+		t.Fatal("text outside the table changed the hash")
+	}
+	// CRLF line ends hash like LF
+	if got3, _ := tableSHA256([]byte(strings.ReplaceAll(md, "\n", "\r\n"))); got3 != got {
+		t.Fatal("CRLF changed the hash")
+	}
+	if _, ok := tableSHA256([]byte("<!-- hwstatus:begin -->\n" + table)); ok {
+		t.Fatal("missing end marker accepted")
+	}
+}
+
 // When the driver repository sits next to this one (local checkout), the
-// embedded copy must be generated from the current RESULTS.md.
+// embedded copy must be generated from the current table in RESULTS.md;
+// text outside the hwstatus markers does not matter.
 func TestEmbeddedTableInSyncWithResults(t *testing.T) {
 	p := filepath.Join("..", "..", "..", "n5pro-ec", "befunde", "RESULTS.md")
 	b, err := os.ReadFile(p)
 	if err != nil {
 		t.Skip("RESULTS.md not next to this checkout")
 	}
-	sum := sha256.Sum256(b)
-	if got := hex.EncodeToString(sum[:]); got != Source().SourceSHA256 {
-		t.Fatalf("results.tsv is stale: RESULTS.md sha256 %s, embedded from %s; run tools/gen-hwstatus.sh", got, Source().SourceSHA256)
+	got, ok := tableSHA256(b)
+	if !ok {
+		t.Fatal("RESULTS.md: hwstatus markers not found")
+	}
+	if got != Source().SourceTableSHA256 {
+		t.Fatalf("results.tsv is stale: RESULTS.md table sha256 %s, embedded from %s; run tools/gen-hwstatus.sh", got, Source().SourceTableSHA256)
 	}
 }
 

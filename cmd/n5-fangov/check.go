@@ -41,16 +41,22 @@ type checkResult struct {
 	alert string
 }
 
-// checkAlerter and underSystemd are replaced by tests.
-var (
-	checkAlerter = newAlerter
-	// underSystemd: systemd sets INVOCATION_ID for every process of a
-	// service, ExecStartPre included.
-	underSystemd = func() bool { return os.Getenv("INVOCATION_ID") != "" }
-)
+// unitStartEnv is set to "1" by the unit (Environment=) and marks check as
+// its ExecStartPre; serve removes it from its own environment.
+const unitStartEnv = "N5FANGOV_UNIT_START"
+
+// checkAlerter is replaced by tests.
+var checkAlerter = newAlerter
 
 // cmdCheck is the self-check used interactively and as ExecStartPre.
 // Exit 1 when any non-advisory check fails. --quiet prints only failures.
+// The unit marks its ExecStartPre (the only caller that sends alerts) with
+// Environment=N5FANGOV_UNIT_START=1, not with INVOCATION_ID, which systemd
+// sets for every process it starts, other units and their scripts included.
+// An environment variable and not a switch, so that a rolled-back older
+// binary under the newer unit still starts (it ignores the variable; an
+// unknown flag would fail ExecStartPre). --unit-start does the same for a
+// manual run.
 //
 // Fatal (DESIGN rule 8: only what stops serve itself) are an unreadable
 // config file, a profile/device that is not detected and a pwm the daemon
@@ -64,6 +70,7 @@ func cmdCheck(args []string) int {
 	quiet := fs.Bool("quiet", false, "print only failures")
 	cfgPath := fs.String("config", defaultConfigPath, "config file")
 	afterUpdate := fs.Bool("after-update", false, "kernel gate for the apt hook: DKMS module present for every installed kernel (n5pro)")
+	unitStart := fs.Bool("unit-start", false, "as ExecStartPre (the unit sets "+unitStartEnv+"=1 instead): send the driver/profile alert of a failed check (serve never runs then)")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
@@ -71,7 +78,7 @@ func cmdCheck(args []string) int {
 		return cmdCheckAfterUpdate(*cfgPath, runDir())
 	}
 	results := runChecks(*cfgPath, runDir())
-	if underSystemd() {
+	if *unitStart || os.Getenv(unitStartEnv) == "1" {
 		// ExecStartPre: a failed profile check stops the start before
 		// serve could alert; the same alert goes out from here, with the
 		// shared start-up cooldown (no mail per restart attempt)

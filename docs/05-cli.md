@@ -16,7 +16,7 @@ the running daemon and fall back to the files or `state.json` when it is down
 | `auto <ch\|all>` | — | back to the curve (*socket*) |
 | `curve` | — | print the configured curves |
 | `log` | `-n N` (default 50), `--export FILE` (`-` = stdout), `--clear` | log file; journal when no file is configured (`--clear` then impossible) — [Logs](10-troubleshooting.md#logs) |
-| `check` | `--quiet` (failures only), `--after-update` | self-check (`ExecStartPre`; there it sends the `driver`/`profile` alert itself): config, profile (fails on a read-only or missing N5 driver on a board the driver writes on; N5 Air and N5 PRO/F8NAB run as `monitor` under `auto`), hardware status, driver version and parameters, pwm writable, sensors, emergency hook, tls, log, dkms; `--after-update` is the apt hook's [kernel gate](02-kernel-driver.md#the-kernel-update-gate) |
+| `check` | `--quiet` (failures only), `--after-update`, `--unit-start` | self-check (`ExecStartPre`; with `N5FANGOV_UNIT_START=1`, which the unit sets, or `--unit-start` it sends the `driver`/`profile` alert itself): config, profile (fails on a read-only or missing N5 driver on a board the driver writes on; N5 Air and N5 PRO/F8NAB run as `monitor` under `auto`), hardware status, driver version and parameters, pwm writable, sensors, emergency hook, tls, log, dkms; `--after-update` is the apt hook's [kernel gate](02-kernel-driver.md#the-kernel-update-gate) |
 | `detect` | — | list profiles with their detection result (read-only) |
 | `identify` | `--json` | machine, BIOS, EC firmware, kernel, driver version/parameters/mode, register dump, hardware status (read-only) — [below](#identify) |
 | `system` | `--json` | hardware inventory (*socket*, else local collection) — [System](04-dashboard.md#system) |

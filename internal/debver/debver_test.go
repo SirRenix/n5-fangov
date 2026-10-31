@@ -22,7 +22,8 @@ func TestDriverVersionChain(t *testing.T) {
 	}
 }
 
-// Cases checked against dpkg --compare-versions semantics (deb-version(7)).
+// Cases checked against dpkg --compare-versions semantics (deb-version(7));
+// dpkg_test.go compares a larger list against dpkg itself.
 func TestCompareTable(t *testing.T) {
 	for _, c := range []struct {
 		a, b string

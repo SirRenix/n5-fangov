@@ -51,6 +51,9 @@ func cmdServe(args []string) int {
 		fmt.Fprintln(os.Stderr, "serve: unexpected arguments")
 		return exitUsage
 	}
+	// the unit's start marker is meant for check only: hooks and other
+	// children of serve do not inherit it
+	_ = os.Unsetenv(unitStartEnv)
 	// Relative paths would be taken from the working directory ("/" under
 	// systemd, ProtectSystem=strict): make every directory flag absolute
 	// once, here, like newTLSManager does for the config path.

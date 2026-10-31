@@ -574,8 +574,11 @@ func TestValidatePCIeHandbackOnlyIsReadOnly(t *testing.T) {
 	}
 }
 
-// check as ExecStartPre sends the "driver" alert serve would have sent.
-func TestCheckDriverAlertUnderSystemd(t *testing.T) {
+// check as ExecStartPre (N5FANGOV_UNIT_START=1 from the unit, or
+// --unit-start) sends the "driver" alert serve would have sent; without the
+// marker (interactive, or any other process systemd starts with
+// INVOCATION_ID set) it sends none.
+func TestCheckDriverAlertUnitStart(t *testing.T) {
 	root := fakeN5(t, false)
 	for _, a := range []string{"pwm1", "pwm1_enable", "pwm2", "pwm2_enable", "pwm3", "pwm3_enable", "pwm4", "pwm4_enable"} {
 		if err := os.Remove(filepath.Join(root, "class", "hwmon", "hwmon14", a)); err != nil {
@@ -585,22 +588,34 @@ func TestCheckDriverAlertUnderSystemd(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("N5FANGOV_RUN_DIR", dir)
 	sink := &msgSink{}
-	oldA, oldS := checkAlerter, underSystemd
-	t.Cleanup(func() { checkAlerter, underSystemd = oldA, oldS })
+	oldA := checkAlerter
+	t.Cleanup(func() { checkAlerter = oldA })
 	checkAlerter = func() alert.Sink { return sink }
 	cfg := writeCfg(t, dir, "[daemon]\nprofile = \"auto\"\n")
-	underSystemd = func() bool { return false }
+	t.Setenv("INVOCATION_ID", "0123456789abcdef0123456789abcdef")
+	t.Setenv(unitStartEnv, "")
 	if _, _, rc := captureOutput(t, func() int { return cmdCheck([]string{"--quiet", "--config", cfg}) }); rc != exitFail || len(sink.kinds) != 0 {
-		t.Fatalf("interactive: rc %d alerts %v", rc, sink.kinds)
+		t.Fatalf("without the unit-start marker: rc %d alerts %v", rc, sink.kinds)
 	}
-	underSystemd = func() bool { return true }
-	for i := 0; i < 2; i++ { // second start within the cooldown: no second alert
+	// as the unit sets it; the second start within the cooldown sends no
+	// second alert
+	t.Setenv(unitStartEnv, "1")
+	for i := 0; i < 2; i++ {
 		if _, _, rc := captureOutput(t, func() int { return cmdCheck([]string{"--quiet", "--config", cfg}) }); rc != exitFail {
 			t.Fatalf("rc %d", rc)
 		}
 	}
 	if len(sink.kinds) != 1 || sink.kinds[0] != "driver" || !strings.Contains(sink.msgs[0], "read-only") {
 		t.Fatalf("alerts %v %v", sink.kinds, sink.msgs)
+	}
+	// --unit-start (manual run) takes the same path; fresh run dir, no cooldown
+	t.Setenv(unitStartEnv, "")
+	t.Setenv("N5FANGOV_RUN_DIR", t.TempDir())
+	if _, _, rc := captureOutput(t, func() int { return cmdCheck([]string{"--quiet", "--unit-start", "--config", cfg}) }); rc != exitFail {
+		t.Fatalf("rc %d", rc)
+	}
+	if len(sink.kinds) != 2 || sink.kinds[1] != "driver" {
+		t.Fatalf("--unit-start: alerts %v", sink.kinds)
 	}
 }
 

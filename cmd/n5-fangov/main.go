@@ -59,7 +59,7 @@ var helpText = map[string]string{
 	"auto":     "<ch|all>               return channel(s) to the curve",
 	"curve":    "                       print the configured curves",
 	"log":      "[-n N] [--export FILE] [--clear]  log file (journal when no file is configured)",
-	"check":    "[--quiet] [--after-update]  self-check; --after-update: DKMS module for every kernel (apt hook)",
+	"check":    "[--quiet] [--after-update] [--unit-start]  self-check; --after-update: DKMS module for every kernel (apt hook); --unit-start: send the start alert like the unit's ExecStartPre (the unit sets N5FANGOV_UNIT_START=1)",
 	"detect":   "                       list profiles with detection result (read-only)",
 	"identify": "[--json]               machine, BIOS, EC firmware, kernel, driver state, hardware status (read-only; for reports)",
 	"system":   "[--json]               hardware inventory: machine, CPU, memory modules, GPU/NPU, NICs, disks (live via the daemon)",

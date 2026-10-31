@@ -62,9 +62,12 @@ type Entry struct {
 
 // Meta describes where the embedded table came from.
 type Meta struct {
-	Source       string `json:"source"`
-	SourceSHA256 string `json:"source_sha256"`
-	Generated    string `json:"generated"`
+	Source string `json:"source"`
+	// SourceTableSHA256 is the sha256 of the table lines between the
+	// hwstatus markers of RESULTS.md (see tools/gen-hwstatus.sh), not of
+	// the whole file: text outside the table does not make it stale.
+	SourceTableSHA256 string `json:"source_table_sha256"`
+	Generated         string `json:"generated"`
 }
 
 //go:embed results.tsv
@@ -114,8 +117,8 @@ func Parse(s string) ([]Entry, Meta, error) {
 			switch strings.TrimSpace(k) {
 			case "source":
 				m.Source = v
-			case "source-sha256":
-				m.SourceSHA256 = v
+			case "source-table-sha256":
+				m.SourceTableSHA256 = v
 			case "generated":
 				m.Generated = v
 			}
