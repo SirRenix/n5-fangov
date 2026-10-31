@@ -59,7 +59,8 @@ type Snapshot struct {
 	TS         int64              `json:"ts"`
 	Status     Status             `json:"status"` // starting | ok | sensor-error | write-error | dry-run
 	Profile    string             `json:"profile"`
-	Verified   bool               `json:"verified"`
+	Verified   bool               `json:"verified"`  // compatibility: HWStatus is validated or tested
+	HWStatus   string             `json:"hw_status"` // validated | tested | experimental | unknown
 	HwmonPath  string             `json:"hwmon_path"`
 	DryRun     bool               `json:"dry_run"`
 	Channels   []ChannelState     `json:"channels"`

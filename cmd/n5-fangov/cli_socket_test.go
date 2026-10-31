@@ -137,7 +137,7 @@ func startFakeDaemon(t *testing.T) *fakeDaemon {
 		configRaw: "[daemon]\ninterval = \"10s\"\n\n[[channel]]\nname = \"cpu\"\npwm = 1\nsensor = \"k10temp\"\ncurve = [[45,85],[80,255]]\ncritical = 88\nstop = \"auto\"\n\n[[channel]]\nname = \"hdd\"\npwm = 3\nsensor = \"drivetemp:max\"\ncurve = [[36,105],[46,255]]\ncritical = 56\nstop = 140\n",
 		logLines:  []string{"log line 1", "log line 2", "log line 3", "log line 4"},
 		snap: control.Snapshot{
-			TS: 1789500000, Status: "ok", Profile: "n5pro", Verified: true, HwmonPath: "/sys/class/hwmon/hwmon14", Uptime: 3725,
+			TS: 1789500000, Status: "ok", Profile: "n5pro", HWStatus: "experimental", HwmonPath: "/sys/class/hwmon/hwmon14", Uptime: 3725,
 			Channels: []control.ChannelState{
 				{Name: "cpu", PWM: 1, Sensor: "k10temp", Temp: 36.0, Duty: 85, Target: 85, RPM: 2000, Mode: control.ModeAuto},
 				{Name: "hdd", PWM: 3, Sensor: "drivetemp:max", Temp: 31.5, Duty: 140, Target: 140, RPM: 900, Mode: control.ModeManual},
@@ -213,7 +213,7 @@ func TestCLIStatus(t *testing.T) {
 		t.Fatalf("exit %d, stderr %q", code, errOut)
 	}
 	for _, want := range []string{
-		"n5-fangov: ok  profile n5pro (verified)  uptime 1h02m  unit ",
+		"n5-fangov: ok  profile n5pro (hw experimental)  uptime 1h02m  unit ",
 		"hwmon: /sys/class/hwmon/hwmon14",
 		"channel", "sensor", "temp", "duty", "rpm", "mode",
 		"cpu", "k10temp", "36.0 C", "85", "33%", "2000", "auto",

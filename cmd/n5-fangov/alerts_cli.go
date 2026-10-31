@@ -33,18 +33,19 @@ func init() {
 func cmdAlerts(args []string) int {
 	fs := flag.NewFlagSet("alerts", flag.ContinueOnError)
 	cfgPath := fs.String("config", defaultConfigPath, "config file")
-	if err := fs.Parse(args); err != nil {
+	pos, err := parseInterspersed(fs, args)
+	if err != nil {
 		return exitUsage
 	}
 	usage := func() int {
 		fmt.Fprintln(os.Stderr, "usage: n5-fangov alerts status | test | template")
 		return exitUsage
 	}
-	if fs.NArg() != 1 {
+	if len(pos) != 1 {
 		return usage()
 	}
 	c := alertsClient{cfgPath: *cfgPath, dir: runDir()}
-	switch fs.Arg(0) {
+	switch pos[0] {
 	case "status":
 		return c.status()
 	case "test":

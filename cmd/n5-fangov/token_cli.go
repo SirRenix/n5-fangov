@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 )
 
@@ -83,22 +82,14 @@ func (c tokenClient) create(args []string, usage func() int) int {
 	scope := fs.String("scope", "read", "token scope: read | control | admin")
 	ttl := fs.Int("ttl", 90, "days until expiry (0 = never)")
 	// the name may precede or follow the flags
-	var name string
-	rest := args
-	if len(rest) > 0 && !strings.HasPrefix(rest[0], "-") {
-		name, rest = rest[0], rest[1:]
-	}
-	if err := fs.Parse(rest); err != nil {
+	pos, err := parseInterspersed(fs, args)
+	if err != nil {
 		return exitUsage
 	}
-	if name == "" && fs.NArg() == 1 {
-		name = fs.Arg(0)
-	} else if fs.NArg() != 0 {
+	if len(pos) != 1 || pos[0] == "" {
 		return usage()
 	}
-	if name == "" {
-		return usage()
-	}
+	name := pos[0]
 	switch *scope {
 	case "read", "control", "admin":
 	default:

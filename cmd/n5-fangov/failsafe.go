@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -36,6 +37,22 @@ func cmdFailsafe(args []string) int {
 	if result != "" {
 		fmt.Printf("failsafe: after daemon end (SERVICE_RESULT=%s EXIT_CODE=%s EXIT_STATUS=%s)\n",
 			result, os.Getenv("EXIT_CODE"), os.Getenv("EXIT_STATUS"))
+	}
+
+	// A `validate` or `test` run holds the writer lock (the daemon refused
+	// to start next to it): it restores the channels it touched itself, a
+	// second writer here would interfere with its measurement.
+	// Any other lock problem (run dir not writable) does not stop the
+	// failsafe.
+	release, err := acquireWriterLock(runDir(), "failsafe")
+	switch {
+	case errors.Is(err, errWriterBusy):
+		fmt.Printf("failsafe: %v; that writer restores its own channels, nothing written here\n", err)
+		return exitOK
+	case err != nil:
+		fmt.Printf("failsafe: writer lock: %v (continuing without it)\n", err)
+	default:
+		defer release()
 	}
 
 	cfg, warns, _ := loadConfig(*cfgPath)

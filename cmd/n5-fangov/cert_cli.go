@@ -25,20 +25,39 @@ import (
 // effect at once (hot swap); without it the same manager code works on
 // the files directly and a restart applies the change.
 func cmdCert(args []string) int {
-	fs := flag.NewFlagSet("cert", flag.ContinueOnError)
-	cfgPath := fs.String("config", defaultConfigPath, "config file (the certificate lives next to it in tls/)")
-	if err := fs.Parse(args); err != nil {
-		return exitUsage
-	}
 	usage := func() int {
 		fmt.Fprintln(os.Stderr, "usage: n5-fangov cert info | export [--der] [FILE] | regen [--new-key] | upload CERT KEY | reset")
+		return exitUsage
+	}
+	// --config may stand before the subcommand or anywhere after it; the
+	// subcommand's own flags may precede or follow its arguments
+	var cfgPath string
+	fs := flag.NewFlagSet("cert", flag.ContinueOnError)
+	fs.StringVar(&cfgPath, "config", defaultConfigPath, "config file (the certificate lives next to it in tls/)")
+	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
 	if fs.NArg() < 1 {
 		return usage()
 	}
-	sub, rest := fs.Arg(0), fs.Args()[1:]
-	c := certClient{cfgPath: *cfgPath, dir: runDir()}
+	sub := fs.Arg(0)
+	sfs := flag.NewFlagSet("cert "+sub, flag.ContinueOnError)
+	sfs.StringVar(&cfgPath, "config", cfgPath, "config file (the certificate lives next to it in tls/)")
+	var der, newKey *bool
+	switch sub {
+	case "export":
+		der = sfs.Bool("der", false, "DER (.cer) instead of PEM")
+	case "regen":
+		newKey = sfs.Bool("new-key", false, "generate a new private key (imported trust breaks)")
+	case "info", "upload", "reset":
+	default:
+		return usage()
+	}
+	rest, err := parseInterspersed(sfs, fs.Args()[1:])
+	if err != nil {
+		return usage()
+	}
+	c := certClient{cfgPath: cfgPath, dir: runDir()}
 	switch sub {
 	case "info":
 		if len(rest) != 0 {
@@ -46,16 +65,16 @@ func cmdCert(args []string) int {
 		}
 		return c.info()
 	case "export":
-		efs := flag.NewFlagSet("cert export", flag.ContinueOnError)
-		der := efs.Bool("der", false, "DER (.cer) instead of PEM")
-		if err := efs.Parse(rest); err != nil || efs.NArg() > 1 {
+		if len(rest) > 1 {
 			return usage()
 		}
-		return c.export(*der, efs.Arg(0))
+		file := ""
+		if len(rest) == 1 {
+			file = rest[0]
+		}
+		return c.export(*der, file)
 	case "regen":
-		rfs := flag.NewFlagSet("cert regen", flag.ContinueOnError)
-		newKey := rfs.Bool("new-key", false, "generate a new private key (imported trust breaks)")
-		if err := rfs.Parse(rest); err != nil || rfs.NArg() != 0 {
+		if len(rest) != 0 {
 			return usage()
 		}
 		return c.regen(!*newKey)
@@ -64,13 +83,12 @@ func cmdCert(args []string) int {
 			return usage()
 		}
 		return c.upload(rest[0], rest[1])
-	case "reset":
+	default: // "reset"
 		if len(rest) != 0 {
 			return usage()
 		}
 		return c.reset()
 	}
-	return usage()
 }
 
 // certClient runs one cert subcommand against the daemon (socket) or,

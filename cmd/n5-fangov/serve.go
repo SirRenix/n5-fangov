@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -17,7 +18,9 @@ import (
 	"github.com/SirRenix/n5-fangov/internal/config"
 	"github.com/SirRenix/n5-fangov/internal/control"
 	"github.com/SirRenix/n5-fangov/internal/hwmon"
+	"github.com/SirRenix/n5-fangov/internal/hwstatus"
 	"github.com/SirRenix/n5-fangov/internal/logfile"
+	"github.com/SirRenix/n5-fangov/internal/n5driver"
 	"github.com/SirRenix/n5-fangov/internal/profile"
 	"github.com/SirRenix/n5-fangov/internal/schedule"
 	"github.com/SirRenix/n5-fangov/internal/version"
@@ -63,11 +66,43 @@ func cmdServe(args []string) int {
 	if st.logFile != nil {
 		defer st.logFile.Close()
 	}
+	if !st.dryRun {
+		release, ok := serveWriterLock(st)
+		if !ok {
+			return exitFail
+		}
+		defer release()
+	}
 	if !serveDevice(st) {
 		return exitFail
 	}
 	serveWeb(st)
 	return serveRun(st)
+}
+
+// serveAcquireLock is acquireWriterLock; tests replace it.
+var serveAcquireLock = acquireWriterLock
+
+// serveWriterLock takes the pwm writer lock for the daemon. One pwm writer
+// at a time: a running `validate` or `test` holds the lock, and the daemon
+// does not start next to it (the failsafe of ExecStopPost leaves the
+// channels to that writer as well): ok false. Any other lock error (run
+// dir not writable, flock refused) does not stop the daemon: cooling goes
+// before the lock (decision 7, audit I1). It starts without the lock,
+// with a journal warning and a "start" alert, because a validate or test
+// started now would not see it. release is never nil.
+func serveWriterLock(st *serveState) (release func(), ok bool) {
+	release, err := serveAcquireLock(st.rdir, "serve")
+	switch {
+	case errors.Is(err, errWriterBusy):
+		log.Printf("%snot starting: %v", logError, err)
+		return func() {}, false
+	case err != nil:
+		log.Printf("%sWARNING: writer lock: %v (regulating without it: a validate or test started now is not refused)", logWarning, err)
+		startAlert(st.rdir, st.alerter, "start", fmt.Sprintf("n5-fangov runs without its pwm writer lock: %v\nRegulation is running. A `n5-fangov validate` or `test` started now is not refused and would fight the daemon; fix the run directory (%s) and restart the unit.", err, st.rdir))
+		return func() {}, true
+	}
+	return release, true
 }
 
 // serveState is what the stages of cmdServe hand each other: the parsed
@@ -91,10 +126,11 @@ type serveState struct {
 	logFile  *logfile.Writer // nil without [log].file; closed by cmdServe
 
 	// serveDevice: hardware and controller.
-	hw      *hwmon.FS
-	dev     profile.Device
-	factory sensorFactory
-	ctrl    *control.Controller
+	hw       *hwmon.FS
+	dev      profile.Device
+	hwStatus hwstatus.Result // hardware status of this box for the profile
+	factory  sensorFactory
+	ctrl     *control.Controller
 
 	// serveWeb: listener decision, certificate manager, stores, web server.
 	wspec  webSpec
@@ -176,14 +212,27 @@ func serveDevice(st *serveState) bool {
 	dev, err := detectDevice(st.hw, st.dspec.Profile)
 	if err != nil {
 		log.Printf("profile %q: %v", st.dspec.Profile, err)
+		if errors.Is(err, profile.ErrWriteDisabled) || errors.Is(err, profile.ErrDriverMissing) {
+			// gate (a): never a silent fallback to monitoring. Under the
+			// unit, ExecStartPre (check) stops before this and sends the
+			// same alert itself.
+			sendAlertCooled(st.rdir, st.alerter, "driver", fmt.Sprintf("fan driver read-only or missing (profile %q): %v\nNo regulation is running; fans stay in BIOS/EC control.", st.dspec.Profile, err))
+			return false
+		}
 		sendAlertCooled(st.rdir, st.alerter, "profile", fmt.Sprintf("fan controller not detected (profile %q): %v\nNo regulation is running; fans stay in BIOS/EC control.", st.dspec.Profile, err))
 		return false
 	}
 	st.dev = dev
 	p := dev.Profile()
-	log.Printf("profile %s (%s) at %s, %d channel(s), verified=%v", p.Name(), p.Title(), dev.HwmonPath(), len(dev.Channels()), p.Verified())
-	if !p.Verified() {
-		log.Printf("%sWARNING: profile %s is from documentation only, not verified on hardware", logWarning, p.Name())
+	st.hwStatus = hardwareStatus(st.hw, p.Name())
+	log.Printf("profile %s (%s) at %s, %d channel(s), hardware status %s", p.Name(), p.Title(), dev.HwmonPath(), len(dev.Channels()), st.hwStatus.Describe())
+	logHWStatusChange(st.state, p.Name(), st.hwStatus)
+	if p.Name() == "n5pro" {
+		drv := n5driver.Read(st.hw.Root)
+		log.Printf("driver %s %s (srcversion %s), %s", n5driver.ModuleName, orDash(drv.Version), orDash(drv.SrcVersion), drv.Mode())
+		for _, f := range drv.Findings() {
+			log.Printf("%sWARNING: driver: %s", logWarning, f)
+		}
 	}
 	for _, c := range st.chans {
 		if !hasChannel(dev, c.PWM) {
@@ -192,7 +241,7 @@ func serveDevice(st *serveState) bool {
 	}
 
 	st.factory = newSensorFactory(st.hw, dev)
-	ctrl, err := newController(st.cfg, dev, st.factory, st.alerter, controlOpts{DryRun: st.dryRun, RunDir: st.rdir, HistoryFile: historyPath(st.state), DiskKind: diskKindResolver(st.hw)})
+	ctrl, err := newController(st.cfg, dev, st.factory, st.alerter, controlOpts{DryRun: st.dryRun, RunDir: st.rdir, HistoryFile: historyPath(st.state), DiskKind: diskKindResolver(st.hw), HWStatus: string(st.hwStatus.Status)})
 	if err != nil {
 		log.Printf("controller: %v", err)
 		sendAlertCooled(st.rdir, st.alerter, "start", "n5-fangov could not start the controller: "+err.Error())

@@ -20,6 +20,7 @@ import (
 	"github.com/SirRenix/n5-fangov/internal/config"
 	"github.com/SirRenix/n5-fangov/internal/fsutil"
 	"github.com/SirRenix/n5-fangov/internal/history"
+	"github.com/SirRenix/n5-fangov/internal/hwstatus"
 	"github.com/SirRenix/n5-fangov/internal/logfile"
 	"github.com/SirRenix/n5-fangov/internal/profile"
 	"github.com/SirRenix/n5-fangov/internal/sdnotify"
@@ -82,6 +83,12 @@ type Options struct {
 	// HookCheck decides whether the hook may run; nil = HookStatus (tests
 	// inject a verdict, the ownership rule needs root-owned files).
 	HookCheck func(path string) HookState
+
+	// HWStatus is the hardware status of this machine for the active
+	// profile (internal/hwstatus: validated, tested, experimental, unknown);
+	// "" = unknown. The snapshot carries it as hw_status and derives the
+	// compatibility field verified from it.
+	HWStatus string
 }
 
 // Limits on temperature plausibility in millidegrees; defined once in
@@ -92,11 +99,13 @@ const (
 )
 
 // MinHDDOverride is the lowest duty a manual override may set on a channel
-// that the chip no longer regulates by itself (see hddLike): a channel with
-// a fixed stop duty, or pwm3 on the N5 Pro. Rationale: on the N5 Pro the EC
-// stops regulating the HDD channel after the first manual write, so a low
-// manual duty is a permanent low duty for spinning disks whose temperature
-// reacts with a lag of many minutes; 60 (~900 RPM) keeps some airflow.
+// that n5-fangov does not hand back to the chip (see hddLike): a channel with
+// a fixed stop duty, or pwm3 on the N5 Pro. Rationale: on the N5 Pro the HDD
+// channel leaves the written value after the hand-back to EC automatic, but
+// whether the EC curve then regulates it is unproven, so n5-fangov never
+// relies on it; a low manual duty is then a lasting low duty for spinning
+// disks whose temperature reacts with a lag of many minutes; 60 (~900 RPM)
+// keeps some airflow.
 // Critical still applies on top of any override.
 const MinHDDOverride = 60
 
@@ -165,11 +174,17 @@ type channel struct {
 
 	cur     int  // last duty written (ReadDuty at start); -1 = unknown after a failed write
 	written bool // at least one successful write by this process (stall detection gate)
-	rpm     int  // -1 when no tach / unreadable
-	temp    int  // millidegrees; valid when tempOK
-	tempOK  bool
-	target  int
-	mode    Mode
+	// regDuty/regAt/regPending: the last written duty whose hardware
+	// register is still to be compared (profile.RegisterVerifier), and when
+	// it was written. Only hwMu holders touch them (dcr.go checkRegisters).
+	regDuty    int
+	regAt      time.Time
+	regPending bool
+	rpm        int // -1 when no tach / unreadable
+	temp       int // millidegrees; valid when tempOK
+	tempOK     bool
+	target     int
+	mode       Mode
 
 	// sensorBad is the channel's sensor state after the last cycle (alerts
 	// go out on the transition into it); sensorErr says why, for the log
@@ -247,6 +262,9 @@ type Controller struct {
 
 	logMu   sync.Mutex
 	lastMsg map[string]string
+	// readErrs rate-limits the driver read-error warnings (readerr.go);
+	// guarded by logMu.
+	readErrs map[string]*readErrState
 
 	// hwMu serializes hardware writes between the loop (write phase,
 	// failsafe) and Stop (SafeStop). It is never held together with c.mu
@@ -461,7 +479,7 @@ func SanitizeChannels(profileName string, chans []config.Channel) ([]config.Chan
 			continue
 		}
 		if def.PWM == 3 && out[i].Stop == "auto" {
-			notes = append(notes, fmt.Sprintf("n5pro: channel %q (pwm3) has stop=\"auto\", but the EC does not regulate pwm3 after a write; stop=%s used",
+			notes = append(notes, fmt.Sprintf("n5pro: channel %q (pwm3) has stop=\"auto\", but whether the EC regulates pwm3 after the hand-back is unproven; fixed stop=%s used",
 				out[i].Name, config.HDDStop))
 			out[i].Stop = config.HDDStop
 		}
@@ -636,12 +654,16 @@ func (c *Controller) readSensors(cs *cycleState) {
 			continue
 		}
 		v, err := ch.sensor.Read()
+		src := fmt.Sprintf("sensor %s (channel %s)", ch.cfg.Sensor, ch.cfg.Name)
 		switch {
 		case err != nil:
 			ch.sensorErr = "read: " + err.Error()
+			c.noteReadErr(src, err)
 		case !sensor.Plausible(v):
+			c.noteReadOK(src)
 			ch.sensorErr = fmt.Sprintf("implausible %d mdegC", v)
 		default:
+			c.noteReadOK(src)
 			ch.temp, ch.tempOK = v, true
 			ch.parts = partsOf(ch.sensor, ch.cfg.Sensor, v)
 		}
@@ -1102,6 +1124,7 @@ func (c *Controller) writePhase(chans []*channel, d config.Daemon, n int) (werr,
 	if c.stopped.Load() {
 		return false, false
 	}
+	c.checkRegisters(chans)
 	for _, ch := range chans {
 		if c.opts.DryRun {
 			// the snapshot shows what the chip really does, not what we would write
@@ -1221,7 +1244,12 @@ func (c *Controller) readRPMs(chans []*channel) {
 			continue
 		}
 		r, err := c.dev.ReadRPM(ch.cfg.PWM)
+		src := fmt.Sprintf("fan%d_input (channel %s)", ch.cfg.PWM, ch.cfg.Name)
+		if err == nil {
+			c.noteReadOK(src)
+		}
 		if err != nil {
+			c.noteReadErr(src, err)
 			// no RPM means no stall detection for this channel; say so once
 			c.logOnce("rpm."+ch.cfg.Name, "%s: fan%d_input unreadable (%v), stall detection inactive", ch.cfg.Name, ch.cfg.PWM, err)
 			continue
@@ -1242,8 +1270,10 @@ func (c *Controller) readExtra() map[string]float64 {
 	for id, path := range c.extra {
 		b, err := os.ReadFile(path)
 		if err != nil {
+			c.noteReadErr("sensor "+id, err)
 			continue
 		}
+		c.noteReadOK("sensor " + id)
 		v, err := strconv.Atoi(strings.TrimSpace(string(b)))
 		if err != nil || !sensor.Plausible(v) {
 			continue
@@ -1281,7 +1311,11 @@ func (c *Controller) write(ch *channel, duty int, n int) error {
 			c.logClear("enable." + ch.cfg.Name)
 		}
 	}
-	return c.dev.WriteDuty(ch.cfg.PWM, duty)
+	if err := c.dcrDeviation(ch.cfg.Name, c.dev.WriteDuty(ch.cfg.PWM, duty)); err != nil {
+		return err
+	}
+	c.noteRegisterWrite(ch, duty)
+	return nil
 }
 
 // failsafeAll drives every managed channel to 255 (rule 4). It returns
@@ -1341,7 +1375,7 @@ func (c *Controller) safeStopLocked() {
 	c.log.Printf("stop: safe state %s", strings.Join(parts, " "))
 	if !c.opts.DryRun {
 		for _, ch := range chans {
-			if err := c.dev.SafeStop(ch.cfg.PWM, ch.cfg.Stop); err != nil {
+			if err := c.dcrDeviation(ch.cfg.Name, c.dev.SafeStop(ch.cfg.PWM, ch.cfg.Stop)); err != nil {
 				c.log.Printf("%s: safe stop (%s) failed: %v", ch.cfg.Name, ch.cfg.Stop, err)
 			}
 		}
@@ -1368,6 +1402,7 @@ func Failsafe(dev profile.Device, cfg config.Config, logger Logger) error {
 		}
 	}
 	var errs []error
+	var fixed []config.Channel // fixed stop duties written: register compared after all writes
 	for _, ch := range chans {
 		if !present[ch.PWM] {
 			if logger != nil {
@@ -1375,7 +1410,21 @@ func Failsafe(dev profile.Device, cfg config.Config, logger Logger) error {
 			}
 			continue
 		}
-		if err := dev.SafeStop(ch.PWM, ch.Stop); err != nil {
+		err := dev.SafeStop(ch.PWM, ch.Stop)
+		if errors.Is(err, profile.ErrDCRMismatch) {
+			// written and accepted by the driver; only the register dump
+			// (debug_regs=1) shows another value: no failsafe failure
+			if logger != nil {
+				logger.Printf("failsafe: %s: pwm%d stop=%s written, EC register differs: %v", ch.Name, ch.PWM, ch.Stop, err)
+			}
+			continue
+		}
+		if err == nil {
+			if _, ok := ch.StopDuty(); ok {
+				fixed = append(fixed, ch)
+			}
+		}
+		if err != nil {
 			errs = append(errs, fmt.Errorf("%s (pwm%d, stop=%s): %w", ch.Name, ch.PWM, ch.Stop, err))
 			if logger != nil {
 				logger.Printf("failsafe: %s: pwm%d stop=%s FAILED: %v", ch.Name, ch.PWM, ch.Stop, err)
@@ -1386,8 +1435,41 @@ func Failsafe(dev profile.Device, cfg config.Config, logger Logger) error {
 			logger.Printf("failsafe: %s: pwm%d stop=%s ok", ch.Name, ch.PWM, ch.Stop)
 		}
 	}
+	failsafeRegisters(dev, fixed, logger)
 	return errors.Join(errs...)
 }
+
+// failsafeRegisters compares the EC register of every fixed stop duty the
+// failsafe wrote, after all writes (the safe state is not delayed by it):
+// each register gets its settle time from the first comparison on
+// (profile.WaitRegister; HDD up to N5ProSettleHDD, measured in maintenance
+// window 1). A register that still differs is logged, no failsafe failure.
+// Without a register path (no debug_regs) nothing is read and nothing waits.
+func failsafeRegisters(dev profile.Device, fixed []config.Channel, logger Logger) {
+	rv, ok := dev.(profile.RegisterVerifier)
+	if !ok || len(fixed) == 0 {
+		return
+	}
+	start := registerNow()
+	for _, ch := range fixed {
+		duty, _ := ch.StopDuty()
+		settle := rv.RegisterSettle(ch.PWM)
+		if settle <= 0 {
+			continue
+		}
+		err := profile.WaitRegister(rv, ch.PWM, duty, start.Add(settle), registerNow, registerSleep)
+		if err != nil && logger != nil {
+			logger.Printf("failsafe: %s: pwm%d stop=%s written, EC register differs after %s: %v", ch.Name, ch.PWM, ch.Stop, settle, err)
+		}
+	}
+}
+
+// registerNow and registerSleep are the clock of failsafeRegisters (tests
+// replace them).
+var (
+	registerNow   = time.Now
+	registerSleep = time.Sleep
+)
 
 // FullSpeed drives every configured channel to 255 in manual mode. Emergency
 // helper for the CLI; not used by the loop.
@@ -1536,8 +1618,8 @@ func (c *Controller) HistoryRange(span time.Duration, since int64) []HistoryPoin
 }
 
 // SetOverride pins a channel to duty (manual mode) until ClearOverride.
-// Critical temperature and stall handling still apply. Channels the chip
-// does not regulate by itself (hddLike) refuse duties below MinHDDOverride.
+// Critical temperature and stall handling still apply. Channels n5-fangov
+// does not hand back to the chip (hddLike) refuse duties below MinHDDOverride.
 func (c *Controller) SetOverride(name string, duty int) error {
 	if duty < 0 || duty > 255 {
 		return fmt.Errorf("duty %d outside 0..255", duty)
@@ -1755,9 +1837,10 @@ func sameChannelSet(a, b []config.Channel) bool {
 }
 
 // hddLike reports whether a channel must never run at a low manual duty:
-// it has a fixed stop duty (the chip is not expected to regulate it on
-// its own), or it is pwm3 on the N5 Pro (the EC does not regulate it after
-// a write regardless of the configured stop).
+// it has a fixed stop duty (n5-fangov does not rely on the chip to regulate
+// it), or it is pwm3 on the N5 Pro (EC regulation after the hand-back is
+// unproven, so the channel is treated as unregulated regardless of the
+// configured stop).
 func (c *Controller) hddLike(cc config.Channel) bool {
 	if _, fixed := cc.StopDuty(); fixed {
 		return true
@@ -1787,7 +1870,8 @@ func (c *Controller) buildSnapshotLocked(status Status, extra, watched map[strin
 		TS:         now.Unix(),
 		Status:     status,
 		Profile:    c.dev.Profile().Name(),
-		Verified:   c.dev.Profile().Verified(),
+		Verified:   hwstatus.Status(c.hwStatus()).Verified(),
+		HWStatus:   c.hwStatus(),
 		HwmonPath:  c.dev.HwmonPath(),
 		DryRun:     c.opts.DryRun,
 		Channels:   make([]ChannelState, 0, len(c.chans)),
@@ -1980,4 +2064,12 @@ func (c *Controller) logClear(key string) {
 	c.logMu.Lock()
 	delete(c.lastMsg, key)
 	c.logMu.Unlock()
+}
+
+// hwStatus is Options.HWStatus, "unknown" when unset.
+func (c *Controller) hwStatus() string {
+	if s := hwstatus.Status(c.opts.HWStatus); s.Valid() {
+		return string(s)
+	}
+	return string(hwstatus.Unknown)
 }

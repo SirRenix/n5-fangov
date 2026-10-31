@@ -33,7 +33,7 @@ const (
 )
 
 // Generic profile defaults: a conservative curve (fans never below ~40 %,
-// full at 70 C) for chips that are documented but not verified.
+// full at 70 C) for chips that are documented but untested.
 var (
 	genericCurve    = [][2]int{{40, 100}, {70, 255}}
 	genericCritical = 85
@@ -75,11 +75,7 @@ func cmdSetup(args []string) int {
 	}
 	p := dev.Profile()
 	fmt.Printf("profile: %s (%s) at %s", p.Name(), p.Title(), dev.HwmonPath())
-	if p.Verified() {
-		fmt.Println("  [verified on hardware]")
-	} else {
-		fmt.Println("  [from documentation, untested]")
-	}
+	fmt.Printf("  [hardware status: %s]\n", hardwareStatus(hw, p.Name()).Describe())
 	chans := setupChannels(dev, hw, newSensorFactory(hw, dev))
 	for _, c := range chans {
 		fmt.Printf("  channel %-6s pwm%d  sensor %-16s curve %v  critical %d  stop %s\n", c.Name, c.PWM, c.Sensor, c.Curve, c.Critical, c.Stop)
@@ -229,7 +225,7 @@ func cmdSetup(args []string) int {
 }
 
 // setupChannels returns the channel set for a detected device: the
-// verified N5 Pro set, nothing for monitor, one conservative channel per
+// measured N5 Pro set, nothing for monitor, one conservative channel per
 // pwm for the generic chips (sensor: k10temp, else coretemp, else the
 // first hwmon temperature).
 func setupChannels(dev profile.Device, hw *hwmon.FS, f sensorFactory) []chanSpec {

@@ -46,7 +46,7 @@ func register(name string, c command) { commands[name] = c }
 // order lists every public subcommand in usage order.
 var order = []string{
 	"setup", "serve", "status", "set", "auto", "curve", "log",
-	"check", "detect", "system", "test", "failsafe",
+	"check", "detect", "identify", "system", "test", "validate", "failsafe",
 	"passwd", "cert", "alerts", "token", "export", "import", "version",
 }
 
@@ -61,8 +61,10 @@ var helpText = map[string]string{
 	"log":      "[-n N] [--export FILE] [--clear]  log file (journal when no file is configured)",
 	"check":    "[--quiet] [--after-update]  self-check; --after-update: DKMS module for every kernel (apt hook)",
 	"detect":   "                       list profiles with detection result (read-only)",
+	"identify": "[--json]               machine, BIOS, EC firmware, kernel, driver state, hardware status (read-only; for reports)",
 	"system":   "[--json]               hardware inventory: machine, CPU, memory modules, GPU/NPU, NICs, disks (live via the daemon)",
 	"test":     "<ch> [--force]         channel verification run (writes duty, daemon must be stopped)",
+	"validate": "<pwmN> [--tests ..] [--boot cold|warm] [--out DIR] | --dry-run [pwmN] | --replay LOG I2EC  TESTSPEC run with result bundle (writes, at the console, daemon stopped)",
 	"failsafe": "                       put all configured channels into their safe state",
 	"passwd":   "[--user U] [--password-file F | --password -]  set the web user/password (auth = basic), restart to apply; the dashboard (signed in) changes both live",
 	"cert":     "info | export [--der] [FILE] | regen [--new-key] | upload CERT KEY | reset  dashboard certificate (live via the daemon)",

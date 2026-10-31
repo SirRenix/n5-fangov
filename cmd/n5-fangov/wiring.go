@@ -27,6 +27,7 @@ import (
 	"github.com/SirRenix/n5-fangov/internal/config"
 	"github.com/SirRenix/n5-fangov/internal/control"
 	"github.com/SirRenix/n5-fangov/internal/hwmon"
+	"github.com/SirRenix/n5-fangov/internal/hwstatus"
 	"github.com/SirRenix/n5-fangov/internal/ipc"
 	"github.com/SirRenix/n5-fangov/internal/logfile"
 	"github.com/SirRenix/n5-fangov/internal/profile"
@@ -626,6 +627,7 @@ type controlOpts struct {
 	RunDir      string                  // state.json, override.<name>, alert stamps
 	HistoryFile string                  // <state dir>/history.json; "" = memory only
 	DiskKind    func(dev string) string // disk:<dev> kinds for the built-in ceilings
+	HWStatus    string                  // hardware status of this box (hwstatus), snapshot hw_status
 }
 
 func newController(cfg config.Config, dev profile.Device, f sensorFactory, a alert.Sink, o controlOpts) (*control.Controller, error) {
@@ -634,6 +636,7 @@ func newController(cfg config.Config, dev profile.Device, f sensorFactory, a ale
 		RunDir:      o.RunDir,
 		HistoryFile: o.HistoryFile,
 		DiskKind:    o.DiskKind,
+		HWStatus:    o.HWStatus,
 		Logger:      log.Default(),
 		Notify:      func() { noteNotify("WATCHDOG=1", sdnotify.Watchdog()) },
 		Status:      func(s string) { noteNotify("STATUS", sdnotify.Status(s)) },
@@ -760,11 +763,17 @@ func newWebServer(d webDeps) webServer {
 	if d.Device != nil {
 		active = d.Device.Profile().Name()
 	}
+	// the machine's key for the hardware status, read once (DMI is static)
+	var id hwstatus.Identity
+	if d.Sysfs != nil {
+		id = hwstatus.ReadIdentity(d.Sysfs.Root)
+	}
 	profiles := func() []web.ProfileInfo {
 		var out []web.ProfileInfo
 		for _, p := range profile.All() {
+			hs := hwstatus.ForProfile(p.Name(), id)
 			out = append(out, web.ProfileInfo{
-				Name: p.Name(), Title: p.Title(), Verified: p.Verified(), Notes: p.Notes(),
+				Name: p.Name(), Title: p.Title(), Verified: hs.Status.Verified(), HWStatus: string(hs.Status), Notes: p.Notes(),
 				Active: p.Name() == active,
 			})
 		}

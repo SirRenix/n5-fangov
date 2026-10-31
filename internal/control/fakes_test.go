@@ -27,7 +27,6 @@ func (p fakeProfile) Name() string {
 	return p.name
 }
 func (fakeProfile) Title() string                            { return "Fake device" }
-func (fakeProfile) Verified() bool                           { return true }
 func (fakeProfile) Notes() string                            { return "" }
 func (fakeProfile) Detect(*hwmon.FS) (profile.Device, error) { return nil, errors.New("n/a") }
 
@@ -41,12 +40,22 @@ type fakeDev struct {
 	enable    map[int]int
 	rpm       map[int]int
 	failWrite map[int]bool // WriteDuty fails for this pwm
-	failEnter map[int]bool
-	failRead  map[int]bool // ReadDuty fails for this pwm
-	failRPM   map[int]bool // ReadRPM fails for this pwm
-	failStop  bool         // SafeStop fails for every pwm
-	calls     []string     // "manual:1", "write:1=85", "stop:3=140"
-	extra     map[string]string
+	dcrDiff   map[int]bool // the EC register never shows the written duty (VerifyRegister: profile.ErrDCRMismatch)
+	// fake EC register (profile.RegisterVerifier): with regSettle > 0 the
+	// register is compared; it shows a written duty dcrLag after the write
+	// (clock regNow), before that it reads as a mismatch
+	regSettle  time.Duration
+	dcrLag     time.Duration
+	regNow     func() time.Time
+	writtenAt  map[int]time.Time
+	verifyCall []string // "verify:3=140"
+	failEnter  map[int]bool
+	failRead   map[int]bool // ReadDuty fails for this pwm
+	failRPM    map[int]bool // ReadRPM fails for this pwm
+	rpmErr     error        // ReadRPM fails with this error for every pwm
+	failStop   bool         // SafeStop fails for every pwm
+	calls      []string     // "manual:1", "write:1=85", "stop:3=140"
+	extra      map[string]string
 }
 
 // newFakeDev returns a device whose channels sit at the N5 Pro EC idle
@@ -85,6 +94,9 @@ func (d *fakeDev) ExtraTemps() map[string]string { return d.extra }
 func (d *fakeDev) ReadRPM(ch int) (int, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if d.rpmErr != nil {
+		return 0, d.rpmErr
+	}
 	if d.failRPM[ch] {
 		return 0, errors.New("fan input unreadable")
 	}
@@ -132,7 +144,38 @@ func (d *fakeDev) WriteDuty(ch int, duty int) error {
 		return errors.New("readback mismatch")
 	}
 	d.duty[ch] = duty
+	if d.regNow != nil {
+		if d.writtenAt == nil {
+			d.writtenAt = map[int]time.Time{}
+		}
+		d.writtenAt[ch] = d.regNow()
+	}
 	return nil
+}
+
+func (d *fakeDev) RegisterSettle(int) time.Duration {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.regSettle
+}
+
+func (d *fakeDev) VerifyRegister(ch, duty int) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.verifyCall = append(d.verifyCall, fmt.Sprintf("verify:%d=%d", ch, duty))
+	if d.dcrDiff[ch] {
+		return fmt.Errorf("%w: pwm%d: EC register reads 0 after writing %d", profile.ErrDCRMismatch, ch, duty)
+	}
+	if d.regNow != nil && d.regNow().Sub(d.writtenAt[ch]) < d.dcrLag {
+		return fmt.Errorf("%w: pwm%d: EC register still ramping to %d", profile.ErrDCRMismatch, ch, duty)
+	}
+	return nil
+}
+
+func (d *fakeDev) verifies() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]string(nil), d.verifyCall...)
 }
 
 func (d *fakeDev) SafeStop(ch int, stop string) error {
@@ -141,6 +184,12 @@ func (d *fakeDev) SafeStop(ch int, stop string) error {
 	d.calls = append(d.calls, fmt.Sprintf("stop:%d=%s", ch, stop))
 	if d.failStop {
 		return errors.New("device gone")
+	}
+	if _, err := strconv.Atoi(stop); err == nil && d.regNow != nil {
+		if d.writtenAt == nil {
+			d.writtenAt = map[int]time.Time{}
+		}
+		d.writtenAt[ch] = d.regNow()
 	}
 	return nil
 }

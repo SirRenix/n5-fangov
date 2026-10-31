@@ -80,8 +80,17 @@ func TestFirstCycleDirectThenSlew(t *testing.T) {
 	h.expectDuty("cpu", 90)
 	h.cycles(1)
 	h.expectDuty("cpu", 85)
-	if s := h.c.Snapshot(); s.Status != "ok" || s.Profile != "fake" || !s.Verified || len(s.Channels) != 3 {
+	if s := h.c.Snapshot(); s.Status != "ok" || s.Profile != "fake" || s.Verified || s.HWStatus != "unknown" || len(s.Channels) != 3 {
 		t.Errorf("snapshot: %+v", s)
+	}
+	// hw_status from Options; verified = validated or tested
+	for st, want := range map[string]bool{"tested": true, "validated": true, "experimental": false, "bogus": false} {
+		h2 := newHarness(t, n5cfg(), func(o *Options) { o.HWStatus = st })
+		h2.cycles(1)
+		s := h2.c.Snapshot()
+		if s.Verified != want || (st != "bogus" && s.HWStatus != st) || (st == "bogus" && s.HWStatus != "unknown") {
+			t.Errorf("HWStatus %q: verified=%v hw_status=%q", st, s.Verified, s.HWStatus)
+		}
 	}
 }
 
