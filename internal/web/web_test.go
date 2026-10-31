@@ -219,7 +219,7 @@ func (e *env) deps(auth AuthConfig) Deps {
 		Presets: e.presets,
 		Log:     &fakeLogStore{lines: e.logs, clearErr: fmt.Errorf("journal-only log source: %w", errors.ErrUnsupported)},
 		Profiles: func() []ProfileInfo {
-			return []ProfileInfo{{Name: "n5pro", Title: "Minisforum N5 Pro (IT5571 EC)", Verified: true, Active: true}, {Name: "nct67xx", Title: "Nuvoton NCT67xx", Notes: "untested"}}
+			return []ProfileInfo{{Name: "n5pro", Title: "Minisforum N5 Pro (IT5571 EC)", Verified: true, HWStatus: "tested", Active: true}, {Name: "nct67xx", Title: "Nuvoton NCT67xx", Notes: "untested"}}
 		},
 		Sensors: func() []SensorInfo {
 			t := 38.2
@@ -471,7 +471,7 @@ func TestStateJSONShape(t *testing.T) {
 	}
 	var m map[string]any
 	decode(t, r.body, &m)
-	for _, k := range []string{"ts", "status", "profile", "verified", "hwmon_path", "dry_run", "channels", "extra_temps", "alerts", "uptime_s"} {
+	for _, k := range []string{"ts", "status", "profile", "verified", "hw_status", "hwmon_path", "dry_run", "channels", "extra_temps", "alerts", "uptime_s"} {
 		if _, ok := m[k]; !ok {
 			t.Errorf("missing key %q", k)
 		}
@@ -1346,7 +1346,7 @@ func TestProfilesVersionSensors(t *testing.T) {
 	wantCode(t, r, 200)
 	var ps []ProfileInfo
 	decode(t, r.body, &ps)
-	if len(ps) != 2 || !ps[0].Verified || !ps[0].Active || ps[1].Verified {
+	if len(ps) != 2 || !ps[0].Verified || ps[0].HWStatus != "tested" || !ps[0].Active || ps[1].Verified {
 		t.Fatalf("profiles = %+v", ps)
 	}
 	r = e.do(t, "GET", "/api/version", "", nil)

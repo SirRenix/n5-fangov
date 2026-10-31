@@ -29,7 +29,7 @@ func TestVisibilityStateHistory(t *testing.T) {
 			t.Errorf("anonymous state carries %q: %s", k, r.body)
 		}
 	}
-	for _, k := range []string{"ts", "status", "profile", "verified", "uptime_s", "dry_run", "channels"} {
+	for _, k := range []string{"ts", "status", "profile", "verified", "hw_status", "uptime_s", "dry_run", "channels"} {
 		if _, has := m[k]; !has {
 			t.Errorf("anonymous state lacks %q: %s", k, r.body)
 		}

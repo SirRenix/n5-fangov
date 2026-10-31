@@ -71,14 +71,20 @@ func (s *Server) historyCSV(w http.ResponseWriter, r *http.Request) {
 	sort.Strings(extras)
 	// Local time, the same clock as the time column (DESIGN §9): a 02:08 export is
 	// named 020800, not the UTC 000800.
-	name := fmt.Sprintf("n5-fangov-history-%s-%s.csv", hostLabel(), time.Now().Local().Format("20060102-150405"))
+	loc := localZone()
+	name := fmt.Sprintf("n5-fangov-history-%s-%s.csv", hostLabel(), time.Now().In(loc).Format("20060102-150405"))
 	attachment(w, "text/csv; charset=utf-8", name)
 	w.WriteHeader(http.StatusOK)
-	if err := history.CSV(w, pts, channels, extras); err != nil {
+	if err := history.CSVIn(w, pts, channels, extras, loc); err != nil {
 		// Headers are out; the client sees a truncated file. Say so in the log.
 		s.logf("web: history csv: %v", err)
 	}
 }
+
+// localZone is the zone of the CSV export (time.Local). A test replaces
+// the function instead of time.Local: every goroutine that calls time.Now
+// reads time.Local, so writing it during a test is a data race (BACKLOG #39).
+var localZone = func() *time.Location { return time.Local }
 
 // getSchedules (protected) answers the scheduler's status; 501 without a
 // scheduler.

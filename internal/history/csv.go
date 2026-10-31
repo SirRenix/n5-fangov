@@ -13,6 +13,11 @@ import (
 // local zone, an absent value is an empty cell. Ids that contain commas
 // (composite sensors) are quoted by the encoder.
 func CSV(w io.Writer, pts []Point, channels []string, extras []string) error {
+	return CSVIn(w, pts, channels, extras, time.Local)
+}
+
+// CSVIn is CSV with the `time` column in loc.
+func CSVIn(w io.Writer, pts []Point, channels []string, extras []string, loc *time.Location) error {
 	cw := csv.NewWriter(w)
 	header := []string{"ts", "time"}
 	for _, ch := range channels {
@@ -25,7 +30,7 @@ func CSV(w io.Writer, pts []Point, channels []string, extras []string) error {
 	row := make([]string, 0, len(header))
 	for _, p := range pts {
 		row = row[:0]
-		row = append(row, strconv.FormatInt(p.TS, 10), time.Unix(p.TS, 0).Format(time.RFC3339))
+		row = append(row, strconv.FormatInt(p.TS, 10), time.Unix(p.TS, 0).In(loc).Format(time.RFC3339))
 		for _, ch := range channels {
 			row = append(row, floatCell(p.Temp, ch), intCell(p.Duty, ch), intCell(p.RPM, ch))
 		}

@@ -48,6 +48,15 @@ func TestHistoryTiersByMinutes(t *testing.T) {
 }
 
 func TestHistoryCSV(t *testing.T) {
+	// CI runs in UTC, where Local == UTC would hide a regression to .UTC().
+	// The export zone is injected, not time.Local: every goroutine that calls
+	// time.Now reads time.Local (BACKLOG #39, data race under -race). Set
+	// before the server starts, put back after it stopped (cleanups run
+	// last-in first-out).
+	zone := time.FixedZone("gate", 2*3600)
+	oldZone := localZone
+	localZone = func() *time.Location { return zone }
+	t.Cleanup(func() { localZone = oldZone })
 	e := newEnv(t, AuthConfig{})
 	e.svc.mu.Lock()
 	e.svc.hist = []control.HistoryPoint{
@@ -55,16 +64,12 @@ func TestHistoryCSV(t *testing.T) {
 		{TS: 1789500000, Temp: map[string]float64{"cpu": 36.0}, Duty: map[string]int{"cpu": 85, "hdd": 140}, RPM: map[string]int{"cpu": 2000, "hdd": 900}},
 	}
 	e.svc.mu.Unlock()
-	// CI runs in UTC, where Local == UTC would hide a regression to .UTC()
-	oldLocal := time.Local
-	time.Local = time.FixedZone("gate", 2*3600)
-	t.Cleanup(func() { time.Local = oldLocal })
 	r := e.do(t, "GET", "/api/history.csv?minutes=1440", "", nil)
 	name := wantAttachment(t, r, "text/csv", `^n5-fangov-history-[A-Za-z0-9.-]+-\d{8}-\d{6}\.csv$`)
 	// the stamp is local time, the clock of the time column (DESIGN §9); an export
 	// at 02:08 CEST was once named 000837 (release-gate finding 2026-09-18)
 	stamp := name[len(name)-len("20060102-150405.csv") : len(name)-len(".csv")]
-	if ts, err := time.ParseInLocation("20060102-150405", stamp, time.Local); err != nil {
+	if ts, err := time.ParseInLocation("20060102-150405", stamp, zone); err != nil {
 		t.Errorf("filename stamp %q: %v", stamp, err)
 	} else if d := time.Since(ts); d < -2*time.Minute || d > 2*time.Minute {
 		t.Errorf("filename stamp %q is %s from local now (UTC instead of local?)", stamp, d)
@@ -77,7 +82,7 @@ func TestHistoryCSV(t *testing.T) {
 	if lines[0] != "ts,time,cpu_temp,cpu_duty,cpu_rpm,hdd_temp,hdd_duty,hdd_rpm,ec:system,hwmon:amdgpu:temp1" {
 		t.Errorf("header: %s", lines[0])
 	}
-	local := time.Unix(1789499990, 0).Format(time.RFC3339)
+	local := time.Unix(1789499990, 0).In(zone).Format(time.RFC3339)
 	if lines[1] != "1789499990,"+local+",35.5,85,1990,31,140,900,32,48.5" {
 		t.Errorf("row 1: %s", lines[1])
 	}
