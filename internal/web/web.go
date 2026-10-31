@@ -162,9 +162,13 @@ type Bundle interface {
 
 // ProfileInfo describes one hardware profile for /api/profiles.
 type ProfileInfo struct {
-	Name     string `json:"name"`
-	Title    string `json:"title"`
-	Verified bool   `json:"verified"`
+	Name  string `json:"name"`
+	Title string `json:"title"`
+	// Verified is kept for compatibility: HWStatus is validated or tested.
+	Verified bool `json:"verified"`
+	// HWStatus is the hardware status of this machine for the profile:
+	// validated, tested, experimental or unknown.
+	HWStatus string `json:"hw_status"`
 	Notes    string `json:"notes"`
 	Active   bool   `json:"active"`
 }
@@ -840,6 +844,7 @@ type publicState struct {
 	Status   control.Status  `json:"status"`
 	Profile  string          `json:"profile"`
 	Verified bool            `json:"verified"`
+	HWStatus string          `json:"hw_status"`
 	DryRun   bool            `json:"dry_run"`
 	Channels []publicChannel `json:"channels"`
 	Uptime   int64           `json:"uptime_s"`
@@ -871,7 +876,7 @@ func (s *Server) getState(w http.ResponseWriter, r *http.Request) {
 	}
 	snap := s.deps.Service.Snapshot()
 	if !CallerFrom(r.Context()).Authenticated {
-		out := publicState{TS: snap.TS, Status: snap.Status, Profile: snap.Profile, Verified: snap.Verified, DryRun: snap.DryRun, Uptime: snap.Uptime, Channels: make([]publicChannel, 0, len(snap.Channels))}
+		out := publicState{TS: snap.TS, Status: snap.Status, Profile: snap.Profile, Verified: snap.Verified, HWStatus: snap.HWStatus, DryRun: snap.DryRun, Uptime: snap.Uptime, Channels: make([]publicChannel, 0, len(snap.Channels))}
 		for _, c := range snap.Channels {
 			out.Channels = append(out.Channels, publicChannel{Name: c.Name, PWM: c.PWM, Sensor: c.Sensor, Temp: c.Temp, Duty: c.Duty, Target: c.Target, RPM: c.RPM, Mode: c.Mode})
 		}

@@ -12,9 +12,8 @@ type monitor struct{}
 // Monitor returns the monitoring-only profile.
 func Monitor() Profile { return monitor{} }
 
-func (monitor) Name() string   { return "monitor" }
-func (monitor) Title() string  { return "Monitoring only (no fan control)" }
-func (monitor) Verified() bool { return false }
+func (monitor) Name() string  { return "monitor" }
+func (monitor) Title() string { return "Monitoring only (no fan control)" }
 func (monitor) Notes() string {
 	return "No supported fan controller detected. Temperatures are read and shown, " +
 		"every write request is refused. Fans stay under BIOS/EC control."

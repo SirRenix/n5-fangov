@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/SirRenix/n5-fangov/internal/hwmon"
+	"github.com/SirRenix/n5-fangov/internal/hwstatus"
+	"github.com/SirRenix/n5-fangov/internal/n5driver"
 )
 
 func init() {
@@ -34,13 +36,19 @@ func cmdDetect(args []string) int {
 		fmt.Println()
 	}
 
+	fmt.Printf("hardware: %s\n", hwstatus.ReadIdentity(hw.Root).Key())
+	if st := n5driver.Read(hw.Root); st.Loaded || st.HwmonPath != "" {
+		fmt.Printf("driver: %s %s, %s\n", n5driver.ModuleName, orDash(st.Version), st.Mode())
+		for _, f := range st.Findings() {
+			fmt.Printf("  note: %s\n", f)
+		}
+	}
+	fmt.Println()
+
 	rc := exitFail // becomes 0 as soon as one profile detects
 	fmt.Println("profiles:")
 	for _, p := range allProfiles() {
-		verified := "verified on hardware"
-		if !p.Verified() {
-			verified = "from documentation, untested"
-		}
+		verified := "hardware status " + string(hardwareStatus(hw, p.Name()).Status)
 		dev, err := p.Detect(hw)
 		if err != nil {
 			fmt.Printf("  %-8s %-40s %s\n           not detected: %v\n", p.Name(), p.Title(), verified, err)

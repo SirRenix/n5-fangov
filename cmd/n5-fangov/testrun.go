@@ -3,14 +3,14 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
-	"os/signal"
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/SirRenix/n5-fangov/internal/hwmon"
@@ -22,7 +22,7 @@ func init() {
 	register("test", command{run: cmdTest})
 }
 
-// Test parameters, mirroring n5pro-ec/scripts/06-pwm-test.sh.
+// Test parameters, mirroring n5pro-ec/legacy/06-pwm-test.sh (replaced there by n5-ectest map).
 const (
 	testMaxCPU   = 85.0 // C, abort threshold k10temp
 	testMaxNVMe  = 70.0 // C, abort threshold nvme:max
@@ -34,6 +34,46 @@ const (
 
 var testSteps = []int{255, 217, 179, 140}
 
+// testStdin and testSleep let tests replace the confirmation input and the
+// sample wait.
+var (
+	testStdin io.Reader = os.Stdin
+	testSleep           = sleepCtx
+)
+
+// testOpts are the parsed arguments of `n5-fangov test`.
+type testOpts struct {
+	channel string
+	force   bool
+	cfgPath string
+	hold    time.Duration
+	sample  time.Duration
+}
+
+// parseTestArgs parses `test` arguments; flags may precede or follow the
+// channel. ok false means a usage error, already printed to stderr.
+func parseTestArgs(args []string) (o testOpts, ok bool) {
+	fs := flag.NewFlagSet("test", flag.ContinueOnError)
+	fs.BoolVar(&o.force, "force", false, "proceed even though the daemon socket answers (you must stop the daemon yourself)")
+	fs.StringVar(&o.cfgPath, "config", defaultConfigPath, "config file")
+	fs.DurationVar(&o.hold, "hold", testStepHold, "time per duty step (fixtures only)")
+	fs.DurationVar(&o.sample, "sample", testSample, "tach sampling interval (fixtures only)")
+	pos, err := parseInterspersed(fs, args)
+	if err != nil {
+		return o, false
+	}
+	if len(pos) != 1 {
+		fmt.Fprintln(os.Stderr, "usage: n5-fangov test <channel|pwmN> [--force]")
+		return o, false
+	}
+	if o.sample <= 0 || o.hold <= 0 || o.sample > o.hold {
+		fmt.Fprintf(os.Stderr, "test: --sample (%s) and --hold (%s) must be positive and sample <= hold\n", o.sample, o.hold)
+		return o, false
+	}
+	o.channel = pos[0]
+	return o, true
+}
+
 // cmdTest drives ONE channel through 255/217/179/140 for 45 s each and logs
 // every tach each 5 s. Only the tach of the written channel may move; a
 // moving other tach means the profile's channel mapping is wrong. Any tach
@@ -43,23 +83,11 @@ var testSteps = []int{255, 217, 179, 140}
 //
 // The daemon must not be running: this command does not coordinate with it.
 func cmdTest(args []string) int {
-	fs := flag.NewFlagSet("test", flag.ContinueOnError)
-	force := fs.Bool("force", false, "proceed even though the daemon socket answers (you must stop the daemon yourself)")
-	cfgPath := fs.String("config", defaultConfigPath, "config file")
-	hold := fs.Duration("hold", testStepHold, "time per duty step (fixtures only)")
-	sample := fs.Duration("sample", testSample, "tach sampling interval (fixtures only)")
-	if err := fs.Parse(args); err != nil {
+	o, ok := parseTestArgs(args)
+	if !ok {
 		return exitUsage
 	}
-	if fs.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "usage: n5-fangov test <channel|pwmN> [--force]")
-		return exitUsage
-	}
-	if *sample <= 0 || *hold <= 0 || *sample > *hold {
-		fmt.Fprintf(os.Stderr, "test: --sample (%s) and --hold (%s) must be positive and sample <= hold\n", *sample, *hold)
-		return exitUsage
-	}
-	want := fs.Arg(0)
+	want := o.channel
 
 	if os.Geteuid() != 0 && os.Getenv("N5FANGOV_SYSFS") == "" {
 		fmt.Fprintln(os.Stderr, "test: must run as root (writes pwm via sysfs)")
@@ -67,17 +95,25 @@ func cmdTest(args []string) int {
 	}
 
 	dir := runDir()
-	if daemonRunning(dir) || unitActive(unitName) {
+	if daemonRunning(dir) || unitRunning(unitName) {
 		fmt.Fprintln(os.Stderr, "test: the n5-fangov daemon is running. Two regulators must never write the same channel.")
 		fmt.Fprintln(os.Stderr, "      Stop it first:  systemctl stop n5-fangov   (ExecStopPost puts the fans into the safe state)")
-		if !*force {
+		if !o.force {
 			fmt.Fprintln(os.Stderr, "      Refusing. --force skips this check but does NOT stop the daemon for you.")
 			return exitFail
 		}
 		fmt.Fprintln(os.Stderr, "      --force given: continuing on your responsibility; the daemon will fight this test.")
 	}
+	// one pwm writer at a time (serve, test, validate); --force does not
+	// skip this: a daemon of this version holds the lock while it runs
+	release, err := acquireWriterLock(dir, "test")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "test: %v\n", err)
+		return exitFail
+	}
+	defer release()
 
-	cfg, warns, _ := loadConfig(*cfgPath)
+	cfg, warns, _ := loadConfig(o.cfgPath)
 	for _, w := range warns {
 		fmt.Fprintf(os.Stderr, "config: %s\n", w)
 	}
@@ -96,7 +132,7 @@ func cmdTest(args []string) int {
 
 	t := &testRun{
 		dev: dev, hw: hw, ch: chn, spec: spec,
-		hold: *hold, sample: *sample,
+		hold: o.hold, sample: o.sample,
 		factory: newSensorFactory(hw, dev),
 	}
 	t.initSensors()
@@ -106,8 +142,8 @@ func cmdTest(args []string) int {
 // testStopPolicy picks the stop value the verification run restores pwm to.
 // It is the stop of the channel that owns the pwm after
 // control.SanitizeChannels: on the n5pro profile pwm3 is never "auto"
-// (the EC does not regulate it after a write, stop "140" from the built-in
-// defaults) and pwm1..3 missing from the config get their built-in stop.
+// (EC regulation after the hand-back is unproven, stop "140" from the
+// built-in defaults) and pwm1..3 missing from the config get their built-in stop.
 // A pwm no channel owns falls back to "auto".
 func testStopPolicy(profileName string, chans []chanSpec, pwm int) string {
 	fixed, _ := sanitizeChannelSpecs(profileName, chans)
@@ -260,6 +296,9 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 }
 
 func (t *testRun) run() (rc int) {
+	// Ctrl-Z and a dead stdout pipe must not stop or kill the run; the stop
+	// signals are caught after the prompt (stopContext)
+	ignoreRunSignals()
 	p := t.dev.Profile()
 	fmt.Printf("=== n5-fangov test  channel %s (pwm%d, %s)  profile %s  %s ===\n\n",
 		t.spec.Name, t.ch.Index, t.ch.Label, p.Name(), time.Now().Format(time.RFC3339))
@@ -271,12 +310,12 @@ func (t *testRun) run() (rc int) {
 	if !t.ch.HasTach {
 		fmt.Printf("  - pwm%d has no tach: the expected finding is \"no tach changes\"\n", t.ch.Index)
 	}
-	if !p.Verified() {
-		fmt.Printf("  - profile %s is NOT hardware-verified\n", p.Name())
+	if hs := hardwareStatus(t.hw, p.Name()); !hs.Status.Verified() {
+		fmt.Printf("  - hardware status %s: %s\n", hs.Status, hs.Reason)
 	}
 	fmt.Println()
 	fmt.Print("Type exactly  TEST START  to continue: ")
-	rd := bufio.NewReader(os.Stdin)
+	rd := bufio.NewReader(testStdin)
 	answer, _ := rd.ReadString('\n')
 	if strings.TrimSpace(answer) != "TEST START" {
 		fmt.Println("Aborted, nothing written.")
@@ -292,16 +331,25 @@ func (t *testRun) run() (rc int) {
 		fmt.Printf("  pwm%d duty %d (%d%%), stop policy %q\n", t.ch.Index, d, pct(d), t.spec.Stop)
 	}
 
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	// SIGINT/TERM/HUP/QUIT cancel the run. A cancelled run prints nothing
+	// before the deferred restore has put the channel back.
+	ctx, cancel := stopContext()
 	defer cancel()
+	aborted := false
 
 	defer func() {
-		// runs on every exit path including panics
-		if r := recover(); r != nil {
-			fmt.Printf("\n!! panic: %v\n", r)
-			rc = exitFail
-		}
-		t.restore(base)
+		// runs on every exit path including panics; the channel first,
+		// then the output
+		r := recover()
+		t.restore(base, func() {
+			if r != nil {
+				fmt.Printf("\n!! panic: %v\n", r)
+				rc = exitFail
+			}
+			if aborted {
+				fmt.Println("  aborted by signal")
+			}
+		})
 	}()
 
 	fmt.Printf("\n--- pwm%d_enable = 1 (manual; n5pro driver starts at 255) ---\n", t.ch.Index)
@@ -309,15 +357,15 @@ func (t *testRun) run() (rc int) {
 		fmt.Printf("  !! EnterManual: %v\n", err)
 		return exitFail
 	}
-	if !sleepCtx(ctx, t.sample) {
-		fmt.Println("  aborted by signal")
+	if !testSleep(ctx, t.sample) {
+		aborted = true
 		return exitFail
 	}
 	fmt.Println(t.take("  after:").text)
 
 	for _, duty := range testSteps {
 		fmt.Printf("\n--- pwm%d = %d (~%d%%) for %s ---\n", t.ch.Index, duty, pct(duty), t.hold)
-		if err := t.dev.WriteDuty(t.ch.Index, duty); err != nil {
+		if err := t.dev.WriteDuty(t.ch.Index, duty); err != nil && !errors.Is(err, profile.ErrDCRMismatch) {
 			fmt.Printf("  !! WriteDuty %d: %v (read-back mismatch or EC refused)\n", duty, err)
 			return exitFail
 		}
@@ -326,8 +374,8 @@ func (t *testRun) run() (rc int) {
 			samples = 1
 		}
 		for i := 1; i <= samples; i++ {
-			if !sleepCtx(ctx, t.sample) {
-				fmt.Println("  aborted by signal")
+			if !testSleep(ctx, t.sample) {
+				aborted = true
 				return exitFail
 			}
 			s := t.take(fmt.Sprintf("  t+%02ds", int(t.sample.Seconds())*i))
@@ -347,6 +395,14 @@ func (t *testRun) run() (rc int) {
 				}
 			}
 		}
+		// the EC register (debug_regs=1) after the hold, not right after
+		// the write: the EC takes a duty with a delay (maintenance window 1);
+		// a difference is reported, not a write error
+		if rv, ok := t.dev.(profile.RegisterVerifier); ok {
+			if err := rv.VerifyRegister(t.ch.Index, duty); err != nil {
+				fmt.Printf("  note: %v\n", err)
+			}
+		}
 	}
 
 	fmt.Println("\nSequence complete. Evaluate the tach columns:")
@@ -359,11 +415,18 @@ func (t *testRun) run() (rc int) {
 	return rc
 }
 
-// restore returns the channel to its configured safe state and compares the
-// rpm with the baseline after a settle time.
-func (t *testRun) restore(base map[int]int) {
+// restore returns the channel to its configured safe state, then prints
+// what happened before (pending: panic, signal), then the restore result,
+// and compares the rpm with the baseline after a settle time. The write
+// comes before any output: a stdout that blocks or fails must not keep
+// the channel at a test duty.
+func (t *testRun) restore(base map[int]int, pending func()) {
+	err := t.dev.SafeStop(t.ch.Index, t.spec.Stop)
+	if pending != nil {
+		pending()
+	}
 	fmt.Printf("\n--- restore: SafeStop(pwm%d, %q) ---\n", t.ch.Index, t.spec.Stop)
-	if err := t.dev.SafeStop(t.ch.Index, t.spec.Stop); err != nil {
+	if err != nil {
 		fmt.Printf("  !! SafeStop failed: %v\n", err)
 		fmt.Printf("  !! Manual fallback: echo 2 > %s/pwm%d_enable  (or modprobe -r the driver)\n", t.dev.HwmonPath(), t.ch.Index)
 	} else {
@@ -400,6 +463,7 @@ func (t *testRun) restore(base map[int]int) {
 	if ok {
 		fmt.Println("safe state restored: YES")
 	} else {
-		fmt.Println("safe state restored: NO. Watch the fans; a cold boot returns the EC to full control.")
+		fmt.Println("safe state restored: NO by the tach criterion (+-150 rpm after 20 s). That criterion is no proof either way;")
+		fmt.Println("watch the fans, and measure EC behaviour with `n5-fangov validate` (TESTSPEC, duty registers).")
 	}
 }

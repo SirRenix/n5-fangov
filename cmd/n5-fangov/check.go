@@ -2,19 +2,23 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/SirRenix/n5-fangov/internal/alert"
 	"github.com/SirRenix/n5-fangov/internal/control"
+	"github.com/SirRenix/n5-fangov/internal/debver"
 	"github.com/SirRenix/n5-fangov/internal/hwmon"
+	"github.com/SirRenix/n5-fangov/internal/hwstatus"
+	"github.com/SirRenix/n5-fangov/internal/n5driver"
+	"github.com/SirRenix/n5-fangov/internal/profile"
 )
 
 func init() {
@@ -31,7 +35,19 @@ type checkResult struct {
 	advisory bool // a failed advisory check does not change the exit code
 	name     string
 	detail   string
+	// alert is the alert kind a failure of this line raises when check
+	// runs as the unit's ExecStartPre (serve never runs then, so its own
+	// start-up alert would never be sent): "driver" or "profile".
+	alert string
 }
+
+// checkAlerter and underSystemd are replaced by tests.
+var (
+	checkAlerter = newAlerter
+	// underSystemd: systemd sets INVOCATION_ID for every process of a
+	// service, ExecStartPre included.
+	underSystemd = func() bool { return os.Getenv("INVOCATION_ID") != "" }
+)
 
 // cmdCheck is the self-check used interactively and as ExecStartPre.
 // Exit 1 when any non-advisory check fails. --quiet prints only failures.
@@ -55,6 +71,16 @@ func cmdCheck(args []string) int {
 		return cmdCheckAfterUpdate(*cfgPath, runDir())
 	}
 	results := runChecks(*cfgPath, runDir())
+	if underSystemd() {
+		// ExecStartPre: a failed profile check stops the start before
+		// serve could alert; the same alert goes out from here, with the
+		// shared start-up cooldown (no mail per restart attempt)
+		for _, r := range results {
+			if !r.ok && r.alert != "" {
+				sendAlertCooled(runDir(), checkAlerter(), r.alert, r.detail+"\nn5-fangov does not start; fans stay in BIOS/EC control.")
+			}
+		}
+	}
 	rc := exitOK
 	warnings := 0
 	for _, r := range results {
@@ -119,13 +145,23 @@ func runChecks(cfgPath, dir string) []checkResult {
 	hw := hwmon.New()
 	dev, err := detectDevice(hw, dspec.Profile)
 	if err != nil {
-		add(false, "profile", fmt.Sprintf("%q not detected: %v", dspec.Profile, err))
+		if errors.Is(err, profile.ErrWriteDisabled) || errors.Is(err, profile.ErrDriverMissing) {
+			// gate (a): the N5 Pro driver is read-only or missing on an
+			// N5 board; with profile = "auto" this used to pass as monitor
+			res = append(res, checkResult{name: "profile", detail: fmt.Sprintf("%q: %v", dspec.Profile, err), alert: "driver"})
+			return res
+		}
+		res = append(res, checkResult{name: "profile", detail: fmt.Sprintf("%q not detected: %v", dspec.Profile, err), alert: "profile"})
 		return res
 	}
 	p := dev.Profile()
 	add(true, "profile", fmt.Sprintf("%s (%s) at %s", p.Name(), p.Title(), dev.HwmonPath()))
-	if !p.Verified() {
-		adv(false, "profile verified", p.Name()+" is documentation-only, not hardware-verified")
+	hs := hardwareStatus(hw, p.Name())
+	adv(hs.Status.Verified(), "hardware status", hs.Describe())
+	if p.Name() == "n5pro" {
+		for _, r := range driverChecks(n5driver.Read(hw.Root), expectedModuleVersion(installedPackageVersion(), dkmsSourceVersion(defaultDKMSSrcRoot))) {
+			res = append(res, r)
+		}
 	}
 
 	// 3. channels: the set serve will actually manage (the same
@@ -309,7 +345,119 @@ func dkmsInstalled(pkg string) (bool, string) {
 			return true, strings.TrimSpace(line)
 		}
 	}
-	return false, pkg + " not installed for kernel " + k + " (run: dkms status " + pkg + ")"
+	return false, pkg + " not installed for kernel " + k + " (" + reinstallHint() + ")"
+}
+
+// hardwareStatus is the hardware status of profile on this machine
+// (internal/hwstatus, keyed by DMI product/board/BIOS/EC firmware).
+func hardwareStatus(hw *hwmon.FS, profileName string) hwstatus.Result {
+	return hwstatus.ForProfile(profileName, hwstatus.ReadIdentity(hw.Root))
+}
+
+// driverChecks reports the N5 Pro driver state from sysfs (gate b): the
+// loaded module's version against the installed package, and what the
+// parameters say (force, debug_regs). All advisory: a write-disabled driver
+// already fails the profile check.
+func driverChecks(st n5driver.State, wantVersion string) []checkResult {
+	var out []checkResult
+	adv := func(ok bool, detail string) {
+		out = append(out, checkResult{ok: ok, advisory: true, name: "driver", detail: detail})
+	}
+	if !st.Loaded {
+		adv(false, n5driver.ModuleName+" not loaded (no /sys/module entry)")
+		return out
+	}
+	ver := st.Version
+	if ver == "" {
+		ver = "?"
+	}
+	desc := fmt.Sprintf("%s %s, srcversion %s, %s", n5driver.ModuleName, ver, orDash(st.SrcVersion), st.Mode())
+	switch {
+	case wantVersion != "" && st.Version != wantVersion:
+		adv(false, desc+fmt.Sprintf("; the installed package expects %s: reload the module with the daemon stopped (systemctl stop n5-fangov; modprobe -r %s; modprobe %s; systemctl start n5-fangov)", wantVersion, n5driver.ModuleName, n5driver.ModuleName))
+	default:
+		adv(true, desc)
+	}
+	for _, f := range st.Findings() {
+		adv(false, f)
+	}
+	return out
+}
+
+// reinstallHint is the repair step for a missing or stale module: the
+// driver package rebuilds the module for every kernel with headers. A
+// hand-run `dkms install <version>` is not offered: it bypasses the
+// package's options, autoload entry and version checks.
+func reinstallHint() string {
+	if installedPackageVersion() != "" {
+		return "reinstall the driver package: apt install --reinstall " + n5driver.PackageName
+	}
+	return "install the driver package " + n5driver.PackageName + " (.deb from the driver repository's release, see docs/02-kernel-driver.md)"
+}
+
+// installedPackageVersion is the Debian version of the installed driver
+// package ("0.2.1+sr1~rc1-1"), "" when it is not installed; a func var for
+// tests.
+var installedPackageVersion = func() string {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "dpkg-query", "-W", "-f=${db:Status-Abbrev}${Version}", n5driver.PackageName).Output()
+	if err != nil {
+		return ""
+	}
+	return parseDpkgInstalled(string(out))
+}
+
+// parseDpkgInstalled reads `dpkg-query -f '${db:Status-Abbrev}${Version}'`
+// and returns the version of an installed package, "" otherwise. The
+// abbreviation has three characters: the selection (i install, h hold, r
+// remove, p purge, u unknown), the package state (i = installed) and the
+// error flag (blank or R). Only the second character says "installed": a
+// held package ("hi ") is installed too (audit 2026-10-16 G1; before, it
+// counted as missing and the hint said "install" instead of "reinstall").
+func parseDpkgInstalled(s string) string {
+	s = strings.TrimRight(s, "\r\n")
+	if len(s) < 3 || s[1] != 'i' {
+		return ""
+	}
+	return strings.TrimSpace(s[3:])
+}
+
+// moduleVersionOf is `modinfo -F version <file>` of a built module (also
+// compressed); a func var for tests.
+var moduleVersionOf = func(path string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "modinfo", "-F", "version", path).Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// legacyModuleVersion maps an unpatched upstream package version to the
+// MODULE_VERSION its source declares: upstream v0.2.1 still says "0.2.0"
+// (driver repository packaging/UPSTREAM). From 0.2.1+sr1 the patch series
+// sets MODULE_VERSION to the DKMS PACKAGE_VERSION.
+var legacyModuleVersion = map[string]string{"0.2.1": "0.2.0"}
+
+// expectedModuleVersion is the MODULE_VERSION a correct build carries:
+// from the installed package's version (Debian revision stripped), else
+// from the newest DKMS source tree; "" when neither is known.
+func expectedModuleVersion(pkgVersion, srcVersion string) string {
+	base := srcVersion
+	if pkgVersion != "" {
+		base = debver.UpstreamOf(pkgVersion)
+	}
+	if base == "" {
+		return ""
+	}
+	if !strings.Contains(base, "+sr") {
+		if m, ok := legacyModuleVersion[base]; ok {
+			return m
+		}
+	}
+	return base
 }
 
 // ---------------------------------------------------------------------------
@@ -319,25 +467,29 @@ func dkmsInstalled(pkg string) (bool, string) {
 const (
 	dkmsPackage        = "minisforum-n5-it5571"
 	dkmsKernelObject   = "minisforum_n5_it5571.ko"
-	dkmsFallbackVer    = "0.2.0"
 	defaultModulesRoot = "/lib/modules"
 	defaultDKMSSrcRoot = "/usr/src"
 )
 
 // cmdCheckAfterUpdate is run by /etc/apt/apt.conf.d/90n5-fangov after every
 // dpkg run. On a machine that uses the n5pro profile every kernel the box
-// can boot into must carry the DKMS module, otherwise the next reboot
-// starts without the EC driver: ExecStartPre fails, the fans stay in BIOS
-// control and the onfailure alert fires — this check says it earlier,
-// while the old kernel still runs.
+// can boot into must carry the DKMS module in the version of the installed
+// driver package, otherwise the next reboot starts without the EC driver
+// (ExecStartPre fails, the fans stay in BIOS control, the onfailure alert
+// fires) or with an old build — this check says it earlier, while the old
+// kernel still runs.
 //
 // "Can boot into" is the running kernel plus what
 // `proxmox-boot-tool kernel list` selects (manually, automatically,
 // pinned); without the tool: the running kernel and the newest installed
 // one. Older kernels that are merely still installed (apt keeps two) get
 // an info line only — a module missing there is not worth a notification.
+// The version check compares `modinfo -F version` of each kernel's
+// updates/dkms module with the MODULE_VERSION the installed package
+// builds (expectedModuleVersion); it is skipped when neither the package
+// nor a DKMS source tree says which version to expect.
 // Exit 1 and a "kernel" alert (cooldown) when a relevant kernel lacks the
-// module; other profiles: ok, exit 0.
+// module or carries another version; other profiles: ok, exit 0.
 func cmdCheckAfterUpdate(cfgPath, dir string) int {
 	cfg, _, _ := loadConfig(cfgPath)
 	profileName := daemonOf(cfg).Profile
@@ -345,62 +497,129 @@ func cmdCheckAfterUpdate(cfgPath, dir string) int {
 	if dev, err := detectDevice(hwmon.New(), profileName); err == nil {
 		detected = dev.Profile().Name()
 	}
-	if !wantsN5Pro(profileName, detected, dkmsSourceVersion(defaultDKMSSrcRoot) != "") {
+	srcVer := dkmsSourceVersion(defaultDKMSSrcRoot)
+	if !wantsN5Pro(profileName, detected, srcVer != "") {
 		fmt.Println("n5-fangov: kernel gate not applicable (profile is not n5pro)")
 		return exitOK
 	}
-	kernels, missing, err := scanKernelModules(defaultModulesRoot, dkmsKernelObject)
+	toolOut, toolErr := bootToolKernelList()
+	g, err := kernelGate(defaultModulesRoot, expectedModuleVersion(installedPackageVersion(), srcVer), runningKernel(), toolOut, toolErr)
 	if err != nil {
 		fmt.Printf("n5-fangov: kernel gate: %v\n", err)
 		return exitFail
 	}
-	if len(kernels) == 0 {
-		fmt.Printf("n5-fangov: kernel gate: no kernels found under %s\n", defaultModulesRoot)
-		return exitOK
-	}
-	ver := dkmsSourceVersion(defaultDKMSSrcRoot)
-	if ver == "" {
-		ver = dkmsFallbackVer
-	}
-	toolOut, toolErr := bootToolKernelList()
-	relevant, source := relevantKernels(runningKernel(), kernels, toolOut, toolErr)
-	if len(missing) == 0 {
-		fmt.Printf("n5-fangov: fan driver module present for %d kernel(s): %s\n", len(kernels), strings.Join(kernels, " "))
-		return exitOK
-	}
-	var alertLines, infoLines []string
-	for _, k := range missing {
-		if relevant[k] {
-			alertLines = append(alertLines, kernelMissingLine(k, ver))
-		} else {
-			infoLines = append(infoLines, kernelMissingInfo(k, ver))
-		}
-	}
-	for _, l := range infoLines {
+	for _, l := range g.info {
 		fmt.Println(l)
 	}
-	if len(alertLines) == 0 {
-		fmt.Printf("n5-fangov: fan driver module present for every bootable kernel (%s)\n", source)
+	if len(g.alert) == 0 {
+		fmt.Println(g.okLine)
 		return exitOK
 	}
-	for _, l := range alertLines {
+	for _, l := range g.alert {
 		fmt.Println(l)
 	}
-	msg := fmt.Sprintf("Fan driver module %s is missing for %d bootable kernel(s) (%s). A reboot into such a kernel leaves the fans in BIOS/EC control (n5-fangov will not start).\n%s",
-		dkmsKernelObject, len(alertLines), source, strings.Join(alertLines, "\n"))
+	msg := fmt.Sprintf("Fan driver module %s is missing or not the installed version for %d bootable kernel(s) (%s). A reboot into such a kernel leaves the fans in BIOS/EC control (n5-fangov will not start) or runs an old driver build.\n%s",
+		dkmsKernelObject, len(g.alert), g.source, strings.Join(g.alert, "\n"))
 	sendAlertCooled(dir, newAlerter(), "kernel", msg)
 	return exitFail
 }
 
-// kernelMissingLine is the line printed per bootable kernel without the module.
-func kernelMissingLine(kernel, ver string) string {
-	return fmt.Sprintf("kernel %s: fan driver module missing - run: dkms install %s/%s -k %s", kernel, dkmsPackage, ver, kernel)
+// gateResult is the outcome of kernelGate: alert lines (bootable kernels
+// without a usable module), info lines (other kernels, unreadable
+// versions) and the line printed when nothing needs an alert.
+type gateResult struct {
+	alert, info []string
+	okLine      string
+	source      string // which rule chose the bootable kernels
 }
 
-// kernelMissingInfo is the line for an installed kernel the box does not
-// boot into (no alert).
-func kernelMissingInfo(kernel, ver string) string {
-	return fmt.Sprintf("kernel %s: fan driver module missing (not selected for boot, info only; dkms install %s/%s -k %s if you intend to boot it)", kernel, dkmsPackage, ver, kernel)
+// kernelGate scans root (/lib/modules) for the module of every kernel and,
+// when want is set, compares its version. A missing module or another
+// version on a bootable kernel is an alert line, on any other kernel an
+// info line.
+func kernelGate(root, want, running, toolOut string, toolErr error) (gateResult, error) {
+	var g gateResult
+	kernels, missing, err := scanKernelModules(root, dkmsKernelObject)
+	if err != nil {
+		return g, err
+	}
+	if len(kernels) == 0 {
+		g.okLine = fmt.Sprintf("n5-fangov: kernel gate: no kernels found under %s", root)
+		return g, nil
+	}
+	relevant, source := relevantKernels(running, kernels, toolOut, toolErr)
+	g.source = source
+	isMissing := map[string]bool{}
+	for _, k := range missing {
+		isMissing[k] = true
+	}
+	compared := 0 // modules whose version was read and compared with want
+	for _, k := range kernels {
+		var line string
+		switch {
+		case isMissing[k]:
+			line = kernelMissingLine(k)
+		case want != "":
+			got, err := moduleVersionOf(kernelModulePath(root, k, dkmsKernelObject))
+			if err == nil {
+				compared++
+			}
+			switch {
+			case err != nil:
+				g.info = append(g.info, fmt.Sprintf("kernel %s: fan driver module version not readable (%v), version check skipped", k, err))
+				continue
+			case got != want:
+				line = kernelStaleLine(k, got, want)
+			default:
+				continue
+			}
+		default:
+			continue
+		}
+		if relevant[k] {
+			g.alert = append(g.alert, line)
+		} else {
+			g.info = append(g.info, line+" (not selected for boot, info only)")
+		}
+	}
+	// the OK line names a version only when at least one module was
+	// actually compared with it (audit 2026-10-16 G2)
+	verNote := ""
+	if want != "" && compared > 0 {
+		verNote = ", version " + want
+	}
+	switch {
+	case len(missing) == 0 && len(g.info) == 0:
+		g.okLine = fmt.Sprintf("n5-fangov: fan driver module present for %d kernel(s)%s: %s", len(kernels), verNote, strings.Join(kernels, " "))
+	default:
+		g.okLine = fmt.Sprintf("n5-fangov: fan driver module present for every bootable kernel%s (%s)", verNote, source)
+	}
+	return g, nil
+}
+
+// kernelModulePath is the module file of kernel under root (also
+// compressed); the uncompressed name when none exists.
+func kernelModulePath(root, kernel, ko string) string {
+	for _, suffix := range []string{"", ".xz", ".zst", ".gz"} {
+		p := filepath.Join(root, kernel, "updates", "dkms", ko+suffix)
+		if isFile(p) {
+			return p
+		}
+	}
+	return filepath.Join(root, kernel, "updates", "dkms", ko)
+}
+
+// kernelMissingLine is the line for a kernel without the module.
+func kernelMissingLine(kernel string) string {
+	return fmt.Sprintf("kernel %s: fan driver module missing - %s (needs the headers of %s)", kernel, reinstallHint(), kernel)
+}
+
+// kernelStaleLine is the line for a kernel whose module is another build.
+func kernelStaleLine(kernel, got, want string) string {
+	if got == "" {
+		got = "(none)"
+	}
+	return fmt.Sprintf("kernel %s: fan driver module version %s, the installed package builds %s - %s", kernel, got, want, reinstallHint())
 }
 
 // bootToolKernelList runs `proxmox-boot-tool kernel list`; a func var so
@@ -588,23 +807,9 @@ func dkmsSourceVersion(root string) string {
 	return vers[len(vers)-1]
 }
 
-// versionLess compares dotted numeric versions ("0.2.0" < "0.10.0").
-func versionLess(a, b string) bool {
-	as, bs := strings.Split(a, "."), strings.Split(b, ".")
-	for i := 0; i < len(as) || i < len(bs); i++ {
-		var x, y int
-		if i < len(as) {
-			x, _ = strconv.Atoi(as[i])
-		}
-		if i < len(bs) {
-			y, _ = strconv.Atoi(bs[i])
-		}
-		if x != y {
-			return x < y
-		}
-	}
-	return false
-}
+// versionLess orders versions like dpkg --compare-versions (deb-version(7)):
+// "0.2.0" < "0.10.0", "0.2.1+sr1~rc1" < "0.2.1+sr1" < "0.2.1+sr2~rc1".
+func versionLess(a, b string) bool { return debver.Less(a, b) }
 
 func isDir(p string) bool {
 	st, err := os.Stat(p)

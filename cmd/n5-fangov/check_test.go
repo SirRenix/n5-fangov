@@ -265,9 +265,13 @@ func TestScanKernelModules(t *testing.T) {
 	if strings.Join(missing, " ") != "6.17.4-1-pve 6.17.4-2-pve" {
 		t.Errorf("missing: %v", missing)
 	}
-	line := kernelMissingLine("6.17.4-1-pve", "0.2.0")
-	if line != "kernel 6.17.4-1-pve: fan driver module missing - run: dkms install minisforum-n5-it5571/0.2.0 -k 6.17.4-1-pve" {
+	stubPackage(t, "0.2.1-1")
+	line := kernelMissingLine("6.17.4-1-pve")
+	if line != "kernel 6.17.4-1-pve: fan driver module missing - reinstall the driver package: apt install --reinstall minisforum-n5-it5571-dkms (needs the headers of 6.17.4-1-pve)" {
 		t.Errorf("line: %s", line)
+	}
+	if strings.Contains(line, "dkms install") {
+		t.Error("hint must not be dkms install <version>")
 	}
 	if _, _, err := scanKernelModules(filepath.Join(root, "nope"), dkmsKernelObject); err == nil {
 		t.Errorf("missing root must error")
@@ -337,9 +341,6 @@ Pinned kernel:
 	}
 	if kernelLess("6.17.4-2-pve", "6.17.4-2-pve") {
 		t.Error("kernelLess equal")
-	}
-	if l := kernelMissingInfo("6.8.12-9-pve", "0.2.0"); !strings.Contains(l, "info only") || !strings.Contains(l, "dkms install minisforum-n5-it5571/0.2.0 -k 6.8.12-9-pve") {
-		t.Errorf("info line: %s", l)
 	}
 	// the func vars run real commands by default; on the test host uname
 	// works and the tool is absent or works — both paths must not panic
@@ -504,5 +505,182 @@ func TestCheckEmergencyHookLine(t *testing.T) {
 		}
 	} else if r.ok || !strings.Contains(r.detail, "refused: not owned by root") {
 		t.Errorf("non-root 0750: %+v", r)
+	}
+}
+
+// stubPackage makes installedPackageVersion report ver ("" = not installed).
+func stubPackage(t *testing.T, ver string) {
+	t.Helper()
+	old := installedPackageVersion
+	installedPackageVersion = func() string { return ver }
+	t.Cleanup(func() { installedPackageVersion = old })
+}
+
+// Gate (c): versions sort like dpkg --compare-versions, including the
+// driver's "+srN" and "~rcN".
+func TestVersionLessDpkgSemantics(t *testing.T) {
+	chain := []string{"0.2.0", "0.2.1", "0.2.1+sr1~rc1", "0.2.1+sr1", "0.2.1+sr2~rc1", "0.2.2"}
+	for i := range chain {
+		for j := range chain {
+			if got, want := versionLess(chain[i], chain[j]), i < j; got != want {
+				t.Errorf("versionLess(%q, %q) = %v, want %v", chain[i], chain[j], got, want)
+			}
+		}
+	}
+	src := t.TempDir()
+	for _, v := range []string{"0.2.1", "0.2.1+sr1~rc1", "0.2.0"} {
+		if err := os.Mkdir(filepath.Join(src, dkmsPackage+"-"+v), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if v := dkmsSourceVersion(src); v != "0.2.1+sr1~rc1" {
+		t.Fatalf("newest source tree %q", v)
+	}
+}
+
+func TestExpectedModuleVersion(t *testing.T) {
+	for _, c := range []struct{ pkg, src, want string }{
+		{"0.2.1+sr1~rc1-1", "", "0.2.1+sr1~rc1"},
+		{"0.2.1+sr1-1", "0.2.1+sr1~rc1", "0.2.1+sr1"}, // the package wins over a leftover source tree
+		{"0.2.1-1", "", "0.2.0"},                      // upstream v0.2.1 declares MODULE_VERSION 0.2.0
+		{"", "0.2.1", "0.2.0"},                        // hand installation, source tree only
+		{"", "0.2.1+sr2", "0.2.1+sr2"},
+		{"", "", ""},
+	} {
+		if got := expectedModuleVersion(c.pkg, c.src); got != c.want {
+			t.Errorf("expectedModuleVersion(%q, %q) = %q, want %q", c.pkg, c.src, got, c.want)
+		}
+	}
+}
+
+// Gate (d): the kernel gate checks the module VERSION per kernel, not only
+// that the file exists; (e): the hint is the .deb, never dkms install.
+func TestKernelGateModuleVersion(t *testing.T) {
+	stubPackage(t, "0.2.1+sr1~rc1-1")
+	root := t.TempDir()
+	mkKernel(t, root, "7.0.12-1-pve", true, dkmsKernelObject)
+	mkKernel(t, root, "7.0.14-20-pve", true, dkmsKernelObject+".zst")
+	mkKernel(t, root, "6.17.4-1-pve", true, dkmsKernelObject) // old, not bootable
+	vers := map[string]string{"7.0.12-1-pve": "0.2.1+sr1~rc1", "7.0.14-20-pve": "0.2.0", "6.17.4-1-pve": "0.2.0"}
+	old := moduleVersionOf
+	moduleVersionOf = func(p string) (string, error) {
+		k := filepath.Base(filepath.Dir(filepath.Dir(filepath.Dir(p))))
+		if !strings.HasPrefix(filepath.Base(p), dkmsKernelObject) {
+			t.Errorf("modinfo on %s", p)
+		}
+		return vers[k], nil
+	}
+	t.Cleanup(func() { moduleVersionOf = old })
+	tool := "Automatically selected kernels:\n7.0.14-20-pve\n7.0.12-1-pve\n"
+	g, err := kernelGate(root, "0.2.1+sr1~rc1", "7.0.14-20-pve", tool, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(g.alert) != 1 || !strings.Contains(g.alert[0], "kernel 7.0.14-20-pve: fan driver module version 0.2.0, the installed package builds 0.2.1+sr1~rc1 - reinstall the driver package: apt install --reinstall minisforum-n5-it5571-dkms") {
+		t.Fatalf("alert: %q", g.alert)
+	}
+	if len(g.info) != 1 || !strings.Contains(g.info[0], "6.17.4-1-pve") || !strings.Contains(g.info[0], "info only") {
+		t.Fatalf("info: %q", g.info)
+	}
+	// all current: one ok line with the version
+	vers["7.0.14-20-pve"], vers["6.17.4-1-pve"] = "0.2.1+sr1~rc1", "0.2.1+sr1~rc1"
+	g, _ = kernelGate(root, "0.2.1+sr1~rc1", "7.0.14-20-pve", tool, nil)
+	if len(g.alert) != 0 || len(g.info) != 0 || !strings.Contains(g.okLine, "present for 3 kernel(s), version 0.2.1+sr1~rc1") {
+		t.Fatalf("all current: %+v", g)
+	}
+	// no expectation (neither package nor source tree): existence only
+	vers["7.0.14-20-pve"] = "something"
+	if g, _ = kernelGate(root, "", "7.0.14-20-pve", tool, nil); len(g.alert) != 0 {
+		t.Fatalf("no expectation: %+v", g)
+	}
+	// unreadable version: info, no alert
+	moduleVersionOf = func(string) (string, error) { return "", errors.New("modinfo: not found") }
+	if g, _ = kernelGate(root, "0.2.1+sr1~rc1", "7.0.14-20-pve", tool, nil); len(g.alert) != 0 || len(g.info) != 3 {
+		t.Fatalf("modinfo failing: %+v", g)
+	}
+	// G2 (audit 2026-10-16): nothing was compared, so the OK line names no version
+	if strings.Contains(g.okLine, "version") {
+		t.Fatalf("ok line names a version nothing was compared with: %q", g.okLine)
+	}
+	// missing module on a bootable kernel: alert with the .deb hint
+	mkKernel(t, root, "7.0.15-1-pve", true, "")
+	g, _ = kernelGate(root, "", "7.0.14-20-pve", tool+"7.0.15-1-pve\n", nil)
+	if len(g.alert) != 1 || !strings.Contains(g.alert[0], "7.0.15-1-pve: fan driver module missing - reinstall the driver package") {
+		t.Fatalf("missing: %+v", g)
+	}
+	stubPackage(t, "")
+	if l := kernelMissingLine("x"); !strings.Contains(l, "install the driver package minisforum-n5-it5571-dkms (.deb") {
+		t.Fatalf("hand-install hint: %s", l)
+	}
+}
+
+// G1 (audit 2026-10-16): the second character of the dpkg status
+// abbreviation says "installed"; a held package counts.
+func TestParseDpkgInstalled(t *testing.T) {
+	for in, want := range map[string]string{
+		"ii 0.2.1+sr1~rc1-1":   "0.2.1+sr1~rc1-1",
+		"hi 0.2.1+sr1~rc1-1\n": "0.2.1+sr1~rc1-1",
+		"iiR0.2.1-1":           "0.2.1-1",
+		"un ":                  "",
+		"rc 0.2.1-1":           "",
+		"iU 0.2.1-1":           "",
+		"pn ":                  "",
+		"":                     "",
+		"i":                    "",
+	} {
+		if got := parseDpkgInstalled(in); got != want {
+			t.Errorf("parseDpkgInstalled(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// Gate (a): profile = "auto" with the N5 Pro driver loaded read-only is a
+// FAIL with the reason, not a passing check on the monitor profile.
+func TestCheckAutoWriteDisabledFails(t *testing.T) {
+	root := fakeN5(t, false)
+	for _, a := range []string{"pwm1", "pwm1_enable", "pwm2", "pwm2_enable", "pwm3", "pwm3_enable", "pwm4", "pwm4_enable"} {
+		if err := os.Remove(filepath.Join(root, "class", "hwmon", "hwmon14", a)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p := filepath.Join(root, "module", "minisforum_n5_it5571", "parameters")
+	if err := os.MkdirAll(p, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(p, "force"), []byte("Y\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	t.Setenv("N5FANGOV_RUN_DIR", dir)
+	cfg := writeCfg(t, dir, "[daemon]\nprofile = \"auto\"\n")
+	out, _, rc := captureOutput(t, func() int { return cmdCheck([]string{"--config", cfg}) })
+	if rc != exitFail || !strings.Contains(out, "[FAIL] profile") || !strings.Contains(out, "read-only") || !strings.Contains(out, "force-loaded") || strings.Contains(out, "monitor (Monitoring only") {
+		t.Fatalf("rc %d:\n%s", rc, out)
+	}
+}
+
+// Gate (b) and the hardware status line: the reference identity shows
+// experimental, the driver line carries version and mode.
+func TestCheckHardwareStatusAndDriver(t *testing.T) {
+	referenceN5(t)
+	fakeProc(t)
+	stubPackage(t, "0.2.1+sr1~rc1-1")
+	dir := t.TempDir()
+	t.Setenv("N5FANGOV_RUN_DIR", dir)
+	cfg := writeCfg(t, dir, "[daemon]\nprofile = \"n5pro\"\n")
+	out, _, _ := captureOutput(t, func() int { return cmdCheck([]string{"--config", cfg}) })
+	for _, want := range []string{
+		"[warn] hardware status        experimental (N5 PRO / F8NAA / BIOS 1.05 / EC 0.14",
+		"[ok  ] driver                 minisforum_n5_it5571 0.2.1+sr1~rc1, srcversion 886E3C25669AF187D2E96F0, write-enabled",
+		"[warn] driver                 debug_regs=Y",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("check output lacks %q:\n%s", want, out)
+		}
+	}
+	stubPackage(t, "0.2.1+sr2-1")
+	out, _, _ = captureOutput(t, func() int { return cmdCheck([]string{"--config", cfg}) })
+	if !strings.Contains(out, "the installed package expects 0.2.1+sr2: reload the module") {
+		t.Errorf("stale module not reported:\n%s", out)
 	}
 }

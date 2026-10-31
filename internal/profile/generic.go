@@ -50,10 +50,9 @@ func IT87xx() Profile {
 	}
 }
 
-func (g *generic) Name() string   { return g.name }
-func (g *generic) Title() string  { return g.title }
-func (g *generic) Verified() bool { return false }
-func (g *generic) Notes() string  { return g.notes }
+func (g *generic) Name() string  { return g.name }
+func (g *generic) Title() string { return g.title }
+func (g *generic) Notes() string { return g.notes }
 
 // Detect finds the first hwmon device matching the chip name regexp, scans
 // its pwm channels and captures the original pwmN_enable values so that

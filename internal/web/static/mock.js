@@ -188,7 +188,7 @@ window.n5mock = (() => {
 		if (M.in && M.exp && now - t0 > 15 && p === '/api/state') { M.in = M.exp = false; return fail('unauthorized', 401); } // &expire=1: session dies once after 15 s
 		if (Q.get('down') === '1' && now - t0 > 2 && /^\/api\/(state|history|sensors)$/.test(p)) return fail('network: mock down', 0); // &down=1: after the boot the poll path fails like a lost daemon (status 0 = no answer) → connection banner
 		if (p === '/api/state') { const pt = point(now), stall = (now | 0) % 40 < 3, hold = (now | 0) % 300 < 90;
-			const body = { ts: pt.ts, status: 'ok', profile: 'n5pro', verified: true, dry_run: false, uptime_s: 435723,
+			const body = { ts: pt.ts, status: 'ok', profile: 'n5pro', verified: false, hw_status: 'experimental', dry_run: false, uptime_s: 435723,
 				// like the daemon: an override replaces the target and the mode, stall and critical win on top; &lag=1 reports the previous
 				// override state for two more polls (the daemon's snapshot follows a PUT/DELETE only with the next cycle)
 				channels: cfg.channel.map(c => { const n = c.name, st = n === 'hdd' && stall, lg = ovLag[n], ov = lg && lg.left-- > 0 ? lg.ov : overrides[n]; if (lg && lg.left <= 0) delete ovLag[n];
@@ -240,7 +240,7 @@ window.n5mock = (() => {
 		if (p === '/api/config/import') { let j; try { j = JSON.parse(opt.body); } catch (e) { j = null; }
 			if (!j || j.format !== 1) return fail('import rejected: bundle format missing\nexpected "format": 1', 400);
 			return wait({ status: /restart/.test(opt.body) ? 202 : 200, body: { ok: true } }); }
-		if (p === '/api/profiles') return ok([{ name: 'n5pro', title: 'Minisforum N5 Pro (IT5571 EC)', verified: true, notes: 'EC does not resume HDD regulation after a write; stop = fixed duty.' }, { name: 'nct67xx', title: 'Nuvoton NCT67xx (SmartFan IV)', verified: false, notes: 'Auto = pwmN_enable 5.' }]);
+		if (p === '/api/profiles') return ok([{ name: 'n5pro', title: 'Minisforum N5 Pro (IT5571 EC)', verified: false, hw_status: 'experimental', notes: 'HDD channel leaves the written value after the hand-back; EC regulation unproven, stop = fixed duty.' }, { name: 'nct67xx', title: 'Nuvoton NCT67xx (SmartFan IV)', verified: false, hw_status: 'unknown', notes: 'Auto = pwmN_enable 5.' }]);
 		if (p === '/api/alerts') { if (m === 'PUT') { const j = opt.json || {}; if (!/^(auto|pve|mail|webhook|log|off)$/.test(j.transport)) return fail('transport: unknown value', 400);
 				if (j.mail_to !== undefined && /[\s"']/.test(j.mail_to || '')) return fail('mail_to: no spaces or quotes', 400);
 				if (j.webhook_url !== undefined && j.webhook_url !== '' && !/^https?:\/\/[^\s/@]+/.test(j.webhook_url)) return fail('webhook_url: absolute http(s) URL with a host, no userinfo', 400);

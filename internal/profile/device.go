@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"sort"
 	"strconv"
+	"time"
 
 	"github.com/SirRenix/n5-fangov/internal/hwmon"
 )
@@ -30,6 +31,15 @@ type pwmDevice struct {
 	// autoValue returns the pwmN_enable value that hands the channel back
 	// to the chip's own regulation (SafeStop "auto").
 	autoValue func(ch int) string
+	// hwVerify, when set, checks a written duty against the hardware
+	// register behind the sysfs cache (n5pro: the optional debugfs dump of
+	// the EC duty registers). It returns nil when it cannot check. It is
+	// not part of WriteDuty: the register takes the value with a delay
+	// (VerifyRegister, RegisterSettle).
+	hwVerify func(ch, duty int) error
+	// settle is how long the hardware register may take to show a written
+	// duty (RegisterSettle); nil = no hardware register check.
+	settle func(ch int) time.Duration
 }
 
 func (d *pwmDevice) Profile() Profile    { return d.prof }
@@ -97,7 +107,11 @@ func (d *pwmDevice) EnterManual(ch int) error {
 }
 
 // WriteDuty ensures manual mode (DESIGN rule 2), writes pwmN and reads it
-// back (rule 3).
+// back (rule 3). The read-back proves what the driver accepted, not what the
+// chip holds: a driver may answer pwmN from its own cache (the N5 Pro EC
+// driver does). Where the profile has a hardware read path, the register is
+// checked separately once it had time to settle (VerifyRegister): the N5 Pro
+// EC takes a written duty with a delay (maintenance window 1, 2026-10-17).
 func (d *pwmDevice) WriteDuty(ch int, duty int) error {
 	if duty < 0 || duty > 255 {
 		return fmt.Errorf("profile %s: duty %d out of range 0..255", d.prof.Name(), duty)
@@ -106,6 +120,25 @@ func (d *pwmDevice) WriteDuty(ch int, duty int) error {
 		return err
 	}
 	return d.fs.WriteVerify(d.attr(fmt.Sprintf("pwm%d", ch)), strconv.Itoa(duty))
+}
+
+// VerifyRegister compares the hardware register of ch with duty (one
+// read, no wait). It returns nil when the profile has no register path or
+// the register cannot be read, ErrDCRMismatch when it differs.
+func (d *pwmDevice) VerifyRegister(ch, duty int) error {
+	if d.hwVerify == nil {
+		return nil
+	}
+	return d.hwVerify(ch, duty)
+}
+
+// RegisterSettle is the time after a write before the register of ch is
+// compared; 0 when the profile has no register check.
+func (d *pwmDevice) RegisterSettle(ch int) time.Duration {
+	if d.hwVerify == nil || d.settle == nil {
+		return 0
+	}
+	return d.settle(ch)
 }
 
 // SafeStop hands the channel back to the chip ("auto") or pins it to a

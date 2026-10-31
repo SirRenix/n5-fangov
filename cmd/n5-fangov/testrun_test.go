@@ -3,9 +3,9 @@ package main
 import "testing"
 
 // The verification run must not hand pwm3 back to the EC on the N5 Pro:
-// the EC does not regulate that channel after a write (measured
-// 2026-09-14). The stop value therefore comes from the sanitized channel
-// list, not from the raw config.
+// after the hand-back the channel leaves the written value, but whether the
+// EC curve then regulates it is unproven (2026-09-14 data). The stop value
+// therefore comes from the sanitized channel list, not from the raw config.
 func TestTestStopPolicy(t *testing.T) {
 	hdd := chanSpec{Name: "hdd", PWM: 3, Sensor: "drivetemp:max", Curve: [][2]int{{36, 105}, {46, 255}}, Critical: 56, Stop: "auto"}
 	cpu := chanSpec{Name: "cpu", PWM: 1, Sensor: "k10temp", Curve: [][2]int{{45, 85}, {80, 255}}, Critical: 88, Stop: "auto"}

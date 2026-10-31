@@ -269,7 +269,8 @@ const seriesColor = i => SERIES[i % SERIES.length];
 const modeBadge = (el, m, ceil) => { el.className = 'mode m-' + (m || 'unknown'); el.textContent = m || 'unknown'; el.title = m === 'stall' ? 'stall: the fan reports 0 rpm, the channel is raised until it spins' : m === 'critical' ? (ceil ? 'ceiling reached: ' + TIP.ceiling : TIP.critical) : ''; };
 const chanHead = (c, ...pre) => h('span', null, ...pre, h('span', { class: 'name' }, c.name), h('span', { class: 'sub' }, `pwm${c.pwm} · ${c.sensor || '?'}`));
 const act = async (fn, ok) => { try { const r = await fn(); if (ok) toast(typeof ok === 'function' ? ok(r) : ok, 'ok'); return r; } catch (e) { toast(e.message, 'err'); } };
-const verTxt = v => v ? 'verified on hardware' : 'from documentation · untested';
+// hardware status (validated/tested/experimental/unknown); an older daemon sends only verified
+const verTxt = (s, v) => s ? 'hardware ' + s : v ? 'verified on hardware' : 'from documentation · untested';
 const preBadge = (els, pre) => { for (const el of els) { el.hidden = !pre; el.textContent = (pre || '').split('.')[0]; } };
 const errText = e => /lspci.*(not found|no such file)/i.test(e) ? 'lspci not installed — apt install pciutils for PCI device names (ids only until then)' : e;
 
@@ -279,7 +280,7 @@ function renderHeader() {
 	if (version) { for (const v of $$('.version')) v.textContent = 'v' + version.replace(/^v/, ''); const nv = $('#nav-ver'); if (nv) nv.textContent = 'v' + version.replace(/^v/, ''); }
 	if (!snap) return;
 	const pr = profiles.find(x => x.name === snap.profile), title = pr ? pr.title : snap.profile || '—', pf = $('#h-profile');
-	pf.textContent = title; pf.title = title + (snap.verified === undefined ? '' : ' · ' + verTxt(snap.verified));
+	pf.textContent = title; pf.title = title + (snap.verified === undefined && !snap.hw_status ? '' : ' · ' + verTxt(snap.hw_status, snap.verified));
 	const st = snap.dry_run ? 'dry-run' : snap.status || 'unknown';
 	const c = $('#h-status'); c.className = 'chip ' + st; if (c.textContent !== st) c.textContent = st; // role=status: no mutation without change
 	for (const u of $$('.uptime')) u.textContent = 'up ' + fmtUp(snap.uptime_s || 0);
@@ -666,7 +667,7 @@ function buildEditors(keepNotice) { // keepNotice: the 202 / warnings notice of 
 		lv.pctEl = h('span', { class: 'hint sm' });
 		lv.show = (v, keep) => { lv.range.value = v; if (!keep) lv.num.value = v; lv.pctEl.textContent = `${pct(v)} %`;
 			lv.low = lv.min > 0 && v < lv.min; lv.set.disabled = lv.low || lv.box.dataset.off === 'true';
-			lv.warn.textContent = lv.min ? `HDD-like channel: minimum ${lv.min} (the EC stops regulating it; lower values are refused)` : 'Critical-temperature and stall guards still apply and override any manual value.'; lv.warn.classList.toggle('on', lv.low); };
+			lv.warn.textContent = lv.min ? `HDD-like channel: minimum ${lv.min} (not handed back to the EC; lower values are refused)` : 'Critical-temperature and stall guards still apply and override any manual value.'; lv.warn.classList.toggle('on', lv.low); };
 		// the switch: Manual holds the duty the channel runs now (PUT /api/override with the snapshot duty), Auto is the DELETE. The snapshot mode follows
 		// with the next cycle, so the switch shows the client flag lv.on, held through a pending window (lv.pend) — see renderLive. aria-busy, not disabled: the focus stays
 		lv.sw = h('button', { class: 'switch', role: 'switch', 'aria-checked': 'false', 'aria-label': `${c.name}: manual override`, onclick: async () => {
@@ -1068,7 +1069,7 @@ function renderProfiles() {
 	const tb = clear($('#profiles tbody'));
 	for (const p of profiles) { const act = snap && snap.profile === p.name;
 		tb.append(h('tr', { class: act ? 'active' : '' }, h('td', { class: 'mono' }, p.name, act ? h('span', { class: 'act' }, 'ACTIVE') : null), h('td', null, p.title || ''),
-			h('td', null, h('span', { class: 'badge ' + (p.verified ? 'ok' : 'warn') }, verTxt(p.verified))), h('td', null, p.notes || ''))); }
+			h('td', null, h('span', { class: 'badge ' + (p.verified ? 'ok' : 'warn') }, verTxt(p.hw_status, p.verified))), h('td', null, p.notes || ''))); }
 }
 
 // loading & polling

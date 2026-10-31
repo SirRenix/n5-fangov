@@ -381,11 +381,12 @@ func openAPISchemas() map[string]any {
 			"ceiling":     integer("effective ceiling in °C: the sensor kind's built-in one (HDD 65, SSD 85, CPU 100), lowered by [[channel]] ceiling; signed in only"),
 			"ceiling_hit": boolean("the channel is in the ceiling state (255, mode critical) until the reading is 3 °C below the ceiling; signed in only"),
 		}),
-		"State": object("Snapshot (GET /api/state); anonymous callers get ts, status, profile, verified, uptime_s, dry_run and the channels without extra_temps, watched, alerts and hwmon_path", []string{"ts", "status", "profile", "verified", "dry_run", "uptime_s", "channels"}, map[string]any{
+		"State": object("Snapshot (GET /api/state); anonymous callers get ts, status, profile, verified, hw_status, uptime_s, dry_run and the channels without extra_temps, watched, alerts and hwmon_path", []string{"ts", "status", "profile", "verified", "hw_status", "dry_run", "uptime_s", "channels"}, map[string]any{
 			"ts":          integer("unix seconds"),
 			"status":      strEnum("daemon status", "starting", "ok", "sensor-error", "write-error", "dry-run"),
 			"profile":     str("hardware profile"),
-			"verified":    boolean("profile verified on real hardware"),
+			"verified":    boolean("compatibility field: true when hw_status is validated or tested"),
+			"hw_status":   strEnum("hardware status of this machine (product, board, BIOS, EC firmware) for the active profile, from the embedded hardware results table", "validated", "tested", "experimental", "unknown"),
 			"hwmon_path":  str("sysfs path of the fan controller"),
 			"dry_run":     boolean("no hardware writes"),
 			"uptime_s":    integer("daemon uptime in seconds"),

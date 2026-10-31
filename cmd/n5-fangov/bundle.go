@@ -230,10 +230,11 @@ func cmdExport(args []string) int {
 	fs := flag.NewFlagSet("export", flag.ContinueOnError)
 	cfgPath := fs.String("config", defaultConfigPath, "config file")
 	presetDir := fs.String("presets", defaultPresetDir, "preset directory")
-	if err := fs.Parse(args); err != nil {
+	pos, err := parseInterspersed(fs, args)
+	if err != nil {
 		return exitUsage
 	}
-	if fs.NArg() > 1 {
+	if len(pos) > 1 {
 		fmt.Fprintln(os.Stderr, "usage: n5-fangov export [FILE]")
 		return exitUsage
 	}
@@ -243,15 +244,15 @@ func cmdExport(args []string) int {
 		return exitFail
 	}
 	data = append(data, '\n')
-	if fs.NArg() == 0 || fs.Arg(0) == "-" {
+	if len(pos) == 0 || pos[0] == "-" {
 		os.Stdout.Write(data)
 		return exitOK
 	}
-	if err := os.WriteFile(fs.Arg(0), data, 0o600); err != nil {
+	if err := os.WriteFile(pos[0], data, 0o600); err != nil {
 		fmt.Fprintln(os.Stderr, "export:", err)
 		return exitFail
 	}
-	fmt.Printf("settings written to %s (password hash redacted as %s)\n", fs.Arg(0), redactedHash)
+	fmt.Printf("settings written to %s (password hash redacted as %s)\n", pos[0], redactedHash)
 	return exitOK
 }
 
@@ -259,19 +260,19 @@ func cmdImport(args []string) int {
 	fs := flag.NewFlagSet("import", flag.ContinueOnError)
 	cfgPath := fs.String("config", defaultConfigPath, "config file")
 	presetDir := fs.String("presets", defaultPresetDir, "preset directory")
-	if err := fs.Parse(args); err != nil {
+	pos, err := parseInterspersed(fs, args)
+	if err != nil {
 		return exitUsage
 	}
-	if fs.NArg() != 1 {
+	if len(pos) != 1 {
 		fmt.Fprintln(os.Stderr, "usage: n5-fangov import FILE   (\"-\" reads stdin)")
 		return exitUsage
 	}
 	var data []byte
-	var err error
-	if fs.Arg(0) == "-" {
+	if pos[0] == "-" {
 		data, err = io.ReadAll(io.LimitReader(os.Stdin, 4<<20))
 	} else {
-		data, err = os.ReadFile(fs.Arg(0))
+		data, err = os.ReadFile(pos[0])
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "import:", err)

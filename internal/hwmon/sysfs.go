@@ -139,6 +139,12 @@ var ErrVerify = errors.New("hwmon: read-back mismatch")
 // is opened write-only with truncate (like `echo > attr`; a no-op on sysfs,
 // required on the regular files of a fake tree) and never created. Integers
 // are compared numerically, everything else as trimmed strings.
+//
+// The read-back proves that the driver accepted the value, not that the
+// hardware holds it: hwmon drivers may answer an attribute from their own
+// cache. minisforum_n5_it5571 does so for pwmN and pwmN_enable (pwmN_enable
+// reads 2 after a hand-back whatever the EC does). The n5pro profile checks
+// the EC register in addition when the driver's debugfs dump is readable.
 func (fs *FS) WriteVerify(path, value string) error {
 	abs := fs.Abs(path)
 	f, err := os.OpenFile(abs, os.O_WRONLY|os.O_TRUNC, 0)

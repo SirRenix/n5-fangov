@@ -6,9 +6,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SirRenix/n5-fangov/internal/hwmon"
 	"github.com/SirRenix/n5-fangov/internal/hwmon/hwmontest"
+	"github.com/SirRenix/n5-fangov/internal/n5driver"
 	"github.com/SirRenix/n5-fangov/internal/profile"
 )
 
@@ -26,15 +28,12 @@ func TestAllAndNames(t *testing.T) {
 		t.Fatalf("Names() = %v, want %v", got, want)
 	}
 	for _, p := range profile.All() {
-		if p.Verified() != (p.Name() == "n5pro") {
-			t.Errorf("%s: Verified() = %v", p.Name(), p.Verified())
-		}
 		if p.Title() == "" || p.Notes() == "" {
 			t.Errorf("%s: empty title or notes", p.Name())
 		}
 	}
 	if !strings.Contains(profile.N5Pro().Notes(),
-		"EC does not resume automatic regulation of the HDD channel (pwm3) after any write - use a fixed stop duty; measured 2026-09-14 on BIOS 1.05") {
+		"After the hand-back to EC automatic the HDD channel (pwm3) leaves the written value; whether the EC curve then regulates it is unproven, so n5-fangov keeps a fixed HDD stop duty.") {
 		t.Error("n5pro notes lack the HDD channel caveat")
 	}
 	for _, name := range []string{"nct67xx", "it87xx"} {
@@ -51,7 +50,7 @@ func TestN5ProDetect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dev.Profile().Name() != "n5pro" || !dev.Profile().Verified() {
+	if dev.Profile().Name() != "n5pro" {
 		t.Fatalf("wrong profile %s", dev.Profile().Name())
 	}
 	if filepath.Base(dev.HwmonPath()) != "hwmon14" {
@@ -307,8 +306,8 @@ func TestNCT67xxDetectAndRestore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dev.Profile().Name() != "nct67xx" || dev.Profile().Verified() {
-		t.Fatalf("auto picked %s (verified=%v)", dev.Profile().Name(), dev.Profile().Verified())
+	if dev.Profile().Name() != "nct67xx" {
+		t.Fatalf("auto picked %s", dev.Profile().Name())
 	}
 	chans := dev.Channels()
 	if len(chans) != 2 || chans[0].Index != 1 || chans[1].Index != 2 {
@@ -400,7 +399,7 @@ func TestMonitorOnTreeWithoutPWM(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dev.Profile().Name() != "monitor" || dev.Profile().Verified() {
+	if dev.Profile().Name() != "monitor" {
 		t.Fatalf("auto picked %s", dev.Profile().Name())
 	}
 	if len(dev.Channels()) != 0 {
@@ -444,5 +443,223 @@ func TestMonitorNeedsSomeHwmon(t *testing.T) {
 	}
 	if _, err := profile.Detect(&hwmon.FS{Root: filepath.Join(root, "missing")}, "monitor"); err == nil {
 		t.Fatal("missing sysfs must fail")
+	}
+}
+
+// Gate (a): the N5 Pro driver loaded without pwm nodes is a fault, not a
+// silent fallback to monitor; the error says why (force, experimental_write).
+func TestAutoWriteDisabledIsNotMonitor(t *testing.T) {
+	root, fs := n5proCopy(t)
+	for _, a := range []string{"pwm1", "pwm1_enable", "pwm2", "pwm2_enable", "pwm3", "pwm3_enable", "pwm4", "pwm4_enable"} {
+		if err := os.Remove(filepath.Join(root, "class", "hwmon", "hwmon14", a)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	params := filepath.Join(root, "module", "minisforum_n5_it5571", "parameters")
+	if err := os.MkdirAll(params, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for k, v := range map[string]string{"force": "N", "experimental_write": "N"} {
+		if err := os.WriteFile(filepath.Join(params, k), []byte(v+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, want := range []string{"auto", "", "n5pro"} {
+		dev, err := profile.Detect(fs, want)
+		if !errors.Is(err, profile.ErrWriteDisabled) {
+			t.Fatalf("%q: dev=%v err=%v, want ErrWriteDisabled", want, dev, err)
+		}
+		if !strings.Contains(err.Error(), "experimental_write=N") || !strings.Contains(err.Error(), `profile = "monitor"`) {
+			t.Errorf("%q: message lacks reason or way out: %v", want, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(params, "force"), []byte("Y\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := profile.Detect(fs, "auto"); err == nil || !strings.Contains(err.Error(), "force-loaded") {
+		t.Fatalf("force=Y not reported: %v", err)
+	}
+	// an explicit monitor profile still works on such a box
+	if dev, err := profile.Detect(fs, "monitor"); err != nil || dev.Profile().Name() != "monitor" {
+		t.Fatalf("explicit monitor: %v", err)
+	}
+}
+
+// Gate (f): with the driver's debugfs dump present the EC register can be
+// compared with a written duty (VerifyRegister); without it nothing is
+// checked. WriteDuty itself does not read the register any more: the EC
+// takes a duty with a delay (maintenance window 1, C6/Z1/Z2).
+func TestVerifyRegisterChecksDCRWhenReadable(t *testing.T) {
+	root, fs := n5proCopy(t)
+	dev, err := profile.Detect(fs, "n5pro")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rv, ok := dev.(profile.RegisterVerifier)
+	if !ok {
+		t.Fatal("n5pro device is no RegisterVerifier")
+	}
+	if rv.RegisterSettle(3) < 5*time.Second || rv.RegisterSettle(1) < time.Second || rv.RegisterSettle(4) < time.Second {
+		t.Fatalf("settle times %s/%s/%s, want >= 5 s HDD, >= 1 s else", rv.RegisterSettle(3), rv.RegisterSettle(1), rv.RegisterSettle(4))
+	}
+	if err := rv.VerifyRegister(3, 140); err != nil {
+		t.Fatalf("no dcr file: %v", err)
+	}
+	dir := filepath.Join(root, "kernel", "debug", "minisforum_n5_it5571")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dcr := filepath.Join(dir, "dcr")
+	// DCR3 (0x1805) = 0x8c = 140, DCR1 = 0x55
+	if err := os.WriteFile(dcr, []byte("1800: 00 ff 00 55 4a 8c 8c 8c 00 00 00 06 00 00 00 00\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// a write never fails on the register, whatever it shows right after
+	if err := dev.WriteDuty(1, 200); err != nil {
+		t.Fatalf("WriteDuty with a deviating register: %v", err)
+	}
+	if err := rv.VerifyRegister(3, 140); err != nil {
+		t.Fatalf("DCR matches: %v", err)
+	}
+	// a mismatch is ErrDCRMismatch, not a read-back error of the driver
+	err = rv.VerifyRegister(1, 200)
+	if !errors.Is(err, profile.ErrDCRMismatch) || errors.Is(err, hwmon.ErrVerify) || !strings.Contains(err.Error(), "DCR1 reads 85 after writing 200") {
+		t.Fatalf("DCR mismatch: %v", err)
+	}
+	if err := os.WriteFile(dcr, []byte("garbage\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := rv.VerifyRegister(1, 200); err != nil {
+		t.Fatalf("unparsable dump must not count as a deviation: %v", err)
+	}
+}
+
+// WaitRegister against a fake dcr dump: a register that reaches the value
+// within the deadline (HDD ramp, Z2) is no deviation; one that never does
+// is reported after the deadline, with the last value read.
+func TestWaitRegisterSettles(t *testing.T) {
+	root, fs := n5proCopy(t)
+	dev, err := profile.Detect(fs, "n5pro")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rv := dev.(profile.RegisterVerifier)
+	dir := filepath.Join(root, "kernel", "debug", "minisforum_n5_it5571")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dcr := filepath.Join(dir, "dcr")
+	// the EC ramps DCR3 0x57 -> 0x6a -> 0x8c (140) over three polls
+	ramp := []string{"57", "6a", "8c"}
+	write := func(v string) {
+		if err := os.WriteFile(dcr, []byte("1800: 00 ff 00 55 4a "+v+" "+v+" 8c 00 00 00 06 00 00 00 00\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(ramp[0])
+	now := time.Date(2026, 10, 17, 12, 33, 0, 0, time.UTC)
+	clock := func() time.Time { return now }
+	polls := 0
+	sleep := func(d time.Duration) {
+		polls++
+		now = now.Add(d)
+		if polls < len(ramp) {
+			write(ramp[polls])
+		}
+	}
+	if err := profile.WaitRegister(rv, 3, 140, now.Add(rv.RegisterSettle(3)), clock, sleep); err != nil {
+		t.Fatalf("ramping register: %v", err)
+	}
+	if polls != 2 {
+		t.Fatalf("polls %d, want 2", polls)
+	}
+	// never reaches 200: reported once the deadline has passed
+	start := now
+	err = profile.WaitRegister(rv, 1, 200, now.Add(time.Second), clock, sleep)
+	if !errors.Is(err, profile.ErrDCRMismatch) || now.Sub(start) < time.Second {
+		t.Fatalf("stuck register: %v after %s", err, now.Sub(start))
+	}
+}
+
+// Gate (a), second half: a board from the hardware table without the EC
+// driver (not built for this kernel, removed) does not pass as monitor.
+func TestDetectAutoDriverMissingOnN5Board(t *testing.T) {
+	root, fs := n5proCopy(t)
+	if err := os.RemoveAll(filepath.Join(root, "class", "hwmon", "hwmon14")); err != nil {
+		t.Fatal(err)
+	}
+	// anonymised DMI of the fixture: monitor as before
+	if dev, err := profile.Detect(fs, "auto"); err != nil || dev.Profile().Name() != "monitor" {
+		t.Fatalf("other board: %v", err)
+	}
+	for k, v := range map[string]string{"product_name": "N5 PRO", "board_name": "F8NAA"} {
+		if err := os.WriteFile(filepath.Join(root, "class", "dmi", "id", k), []byte(v+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// N5 PRO/F8NAA with the fixture's vendor string: the driver keeps it
+	// read-only (exact sys_vendor, patch 0002), so auto runs as monitor
+	// (rc2 review R4)
+	if dev, err := profile.Detect(fs, "auto"); err != nil || dev.Profile().Name() != "monitor" {
+		t.Fatalf("N5 PRO/F8NAA with another vendor: dev %v err %v", dev, err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "class", "dmi", "id", "sys_vendor"), []byte(n5driver.SysVendor+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := profile.Detect(fs, "auto")
+	if !errors.Is(err, profile.ErrDriverMissing) || !strings.Contains(err.Error(), "N5 PRO / F8NAA") || !strings.Contains(err.Error(), `profile = "monitor"`) {
+		t.Fatalf("N5 board without driver: %v", err)
+	}
+	if dev, err := profile.Detect(fs, "monitor"); err != nil || dev.Profile().Name() != "monitor" {
+		t.Fatalf("explicit monitor: %v", err)
+	}
+}
+
+// G3 (audit 2026-10-16, decision 4): boards the driver keeps read-only (N5
+// Air, N5 PRO/F8NAB) run as monitor under auto, with the driver missing or
+// loaded read-only, as in 0.4.2; the upstream N5/F8NAA (write-capable)
+// still stops with ErrDriverMissing.
+func TestDetectAutoReadOnlyBoardsMonitor(t *testing.T) {
+	setDMI := func(t *testing.T, root, product, board string) {
+		t.Helper()
+		for k, v := range map[string]string{"product_name": product, "board_name": board, "sys_vendor": n5driver.SysVendor} {
+			if err := os.WriteFile(filepath.Join(root, "class", "dmi", "id", k), []byte(v+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	for _, b := range [][2]string{{"N5A", "F8NAB"}, {"N5 AIR", "F8NAB"}, {"N5 PRO", "F8NAB"}} {
+		// driver missing
+		root, fs := n5proCopy(t)
+		if err := os.RemoveAll(filepath.Join(root, "class", "hwmon", "hwmon14")); err != nil {
+			t.Fatal(err)
+		}
+		setDMI(t, root, b[0], b[1])
+		if dev, err := profile.Detect(fs, "auto"); err != nil || dev.Profile().Name() != "monitor" {
+			t.Fatalf("%v without driver: dev %v err %v", b, dev, err)
+		}
+		// driver loaded read-only (pwm nodes hidden)
+		root, fs = n5proCopy(t)
+		for _, a := range []string{"pwm1", "pwm1_enable", "pwm2", "pwm2_enable", "pwm3", "pwm3_enable", "pwm4", "pwm4_enable"} {
+			if err := os.Remove(filepath.Join(root, "class", "hwmon", "hwmon14", a)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		setDMI(t, root, b[0], b[1])
+		if dev, err := profile.Detect(fs, "auto"); err != nil || dev.Profile().Name() != "monitor" {
+			t.Fatalf("%v read-only driver: dev %v err %v", b, dev, err)
+		}
+		// the explicit n5pro profile still says why it cannot write
+		if _, err := profile.Detect(fs, "n5pro"); !errors.Is(err, profile.ErrWriteDisabled) {
+			t.Fatalf("%v explicit n5pro: %v", b, err)
+		}
+	}
+	root, fs := n5proCopy(t)
+	if err := os.RemoveAll(filepath.Join(root, "class", "hwmon", "hwmon14")); err != nil {
+		t.Fatal(err)
+	}
+	setDMI(t, root, "N5", "F8NAA")
+	if _, err := profile.Detect(fs, "auto"); !errors.Is(err, profile.ErrDriverMissing) {
+		t.Fatalf("N5/F8NAA without driver: %v", err)
 	}
 }

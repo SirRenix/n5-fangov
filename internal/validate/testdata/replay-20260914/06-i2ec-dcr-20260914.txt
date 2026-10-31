@@ -1,0 +1,30 @@
+I2EC-Lesungen IT5571 PWM-Block (n5_i2ec_read 0x1800 ...), 14.09.2026
+Layout: 0x1800 C0CPRS, 0x1801 CTR, 0x1802-0x1809 DCR0-DCR7
+Alle Lesungen NACH den vier PWM-Tests (Kanal 4,1,2,3); ein Snapshot VOR den
+Tests existiert nicht (Lehre: seither im 06-Skript enthalten).
+
+17:20  nach Test Kanal 3, Modul entladen, 0x2b (auto) fuer Kanal 3 gesendet:
+1800: 00 ff 00 55 4a 57 57 8c 00 00 00 06 00 00 00 00
+1810: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 38 04
+1820: ef 03 00 02 00 00 00 02 00 00 00 48 00 00 00 00
+  -> DCR1=0x55 CPU, DCR2=0x4a SSD, DCR3=DCR4=0x57 HDD (Gruppe), DCR5=0x8c PCIe
+  -> DCR5 = 140 = letzter Schreibwert des Kanal-4-Tests; 0x31 (auto) hat ihn
+     nicht zurueckgesetzt
+  -> TACH3 dabei 1237 RPM; vor den Tests 1647 RPM bei gleichen HDD-Temps
+
+17:21  erneut 0x2b (Kanal 3) und 0x31 (Kanal 4) ueber den Treiber gesendet:
+1802: 00 55 4a 57 57 8c   (unveraendert, auch 15 s spaeter)
+
+17:22-17:27  HDD-Leselast (dd auf sda/sdb/sdc), EC System-Temp 33->38 C,
+Board 26->32 C, Platten +1-2 C:
+DCR3/4 = 57 57 in allen 9 Messungen -> HDD-Kanal wird NICHT nachgeregelt
+
+17:27-17:29  CPU-Last (2 Kerne), k10temp 40->83 C:
+DCR1: 55 -> 74 -> 84 -> 84 -> 84 -> 84 -> 94 -> 94   TACH1 2002 -> 3281
+DCR2..5 unveraendert -> CPU-Kanal wird nach 0x21 (auto) weiterhin geregelt
+
+17:29  Kanal 3 manuell auf 119 gesetzt (pwm3_enable=1, pwm3=119):
+1803: 55 4a 77 77 8c
+
+17:33  n5-fand aktiv (CPU 85, SSD 74/117, HDD 105/117):
+1803: 55 6e 75 75 8c   bzw. spaeter   55 4a 69 69 8c

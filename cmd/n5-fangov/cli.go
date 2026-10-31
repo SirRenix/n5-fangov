@@ -68,9 +68,14 @@ func cmdStatus(args []string) int {
 }
 
 func printSnapshot(s control.Snapshot, source string, active bool) {
-	verified := "verified"
-	if !s.Verified {
-		verified = "UNVERIFIED profile"
+	// hardware status (validated/tested/experimental/unknown); a snapshot
+	// of an older daemon carries only the verified bool
+	verified := "hw " + s.HWStatus
+	if s.HWStatus == "" {
+		verified = "verified"
+		if !s.Verified {
+			verified = "UNVERIFIED profile"
+		}
 	}
 	unit := "active"
 	if !active {
@@ -278,15 +283,16 @@ func cmdLog(args []string) int {
 	export := fs.String("export", "", "write the whole current log file to FILE (\"-\" = stdout)")
 	clear := fs.Bool("clear", false, "truncate the current log file (journal untouched)")
 	cfgPath := fs.String("config", defaultConfigPath, "config file")
-	if err := fs.Parse(args); err != nil {
+	pos, err := parseInterspersed(fs, args)
+	if err != nil {
 		return exitUsage
 	}
-	if fs.NArg() > 1 || (fs.NArg() == 1 && (*export != "" || *clear)) {
+	if len(pos) > 1 || (len(pos) == 1 && (*export != "" || *clear)) {
 		fmt.Fprintln(os.Stderr, "usage: n5-fangov log [-n N] [N] | --export FILE | --clear")
 		return exitUsage
 	}
-	if fs.NArg() == 1 {
-		v, err := strconv.Atoi(fs.Arg(0))
+	if len(pos) == 1 {
+		v, err := strconv.Atoi(pos[0])
 		if err != nil || v < 1 {
 			fmt.Fprintln(os.Stderr, "log: n must be a positive integer")
 			return exitUsage

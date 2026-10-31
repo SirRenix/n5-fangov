@@ -1,5 +1,7 @@
 // Package profile defines hardware profiles: how a fan controller chip is
-// detected and driven through sysfs. Only n5pro is hardware-verified.
+// detected and driven through sysfs. What is known about the hardware behind a
+// profile (validated/tested/experimental/unknown) is not a property of the
+// profile: internal/hwstatus keys it by product, board, BIOS and EC firmware.
 package profile
 
 import "github.com/SirRenix/n5-fangov/internal/hwmon"
@@ -13,10 +15,9 @@ type Channel struct {
 
 // Profile knows how to detect and instantiate a Device.
 type Profile interface {
-	Name() string   // short id: n5pro, nct67xx, it87xx, monitor
-	Title() string  // human readable
-	Verified() bool // true only when validated on real hardware
-	Notes() string  // caveats shown in the UI
+	Name() string  // short id: n5pro, nct67xx, it87xx, monitor
+	Title() string // human readable
+	Notes() string // caveats shown in the UI
 	Detect(fs *hwmon.FS) (Device, error)
 }
 
