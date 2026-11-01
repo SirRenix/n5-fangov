@@ -14,6 +14,23 @@ drove the 0.3.1 work is `docs/AUDIT.md` (code) and `docs/DESIGN-AUDIT.md`
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-11-01
+
+Security release. The code is that of 0.4.2; only the toolchain changed.
+
+### Security
+
+- Built with Go 1.26.10 (`toolchain go1.26.10` in `go.mod`). The 0.4.2 binaries were
+  built with Go 1.26.8; `govulncheck -mode=binary` reports 13 standard-library
+  vulnerabilities fixed in Go 1.26.9/1.26.10 (crypto/tls handshake, crypto/x509 verify,
+  net/http header handling and ServeContent, net/textproto, html/template: the paths of the
+  dashboard's HTTPS server). `govulncheck` on the 0.4.3 source and binary: no findings.
+
+### Changed
+
+- CI and release run on `ubuntu-24.04` instead of `ubuntu-latest` (now Ubuntu 26), so the
+  package is built with the same `dpkg-deb` as before.
+
 ### Docs
 
 - Kernel driver: installed from the DKMS package `minisforum-n5-it5571-dkms` (release
