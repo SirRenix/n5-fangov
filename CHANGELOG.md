@@ -314,6 +314,25 @@ hardware-status warning).
   hardware-status warning, read errors. README: hardware status instead of "tested
   hardware". Release gate: both components, F8a/F8b, rows for 0.5.0.
 
+## [0.4.3] — 2026-11-01
+
+Security release from the 0.4.2 code; only the toolchain changed. 0.5.0 carries the same
+pin (`toolchain go1.26.10`).
+
+### Security
+
+- Built with Go 1.26.10 (`toolchain go1.26.10` in `go.mod`). The 0.4.2 binaries were
+  built with Go 1.26.8; `govulncheck -mode=binary` reports 13 standard-library
+  vulnerabilities fixed in Go 1.26.9/1.26.10 (crypto/tls handshake, crypto/x509 verify,
+  net/http header handling and ServeContent, net/textproto, html/template: the paths of the
+  dashboard's HTTPS server). `govulncheck` on the 0.4.3 source and binary: no findings.
+
+### Changed
+
+- CI and release run on `ubuntu-24.04` instead of `ubuntu-latest` (now Ubuntu 26), so the
+  package is built with the same `dpkg-deb` as before.
+- Ships the DKMS documentation listed under 0.5.0-rc2 → Docs (written after 0.4.2).
+
 ## [0.4.2] — 2026-09-25
 
 **Operations and polish.** `setup` keeps your settings when it rewrites an existing config
