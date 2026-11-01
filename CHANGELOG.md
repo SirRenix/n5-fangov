@@ -12,10 +12,13 @@ drove the 0.3.1 work is `docs/AUDIT.md` (code) and `docs/DESIGN-AUDIT.md`
 (dashboard); the reviews of the 0.4.0 redesign are referenced as `C01`… (code) and
 `D01`… (design), the findings of its release gate as `G1`…`G12`, in the 0.4.0 section.
 
-## [Unreleased]
+## [0.5.0] — 2026-11-02
 
 0.5.0 is the validation release (operator decision 2026-10-08): the 0.4.3–0.4.6 roadmap
-is on hold, feature ideas move to 0.6.
+is on hold, feature ideas move to 0.6. Code equals 0.5.0-rc4 (running on the reference host
+since 2026-11-01) plus the regenerated hardware-status table (`befunde/RESULTS.md` of the
+driver repository, 2026-11-01: maintenance window 2a). Built with Go 1.26.10. Hardware status
+of the N5 Pro stays `experimental`.
 
 ### Changed
 
