@@ -12,11 +12,12 @@ drove the 0.3.1 work is `docs/AUDIT.md` (code) and `docs/DESIGN-AUDIT.md`
 (dashboard); the reviews of the 0.4.0 redesign are referenced as `C01`… (code) and
 `D01`… (design), the findings of its release gate as `G1`…`G12`, in the 0.4.0 section.
 
-## [Unreleased]
+## [0.6.0-rc1] — 2026-11-02
 
-Operating features on the reference host's wish list (operator 2026-09-28 and 2026-11-02).
+Operating features on the reference host's wish list (operator 2026-09-28 and 2026-11-02):
+acknowledging alerts, `/healthz`, a Health page and the loaded fan driver in the header.
 No change to the regulation: curves, slew, critical, stall, ceiling and failsafe behave as
-in 0.5.0.
+in 0.5.0. Release candidate: the 0.6.0 release follows after the reference host ran it.
 
 ### Added
 
@@ -1481,7 +1482,8 @@ of `v0.2.0`.
   security review `H1`–`H3`, `M1`–`M4`, `L1`–`L6` (Host header, CSRF, socket mode 0750,
   body limits, …).
 
-[Unreleased]: https://github.com/SirRenix/n5-fangov/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/SirRenix/n5-fangov/compare/v0.6.0-rc1...HEAD
+[0.6.0-rc1]: https://github.com/SirRenix/n5-fangov/releases/tag/v0.6.0-rc1
 [0.4.1]: https://github.com/SirRenix/n5-fangov/releases/tag/v0.4.1
 [0.4.0]: https://github.com/SirRenix/n5-fangov/releases/tag/v0.4.0
 [0.3.1]: https://github.com/SirRenix/n5-fangov/releases/tag/v0.3.1
