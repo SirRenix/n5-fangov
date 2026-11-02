@@ -206,6 +206,17 @@ card are **Settings → Alert transport** ([Dashboard](04-dashboard.md#alerts)).
   Alert texts are plain ASCII.
 - **Install / Update template**: below.
 
+### Acknowledging
+
+Open alerts stand at the top of *Recent alerts*; **Ack** acknowledges one, **Acknowledge
+all** every open one up to the newest the page shows (one that arrives meanwhile stays
+open). Acknowledged alerts fold into *N acknowledged* with who did it (`user:<name>`,
+`token:<name>`, `cli`). A new alert is always open, also of a kind acknowledged before.
+The Alerts entry in the navigation shows the number of open alerts. Acknowledging
+changes the display only: delivery, cooldown and failsafe do not look at it. The state
+is kept in `alerts.json` and survives a restart; an alert leaves the list after 50 newer
+ones as before. API: `POST /api/alerts/ack` (scope `control`).
+
 ## The PVE template
 
 The two template files (`n5-fangov-subject.txt.hbs`, `n5-fangov-body.txt.hbs`) are
@@ -233,10 +244,14 @@ and body.
 n5-fangov alerts status          transport, tools, template, last alert per kind, recent alerts
 n5-fangov alerts test            send a test alert now
 n5-fangov alerts template        install/update the PVE template pair
+n5-fangov alerts ack 41 42       acknowledge alerts by id (status lists the ids)
+n5-fangov alerts ack --all       acknowledge every open alert
 ```
 
 `status` shows the configured and the effective transport, `mail_to`, and for the
-webhook the URL (query redacted) and the format. `status` and `test` go through the
+webhook the URL (query redacted) and the format; the recent alerts with id and `open` or
+who acknowledged them. `ack` goes through the socket when the daemon runs and writes
+`alerts.json` itself when it does not. `status` and `test` go through the
 daemon's socket when it runs (the test then shows in the dashboard), otherwise they
 work on the config file. `template` asks the daemon first and writes the files itself
 when that fails for anything but "not a PVE host". A test sent with the daemon stopped

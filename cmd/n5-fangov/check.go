@@ -513,6 +513,10 @@ func cmdCheckAfterUpdate(cfgPath, dir string) int {
 		fmt.Printf("n5-fangov: kernel gate: %v\n", err)
 		return exitFail
 	}
+	// the daemon's health page cannot read /lib/modules (sandbox): it shows this result
+	if err := saveGate(kernelGatePath(stateDir()), g, time.Now()); err != nil {
+		fmt.Printf("n5-fangov: kernel gate result not stored for the health page: %v\n", err)
+	}
 	for _, l := range g.info {
 		fmt.Println(l)
 	}

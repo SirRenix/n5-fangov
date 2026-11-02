@@ -17,12 +17,18 @@ const RingSize = 50
 
 // Record is one alert that passed through the Ring. Error carries the
 // delivery failure when the wrapped sink reported one, so the history does
-// not suggest a delivery that never happened.
+// not suggest a delivery that never happened. ID numbers the records of
+// one ring in arrival order (kept across restarts); AckTS and AckBy are
+// set when the operator acknowledged the record (display only: delivery,
+// cooldown and failsafe do not look at them).
 type Record struct {
+	ID    uint64 `json:"id"`
 	TS    int64  `json:"ts"`
 	Kind  string `json:"kind"`
 	Msg   string `json:"msg"`
 	Error string `json:"error,omitempty"`
+	AckTS int64  `json:"ack_ts,omitempty"`
+	AckBy string `json:"ack_by,omitempty"`
 }
 
 // Ring wraps a Sink and records every alert that passes through it —
@@ -40,6 +46,7 @@ type Ring struct {
 
 	mu       sync.Mutex
 	recs     []Record // oldest first
+	lastID   uint64   // highest ID handed out
 	warnedIO bool
 }
 
@@ -126,6 +133,8 @@ func (r *Ring) Last() map[string]int64 {
 func (r *Ring) record(rec Record) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.lastID++
+	rec.ID = r.lastID
 	r.recs = append(r.recs, rec)
 	if len(r.recs) > RingSize {
 		r.recs = append(r.recs[:0], r.recs[len(r.recs)-RingSize:]...)
@@ -169,9 +178,87 @@ func (r *Ring) load() {
 	if len(recs) > RingSize {
 		recs = recs[len(recs)-RingSize:]
 	}
+	// a file written before IDs existed: number its records in file
+	// order after the highest ID present
+	var last uint64
+	for _, rec := range recs {
+		last = max(last, rec.ID)
+	}
+	for i := range recs {
+		if recs[i].ID == 0 {
+			last++
+			recs[i].ID = last
+		}
+	}
 	r.mu.Lock()
 	r.recs = recs
+	r.lastID = last
 	r.mu.Unlock()
+}
+
+// Open counts the records not acknowledged yet.
+func (r *Ring) Open() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := 0
+	for _, rec := range r.recs {
+		if rec.AckTS == 0 {
+			n++
+		}
+	}
+	return n
+}
+
+// Ack acknowledges the records with the given IDs on behalf of by.
+// Already acknowledged records keep their first acknowledgement. unknown
+// lists the IDs the ring does not hold (never seen, or evicted); nothing
+// is written then.
+func (r *Ring) Ack(ids []uint64, by string) (acked int, unknown []uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	idx := make(map[uint64]int, len(r.recs))
+	for i, rec := range r.recs {
+		idx[rec.ID] = i
+	}
+	for _, id := range ids {
+		if _, ok := idx[id]; !ok {
+			unknown = append(unknown, id)
+		}
+	}
+	if len(unknown) > 0 {
+		return 0, unknown
+	}
+	ts := r.now().Unix()
+	for _, id := range ids {
+		if rec := &r.recs[idx[id]]; rec.AckTS == 0 {
+			rec.AckTS, rec.AckBy = ts, by
+			acked++
+		}
+	}
+	if acked > 0 {
+		r.saveLocked()
+	}
+	return acked, nil
+}
+
+// AckUpTo acknowledges every open record with an ID up to upTo: "all"
+// for the IDs the caller has seen, so an alert that arrives between
+// showing the list and the click stays open.
+func (r *Ring) AckUpTo(upTo uint64, by string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	ts := r.now().Unix()
+	acked := 0
+	for i := range r.recs {
+		if rec := &r.recs[i]; rec.ID <= upTo && rec.AckTS == 0 {
+			rec.AckTS, rec.AckBy = ts, by
+			acked++
+		}
+	}
+	if acked > 0 {
+		r.saveLocked()
+	}
+	return acked
 }
 
 // writePrivate writes data to path with mode 0600 (temp file + rename).

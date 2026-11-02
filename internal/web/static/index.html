@@ -51,6 +51,7 @@
         <span class="chip" id="h-status" role="status">…</span>
         <span class="meta uptime mx" title="daemon uptime">up —</span>
         <span class="meta ver mx"><span class="version">v —</span><span class="badge beta" hidden>beta</span></span>
+        <button class="chip drv" id="h-drv" type="button" aria-label="fan driver" hidden><svg class="ic" aria-hidden="true"><use href="#i-chip"/></svg><span class="mx" id="h-drv-t"></span></button>
         <button class="chip warn" id="h-cert" type="button" aria-label="certificate" hidden><svg class="ic" aria-hidden="true"><use href="#i-warn"/></svg><span class="mx" id="h-cert-t">certificate</span></button>
         <span class="live" id="h-live" aria-live="polite"><i></i><span class="mx">live</span></span>
         <span class="meta user" id="h-user" title="signed in as" hidden><svg class="ic" aria-hidden="true"><use href="#i-user"/></svg><span id="h-user-n"></span></span>
@@ -124,6 +125,14 @@
   </div>
 </section>
 
+<section id="p-health" class="pg" data-auth hidden>
+  <div class="card"><div class="card-h"><h2>Checks</h2><span class="hint sm" id="hl-sum"></span></div><ul class="hl" id="hl-checks"></ul></div>
+  <div class="grid2">
+    <div class="card"><h2>Kernel gate</h2><ul class="hl" id="hl-gate"></ul></div>
+    <div class="card"><h2>Driver and daemon</h2><dl class="kv" id="hl-kv"></dl></div>
+  </div>
+</section>
+
 <section id="p-fans" class="pg" data-auth hidden>
   <p class="gloss">Drag points or edit the table: <span id="cv-hint">2–8</span> points, temperatures ascending (°C, whatever the display unit), duty never falling. <em>Apply to daemon</em> rewrites the <code>[[channel]]</code> tables and keeps everything else.</p>
   <details class="gloss how"><summary>More about duty, critical, stall, stop</summary>
@@ -167,7 +176,7 @@
       <dl class="kv" id="al-status"></dl>
       <div class="act"><button class="btn" id="al-test" type="button"><svg class="ic" aria-hidden="true"><use href="#i-bell"/></svg>Send test alert</button><span class="hint sm">kind <code>test</code>, no cooldown</span></div>
     </div>
-    <div class="card"><h2>Recent alerts</h2><ul class="alerts" id="al-recent"></ul></div>
+    <div class="card"><div class="card-h"><h2>Recent alerts</h2><button class="btn sm" id="al-ackall" type="button" hidden><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg>Acknowledge all</button></div><ul class="alerts" id="al-recent"></ul></div>
   </div>
   <div class="card tbl-wrap"><table class="tbl" id="al-kinds"><thead><tr><th scope="col">Kind</th><th scope="col">Description</th><th scope="col">Last sent</th></tr></thead><tbody></tbody></table></div>
 </section>

@@ -51,12 +51,16 @@ type AccountStore interface {
 
 // AlertRecord is one alert that went through the ring (last 50). Error is
 // the delivery failure text when the transport reported one; absent for a
-// delivered alert.
+// delivered alert. AckTS/AckBy are set once the record is acknowledged
+// (AckBy: "user:<name>", "token:<name>" or "cli").
 type AlertRecord struct {
+	ID    uint64 `json:"id"`
 	TS    int64  `json:"ts"`
 	Kind  string `json:"kind"`
 	Msg   string `json:"msg"`
 	Error string `json:"error,omitempty"`
+	AckTS int64  `json:"ack_ts,omitempty"`
+	AckBy string `json:"ack_by,omitempty"`
 }
 
 // AlertKind describes one alert type for the panel.
@@ -98,6 +102,19 @@ type AlertSettings struct {
 	MailTo        *string
 	WebhookURL    *string
 	WebhookFormat *string
+}
+
+// AlertAcker is the optional acknowledgement side of an AlertMgr (POST
+// /api/alerts/ack, the "open" count of GET /api/alerts). Acknowledging
+// changes the display only. Without it the ack endpoint answers 501.
+type AlertAcker interface {
+	// Ack acknowledges the records with these IDs; unknown lists IDs the
+	// ring does not hold, and then nothing is acknowledged.
+	Ack(ids []uint64, by string) (acked int, unknown []uint64)
+	// AckUpTo acknowledges every open record with an ID up to upTo.
+	AckUpTo(upTo uint64, by string) int
+	// Open counts the records not acknowledged yet.
+	Open() int
 }
 
 // AlertMgr backs the alerts panel (implemented in cmd). nil → 501.

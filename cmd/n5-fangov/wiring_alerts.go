@@ -175,10 +175,19 @@ func (m *alertManager) Recent(n int) []web.AlertRecord {
 	recs := m.ring.Recent(n)
 	out := make([]web.AlertRecord, 0, len(recs))
 	for _, r := range recs {
-		out = append(out, web.AlertRecord{TS: r.TS, Kind: r.Kind, Msg: r.Msg, Error: r.Error})
+		out = append(out, web.AlertRecord{ID: r.ID, TS: r.TS, Kind: r.Kind, Msg: r.Msg, Error: r.Error, AckTS: r.AckTS, AckBy: r.AckBy})
 	}
 	return out
 }
+
+// Ack, AckUpTo and Open are the acknowledgement side (web.AlertAcker).
+func (m *alertManager) Ack(ids []uint64, by string) (int, []uint64) { return m.ring.Ack(ids, by) }
+
+// AckUpTo acknowledges every open alert with an ID up to upTo.
+func (m *alertManager) AckUpTo(upTo uint64, by string) int { return m.ring.AckUpTo(upTo, by) }
+
+// Open counts the alerts not acknowledged yet.
+func (m *alertManager) Open() int { return m.ring.Open() }
 
 // Last returns the newest delivery per kind (GET /api/alerts "last").
 func (m *alertManager) Last() map[string]int64 { return m.ring.Last() }

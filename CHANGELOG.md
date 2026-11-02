@@ -12,6 +12,49 @@ drove the 0.3.1 work is `docs/AUDIT.md` (code) and `docs/DESIGN-AUDIT.md`
 (dashboard); the reviews of the 0.4.0 redesign are referenced as `C01`… (code) and
 `D01`… (design), the findings of its release gate as `G1`…`G12`, in the 0.4.0 section.
 
+## [Unreleased]
+
+Operating features on the reference host's wish list (operator 2026-09-28 and 2026-11-02).
+No change to the regulation: curves, slew, critical, stall, ceiling and failsafe behave as
+in 0.5.0.
+
+### Added
+
+- **Acknowledging alerts.** Every recent alert carries an `id` (arrival order, kept across
+  restarts); `POST /api/alerts/ack` (scope `control`) acknowledges by id or, with
+  `{"all":true,"up_to":N}`, every open one up to the newest the client has seen, so an
+  alert arriving meanwhile stays open. The record keeps `ack_ts` and `ack_by`
+  (`user:<name>`, `token:<name>`, `cli`). A new alert is always open. Display only:
+  delivery, cooldown and failsafe do not read it. `GET /api/alerts` adds `open`. Alerts
+  page: open alerts first with *Ack*, *Acknowledge all*, acknowledged ones folded; the
+  Alerts navigation entry counts the open ones. CLI `n5-fangov alerts ack ID...|--all`;
+  `alerts status` lists ids and the acknowledgement; without an answering socket `ack`
+  writes `alerts.json` only while the unit is inactive. `alerts.json` stays an array of
+  records; 0.5.0 reads the new file and ignores the new fields.
+- **`GET /healthz`** (public, also with `auth = "basic"`): 200 `ok`/`starting`, 503
+  `degraded` (write or sensor error, stall), `failsafe`, `stuck` (no finished cycle within
+  three intervals, at the start or later). No readings, versions or channel names.
+- **Health page** (`GET /api/health`, scope `read`): the checks of `n5-fangov check` run
+  in the daemon (cached 15 s, one build at a time), the kernel gate, the driver, daemon
+  start and the last restart/failed/emergency/kernel/driver alert. The unit hides
+  `/lib/modules` from the daemon, so `check --after-update` (apt hook) now stores its
+  result in `<state dir>/kernel-gate.json` and the page shows that, with its time.
+- **Driver chip** in the page header (`GET /api/driver`, scope `read`): the loaded fan
+  driver's version; yellow *reload pending* while the loaded module is not the build the
+  installed driver package expects (the state between `apt install` and the module
+  reload), and while the driver cannot write.
+
+### Changed
+
+- Unit comment: the driver module is loaded by udev through its DMI alias (driver
+  package 0.2.1+sr2 dropped its `modules-load.d` file).
+- About credits name the driver package `SirRenix/minisforum-n5pro-fan-proxmox` (DKMS
+  package with the downstream patches and the test kit) first, `ltdstudio/minisforum-n5-it5571`
+  as the upstream it is based on.
+- Hardware-status table regenerated from the driver repository's `befunde/RESULTS.md` at
+  `v0.2.1-sr2` (table sha256 `8a5a63e7…`): the N5 PRO / F8NAB note says the driver binds
+  there read-only from 0.2.1+sr2.
+
 ## [0.5.0] — 2026-11-02
 
 0.5.0 is the validation release (operator decision 2026-10-08): the 0.4.3–0.4.6 roadmap
@@ -1438,7 +1481,7 @@ of `v0.2.0`.
   security review `H1`–`H3`, `M1`–`M4`, `L1`–`L6` (Host header, CSRF, socket mode 0750,
   body limits, …).
 
-[Unreleased]: https://github.com/SirRenix/n5-fangov/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/SirRenix/n5-fangov/compare/v0.5.0...HEAD
 [0.4.1]: https://github.com/SirRenix/n5-fangov/releases/tag/v0.4.1
 [0.4.0]: https://github.com/SirRenix/n5-fangov/releases/tag/v0.4.0
 [0.3.1]: https://github.com/SirRenix/n5-fangov/releases/tag/v0.3.1

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -182,5 +183,110 @@ func TestAlertsTestBusy(t *testing.T) {
 	wantError(t, r, 409, "test in progress")
 	if !strings.Contains(r.body, `"transport":"mail"`) {
 		t.Errorf("busy = %s", r.body)
+	}
+}
+
+// discardLogger drops log lines (the Off sink of the test ring).
+type discardLogger struct{}
+
+func (discardLogger) Printf(string, ...any) {}
+
+// ackAlerts is a fakeAlerts whose history is a real alert.Ring, so the
+// acknowledgement endpoints run against the ring's rules.
+type ackAlerts struct {
+	fakeAlerts
+	ring *alert.Ring
+}
+
+func (a *ackAlerts) Recent(n int) []AlertRecord {
+	var out []AlertRecord
+	for _, r := range a.ring.Recent(n) {
+		out = append(out, AlertRecord{ID: r.ID, TS: r.TS, Kind: r.Kind, Msg: r.Msg, AckTS: r.AckTS, AckBy: r.AckBy})
+	}
+	return out
+}
+func (a *ackAlerts) Ack(ids []uint64, by string) (int, []uint64) {
+	return a.ring.Ack(ids, by)
+}
+
+func (a *ackAlerts) AckUpTo(upTo uint64, by string) int {
+	return a.ring.AckUpTo(upTo, by)
+}
+
+func (a *ackAlerts) Open() int {
+	return a.ring.Open()
+}
+
+func TestAlertsAck(t *testing.T) {
+	e, _, _, _ := storesEnv(t, adminBasic)
+	ring := alert.NewRing(&alert.Off{Logger: discardLogger{}}, "", nil)
+	for _, k := range []string{"stall", "temp", "stall", "driver"} {
+		ring.Alert(k, k+" message")
+	}
+	al := &ackAlerts{fakeAlerts: fakeAlerts{status: AlertStatus{Transport: "log", Effective: "log"}}, ring: ring}
+	e.withDeps(t, adminBasic, func(d *Deps) {
+		d.TokenFile = filepath.Join(t.TempDir(), "tokens.json")
+		d.Account = &fakeAccount{cfg: adminBasic}
+		d.Alerts = al
+	})
+	ok := basicAuth("admin", "pw")
+	r := e.do(t, "GET", "/api/alerts", "", ok)
+	wantCode(t, r, 200)
+	if !strings.Contains(r.body, `"open":4`) || !strings.Contains(r.body, `"id":4`) {
+		t.Errorf("GET carries ids and the open count: %s", r.body)
+	}
+	// body rules
+	wantError(t, e.do(t, "POST", "/api/alerts/ack", `{"ids":[1],"all":true,"up_to":4}`, ok), 400, "not both")
+	wantError(t, e.do(t, "POST", "/api/alerts/ack", `{"ids":[]}`, ok), 400, "empty")
+	wantError(t, e.do(t, "POST", "/api/alerts/ack", `{"all":true}`, ok), 400, "up_to")
+	wantError(t, e.do(t, "POST", "/api/alerts/ack", `{"ids":[1,"x"]}`, ok), 400, "invalid JSON")
+	r = e.do(t, "POST", "/api/alerts/ack", `{"ids":[1,77]}`, ok)
+	wantError(t, r, 404, "unknown alert id")
+	if !strings.Contains(r.body, `"unknown":[77]`) || ring.Open() != 4 {
+		t.Errorf("unknown id: nothing acknowledged: %s, open %d", r.body, ring.Open())
+	}
+	// basic caller: user:<name>
+	r = e.do(t, "POST", "/api/alerts/ack", `{"ids":[1]}`, ok)
+	wantCode(t, r, 200)
+	if !strings.Contains(r.body, `"acked":1`) || !strings.Contains(r.body, `"open":3`) || ring.Recent(0)[3].AckBy != "user:admin" {
+		t.Errorf("ack 1 = %s %+v", r.body, ring.Recent(0)[3])
+	}
+	// token scopes: read may look, control may acknowledge (token:<name>)
+	readTok, _ := mint(t, e, "viewer", "read", time.Hour)
+	wantCode(t, e.do(t, "GET", "/api/alerts", "", bearer(readTok)), 200)
+	wantCode(t, e.do(t, "POST", "/api/alerts/ack", `{"ids":[2]}`, bearer(readTok)), 403)
+	ctlTok, _ := mint(t, e, "ha", "control", time.Hour)
+	wantCode(t, e.do(t, "POST", "/api/alerts/ack", `{"ids":[2]}`, bearer(ctlTok)), 200)
+	if by := ring.Recent(0)[2].AckBy; by != "token:ha" {
+		t.Errorf("token ack_by = %q", by)
+	}
+	// a new alert after "all up to 4" stays open
+	ring.Alert("stall", "late")
+	r = e.do(t, "POST", "/api/alerts/ack", `{"all":true,"up_to":4}`, ok)
+	wantCode(t, r, 200)
+	if !strings.Contains(r.body, `"acked":2`) || ring.Open() != 1 || ring.Recent(1)[0].AckTS != 0 {
+		t.Errorf("all up to 4 = %s, open %d", r.body, ring.Open())
+	}
+	// socket caller: cli
+	rec := httptest.NewRecorder()
+	e.srv.SocketHandler().ServeHTTP(rec, httptest.NewRequest("POST", "/api/alerts/ack", strings.NewReader(`{"ids":[5]}`)))
+	if rec.Code != 200 || ring.Recent(1)[0].AckBy != "cli" {
+		t.Errorf("socket ack: %d %s %+v", rec.Code, rec.Body.String(), ring.Recent(1)[0])
+	}
+	// protected and CSRF-guarded
+	wantError(t, e.do(t, "POST", "/api/alerts/ack", `{"ids":[1]}`, csrf), 401, "authentication")
+	noCSRF := basicAuth("admin", "pw")
+	delete(noCSRF, CSRFHeader)
+	wantCode(t, e.do(t, "POST", "/api/alerts/ack", `{"ids":[1]}`, noCSRF), 403)
+}
+
+// TestAlertsAckWithoutAcker: a manager without the acknowledgement side
+// answers 501 and GET carries no open count.
+func TestAlertsAckWithoutAcker(t *testing.T) {
+	e, _, _, _ := storesEnv(t, adminBasic)
+	ok := basicAuth("admin", "pw")
+	wantError(t, e.do(t, "POST", "/api/alerts/ack", `{"ids":[1]}`, ok), 501, "acknowledgement")
+	if r := e.do(t, "GET", "/api/alerts", "", ok); strings.Contains(r.body, `"open"`) {
+		t.Errorf("no open count without an acker: %s", r.body)
 	}
 }

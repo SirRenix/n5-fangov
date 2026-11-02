@@ -5,6 +5,7 @@ package web
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/SirRenix/n5-fangov/internal/alert"
@@ -65,7 +66,82 @@ func (s *Server) getAlerts(w http.ResponseWriter, r *http.Request) {
 		recent = []AlertRecord{}
 	}
 	out["recent"] = recent
+	if a, ok := m.(AlertAcker); ok {
+		out["open"] = a.Open()
+	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// alertsAckBody is the POST /api/alerts/ack body: either the IDs to
+// acknowledge, or all with up_to, the newest ID the caller has seen.
+type alertsAckBody struct {
+	IDs  []uint64 `json:"ids"`
+	All  bool     `json:"all"`
+	UpTo uint64   `json:"up_to"`
+}
+
+// maxAckIDs bounds the ID list (the ring holds alert.RingSize records).
+const maxAckIDs = alert.RingSize
+
+// ackSource names who acknowledged, for the record: the signed-in user,
+// the token's name, or "cli" for the socket.
+func ackSource(c Caller) string {
+	switch c.Via {
+	case "socket":
+		return "cli"
+	case "bearer":
+		return "token:" + c.User
+	}
+	if c.User == "" {
+		return "user"
+	}
+	return "user:" + c.User
+}
+
+// alertsAck acknowledges alerts (display only: delivery, cooldown and the
+// failsafe are untouched).
+func (s *Server) alertsAck(w http.ResponseWriter, r *http.Request) {
+	m, ok := s.alerts(w)
+	if !ok {
+		return
+	}
+	a, ok := m.(AlertAcker)
+	if !ok {
+		writeError(w, http.StatusNotImplemented, "alert acknowledgement not available")
+		return
+	}
+	var b alertsAckBody
+	if !decodeJSON(w, r, &b) {
+		return
+	}
+	by := ackSource(CallerFrom(r.Context()))
+	switch {
+	case b.All && len(b.IDs) > 0:
+		writeError(w, http.StatusBadRequest, "give either ids or all, not both")
+		return
+	case b.All:
+		if b.UpTo == 0 {
+			writeError(w, http.StatusBadRequest, "all needs up_to: the newest alert id the client has seen")
+			return
+		}
+		n := a.AckUpTo(b.UpTo, by)
+		s.logf("web: %d alert(s) up to #%d acknowledged by %s from %s", n, b.UpTo, by, remoteIP(r))
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "acked": n, "open": a.Open()})
+		return
+	case len(b.IDs) == 0:
+		writeError(w, http.StatusBadRequest, "ids is empty")
+		return
+	case len(b.IDs) > maxAckIDs:
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("at most %d ids", maxAckIDs))
+		return
+	}
+	n, unknown := a.Ack(b.IDs, by)
+	if len(unknown) > 0 {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "unknown alert id", "unknown": unknown})
+		return
+	}
+	s.logf("web: %d alert(s) acknowledged by %s from %s", n, by, remoteIP(r))
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "acked": n, "open": a.Open()})
 }
 
 func (s *Server) alertsTest(w http.ResponseWriter, r *http.Request) {

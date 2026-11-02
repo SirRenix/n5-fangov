@@ -251,6 +251,15 @@ type Deps struct {
 	// Channels is the daemon's channel order for the history CSV columns;
 	// nil → the order of the snapshot's channels.
 	Channels func() []string
+	// Driver returns the loaded fan driver (DriverInfo) for GET
+	// /api/driver; nil → 501.
+	Driver func() any
+	// Health returns the health page document for GET /api/health;
+	// nil → 501.
+	Health func() any
+	// HealthGrace is how long GET /healthz answers "starting" with 200
+	// before a daemon without a finished cycle counts as stuck (503).
+	HealthGrace time.Duration
 }
 
 // Server holds the mux and serves it on TCP and on the unix socket.

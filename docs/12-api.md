@@ -71,8 +71,8 @@ Cumulative; `read` is the default when a token is created.
 
 | Scope | Allows |
 |---|---|
-| `read` | `GET` on `version`, `about`, `session`, `openapi.json`, `state`, `history`, `history.csv`, `system`, `sensors`, `profiles`, `presets`, `presets/{name}`, `alerts`, `dashboard`, `schedules`, `tls` (info only, not the certificate downloads) |
-| `control` | `read` + `PUT`/`DELETE /api/override/{name}`, `POST /api/presets/{name}/apply`, `PUT /api/dashboard` |
+| `read` | `GET` on `version`, `about`, `session`, `openapi.json`, `state`, `history`, `history.csv`, `system`, `sensors`, `profiles`, `presets`, `presets/{name}`, `alerts`, `dashboard`, `schedules`, `tls` (info only, not the certificate downloads), `driver`, `health` |
+| `control` | `read` + `PUT`/`DELETE /api/override/{name}`, `POST /api/presets/{name}/apply`, `PUT /api/dashboard`, `POST /api/alerts/ack` |
 | `admin` | everything the dashboard can do **except** token and account management |
 
 No token, `admin` included, can reach `/api/tokens*`, `/api/account/*`, `/api/login` or
@@ -108,6 +108,7 @@ Basic auth only, never a token.
 | `GET` | `/api/about` | public | licence, repository, author, credits |
 | `GET` | `/api/session` | public | who the caller is: `authenticated`, `mode`, `user`, `via` (`cookie`/`basic`/`bearer`/`none`), `scope` and `token_id` for a token |
 | `GET` | `/api/openapi.json` | public | the OpenAPI document |
+| `GET` | `/healthz` | public | liveness for monitors, [below](#healthz) |
 | `GET` | `/api/state` | filtered | snapshot: status, `hw_status` (`validated`/`tested`/`experimental`/`unknown`; `verified` = validated or tested, kept for compatibility), channels (temperature, duty, target, RPM, mode; signed in also `held_temp`, `hold_until`, `ceiling`, `ceiling_hit`, EC and watched temperatures, alert stamps) |
 | `GET` | `/api/history` | filtered | history points (`minutes`, `since`; anonymous: without `extra`) |
 
@@ -121,7 +122,9 @@ Basic auth only, never a token.
 | `GET` | `/api/profiles` | profiles with the active one; `hw_status` per profile on this machine |
 | `GET` | `/api/presets`, `/api/presets/{name}` | preset list, one preset's channel tables |
 | `GET` | `/api/schedules` | `[[schedule]]` entries, active, next and last switch, timezone (501 without a scheduler) |
-| `GET` | `/api/alerts` | transport status (`webhook_url` full for a session or Basic auth, query and userinfo redacted for a token caller), kinds with last delivery, recent alerts |
+| `GET` | `/api/alerts` | transport status (`webhook_url` full for a session or Basic auth, query and userinfo redacted for a token caller), kinds with last delivery, recent alerts with `id`, `ack_ts`, `ack_by`, and `open` (alerts not acknowledged) |
+| `GET` | `/api/driver` | the loaded fan driver: `module`, `version`, `srcversion`, `mode`, `expected` (what the installed driver package builds), `pending` (reload needed) |
+| `GET` | `/api/health` | the checks of `n5-fangov check`, the kernel gate as `check --after-update` stored it, the driver, daemon start, last restart/failed/emergency/kernel/driver alert (computed at most every 15 s) |
 | `GET` | `/api/dashboard` | the watched sensor ids |
 | `GET` | `/api/tls` | certificate mode, info, warnings, fallback flag |
 
@@ -133,6 +136,7 @@ Basic auth only, never a token.
 | `DELETE` | `/api/override/{name}` | back to the curve |
 | `POST` | `/api/presets/{name}/apply` | apply a preset (merge by pwm; 202 when a restart is needed) |
 | `PUT` | `/api/dashboard` | set the watched sensor ids |
+| `POST` | `/api/alerts/ack` | acknowledge alerts: `{"ids":[41,42]}` or `{"all":true,"up_to":42}` (the newest id the client has seen); display only, [Alerts](07-alerts.md#acknowledging) |
 
 **Scope `admin`**
 
@@ -196,6 +200,28 @@ failure 500, no preset store 501. 200 `{"ok": true, "saved": "<name>"}`.
 ```
 curl -u admin -H "X-N5-Fangov-Csrf: 1" -H "Content-Type: application/json" \
   -X PUT --data @summer.json https://n5host:8010/api/presets/summer
+```
+
+## /healthz
+
+`GET` or `HEAD /healthz` answers without credentials, also with `auth = "basic"`, and
+carries only a state word — no readings, versions or channel names:
+
+| Daemon | HTTP | Body |
+|---|---|---|
+| last cycle ok, or dry run | 200 | `{"status":"ok"}` |
+| no cycle finished yet, within 3 cycle intervals after the start | 200 | `{"status":"starting"}` |
+| no cycle finished after that, or the last one is older than 3 intervals | 503 | `{"status":"stuck"}` |
+| a pwm write failed, a sensor failed, a fan stalled | 503 | `{"status":"degraded"}` |
+| a channel in failsafe | 503 | `{"status":"failsafe"}` |
+| the web server runs without the controller (not in normal operation) | 503 | `{"status":"unavailable"}` |
+
+A monitor (Pulse, Uptime Kuma) checks for 200. With `tls = "auto"` the certificate is
+self-signed: import it in the monitor or let the monitor ignore TLS errors for this
+URL. No answer at all means the daemon is down.
+
+```
+curl -sk https://n5host:8010/healthz
 ```
 
 ## History and CSV

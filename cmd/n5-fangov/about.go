@@ -22,7 +22,8 @@ func aboutInfo() web.About {
 		AuthorURL:  "https://github.com/SirRenix",
 		Go:         runtime.Version(),
 		Credits: []web.Credit{
-			{Name: "ltdstudio/minisforum-n5-it5571", URL: "https://github.com/ltdstudio/minisforum-n5-it5571", Note: "kernel driver for the IT5571 EC"},
+			{Name: "SirRenix/minisforum-n5pro-fan-proxmox", URL: "https://github.com/SirRenix/minisforum-n5pro-fan-proxmox", Note: "DKMS package of the IT5571 kernel driver with downstream patches (write gate, hand-back, shutdown, ABI) and the test kit; the loaded version is in the header"},
+			{Name: "ltdstudio/minisforum-n5-it5571", URL: "https://github.com/ltdstudio/minisforum-n5-it5571", Note: "upstream kernel driver the package is based on"},
 			{Name: "Sl0thC0der/proxfansx", URL: "https://github.com/Sl0thC0der/proxfansx", Note: "dashboard idea; the nct67xx/it87xx profiles follow its chip handling (from documentation, untested here)"},
 		},
 	}
