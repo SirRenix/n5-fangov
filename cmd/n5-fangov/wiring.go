@@ -725,6 +725,10 @@ type webDeps struct {
 	// Channels is the controller's channel order for the history CSV
 	// columns; nil: the snapshot's order.
 	Channels func() []string
+	// Health backs GET /api/driver and GET /api/health (wiring_health.go);
+	// nil: 501. Interval sets the /healthz grace (healthGraceCycles cycles).
+	Health   *healthView
+	Interval time.Duration
 }
 
 // logStore is the log read side (web.LogStore, DESIGN "Web and API"): implemented by
@@ -830,6 +834,7 @@ func newWebServer(d webDeps) webServer {
 		deps.Schedules = d.Schedules.Status
 	}
 	deps.Channels = d.Channels
+	applyHealthDeps(&deps, d.Health, d.Interval)
 	s := web.New(deps)
 	return webServer{TCP: s.Handler(), Socket: s.SocketHandler(), serve: s.Serve, serveTLS: serveTLSFunc(s)}
 }

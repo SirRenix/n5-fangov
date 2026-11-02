@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,6 +22,7 @@ func init() {
 //	alerts status     transport (configured / effective), tools, PVE template state, last alert per kind, recent alerts
 //	alerts test       send a "test" alert now (no cooldown) and report the delivery result
 //	alerts template   install/update the PVE notification template pair
+//	alerts ack ID...  acknowledge alerts (display only); alerts ack --all: every open one
 //
 // With the daemon running, status and test go through the unix socket
 // (GET /api/alerts, POST /api/alerts/test) — the same sink chain the
@@ -33,18 +35,26 @@ func init() {
 func cmdAlerts(args []string) int {
 	fs := flag.NewFlagSet("alerts", flag.ContinueOnError)
 	cfgPath := fs.String("config", defaultConfigPath, "config file")
+	all := fs.Bool("all", false, "ack: every open alert")
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
 		return exitUsage
 	}
 	usage := func() int {
-		fmt.Fprintln(os.Stderr, "usage: n5-fangov alerts status | test | template")
+		fmt.Fprintln(os.Stderr, "usage: n5-fangov alerts status | test | template | ack ID... | ack --all")
 		return exitUsage
 	}
-	if len(pos) != 1 {
+	c := alertsClient{cfgPath: *cfgPath, dir: runDir()}
+	if len(pos) >= 1 && pos[0] == "ack" {
+		ids, ok := parseAckIDs(pos[1:])
+		if !ok || *all == (len(ids) > 0) {
+			return usage()
+		}
+		return c.ack(ids, *all)
+	}
+	if len(pos) != 1 || *all {
 		return usage()
 	}
-	c := alertsClient{cfgPath: *cfgPath, dir: runDir()}
 	switch pos[0] {
 	case "status":
 		return c.status()
@@ -84,11 +94,18 @@ type alertsResp struct {
 		Description string `json:"description"`
 	} `json:"kinds"`
 	Last   map[string]int64 `json:"last"`
-	Recent []struct {
-		TS   int64  `json:"ts"`
-		Kind string `json:"kind"`
-		Msg  string `json:"msg"`
-	} `json:"recent"`
+	Recent []alertLine      `json:"recent"`
+	Open   int              `json:"open"`
+}
+
+// alertLine is one entry of the recent list.
+type alertLine struct {
+	ID    uint64 `json:"id"`
+	TS    int64  `json:"ts"`
+	Kind  string `json:"kind"`
+	Msg   string `json:"msg"`
+	AckTS int64  `json:"ack_ts"`
+	AckBy string `json:"ack_by"`
 }
 
 // offline builds the manager on the config file and the state directory
@@ -130,12 +147,9 @@ func (c alertsClient) status() int {
 	}
 	r.Last = m.Last()
 	for _, rec := range m.Recent(10) {
-		r.Recent = append(r.Recent, struct {
-			TS   int64  `json:"ts"`
-			Kind string `json:"kind"`
-			Msg  string `json:"msg"`
-		}{rec.TS, rec.Kind, rec.Msg})
+		r.Recent = append(r.Recent, alertLine{rec.ID, rec.TS, rec.Kind, rec.Msg, rec.AckTS, rec.AckBy})
 	}
+	r.Open = m.Open()
 	printAlertStatus(r, "config file (daemon not running)")
 	return exitOK
 }
@@ -177,9 +191,13 @@ func printAlertStatus(r alertsResp, source string) {
 	}
 	if len(r.Recent) > 0 {
 		fmt.Println()
-		fmt.Println("recent (newest first):")
+		fmt.Printf("recent (newest first, %d open):\n", r.Open)
 		for _, rec := range r.Recent {
-			fmt.Printf("  %s  %-16s %s\n", time.Unix(rec.TS, 0).Format("2006-01-02 15:04"), rec.Kind, firstLine(rec.Msg))
+			ack := "open"
+			if rec.AckTS != 0 {
+				ack = "ack " + rec.AckBy
+			}
+			fmt.Printf("  #%-4d %s  %-16s %-14s %s\n", rec.ID, time.Unix(rec.TS, 0).Format("2006-01-02 15:04"), rec.Kind, ack, firstLine(rec.Msg))
 		}
 	}
 }
@@ -217,6 +235,90 @@ func (c alertsClient) test() int {
 		return exitFail
 	}
 	fmt.Printf("test alert sent via %s (daemon not running: sent from this process)\n", eff)
+	return exitOK
+}
+
+// parseAckIDs reads the alert IDs of "alerts ack" ("#12" and "12").
+func parseAckIDs(args []string) ([]uint64, bool) {
+	var ids []uint64
+	for _, a := range args {
+		n, err := strconv.ParseUint(strings.TrimPrefix(a, "#"), 10, 64)
+		if err != nil || n == 0 {
+			return nil, false
+		}
+		ids = append(ids, n)
+	}
+	return ids, true
+}
+
+// ack acknowledges through the daemon (POST /api/alerts/ack); without it
+// directly in the state file. --all takes the newest ID the ring holds
+// now as the limit, so an alert arriving meanwhile stays open.
+func (c alertsClient) ack(ids []uint64, all bool) int {
+	a := newAPI(c.dir)
+	body := map[string]any{"ids": ids}
+	if all {
+		var r alertsResp
+		err := a.get("/api/alerts", &r)
+		switch {
+		case errors.Is(err, errNoDaemon):
+			return c.ackOffline(ids, all)
+		case err != nil:
+			fmt.Fprintln(os.Stderr, "alerts ack:", err)
+			return exitFail
+		case len(r.Recent) == 0:
+			fmt.Println("no alerts")
+			return exitOK
+		}
+		body = map[string]any{"all": true, "up_to": r.Recent[0].ID}
+	}
+	var resp struct {
+		Acked int `json:"acked"`
+		Open  int `json:"open"`
+	}
+	err := a.do("POST", "/api/alerts/ack", body, &resp)
+	switch {
+	case err == nil:
+		fmt.Printf("%d alert(s) acknowledged, %d open (daemon)\n", resp.Acked, resp.Open)
+		return exitOK
+	case !errors.Is(err, errNoDaemon):
+		fmt.Fprintln(os.Stderr, "alerts ack:", err)
+		return exitFail
+	}
+	return c.ackOffline(ids, all)
+}
+
+// ackOffline acknowledges in the state file while the daemon is down.
+// With the unit active (the socket did not answer in time) it refuses:
+// the daemon would overwrite the file with its own copy.
+func (c alertsClient) ackOffline(ids []uint64, all bool) int {
+	if unitActive(unitName) {
+		fmt.Fprintln(os.Stderr, "alerts ack: the daemon does not answer on its socket although the unit is active; nothing written (the daemon would overwrite alerts.json) - try again")
+		return exitFail
+	}
+	m := c.offline()
+	var n int
+	if all {
+		rec := m.Recent(1)
+		if len(rec) == 0 {
+			fmt.Println("no alerts")
+			return exitOK
+		}
+		n = m.AckUpTo(rec[0].ID, "cli")
+	} else {
+		var unknown []uint64
+		n, unknown = m.Ack(ids, "cli")
+		if len(unknown) > 0 {
+			fmt.Fprintf(os.Stderr, "alerts ack: unknown alert id(s) %v; nothing acknowledged\n", unknown)
+			return exitFail
+		}
+	}
+	// the ring logs a failed write only; read the file back to know
+	if n > 0 && c.offline().Open() != m.Open() {
+		fmt.Fprintf(os.Stderr, "alerts ack: %s not written\n", alertsPath(stateDir()))
+		return exitFail
+	}
+	fmt.Printf("%d alert(s) acknowledged, %d open (state file, daemon not running)\n", n, m.Open())
 	return exitOK
 }
 

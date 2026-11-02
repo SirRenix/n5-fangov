@@ -97,8 +97,11 @@ RestrictSUIDSGID=yes
 ProtectProc=invisible
 # The daemon runs as root but needs no capability: sysfs attributes
 # are writable for uid 0 without CAP_DAC_OVERRIDE, the files it writes are
-# its own, and the kernel module is loaded by modules-load.d, never from
-# here (check --after-update only looks at files under /lib/modules).
+# its own, and the kernel module is loaded by udev through its DMI alias
+# (driver package 0.2.1+sr2 and later; earlier ones also by modules-load.d),
+# never from here. /lib/modules is hidden (ProtectKernelModules): the health
+# page shows the kernel gate that check --after-update (apt hook, outside
+# this sandbox) stores in the state directory.
 CapabilityBoundingSet=
 
 [Install]

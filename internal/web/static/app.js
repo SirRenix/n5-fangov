@@ -26,7 +26,7 @@ const ico = name => { const s = document.createElementNS(NS, 'svg'); s.setAttrib
 // UI constants: bp mirror app.css, timings ms, geometry px; limits are defaults until GET /api/version merges into LIM
 const UI = Object.freeze({
 	bp: { xs: 480, sm: 700, md: 900, lg: 1100 },
-	timing: { toast: 5000, toastErr: 12000, toastLong: 15000, toastNotice: 8000, alerts: 60000, system: 30000, log: 10000, schedules: 60000, fans: 30000, blobRevoke: 30000, subLock: 1000 },
+	timing: { toast: 5000, toastErr: 12000, toastLong: 15000, toastNotice: 8000, alerts: 60000, drv: 60000, system: 30000, log: 10000, schedules: 60000, fans: 30000, blobRevoke: 30000, subLock: 1000 },
 	toastMax: 3,
 	chart: { yMargin: .15, yRound: 5, minSpanTemp: 15, minSpanRpm: 1000, minSpan: 10, pad: { l: 40, r: 58, t: 8, b: 22 },
 		lineW: 2, fillAlpha: .08, dotR: 4.5, dotStroke: 2, labelH: 13, labelGap: 6, tipGap: 12, dash: { hover: [3, 3], crit: [4, 3], now: [2, 3] }, ceilAlpha: .55,
@@ -297,7 +297,7 @@ const applyLimits = () => { const L = LIM;
 
 // pages: the nav (sidebar / icon rail / phone bottom bar + More sheet) is built from PAGES; hash routing #<page>[/<section>]
 const PAGES = [
-	{ g: 'Monitor', id: 'overview', t: 'Overview', ic: 'gauge', anon: true }, { g: 'Monitor', id: 'system', t: 'System', ic: 'chip' },
+	{ g: 'Monitor', id: 'overview', t: 'Overview', ic: 'gauge', anon: true }, { g: 'Monitor', id: 'health', t: 'Health', ic: 'check' }, { g: 'Monitor', id: 'system', t: 'System', ic: 'chip' },
 	{ g: 'Control', id: 'fans', t: 'Fans', ic: 'fan' }, { g: 'Control', id: 'schedules', t: 'Schedules', ic: 'clock' },
 	{ g: 'Operate', id: 'alerts', t: 'Alerts', ic: 'bell' }, { g: 'Operate', id: 'log', t: 'Log', ic: 'list' },
 	{ g: 'Settings', id: 'settings', t: 'Settings', ic: 'gear' },
@@ -305,7 +305,7 @@ const PAGES = [
 const BOTTOM = ['overview', 'fans', 'alerts', 'settings']; // the phone bar; the rest goes into the More sheet
 let cur = 'overview', lastHash = '';
 const visible = () => PAGES.filter(p => signedIn() || p.anon);
-const navBtn = (p, extra) => h('button', { 'aria-current': p.id === cur ? 'page' : null, title: p.t, 'data-page': p.id, onclick: () => goUser(p.id) }, ico(p.ic), h('span', { class: 'lbl' }, p.t), extra);
+const navBtn = (p, extra) => h('button', { 'aria-current': p.id === cur ? 'page' : null, title: p.t, 'data-page': p.id, 'data-n': p.id === 'alerts' && alerts && signedIn() ? alerts.open || '' : null, onclick: () => goUser(p.id) }, ico(p.ic), h('span', { class: 'lbl' }, p.t), extra);
 const dirtyDot = () => h('i', { class: 'dirty', hidden: !edDirty, title: 'unsaved changes', role: 'img', 'aria-label': 'unsaved changes' });
 // 700–1099 px: the icon rail is forced (the 220 px sidebar leaves the header no room); the stored preference applies from 1100 px
 const RAIL_MQ = matchMedia(`(max-width:${UI.bp.lg - .02}px)`); RAIL_MQ.addEventListener('change', () => buildNav());
@@ -356,7 +356,7 @@ function go(id, sec, replace) {
 	// every page needs an entry (TestNavHasPages); a missing one would throw after the section switch
 	(({ overview: () => { renderCharts(); pollSensors(); loadAlerts(); }, system: () => { renderSystemTab(); loadSystem(); },
 		fans: () => { if (!edState && cfg) loadEditor(); renderLive(); pollSensors(1); drawEds(); loadPresets(); },
-		schedules: loadSchedules, alerts: () => { alDirty = false; renderAlertsTab(); loadAlerts(); }, log: loadLog,
+		health: loadHealth, schedules: loadSchedules, alerts: () => { alDirty = false; renderAlertsTab(); loadAlerts(); }, log: loadLog,
 		settings: () => { alDirty = false; renderAlertsTab(); renderSettings(); }, about: () => { renderProfiles(); } })[id] || (() => {}))();
 	const el = sec && $('#' + sec);
 	if (sec) { if (el) el.scrollIntoView({ block: 'start' }); if (cur === 'settings') markSub(sec, true); }
@@ -383,12 +383,12 @@ async function applyAuth() {
 	if (!on) psReset();
 	if (!on) { cert = null; cfg = null; edState = null; dirty(false); scReset(); alerts = null; sysinfo = null; dash = []; profiles = []; SN.key = null; for (const k in ED) delete ED[k]; for (const id of ['#fan-cards', '#ch-sel', '#preset-row', '#log', '#sc-tbl tbody', '#sc-kv', '#ac-tok tbody']) clear($(id));
 		// protected content leaves the DOM, not only the view
-		for (const el of $$('#p-system dl, #p-system tbody, #p-alerts dl, #p-alerts tbody, #p-alerts ul, #profiles tbody, #sensors, #sys, #alerts, #ac-sessions tbody, #ct-kv, #ct-san, #al-tpl')) clear(el);
-		for (const id of ['#ct-fp', '#ac-user', '#ac-tk-nn', '#sy-when']) $(id).textContent = ''; ctClearUpload(); acReset(); $('#al-form').reset(); alDirty = false; if (ped.open) ped.close();
+		for (const el of $$('#p-health ul, #p-health dl, #p-system dl, #p-system tbody, #p-alerts dl, #p-alerts tbody, #p-alerts ul, #profiles tbody, #sensors, #sys, #alerts, #ac-sessions tbody, #ct-kv, #ct-san, #al-tpl')) clear(el);
+		for (const id of ['#ct-fp', '#ac-user', '#ac-tk-nn', '#sy-when', '#hl-sum']) $(id).textContent = ''; ctClearUpload(); acReset(); $('#al-form').reset(); alDirty = false; if (ped.open) ped.close();
 		route(); // a page that needs auth falls back to the Overview
-		secState(); renderCharts(); loadAbout(); return; }
+		drv = null; drvState(); secState(); renderCharts(); loadAbout(); return; }
 	hist = []; lastTs = 0; // history is re-read with the extra series
-	await loadConfig(); loadCert(); loadDash(); loadAlerts(); loadSystem(); resetHistory(); loadAbout();
+	await loadConfig(); loadCert(); loadDash(); loadAlerts(); loadSystem(); resetHistory(); loadAbout(); loadDrv();
 	api('/api/profiles').then(r => { profiles = r.body || []; renderHeader(); renderSystem(); renderProfiles(); }).catch(() => {});
 	if (edStash) { edState = edStash; edStash = null; buildEditors(); dirty(true); cvNotice('Unsaved curve edits from before the session expired are restored — apply or revert.', ''); if (cur !== 'fans') toast('Unsaved curve edits restored (Fans page)', 'warn'); }
 	if (scStash) { scState = scStash; scStash = null; scSetDirty(true); scErr('Unsaved schedule edits from before the session expired are restored — save or revert.', ''); if (cur !== 'schedules') toast('Unsaved schedule edits restored (Schedules page)', 'warn'); }
@@ -514,12 +514,18 @@ async function loadSystem() { if (!signedIn()) return;
 	try { sysinfo = (await api('/api/system')).body; renderSystem(); if (cur === 'system') renderSystemTab(); }
 	catch (e) { if (e.status === 401) return; sysinfo = null; renderSystem(); if (cur === 'system') syNotice(e.status === 501 ? 'This daemon has no system inventory (older version?).' : 'system: ' + e.message, 'err'); } }
 on('#sy-refresh', 'click', loadSystem);
-// alerts list (Overview card + Alerts page); `error` = raised but not delivered
-const alertList = (el, recent, empty) => { clear(el); if (!recent.length) el.append(h('li', { class: 'empty' }, empty || 'no alerts'));
-	for (const a of recent) el.append(h('li', null, h('span', { class: 'k ' + a.kind }, a.kind), h('span', { class: 'msg' }, a.msg || '', a.error ? h('span', { class: 'de' }, 'not delivered: ' + a.error) : null), tm(a.ts))); };
+// alerts list (Overview card + Alerts page); `error` = raised but not delivered. Open alerts first, acknowledged ones folded
+// below; ack (Alerts page) adds an Ack button per open alert — acknowledging changes the display only
+const alertLi = (a, ack) => h('li', null, h('span', { class: 'k ' + a.kind }, a.kind), h('span', { class: 'msg' }, a.msg || '', a.error ? h('span', { class: 'de' }, 'not delivered: ' + a.error) : null,
+	a.ack_ts ? h('span', { class: 'ak' }, 'acknowledged by ' + a.ack_by) : null), tm(a.ts), ack && !a.ack_ts && a.id ? h('button', { class: 'btn sm', type: 'button', onclick: () => ackAl({ ids: [a.id] }) }, 'Ack') : null);
+const alertList = (el, recent, empty, ack) => { clear(el); if (!recent.length) el.append(h('li', { class: 'empty' }, empty || 'no alerts'));
+	const dn = recent.filter(a => a.ack_ts); for (const a of recent) if (!a.ack_ts) el.append(alertLi(a, ack));
+	if (dn.length) el.append(h('li', { class: 'ackd' }, h('details', null, h('summary', null, dn.length + ' acknowledged'), h('ul', { class: 'alerts' }, ...dn.map(a => alertLi(a)))))); };
+const ackAl = async j => { if (await act(() => api('/api/alerts/ack', { method: 'POST', json: j }))) loadAlerts(); };
+on('#al-ackall', 'click', () => alerts && alerts.recent && alerts.recent[0] && ackAl({ all: true, up_to: alerts.recent[0].id }));
 const alNotice = notice('#al-notice');
 async function loadAlerts() { if (!signedIn()) return;
-	try { alerts = (await api('/api/alerts')).body; alertList($('#alerts'), alerts.recent || [], 'no alerts — Send test alert on the Alerts page checks the transport'); alNotice(''); if (cur === 'alerts' || cur === 'settings') renderAlertsTab(); }
+	try { alerts = (await api('/api/alerts')).body; for (const b of $$('[data-page="alerts"]')) b.dataset.n = alerts.open || ''; alertList($('#alerts'), alerts.recent || [], 'no alerts — Send test alert on the Alerts page checks the transport'); alNotice(''); if (cur === 'alerts' || cur === 'settings') renderAlertsTab(); }
 	catch (e) { if (e.status === 401) return; alerts = null; alertList($('#alerts'), [], 'alerts: unavailable'); alertList($('#al-recent'), []); alNotice('alerts: ' + e.message); } }
 // sensors card, grouped by `kind` first (disk:* → SSD·NVMe or HDD), then id prefix / hwmon chip
 const GROUPS = [['CPU', /^(k10temp|coretemp)/], ['SSD · NVMe', /^nvme/], ['HDD', /^drivetemp/], ['GPU', /^(amdgpu|nouveau|i915|radeon)/], ['NIC', /^(nic|eth|mlx|igc|ixgbe|r8169|atlantic)/], ['EC · board', /^(ec$|minisforum|acpitz|spd5118)/]];
@@ -1015,7 +1021,7 @@ function renderAlertsTab() {
 	const tb = clear($('#al-kinds tbody')), last = a.last || {};
 	for (const k of a.kinds || []) tb.append(h('tr', null, h('td', { class: 'mono' }, k.kind), h('td', null, k.description || ''), h('td', null, tm(last[k.kind] || 0))));
 	if (!(a.kinds || []).length) tb.append(h('tr', null, h('td', { colspan: 3, class: 'empty' }, 'no alert kinds reported')));
-	alertList($('#al-recent'), a.recent || []);
+	alertList($('#al-recent'), a.recent || [], null, 1); $('#al-ackall').hidden = !(a.open > 0);
 }
 on('#al-form', 'submit', async ev => { ev.preventDefault(); const t = $('#al-transport').value, j = { transport: t };
 	if (/^(auto|mail)$/.test(t)) j.mail_to = $('#al-mailto').value.trim();
@@ -1112,7 +1118,7 @@ function schedule() {
 		setInterval(() => { if (cur === 'overview' || cur === 'alerts') loadAlerts(); }, T.alerts),
 		setInterval(() => { if (cur === 'schedules') loadSchedules(); }, T.schedules), setInterval(refreshFans, T.fans),
 		setInterval(() => { if (cur === 'overview' || cur === 'system') loadSystem(); }, T.system), // live parts: memory, load, link state
-		setInterval(() => { if (cur === 'log') loadLog(); }, T.log), setInterval(scTick, 1000)];
+		setInterval(() => { if (cur === 'log') loadLog(); }, T.log), setInterval(scTick, 1000), setInterval(() => { loadDrv(); if (cur === 'health') loadHealth(); }, T.drv)];
 }
 document.addEventListener('visibilitychange', schedule);
 
@@ -1229,6 +1235,21 @@ function renderCert() {
 const ctClearUpload = () => { for (const id of ['#ct-cpem', '#ct-kpem', '#ct-cfile', '#ct-kfile']) $(id).value = ''; $('#ct-force').checked = false; $('#ct-force-l').hidden = true; };
 async function openCert() { ctNotice(''); $('#ct-regen-f').hidden = $('#ct-upload-f').hidden = true; ctClearUpload(); await loadCert(); renderCert(); }
 on('#h-cert', 'click', () => go('settings', 'st-cert'));
+// fan driver chip (signed in): loaded module version; warn while a reload is pending or the driver cannot write; click → Health
+let drv = null;
+async function loadDrv() { if (!signedIn()) return; try { drv = (await api('/api/driver')).body; } catch { drv = null; } if (!signedIn()) drv = null; drvState(); }
+const drvState = () => { const e = $('#h-drv'), d = drv; e.hidden = !d || !d.module || !signedIn(); if (e.hidden) return;
+	const bad = d.pending || d.mode !== 'write-enabled', t = (d.pending ? 'reload pending: ' : 'drv ') + (d.version || d.module);
+	e.className = 'chip drv' + (bad ? ' warn' : ''); $('#h-drv-t').textContent = t; e.setAttribute('aria-label', 'fan driver ' + t);
+	e.title = `${d.module} ${d.version || ''}${d.srcversion ? ' · srcversion ' + d.srcversion : ''} · ${d.mode}` + (d.pending ? `\ninstalled package builds ${d.expected}: reload the module` : '') + '\nclick for the health page'; };
+on('#h-drv', 'click', () => go('health'));
+// Health page: the checks of `n5-fangov check`, the kernel gate, driver and daemon (GET /api/health, cached 15 s by the daemon)
+const hlList = (el, items) => { clear(el); for (const i of items || []) el.append(h('li', { class: i.level }, h('b', null, i.level), h('span', null, i.name ? i.name + ': ' : '', i.detail))); };
+async function loadHealth() { if (!signedIn()) return; let H; try { H = (await api('/api/health')).body; } catch (e) { if (e.status !== 401) toast('health: ' + e.message, 'err'); return; } if (!signedIn()) return;
+	const d = H.driver || {}, ev = H.last_events || {}; $('#hl-sum').textContent = 'check: ' + H.summary + ' · ' + abs(H.checked);
+	hlList($('#hl-checks'), H.checks); hlList($('#hl-gate'), H.gate); drv = d; drvState();
+	kv($('#hl-kv'), [['driver', (d.module || '—') + ' ' + (d.version || '')], ['srcversion', h('dd', { class: 'mono' }, d.srcversion || '—')], ['mode', d.mode || '—'],
+		['package builds', (d.expected || '—') + (d.pending ? ' — reload pending' : '')], ['daemon started', h('dd', null, tm(H.started))], ...Object.keys(ev).sort().map(k => ['last ' + k + ' alert', h('dd', null, tm(ev[k]))])]); }
 $$('#st-cert [data-cancel]').forEach(b => b.addEventListener('click', () => { b.closest('form').hidden = true; ctClearUpload(); }));
 for (const x of ['crt', 'cer']) on('#ct-' + x, 'click', () => act(() => download('/api/tls/cert.' + x, 'n5-fangov.' + x), n => `Downloaded ${n} — now import it (see How to trust)`));
 on('#ct-copy', 'click', () => navigator.clipboard.writeText($('#ct-fp').textContent).then(() => toast('Fingerprint copied', 'ok'), () => toast('Clipboard blocked — select the text', 'warn')));

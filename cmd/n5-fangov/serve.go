@@ -359,6 +359,8 @@ func serveWeb(st *serveState) {
 		System:      newSystemCollector(st.hw, st.dev),
 		Schedules:   sched,
 		Channels:    ctrl.Channels,
+		Health:      newHealthView(cfgPath, runDir(), st.hw, st.dev, svc, st.alertMgr),
+		Interval:    controllerInterval(ctrl),
 	})
 	st.sched = sched
 	log.Printf("web: sessions %s, tokens %s", orMemory(sessionsPath(st.state)), orMemory(tokensPath(st.state)))

@@ -1,10 +1,12 @@
 # remote-go.ps1 -- build/test a Go tree via Docker on a Linux host with Docker reachable
 # via an ssh alias (default: $env:N5FANGOV_BUILD_HOST, else "builder" - see .env.example). No Go toolchain is needed on the Windows side.
 # Usage:
-#   tools\remote-go.ps1 -Path <repo-or-worktree> -Id <unique-name> [-Host <ssh-alias>] [-Image <docker-image>] [-Cmd "go test ./..."] [-Fetch]
+#   tools\remote-go.ps1 -Path <repo-or-worktree> -Id <unique-name> [-Host <ssh-alias>] [-Image <docker-image>] [-Cmd "go test ./..."] [-Fetch] [-Cleanup]
 # Default Cmd: go mod tidy, go vet, go test, go build -> n5-fangov (linux/amd64, static).
 # Default Image: golang:1.26-alpine; golang:1.26-bookworm (glibc, cgo) when Cmd contains -race.
 # -Fetch copies the built binary back to <Path>\dist\n5-fangov.
+# -Cleanup removes ~/gobuild/<Id> on the host at the end (through Docker: the
+# container leaves root-owned files); without it the copy stays for the next run.
 # Run with pwsh (PowerShell 7+). Windows PowerShell 5.1 corrupts the binary tar pipe.
 param(
     [Parameter(Mandatory=$true)][string]$Path,
@@ -17,7 +19,8 @@ param(
     # detector needs cgo and a glibc image, which a -Cmd containing -race
     # selects on its own (golang:1.26-bookworm) unless -Image is given.
     [string]$Image = "",
-    [switch]$Fetch
+    [switch]$Fetch,
+    [switch]$Cleanup
 )
 $ErrorActionPreference = "Stop"
 $Path = (Resolve-Path $Path).Path
@@ -48,5 +51,9 @@ if ($Fetch -and $rc -eq 0) {
     New-Item -ItemType Directory -Force (Join-Path $Path "dist") | Out-Null
     scp -q "${BuildHost}:$remote/n5-fangov" (Join-Path $Path "dist\n5-fangov")
     Write-Host "fetched -> $(Join-Path $Path 'dist\n5-fangov')"
+}
+if ($Cleanup) {
+    ssh $BuildHost "docker run --rm -v `$HOME/gobuild:/x $Image rm -rf /x/$Id && rmdir ~/gobuild 2>/dev/null; true"
+    Write-Host "removed ${BuildHost}:~/$remote"
 }
 exit $rc

@@ -16,7 +16,7 @@ enforces this ([Who sees what](08-https-security.md#who-sees-what)). With
 ## The shell
 
 **Sidebar** (220 px): the brand row with the **sidebar toggle** (panel-left icon), then
-the pages in five groups: *Monitor* (Overview, System), *Control* (Fans, Schedules),
+the pages in five groups: *Monitor* (Overview, Health, System), *Control* (Fans, Schedules),
 *Operate* (Alerts, Log), *Settings*, *Info* (About). The toggle, the `[` key and
 *Navigation* in Settings → Display switch to the 56 px **icon rail** and back; the
 choice is stored in this browser. Between 700 and 1099 px the rail is forced. The
@@ -28,7 +28,11 @@ footer shows the daemon's version.
 `sensor-error`, `write-error`, `dry-run`), uptime, the version (`beta` badge on a
 pre-release), the **certificate warning chip** while something is wrong (`plain HTTP`
 off loopback, `certificate fallback`, `certificate expires in N d` below 30 days,
-`certificate expired`; it leads to Settings → Certificate), `live`/`paused` (paused
+`certificate expired`; it leads to Settings → Certificate), the **driver chip** (signed
+in: `drv <version>` of the loaded fan driver, tooltip with module, srcversion and write
+mode; yellow `reload pending: <version>` while the loaded module is not the build the
+installed driver package expects, and yellow while the driver cannot write; it leads to
+Health), `live`/`paused` (paused
 while the tab is hidden; red after two failed polls), the user and *Sign in* / *Sign
 out*. Narrow windows drop uptime and version (below 1000 px), then the chip text
 (900 px), then everything but title, status, live dot and user button (700 px).
@@ -41,7 +45,7 @@ Below the header two banners can appear: *Connection to the daemon lost — retr
 import. Toasts show at most three; a fourth drops the oldest.
 
 **Phone** (below 700 px): a **bottom bar** with Overview · Fans · Alerts · Settings ·
-*More*; *More* opens a sheet with System, Schedules, Log, About. Anonymous: Overview ·
+*More*; *More* opens a sheet with Health, System, Schedules, Log, About. Anonymous: Overview ·
 More (About).
 
 ## Overview
@@ -84,6 +88,23 @@ Signed in, three cards follow:
 The page polls `/api/state` every 5 s (Settings → Display: 5, 10 or 30 s), the history
 per range, alerts every 60 s and the system glance every 30 s; nothing while the tab is
 hidden.
+
+## Health
+
+Signed in. The answer to "is everything in order?" in one place:
+
+- **Checks**: the lines of `n5-fangov check`, run by the daemon (`ok`, `warn`, `fail`),
+  with the summary and the time they ran. The daemon computes them at most every 15 s.
+- **Kernel gate**: the result of `check --after-update` with its time — a DKMS module in
+  the expected version for every bootable kernel; a missing one is `fail`. The daemon
+  cannot read `/lib/modules` (service sandbox); the apt hook stores the result after every
+  package run. Until then the card says so; `n5-fangov check --after-update` as root
+  stores it at once. The `dkms` check line shows `skipped` here for the same reason.
+- **Driver and daemon**: module, version, srcversion, write mode, the version the
+  installed driver package builds (*reload pending* when they differ), daemon start, the
+  last `restart`, `failed`, `emergency`, `kernel` and `driver` alert.
+
+The page reloads every minute while it is open.
 
 ## System
 
@@ -262,7 +283,9 @@ What the daemon delivers and did deliver; the transport is configured in
 transport, `pve-notify` and `mail(1)` availability, the webhook URL and format, the
 cooldown, *Configure* and *Send test alert* (kind `test` through the real transport,
 no cooldown; the toast reads `Test alert sent via <transport>` or the delivery error).
-**Recent alerts**: the last 50, kept across restarts, `not delivered: …` in red. The
+**Recent alerts**: the last 50, kept across restarts, `not delivered: …` in red; open
+ones first with **Ack** each and **Acknowledge all** in the card header, acknowledged ones
+folded below ([Acknowledging](07-alerts.md#acknowledging)). The
 **kinds** table lists every alert kind with its description and last delivery. What
 each kind means: [Alerts](07-alerts.md).
 
@@ -372,8 +395,11 @@ and fallback. Each asks first.
 ## About
 
 Public: name, version, description, licence, repository, author, the releases page and
-the credits: [`ltdstudio/minisforum-n5-it5571`](https://github.com/ltdstudio/minisforum-n5-it5571)
-(the kernel driver) and [`Sl0thC0der/proxfansx`](https://github.com/Sl0thC0der/proxfansx)
+the credits: [`SirRenix/minisforum-n5pro-fan-proxmox`](https://github.com/SirRenix/minisforum-n5pro-fan-proxmox)
+(the DKMS package of the kernel driver with the downstream patches and the test kit; the
+loaded version is the driver chip in the header),
+[`ltdstudio/minisforum-n5-it5571`](https://github.com/ltdstudio/minisforum-n5-it5571)
+(the upstream kernel driver the package is based on) and [`Sl0thC0der/proxfansx`](https://github.com/Sl0thC0der/proxfansx)
 (the dashboard idea and the generic NCT67xx/IT87xx handling; no code shared). Signed
 in, the line *built with* (the Go version) appears and the **Compatibility** card
 lists the profiles this build knows: name with `ACTIVE`,
@@ -448,8 +474,11 @@ production page never requests, with documentation values (`n5host`, `192.0.2.x`
 | `&pwm4=1` | a fourth channel `pcie` (pwm 4, no tachometer) |
 | `&lag=1` | an override PUT/DELETE shows in `/api/state` only two polls later, the daemon's next-cycle lag |
 | `&down=1` | state, history and sensors unreachable from 2 s after the boot: the connection banner |
+| `&drv=pending` | the loaded driver is not the build the package expects: yellow driver chip, *reload pending* on Health |
+| `&drv=ro` | the driver cannot write (`write-disabled`): yellow driver chip |
 
-The mock implements every endpoint of the API, including tokens (`n5t_mock…`),
+The mock implements every endpoint of the API, including tokens (`n5t_mock…`), alert
+acknowledgement (two of the recent alerts start acknowledged), driver and health,
 schedules, the history tiers, CSV, the webhook status, `disk:*` sensors and the preset
 body; it validates curves, stop and min on with the daemon's rules. Its presets are the
 three built-ins, `summer` and `alternative` (cpu and ssd from `n5pro-balanced`, its own

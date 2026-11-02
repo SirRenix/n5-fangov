@@ -110,11 +110,15 @@ window.n5mock = (() => {
 	const KINDS = { sensor: 'sensor unreadable', stall: 'fan at 0 rpm', temp: 'critical temp', ceiling: 'built-in ceiling reached (HDD 65, SSD 85, CPU 100 C)', emergency: 'emergency hook ran', write: 'pwm write failed', device: 'hwmon device vanished', config: 'config replaced', 'config-channels': 'channel set changed', profile: 'profile changed',
 		start: 'daemon started', restart: 'restarted', failed: 'unit failed', kernel: 'kernel/DKMS changed', tls: 'cert unreadable', web: 'web listener failed', schedule: 'scheduled preset switch failed', test: 'test alert' };
 	const recent = [[720, 'stall', 'hdd: rpm=0 at duty 105, raised to 255'], [5400, 'temp', 'cpu 91.5 °C ≥ critical 88, forced to 255', 'pve-notify: exit status 1'], [11220, 'sensor', 'drivetemp:max: no devices'], [93600, 'start', 'n5-fangov ' + MV + ' started'], [3 * 86400, 'tls', 'certificate unreadable']]
-		.map(([ago, kind, msg, error]) => Object.assign({ ts: Math.floor(t0 - ago), kind, msg }, error ? { error } : {}));
+		.map(([ago, kind, msg, error], i, all) => Object.assign({ id: all.length - i, ts: Math.floor(t0 - ago), kind, msg }, error ? { error } : {}, i > 2 ? { ack_ts: Math.floor(t0 - 3600), ack_by: 'user:admin' } : {}));
+	let alertId = recent.length; const newAlert = a => recent.unshift(Object.assign({ id: ++alertId }, a)); // ids: arrival order, as the ring
+	// &drv=pending: the module still has to be reloaded (sr1 loaded, the package builds sr2); &drv=ro: the driver cannot write
+	const DRV = { module: 'minisforum_n5_it5571', loaded: true, version: '0.2.1+sr2', srcversion: 'CDDEDE26904251994A0DE35', mode: Q.get('drv') === 'ro' ? 'write-disabled' : 'write-enabled', expected: '0.2.1+sr2', pending: false };
+	if (Q.get('drv') === 'pending') Object.assign(DRV, { version: '0.2.1+sr1', srcversion: '22C5CA61EBD0012B034369B', pending: true });
 	// &ceiling=1: the hdd reading sits above its ceiling (65): 255, mode critical, ceiling_hit, an alert at the head of the list
 	const CEIL = { cpu: 100, ssd: 85, hdd: 65, pcie: 100 }, ceilHit = Q.get('ceiling') === '1';
-	if (ceilHit) recent.unshift({ ts: Math.floor(t0 - 40), kind: 'ceiling', msg: 'hdd: drivetemp:max,disk:sda at 66.5C reached the ceiling 65C (critical 56C) -> 255' });
-	if (Q.get('schedfail')) recent.unshift({ ts: Math.floor(t0 - 3600), kind: 'schedule', msg: 'preset "night" not found (22:00–07:00 kept the previous curves)' });
+	if (ceilHit) newAlert({ ts: Math.floor(t0 - 40), kind: 'ceiling', msg: 'hdd: drivetemp:max,disk:sda at 66.5C reached the ceiling 65C (critical 56C) -> 255' });
+	if (Q.get('schedfail')) newAlert({ ts: Math.floor(t0 - 3600), kind: 'schedule', msg: 'preset "night" not found (22:00–07:00 kept the previous curves)' });
 	const effective = () => A.transport === 'auto' || A.transport === 'pve' ? 'pve-notify' : A.transport === 'webhook' ? (A.webhook_url ? 'webhook' : 'log') : A.transport;
 	const alertStatus = () => ({ transport: A.transport, effective: effective(), mail_to: A.mail_to, webhook_url: A.webhook_url, webhook_format: A.webhook_format, pve_available: true, mail_available: false, template: Object.assign({}, A.tpl), cooldown: '30m0s', kinds: Object.entries(KINDS).map(([kind, description]) => ({ kind, description })) });
 	const iso = ago => new Date((t0 - ago) * 1000).toISOString();
@@ -183,7 +187,7 @@ window.n5mock = (() => {
 			limits: { min_hdd_override: 60, critical_min: 30, critical_max: 150, curve_points_max: 8, dashboard_sensors_max: 8, password_min: 8, password_max: 128, hysteresis_max: 10, min_on_max_s: 3600, ceiling_min: 30 } });
 		if (p === '/api/about') return ok({ name: 'n5-fangov', version: MV, prerelease: PRE, license: 'GPL-2.0-only', license_url: 'https://www.gnu.org/licenses/old-licenses/gpl-2.0.html',
 			repo: GH + 'SirRenix/n5-fangov', author: 'SirRenix', author_url: GH + 'SirRenix', go: M.in ? 'go1.25.1' : '',
-			credits: [['ltdstudio/minisforum-n5-it5571', 'the kernel driver'], ['Sl0thC0der/proxfansx', 'dashboard idea; nct67xx/it87xx profiles']].map(([name, note]) => ({ name, url: GH + name, note })) });
+			credits: [['SirRenix/minisforum-n5pro-fan-proxmox', 'DKMS package of the kernel driver with downstream patches and the test kit'], ['ltdstudio/minisforum-n5-it5571', 'upstream kernel driver the package is based on'], ['Sl0thC0der/proxfansx', 'dashboard idea; nct67xx/it87xx profiles']].map(([name, note]) => ({ name, url: GH + name, note })) });
 		if (p === '/api/openapi.json') return ok(openapi());
 		if (M.in && M.exp && now - t0 > 15 && p === '/api/state') { M.in = M.exp = false; return fail('unauthorized', 401); } // &expire=1: session dies once after 15 s
 		if (Q.get('down') === '1' && now - t0 > 2 && /^\/api\/(state|history|sensors)$/.test(p)) return fail('network: mock down', 0); // &down=1: after the boot the poll path fails like a lost daemon (status 0 = no answer) → connection banner
@@ -248,9 +252,20 @@ window.n5mock = (() => {
 				if (j.transport === 'webhook' && !(j.webhook_url === undefined ? A.webhook_url : j.webhook_url)) return fail('webhook_url required for transport webhook', 400);
 				A.transport = j.transport; if (j.mail_to !== undefined) A.mail_to = j.mail_to || 'root'; if (j.webhook_url !== undefined) A.webhook_url = j.webhook_url; if (j.webhook_format !== undefined) A.webhook_format = j.webhook_format; if (j.transport !== 'webhook') A.webhook_url = '';
 				return ok({ ok: true, status: alertStatus() }); }
-			const last = {}; for (const r of recent) if (!(r.kind in last)) last[r.kind] = r.ts; return ok(Object.assign(alertStatus(), { last, recent: recent.slice(0, 50) })); }
+			const last = {}; for (const r of recent) if (!(r.kind in last)) last[r.kind] = r.ts; return ok(Object.assign(alertStatus(), { last, recent: recent.slice(0, 50), open: recent.filter(r => !r.ack_ts).length })); }
+		if (p === '/api/alerts/ack') { const j = opt.json || {}, by = 'user:' + M.user, at = Math.floor(now), hit = r => !r.ack_ts && (j.all ? r.id <= j.up_to : (j.ids || []).includes(r.id));
+			if (j.all && !j.up_to) return fail('all needs up_to: the newest alert id the client has seen', 400);
+			const n = recent.filter(hit).map(r => Object.assign(r, { ack_ts: at, ack_by: by })).length; return ok({ ok: true, acked: n, open: recent.filter(r => !r.ack_ts).length }); }
+		if (p === '/api/driver') return ok(DRV);
+		if (p === '/api/health') return ok({ checked: Math.floor(now), summary: 'passed with warnings', started: Math.floor(t0 - 93600), status: 'ok', driver: DRV,
+			checks: [['ok', 'config', '/etc/n5-fangov/config.toml parses without warnings'], ['ok', 'profile', 'n5pro (Minisforum N5 Pro (IT5571 EC)) at /sys/class/hwmon/hwmon14'],
+				['warn', 'hardware status', 'experimental (N5 PRO / F8NAA / BIOS 1.05 / EC 0.14: experimental on the reference device)'],
+				DRV.pending ? ['warn', 'driver', `minisforum_n5_it5571 ${DRV.version}, srcversion ${DRV.srcversion}, ${DRV.mode}; the installed package expects ${DRV.expected}: reload the module with the daemon stopped`] : ['ok', 'driver', `minisforum_n5_it5571 ${DRV.version}, srcversion ${DRV.srcversion}, ${DRV.mode}`],
+				['ok', 'channel cpu', 'pwm1 writable, 2140 rpm, sensor k10temp'], ['ok', 'web', 'listen 192.0.2.20:8010, auth basic, tls auto']].map(([level, name, detail]) => ({ level, name, detail })),
+			gate: [{ level: 'ok', name: 'kernel gate', detail: 'fan driver module present for 2 kernel(s), version ' + DRV.expected }],
+			last_events: { restart: Math.floor(t0 - 93600) } });
 		if (p === '/api/alerts/test') { const e = effective(); if (e === 'mail') return fail('mail: exit status 127', 502, { transport: e });
-			recent.unshift({ ts: Math.floor(now), kind: 'test', msg: 'test alert from the dashboard' }); return ok({ ok: true, transport: e }); }
+			newAlert({ ts: Math.floor(now), kind: 'test', msg: 'test alert from the dashboard' }); return ok({ ok: true, transport: e }); }
 		if (p === '/api/alerts/template') { A.tpl.installed = A.tpl.current = true; return ok({ ok: true, path: A.tpl.path }); }
 		if (p === '/api/account') return ok({ user: M.user, mode: M.auth, sessions: sessions() });
 		if (p.startsWith('/api/account/')) { const j = opt.json || {}; if (M.auth === 'none') return fail('auth is none', 409);

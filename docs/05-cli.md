@@ -25,7 +25,7 @@ the running daemon and fall back to the files or `state.json` when it is down
 | `failsafe` | — | put every configured channel into its safe state (`ExecStopPost`; works without the daemon) |
 | `passwd` | `--user U`, `--password-file F` \| `--password -` | set the web user/password (`auth = basic`), restart to apply |
 | `cert` | `info` \| `export [--der] [FILE]` \| `regen [--new-key]` \| `upload CERT KEY` \| `reset` | dashboard certificate (*socket* = hot swap, else on the files plus a restart hint) — [CLI equivalents](08-https-security.md#cli-equivalents) |
-| `alerts` | `status` \| `test` \| `template` | alert transport (`status` shows the webhook URL with its query redacted), test alert, PVE notification template (*socket*, else on the files) — [From the shell](07-alerts.md#from-the-shell) |
+| `alerts` | `status` \| `test` \| `template` \| `ack ID...` \| `ack --all` | alert transport (`status` shows the webhook URL with its query redacted, the recent alerts with id and acknowledgement), test alert, PVE notification template, acknowledge alerts (*socket*, else on the files) — [From the shell](07-alerts.md#from-the-shell) |
 | `token` | `create NAME [--scope read\|control\|admin] [--ttl DAYS]` \| `list` \| `revoke ID` | API tokens (*socket* only: the daemon owns `tokens.json`) — [below](#api-tokens) |
 | `export [FILE]` | `--presets DIR` | settings bundle (config + presets, hash redacted) as JSON; `-`/no file = stdout — [Backup and restore](09-updates.md#backup-and-restore) |
 | `import FILE` | `--presets DIR` | restore a bundle (everything validated first), reload the daemon |

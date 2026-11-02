@@ -4,12 +4,12 @@ The N5 Pro needs an out-of-tree kernel module for its fans. This page covers the
 module, DKMS, install, verify, the kernel-update gate and removal. Other boards:
 [Other boards](#other-boards).
 
-Tested 2026-09-26: package `minisforum-n5-it5571-dkms` 0.2.1-1 (upstream v0.2.1), built
-by DKMS for Proxmox kernels 7.0.14-17-pve and 7.0.12-1-pve, Proxmox VE 9.2.20 / Debian
-13.7, BIOS 1.05; installed over a hand installation and reloaded with the regulator
-stopped. The package n5-fangov 0.5.0 suggests, `0.2.1+sr1~rc2` (write allowlist,
-register dump, safe shutdown), is built and statically checked but **not yet tested on
-hardware**. Other kernel or driver versions are untested. The
+Tested 2026-11-02 on the reference N5 Pro (N5 PRO / F8NAA, BIOS 1.05, EC 0.14): package
+`minisforum-n5-it5571-dkms` `0.2.1+sr2-1`, built by DKMS for Proxmox kernels 7.0.14-26-pve
+and 7.0.12-1-pve, installed over `0.2.1+sr1-1` and reloaded with the regulator stopped.
+The driver's hardware status stays `experimental`; its test results (TESTSPEC runs of
+`0.2.1+sr1`) are in the driver repository's `befunde/RESULTS.md`. Other kernel or driver
+versions are untested. The
 [gate](#the-kernel-update-gate) tells you when a kernel has no module or an old build.
 
 ## Why an out-of-tree module
@@ -87,8 +87,7 @@ install the driver `.deb` as above.
 apt pulls `dkms` and, on Proxmox VE, `proxmox-default-headers` — it follows the default
 kernel series the way `proxmox-default-kernel` does, so a new kernel series brings its
 headers too (on Debian: `linux-headers-amd64`). The package builds the module for every
-kernel that has headers, sets the driver option and the autoload entry below and loads
-the module. Expected output, among apt's lines:
+kernel that has headers, sets the driver option below and loads the module. Expected output, among apt's lines:
 
 ```
 minisforum-n5-it5571: built and installed for 7.0.12-1-pve
@@ -138,9 +137,12 @@ writes and reads the register until it matches or the settle time has passed; `v
 does the same after a restore and records a difference in the bundle. A read of the
 register dump that does not return within 5 s is abandoned.
 
-`/usr/lib/modules-load.d/minisforum-n5-it5571.conf` holds the module name so it loads at
-boot. The daemon's sandbox cannot load modules itself. A file of the same name under
-`/etc/modprobe.d/` or `/etc/modules-load.d/` replaces the package's file.
+At boot udev loads the module through its DMI alias on every board in the driver's table;
+packages up to `0.2.1+sr1` also shipped `/usr/lib/modules-load.d/minisforum-n5-it5571.conf`,
+`0.2.1+sr2` drops it. To keep the module from loading, put
+`blacklist minisforum_n5_it5571` into `/etc/modprobe.d/`. The daemon's sandbox cannot load
+modules itself. A file of the same name under `/etc/modprobe.d/` replaces the package's
+option file.
 
 ## Drive temperatures
 

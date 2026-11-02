@@ -592,7 +592,12 @@ func NewForConfig(c Config, logger Logger) (Sink, string)             // Config{
 func Available() (pve, mail bool)
 type Swappable struct{…}   // Set(Sink)/Get(); the controller and serve hold the Swappable, Configure swaps the inner sink
 type Ring struct{…}        // NewRing(inner, path, logger): records every alert that passed the cooldown (ring of 50,
-                           // mirrored to <state dir>/alerts.json), Recent(n) newest first, Last() kind → ts
+                           // mirrored to <state dir>/alerts.json), Recent(n) newest first, Last() kind → ts;
+                           // Record{ID, TS, Kind, Msg, Error, AckTS, AckBy}: ID in arrival order, kept across
+                           // restarts (a file without ids is numbered in file order on load);
+                           // Ack(ids, by) (n, unknown) — an unknown id acknowledges nothing; AckUpTo(id, by) n;
+                           // Open() n. Acknowledgement is display state only: no sink, cooldown or failsafe
+                           // reads it; a new record is always open
 var ErrTestBusy            // second test while one runs (409)
 func TemplateFiles() map[string][]byte; TemplateStatus(); InstallTemplate() (path, error)
 ```
@@ -727,8 +732,8 @@ Scopes, cumulative:
 
 | Scope | Allows |
 |---|---|
-| `read` (default) | `GET` on `version`, `about`, `session`, `openapi.json`, `state`, `history`, `history.csv`, `system`, `sensors`, `profiles`, `presets`, `presets/{name}`, `alerts`, `dashboard`, `schedules`, `tls` (info only, not the certificate downloads) |
-| `control` | read + `PUT`/`DELETE /api/override/{name}`, `POST /api/presets/{name}/apply`, `PUT /api/dashboard` |
+| `read` (default) | `GET` on `version`, `about`, `session`, `openapi.json`, `state`, `history`, `history.csv`, `system`, `sensors`, `profiles`, `presets`, `presets/{name}`, `alerts`, `dashboard`, `schedules`, `tls` (info only, not the certificate downloads), `driver`, `health` |
+| `control` | read + `PUT`/`DELETE /api/override/{name}`, `POST /api/presets/{name}/apply`, `PUT /api/dashboard`, `POST /api/alerts/ack` |
 | `admin` | everything the dashboard can do **except** token and account management: `/api/tokens*`, `/api/account/*`, `/api/login`, `/api/logout` answer 403 to any token (a leaked admin token cannot mint tokens or change the password) |
 
 Out of scope → 403 `{"error":"token scope read does not allow PUT /api/override/cpu","scope":"read","required":"control"}`.
@@ -750,7 +755,7 @@ type and, where the body is JSON, a schema from `components.schemas`, the respon
 listed in the endpoint table with descriptions, `x-class` (`public`, `filtered`,
 `protected`) and `x-scope`. Component schemas: `Error`, `State`, `Channel`,
 `HistoryPoint`, `Override`, `Version`, `Session`, `Token`, `TokenCreate`, `TokenCreated`,
-`Alerts`, `AlertsUpdate`, `Schedules`, `Dashboard`. Test `TestOpenAPICoversRoutes`: every
+`Alerts`, `AlertsUpdate`, `AlertsAck`, `Healthz`, `Driver`, `Schedules`, `Dashboard`. Test `TestOpenAPICoversRoutes`: every
 registered pattern appears in the document and vice versa; `TestOpenAPIShape`: version,
 summaries, responses, scope values.
 
@@ -760,7 +765,11 @@ summaries, responses, scope values.
 `AllowedHosts`, `TLS`, `TLSMgr`, `TLSHosts`, `Logf`, `SessionFile`, `TokenFile`,
 `Account`, `Alerts`, `Dashboard`, `Schedules` (`ScheduleStatus func() any`; nil → 501),
 `About`, `System func() any`, `Channels func() []string` (history CSV column order; nil →
-the snapshot's channel order). A nil store makes its endpoints answer 501.
+the snapshot's channel order), `Driver func() any` and `Health func() any` (cmd
+`healthView`, `wiring_health.go`; nil → 501), `HealthGrace` (the `/healthz` grace, cmd: 3 ×
+the cycle interval). A nil store makes its endpoints answer 501. `AlertAcker` (`Ack`,
+`AckUpTo`, `Open`) is an optional side of the `AlertMgr`; without it `POST
+/api/alerts/ack` answers 501 and `GET /api/alerts` carries no `open`.
 
 Visibility with `auth = "basic"` (the UI mirrors it; with `auth = "none"` every caller
 counts as signed in, `via: "none"`):
@@ -778,6 +787,7 @@ counts as signed in, `via: "none"`):
 | `GET /api/about` | public | — | `{name, version, prerelease, license, license_url, repo, author, author_url, go, credits[{name,url,note}]}` |
 | `GET /api/session` | public | — | `{authenticated, mode: none\|basic, user, expires?, remember?, via: cookie\|basic\|bearer\|none, scope?, token_id?}` (token caller: `user` = token name) |
 | `GET /api/openapi.json` | public | — | OpenAPI 3.1 document (above) |
+| `GET /healthz` (also HEAD) | public | — | `{status}` only, `Cache-Control: no-store`: 200 `ok` (last cycle ok or dry run), 200 `starting` (no cycle finished, within `HealthGrace` of the start), 503 `stuck` (beyond it, or the last cycle `ts` older than `HealthGrace`), 503 `degraded` (`write-error`, `sensor-error`, a channel in `sensor-error` or `stall`), 503 `failsafe` (a channel in failsafe; wins), 503 `unavailable` (no service). `critical` and `manual` are working protection: 200 |
 | `POST /api/login` | public, CSRF, limiter | `{user, password, remember}` ≤ 4 KiB | 200 `{ok, user, expires, remember}` + `Set-Cookie`; 401 `invalid user or password`; 429; 403 for a token caller |
 | `POST /api/logout` | public, CSRF | — | 204; cookie cleared, session revoked; 403 for a token caller |
 | `GET /api/state` | filtered | — | snapshot (section 6) |
@@ -815,11 +825,14 @@ counts as signed in, `via: "none"`):
 | `POST /api/account/password` | protected | `{current_password, new_password}` (8..128) | `{ok}`; 403 `current password wrong` (counted); 409 `auth is none` |
 | `POST /api/account/user` | protected | `{current_password, user}` | `{ok, user}`; same errors |
 | `POST /api/account/sessions/revoke` | protected | `{others:true}` | `{ok, revoked}` |
-| `GET /api/alerts` | protected | — | `AlertStatus{transport, effective, mail_to, webhook_url, webhook_format, pve_available, mail_available, template{installed,current,writable,path,reason}, cooldown, kinds[]} + {last{kind:ts}, recent[{ts,kind,msg}]}`; `webhook_url` full for cookie, Basic and socket callers, redacted (`RedactURL`) for a token caller of any scope |
+| `GET /api/alerts` | protected | — | `AlertStatus{transport, effective, mail_to, webhook_url, webhook_format, pve_available, mail_available, template{installed,current,writable,path,reason}, cooldown, kinds[]} + {last{kind:ts}, recent[{id,ts,kind,msg,error?,ack_ts?,ack_by?}], open}`; `webhook_url` full for cookie, Basic and socket callers, redacted (`RedactURL`) for a token caller of any scope |
 | `PUT /api/alerts` | protected | `{transport, mail_to, webhook_url?, webhook_format?}` (omitted keys keep the value **in the file** — the merge basis is the `[alert]` section read under the file lock, only the keys sent are written; a transport other than `webhook` **clears `webhook_url`** in the file and in effect, so a receiver key does not linger after the switch back — the daemon has no other `[alert]` writer, `PUT /api/config` and an import write the text they are given) | `{ok, status}` (`webhook_url` redacted for a token caller as in `GET`); 400 (invalid URL, format, mail_to; `webhook` without URL) |
 | `POST /api/alerts/test` | protected | — | `{ok, transport}`; 502 `{error, transport}` delivery failed; 409 test in progress |
 | `POST /api/alerts/template` | protected | — | `{ok, path}`; 501 no PVE; 500 with the CLI hint |
 | `GET /api/system` | protected | — | `sysinfo.Info` verbatim (section 10), `Cache-Control: no-store` |
+| `POST /api/alerts/ack` | protected, `control`, CSRF | `{ids:[…]}` (1..50) or `{all:true, up_to}` ≤ 4 KiB | 200 `{ok, acked, open}`; 400 both, empty ids, `all` without `up_to`; 404 `{error, unknown[]}` (nothing acknowledged); 501 without `AlertAcker`. `ack_by`: `user:<name>` (cookie, Basic; `user` with auth none), `token:<name>`, `cli` (socket) |
+| `GET /api/driver` | protected, `read` | — | `{module, loaded, version, srcversion, mode, expected, pending}`: n5pro from `/sys/module/minisforum_n5_it5571` (`mode` = `n5driver.State.Mode()`), `expected` = the MODULE_VERSION of the installed package (the `check` rule, looked up at most once a minute), `pending` = loaded and `version != expected`; other profiles: the hwmon chip name, no versions |
+| `GET /api/health` | protected, `read` | — | `{checked, summary, checks[{level,name,detail}], gate[…], driver, started, status, last_events{kind:ts}}`: `runChecks` of `check` (levels ok/warn/fail, summary `all good` / `passed with warnings` / `FAILED`), the kernel gate (alert lines fail, info lines warn) — computed when `/lib/modules` is readable, else read from `<state dir>/kernel-gate.json`, which `check --after-update` writes (0600, `{ts, lines[]}`; the unit hides `/lib/modules` with `ProtectKernelModules`), the `dkms` check line then `skipped` —, `last_events` for restart, failed, emergency, kernel, driver; computed at most every 15 s, one build at a time |
 | other `/api/*` | — | — | 404 `{error}` |
 
 Sessions: cookie `n5fangov_session=<token>; Path=/; HttpOnly; SameSite=Strict;
@@ -895,8 +908,8 @@ Every channel of the mock state carries `ceiling` (cpu 100, ssd 85, hdd 65) and
 `critical`, `ceiling_hit` true, an alert of kind `ceiling` at the head of the recent list).
 
 - **Shell:** one `nav` (sidebar) + one page header + one `main` with one `section
-  id="p-<id>"` per page. `PAGES` in `app.js` defines the eight pages in five groups —
-  Monitor: `overview`, `system`; Control: `fans`, `schedules`; Operate: `alerts`, `log`;
+  id="p-<id>"` per page. `PAGES` in `app.js` defines the nine pages in five groups —
+  Monitor: `overview`, `health`, `system`; Control: `fans`, `schedules`; Operate: `alerts`, `log`;
   Settings: `settings`; Info: `about` — with their sprite icon; `overview` and `about`
   are anonymous, every other section and nav entry carries `data-auth` / is filtered by
   `visible()`. The sidebar is 220 px: brand row (logo, name and, at its right end, the
@@ -933,7 +946,11 @@ Every channel of the mock state carries `ceiling` (cpu 100, ssd 85, hdd 65) and
   shown only while signed in and the certificate is in fallback, expires in < 30 days,
   is expired, or the listener is plain HTTP off loopback; text `plain HTTP` /
   `certificate fallback` / `certificate expires in N d` / `certificate expired`; click →
-  `go('settings', 'st-cert')`), live indicator (`paused` while `document.hidden`, `err`
+  `go('settings', 'st-cert')`), the **driver chip** `#h-drv` (`drvState`, signed in only,
+  from `GET /api/driver` every minute: `drv <version>`; class `warn` and text
+  `reload pending: <version>` while `pending`, `warn` also while `mode` is not
+  `write-enabled`; tooltip module, srcversion, mode, expected; click → `go('health')`),
+  live indicator (`paused` while `document.hidden`, `err`
   after two failed polls), user name, *Sign in* / *Sign out* (icon + text; hidden with
   `auth = "none"`). Below 1000 px uptime and version hide, below 900 px the chip is
   icon-only (`aria-label` keeps the text), below 700 px `.mx` elements hide (profile,
@@ -1080,8 +1097,18 @@ Every channel of the mock state carries `ceiling` (cpu 100, ssd 85, hdd 65) and
 - **Alerts:** Delivery card (effective transport, `pve-notify` / `mail(1)` availability
   with the apt hint, webhook URL + format or `no URL configured`, cooldown; *Configure*
   = `data-go="settings" data-sec="st-alerts"`), *Send test alert* (`sendTest`, shared
-  with the Settings section; 409 → "already running"), Recent alerts, kinds table with
-  last delivery (empty state for no kinds). The transport form lives in Settings.
+  with the Settings section; 409 → "already running"), Recent alerts (`alertList`: open
+  ones first with *Ack* — `POST /api/alerts/ack {ids:[id]}` —, acknowledged ones folded
+  into a `details` *N acknowledged* with `acknowledged by …`; *Acknowledge all* in the card
+  header, shown while `open > 0`, sends `{all:true, up_to: recent[0].id}`; the Overview
+  card uses the same list without buttons), kinds table with last delivery (empty state
+  for no kinds). Every `[data-page="alerts"]` nav button carries `data-n` = `open`, drawn
+  by CSS as a count. The transport form lives in Settings.
+- **Health:** Checks card (`hlList`: level word coloured ok/warn/fail/skipped, name,
+  detail; summary and time in the card header), Kernel gate card, *Driver and daemon*
+  `kv` (module + version, srcversion, mode, package builds + *reload pending*, daemon
+  started, last restart/failed/emergency/kernel/driver alert). `GET /api/health` on entry
+  and every minute while current; a successful load also refreshes the driver chip.
 - **Log:** filter (`n of m match`), auto-scroll, `last N lines · source: file|journal`,
   *Refresh*, *Export*; WARN/ERROR colouring; re-read every 10 s while current. *Clear
   log* is in Settings → Danger zone (`#lg-clear`, disabled with `source = journal`).
