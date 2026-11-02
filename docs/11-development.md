@@ -14,7 +14,8 @@ manual test before a release: [RELEASE-GATE.md](RELEASE-GATE.md).
   tree to a Linux host over ssh, runs the build or tests in a `golang:<version>-alpine`
   container and fetches the artefacts (`-Fetch` puts the binary at `dist/n5-fangov`).
   `-Image golang:<version>-bookworm` selects a cgo-capable image, `-Cmd "…"` any make
-  target.
+  target, `-Cleanup` removes the tree copy on the build host afterwards (it is root-owned
+  from the container; without the switch it stays under `~/gobuild/<Id>`).
 - `make verify-deploy` runs `systemd-analyze verify` over the units and `apt-config`
   over the apt hook on a host that has them (the Docker build container skips both with
   a note), and checks that the PVE template pair in `deploy/pve-notification/` matches
