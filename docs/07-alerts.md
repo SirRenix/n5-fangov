@@ -218,6 +218,11 @@ changes the display only: delivery, cooldown and failsafe do not look at it. The
 is kept in `alerts.json` and survives a restart; an alert leaves the list after 50 newer
 ones as before. API: `POST /api/alerts/ack` (scope `control`).
 
+Alerts sent by a command line run while the daemon runs (the apt hook's
+`check --after-update`, the onfailure unit) land in the same list with their own id:
+every writer takes the lock `alerts.json.lock`, reads the file, merges it and writes it
+back, and the daemon picks up a changed file on the next read of the list.
+
 ## The PVE template
 
 The two template files (`n5-fangov-subject.txt.hbs`, `n5-fangov-body.txt.hbs`) are

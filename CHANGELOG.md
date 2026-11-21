@@ -12,6 +12,24 @@ drove the 0.3.1 work is `docs/AUDIT.md` (code) and `docs/DESIGN-AUDIT.md`
 (dashboard); the reviews of the 0.4.0 redesign are referenced as `C01`… (code) and
 `D01`… (design), the findings of its release gate as `G1`…`G12`, in the 0.4.0 section.
 
+## [Unreleased]
+
+### Fixed
+
+- **Alerts from command line runs no longer vanish from the list** (#54, since 0.3).
+  The apt hook's `check --after-update` and the onfailure unit's `alert` record into
+  `alerts.json` through their own ring; the daemon did not read the file again, so its
+  next alert or acknowledgement overwrote the record and handed out the same id again
+  (measured on the reference host with 0.6.0: CLI alert #10, then the daemon's test
+  alert #10, the CLI one gone; both mails were delivered). Every writer now takes an
+  flock on `alerts.json.lock` (at most 2 s, then it writes without the lock and logs
+  once), reads the file, merges it by id and writes it back; a read of the list
+  (`/api/alerts`, the open count, `alerts status`) merges a file changed since. Same
+  id with the same time, kind and message is one record and keeps an acknowledgement
+  from either side; same id with other content keeps the record of the writing ring
+  and renumbers the one from the file after the highest (or drops it when a full list
+  holds only newer ones). File format unchanged.
+
 ## [0.6.0] — 2026-11-21
 
 Code equals 0.6.0-rc1, which ran on the reference host from 2026-11-02 (driver

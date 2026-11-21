@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
+	"sort"
 	"sync"
 	"time"
 
@@ -38,17 +40,31 @@ type Record struct {
 // and loaded from it at construction, so a restart keeps the history. A
 // file that cannot be written is logged once; the ring continues in
 // memory.
+//
+// Several rings may share the file: the daemon's and the one of a CLI run
+// without the daemon socket (apt hook, onfailure `alert`). Every write
+// takes the flock on <path>.lock, reads the file, merges it into memory
+// and then writes (so no record and no acknowledgement is lost and an ID
+// is handed out once, #54); a read notices a changed file by its mtime and
+// size and merges it first.
 type Ring struct {
 	inner  Sink
 	path   string
 	logger Logger
 	now    func() time.Time
 
-	mu       sync.Mutex
-	recs     []Record // oldest first
-	lastID   uint64   // highest ID handed out
-	warnedIO bool
+	mu         sync.Mutex
+	recs       []Record // ascending ID
+	lastID     uint64   // highest ID handed out or seen
+	warnedIO   bool
+	warnedLock bool
+	stampMod   time.Time // mtime and size of the file as last read or written
+	stampSize  int64
 }
+
+// lockWait bounds the wait for the history file lock. A holder that hangs
+// longer only costs the serialization: the write goes ahead, logged once.
+const lockWait = 2 * time.Second
 
 // NewRing wraps inner. path "" = memory only. logger nil = silent.
 func NewRing(inner Sink, path string, logger Logger) *Ring {
@@ -107,6 +123,7 @@ func errText(err error) string {
 func (r *Ring) Recent(n int) []Record {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.refreshLocked()
 	if n <= 0 || n > len(r.recs) {
 		n = len(r.recs)
 	}
@@ -121,6 +138,7 @@ func (r *Ring) Recent(n int) []Record {
 func (r *Ring) Last() map[string]int64 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.refreshLocked()
 	out := map[string]int64{}
 	for _, rec := range r.recs {
 		if rec.TS > out[rec.Kind] {
@@ -133,16 +151,44 @@ func (r *Ring) Last() map[string]int64 {
 func (r *Ring) record(rec Record) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	unlock := r.lockLocked()
+	defer unlock()
+	r.mergeFileLocked()
 	r.lastID++
 	rec.ID = r.lastID
 	r.recs = append(r.recs, rec)
-	if len(r.recs) > RingSize {
-		r.recs = append(r.recs[:0], r.recs[len(r.recs)-RingSize:]...)
-	}
+	r.trimLocked()
 	r.saveLocked()
 }
 
-// saveLocked mirrors the ring to the JSON file. Caller holds r.mu.
+// trimLocked keeps the newest RingSize records. Caller holds r.mu.
+func (r *Ring) trimLocked() {
+	if len(r.recs) > RingSize {
+		r.recs = append(r.recs[:0], r.recs[len(r.recs)-RingSize:]...)
+	}
+}
+
+// lockLocked takes the file lock of the history; the returned func
+// releases it. Memory-only rings and a lock that cannot be had (logged
+// once) return a no-op. Caller holds r.mu.
+func (r *Ring) lockLocked() func() {
+	if r.path == "" {
+		return func() {}
+	}
+	unlock, err := lockFile(r.path+".lock", lockWait)
+	if err != nil {
+		if !r.warnedLock {
+			r.warnedLock = true
+			r.logger.Printf("alert history %s: lock: %v (writing without it)", r.path, err)
+		}
+		return func() {}
+	}
+	r.warnedLock = false
+	return unlock
+}
+
+// saveLocked mirrors the ring to the JSON file. Caller holds r.mu (and,
+// for a write after a merge, the file lock).
 func (r *Ring) saveLocked() {
 	if r.path == "" {
 		return
@@ -159,47 +205,157 @@ func (r *Ring) saveLocked() {
 		return
 	}
 	r.warnedIO = false
+	r.stampLocked()
+}
+
+// stampLocked remembers the file's mtime and size. Caller holds r.mu.
+func (r *Ring) stampLocked() {
+	if st, err := os.Stat(r.path); err == nil {
+		r.stampMod, r.stampSize = st.ModTime(), st.Size()
+	}
+}
+
+// refreshLocked merges the file when another ring changed it since this
+// one last read or wrote it (one stat; the file is replaced atomically, so
+// a read without the lock sees a whole file). Caller holds r.mu.
+func (r *Ring) refreshLocked() {
+	if r.path == "" {
+		return
+	}
+	st, err := os.Stat(r.path)
+	if err != nil || (st.ModTime().Equal(r.stampMod) && st.Size() == r.stampSize) {
+		return
+	}
+	r.mergeFileLocked()
 }
 
 // load reads the mirror file; a missing or unreadable file starts empty.
 func (r *Ring) load() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.mergeFileLocked()
+}
+
+// mergeFileLocked reads the file and merges it into memory (mergeRecords).
+// A missing file changes nothing; an unparsable one is logged and ignored.
+// Caller holds r.mu.
+func (r *Ring) mergeFileLocked() {
 	if r.path == "" {
 		return
 	}
-	b, err := os.ReadFile(r.path)
+	// stat and read on one handle: a rename by another ring in between
+	// must not pair the new stamp with the old content
+	f, err := os.Open(r.path)
 	if err != nil {
 		return
 	}
-	var recs []Record
-	if err := json.Unmarshal(b, &recs); err != nil {
+	st, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return
+	}
+	b, err := io.ReadAll(f)
+	_ = f.Close()
+	if err != nil {
+		return
+	}
+	r.stampMod, r.stampSize = st.ModTime(), st.Size()
+	var file []Record
+	if err := json.Unmarshal(b, &file); err != nil {
 		r.logger.Printf("alert history %s: %v (ignored)", r.path, err)
 		return
 	}
-	if len(recs) > RingSize {
-		recs = recs[len(recs)-RingSize:]
+	r.recs, r.lastID = mergeRecords(r.recs, file, r.lastID)
+	r.trimLocked()
+}
+
+// mergeRecords joins the memory records and the file records by ID:
+//   - a file record whose ID memory does not hold is taken over;
+//   - the same ID with the same ts, kind and message is one record, and an
+//     acknowledgement on either side is kept (it only ever gets set);
+//   - the same ID with other content (left behind by the #54 overwrite)
+//     keeps the memory record of the ring that merges; the file record
+//     gets a new ID after the highest, unless a full ring holds only newer
+//     records (it is dropped then, see below);
+//   - a record without an ID (a file written before IDs existed) is the
+//     memory record with the same ts, kind and message when there is one
+//     (memory numbered it on load), else it is numbered after the highest,
+//     in file order.
+//
+// The result is in ascending ID; last is the highest ID in it or the one
+// handed in, whichever is higher.
+func mergeRecords(mem, file []Record, last uint64) ([]Record, uint64) {
+	type key struct {
+		ts        int64
+		kind, msg string
 	}
-	// a file written before IDs existed: number its records in file
-	// order after the highest ID present
-	var last uint64
-	for _, rec := range recs {
+	out := append([]Record(nil), mem...)
+	idx := make(map[uint64]int, len(out)+len(file))
+	byKey := make(map[key]int, len(out))
+	for i, rec := range out {
+		idx[rec.ID] = i
+		byKey[key{rec.TS, rec.Kind, rec.Msg}] = i
 		last = max(last, rec.ID)
 	}
-	for i := range recs {
-		if recs[i].ID == 0 {
-			last++
-			recs[i].ID = last
+	keepAck := func(m *Record, f Record) {
+		if m.AckTS == 0 && f.AckTS != 0 {
+			m.AckTS, m.AckBy = f.AckTS, f.AckBy
 		}
 	}
-	r.mu.Lock()
-	r.recs = recs
-	r.lastID = last
-	r.mu.Unlock()
+	var renumber []Record
+	for _, f := range file {
+		if f.ID == 0 {
+			if i, ok := byKey[key{f.TS, f.Kind, f.Msg}]; ok {
+				keepAck(&out[i], f)
+			} else {
+				renumber = append(renumber, f)
+			}
+			continue
+		}
+		last = max(last, f.ID)
+		i, ok := idx[f.ID]
+		if !ok {
+			idx[f.ID] = len(out)
+			out = append(out, f)
+			continue
+		}
+		m := &out[i]
+		if m.TS == f.TS && m.Kind == f.Kind && m.Msg == f.Msg {
+			keepAck(m, f)
+			continue
+		}
+		// already renumbered by an earlier merge whose write failed
+		if j, ok := byKey[key{f.TS, f.Kind, f.Msg}]; ok {
+			keepAck(&out[j], f)
+			continue
+		}
+		renumber = append(renumber, f)
+	}
+	sort.SliceStable(out, func(a, b int) bool { return out[a].ID < out[b].ID })
+	// a renumbered record older than the oldest one a full ring keeps
+	// would be evicted at once if it had kept its place; with a new ID it
+	// would come back as the newest instead (on every merge while the file
+	// cannot be rewritten), so it is dropped
+	var oldest int64
+	if len(out) >= RingSize {
+		oldest = out[len(out)-RingSize].TS
+	}
+	for _, f := range renumber {
+		if f.TS < oldest {
+			continue
+		}
+		last++
+		f.ID = last
+		out = append(out, f)
+	}
+	return out, last
 }
 
 // Open counts the records not acknowledged yet.
 func (r *Ring) Open() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.refreshLocked()
 	n := 0
 	for _, rec := range r.recs {
 		if rec.AckTS == 0 {
@@ -216,6 +372,9 @@ func (r *Ring) Open() int {
 func (r *Ring) Ack(ids []uint64, by string) (acked int, unknown []uint64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	unlock := r.lockLocked()
+	defer unlock()
+	r.mergeFileLocked()
 	idx := make(map[uint64]int, len(r.recs))
 	for i, rec := range r.recs {
 		idx[rec.ID] = i
@@ -247,6 +406,9 @@ func (r *Ring) Ack(ids []uint64, by string) (acked int, unknown []uint64) {
 func (r *Ring) AckUpTo(upTo uint64, by string) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	unlock := r.lockLocked()
+	defer unlock()
+	r.mergeFileLocked()
 	ts := r.now().Unix()
 	acked := 0
 	for i := range r.recs {

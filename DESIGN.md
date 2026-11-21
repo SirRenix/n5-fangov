@@ -595,6 +595,10 @@ type Ring struct{…}        // NewRing(inner, path, logger): records every aler
                            // mirrored to <state dir>/alerts.json), Recent(n) newest first, Last() kind → ts;
                            // Record{ID, TS, Kind, Msg, Error, AckTS, AckBy}: ID in arrival order, kept across
                            // restarts (a file without ids is numbered in file order on load);
+                           // shared file: every write under flock <path>.lock reads, merges by ID
+                           // (same ID + ts/kind/msg = one record, ack kept; other content: the merging ring's own
+                           // record keeps the ID, the file's is renumbered or, older than a full ring, dropped)
+                           // and writes; reads merge when mtime/size changed (#54);
                            // Ack(ids, by) (n, unknown) — an unknown id acknowledges nothing; AckUpTo(id, by) n;
                            // Open() n. Acknowledgement is display state only: no sink, cooldown or failsafe
                            // reads it; a new record is always open
