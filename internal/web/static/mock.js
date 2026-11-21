@@ -130,7 +130,9 @@ window.n5mock = (() => {
 		[1800, 'assist', 'hdd', 'assist hdd on (admin)', 'user:admin'], [1260, 'preset', '', 'preset n5pro-cool (admin)', 'user:admin'], [1230, 'reload', '', 'config reloaded (admin)', 'user:admin'],
 		[1200, 'alert', '', 'alert stall', 'daemon'], [600, 'override', 'cpu', 'cpu manual 200 (token home-assistant)', 'token:home-assistant']]
 		.map(([ago, kind, ch, text, by], i) => ({ id: i + 1, ts: Math.floor(t0 - ago), kind, ch: ch || undefined, text, by, end: kind.endsWith('-end') || undefined }));
-	const ev = (kind, ch, text) => EV.push({ id: EV.length + 1, ts: Math.floor(Date.now() / 1000), kind, ch, text: text + ' (admin)', by: 'user:admin', end: kind.endsWith('-end') || undefined });
+	const ev = (kind, ch, text, d) => EV.push({ id: EV.length + 1, ts: Math.floor(Date.now() / 1000), kind, ch, text: d ? text : text + ' (admin)', by: d ? 'daemon' : 'user:admin', end: kind.endsWith('-end') || undefined });
+	// full cooling (POST /api/panic): its end; &panic=1 starts with 9 min left, &pnoff=1 refuses it (profile monitor)
+	let PN = Q.get('panic') ? Math.floor(t0 + 540) : 0; const PNO = Q.get('pnoff') ? 'profile monitor: n5-fangov only reads the sensors here, it does not drive the fans' : undefined;
 	// &drv=pending: the module still has to be reloaded (sr1 loaded, the package builds sr2); &drv=ro: the driver cannot write
 	const DRV = { module: 'minisforum_n5_it5571', loaded: true, version: '0.2.1+sr2', srcversion: 'CDDEDE26904251994A0DE35', mode: Q.get('drv') === 'ro' ? 'write-disabled' : 'write-enabled', expected: '0.2.1+sr2', pending: false };
 	if (Q.get('drv') === 'pending') Object.assign(DRV, { version: '0.2.1+sr1', srcversion: '22C5CA61EBD0012B034369B', pending: true });
@@ -210,22 +212,22 @@ window.n5mock = (() => {
 		if (p === '/api/openapi.json') return ok(openapi());
 		if (M.in && M.exp && now - t0 > 15 && p === '/api/state') { M.in = M.exp = false; return fail('unauthorized', 401); } // &expire=1: session dies once after 15 s
 		if (Q.get('down') === '1' && now - t0 > 2 && /^\/api\/(state|history|sensors)$/.test(p)) return fail('network: mock down', 0); // &down=1: after the boot the poll path fails like a lost daemon (status 0 = no answer) → connection banner
-		if (p === '/api/state') { const pt = point(now), stall = (now | 0) % 40 < 3, hold = (now | 0) % 300 < 90;
+		if (p === '/api/state') { const pt = point(now), stall = (now | 0) % 40 < 3, hold = (now | 0) % 300 < 90; if (PN && now >= PN) { PN = 0; ev('panic-end', undefined, 'full cooling ended (10 min passed)', 1); }
 			const body = { ts: pt.ts, status: 'ok', profile: 'n5pro', verified: false, hw_status: 'experimental', dry_run: false, uptime_s: 435723,
 				// like the daemon: an override replaces the target and the mode, stall and critical win on top; &lag=1 reports the previous
 				// override state for two more polls (the daemon's snapshot follows a PUT/DELETE only with the next cycle)
 				channels: cfg.channel.map(c => { const n = c.name, st = n === 'hdd' && stall, lg = ovLag[n], ov = lg && lg.left-- > 0 ? lg.ov : overrides[n]; if (lg && lg.left <= 0) delete ovLag[n];
 					const cd = Math.round(interp(c.curve, pt.temp[n])), duty = ov === undefined ? cd : ov; // curve duty while the lagged state says auto; rpm follows the (lagged) duty, as on the daemon
 					const ch = { name: n, pwm: c.pwm, sensor: c.sensor, temp: pt.temp[n], duty, target: ov === undefined ? n === 'cpu' ? cd + 22 : cd : ov, rpm: st ? 0 : rpmOf(n, duty),
-					mode: st ? 'stall' : ov !== undefined ? 'manual' : 'auto', ceiling: CEIL[n] || 100, ceiling_hit: false };
+					mode: st ? 'stall' : ov !== undefined ? 'manual' : 'auto', override: ov === undefined ? null : ov, ceiling: CEIL[n] || 100, ceiling_hit: false };
 					// the ceiling (0.4.1) wins over everything: 255, mode critical, ceiling_hit (&ceiling=1 puts the hdd reading above its 65)
 					if (ceilHit && n === 'hdd') Object.assign(ch, { temp: 66.5, duty: 255, target: 255, rpm: rpmOf(n, 255), mode: 'critical', ceiling_hit: true });
 					// hysteresis: the held reading lags the raw one; min_on: a running hold now and then
 					if (c.hysteresis) { const held = Math.round(pt.temp[n]) - 1; if (Math.abs(held - pt.temp[n]) >= .1) ch.held_temp = held; }
 					if (c.min_on !== '0s' && hold && n === 'hdd') ch.hold_until = Math.floor(now - (now | 0) % 300 + 90);
-					assistOf(ch, now);
+					assistOf(ch, now); if (PN && !st && ch.mode !== 'critical') Object.assign(ch, { duty: 255, target: 255, rpm: rpmOf(n, 255), mode: 'panic' });
 					return ch; }) };
-			if (M.in) Object.assign(body, { hwmon_path: '/sys/class/hwmon/hwmon14', extra_temps: { 'ec:cpu': +(pt.temp.cpu + 1.5).toFixed(1) }, alerts: { stall: Math.floor(now - 720) }, watched: pt.extra || {} });
+			if (M.in) Object.assign(body, { hwmon_path: '/sys/class/hwmon/hwmon14', extra_temps: { 'ec:cpu': +(pt.temp.cpu + 1.5).toFixed(1) }, alerts: { stall: Math.floor(now - 720) }, watched: pt.extra || {}, panic: PN ? { until: PN, by: 'user:admin' } : undefined, panic_refused: PNO });
 			return ok(body); }
 		if (p === '/api/history') { const min = Math.min(10080, Math.max(1, +u.searchParams.get('minutes') || 120)); return ok(history(min, +u.searchParams.get('since') || 0, M.in)); }
 		if (p === '/api/events') { const cut = now - Math.min(10080, Math.max(1, +u.searchParams.get('minutes') || 120)) * 60, since = +u.searchParams.get('since') || 0;
@@ -275,6 +277,8 @@ window.n5mock = (() => {
 			if (m === 'GET') { if (!presets[n]) return fail('unknown preset ' + n, 404); return ok({ name: n, builtin: !!b, description: presets[n].description, channels: presets[n].ch }); }
 			if (sub === 'rename') { const nn = opt.json.name; if (b || (presets[nn] && presets[nn].builtin)) return fail('built-in preset', 409); if (!presets[n]) return fail('unknown preset ' + n, 404); if (presets[nn]) return fail('preset exists', 409); presets[nn] = presets[n]; delete presets[n]; return ok({ ok: true, name: nn }); }
 			if (presets[n]) { cfg.channel = presets[n].ch.map(c => Object.assign({}, c)); if (n !== 'summer') ev('preset', undefined, 'preset ' + n); } return wait({ status: n === 'summer' ? 202 : 200, body: { ok: true } }); }
+		if (p === '/api/panic') { const a = (opt.json || {}).action; if (a !== 'start' && a !== 'stop') return fail('"action" must be "start" or "stop"', 400); if (PNO) return fail('full cooling refused: ' + PNO, 409);
+			if (a === 'stop' && PN) ev('panic-end', undefined, 'full cooling stopped'); if (a === 'start' && !PN) ev('panic', undefined, 'full cooling'); PN = a === 'start' ? Math.floor(now + 600) : 0; return ok({ active: !!PN, until: PN }); }
 		if (p === '/api/schedules') return ok(schedStatus());
 		if (p.startsWith('/api/tokens')) return mockTokens(p, m, opt);
 		if (p === '/api/log' && m === 'DELETE') { logs.length = 0; return ok({ cleared: true, note: 'journal untouched' }); }
@@ -297,7 +301,7 @@ window.n5mock = (() => {
 			if (j.all && !j.up_to) return fail('all needs up_to: the newest alert id the client has seen', 400);
 			const n = recent.filter(hit).map(r => Object.assign(r, { ack_ts: at, ack_by: by })).length; return ok({ ok: true, acked: n, open: recent.filter(r => !r.ack_ts).length }); }
 		if (p === '/api/driver') return ok(DRV);
-		if (p === '/api/health') return ok({ checked: Math.floor(now), summary: 'passed with warnings', started: Math.floor(t0 - 93600), status: 'ok', driver: DRV,
+		if (p === '/api/health') return ok({ checked: Math.floor(now), summary: 'passed with warnings', started: Math.floor(t0 - 93600), status: 'ok', driver: DRV, panic: PN ? `full cooling until ${new Date(PN * 1000).toTimeString().slice(0, 5)} (admin)` : undefined,
 			checks: [['ok', 'config', '/etc/n5-fangov/config.toml parses without warnings'], ['ok', 'profile', 'n5pro (Minisforum N5 Pro (IT5571 EC)) at /sys/class/hwmon/hwmon14'],
 				['warn', 'hardware status', 'experimental (N5 PRO / F8NAA / BIOS 1.05 / EC 0.14: experimental on the reference device)'],
 				DRV.pending ? ['warn', 'driver', `minisforum_n5_it5571 ${DRV.version}, srcversion ${DRV.srcversion}, ${DRV.mode}; the installed package expects ${DRV.expected}: reload the module with the daemon stopped`] : ['ok', 'driver', `minisforum_n5_it5571 ${DRV.version}, srcversion ${DRV.srcversion}, ${DRV.mode}`],

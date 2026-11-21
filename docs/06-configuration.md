@@ -111,6 +111,24 @@ min_on = "60s"        # a rise in the curve target is held for at least a minute
 - Readings outside −20..120 °C are implausible; the channel then sits at its safe duty
   (fixed stop duty, else 255) in mode `sensor-error`.
 
+### Which rule wins
+
+Per channel and cycle, the later step wins:
+
+1. curve at the hysteresis-held reading, `min_on` hold, assist boost;
+2. manual override (replaces 1);
+3. `critical` and the [ceiling](#ceilings-and-the-emergency-action): 255;
+4. **full cooling** ([Dashboard](04-dashboard.md#full-cooling), `n5-fangov panic`):
+   255 on every channel for 10 minutes, also over a sensor error's safe duty, without the
+   `step_up` ramp;
+5. stall: 255 while the fan reports 0 rpm;
+6. write-error failsafe: every channel 255 — it always comes first in effect.
+
+Full cooling only covers the steps below it: the daemon keeps computing them, so when it
+ends each channel goes back to what it would run now — an override set before or during
+it, a preset or schedule switch or an assist change made meanwhile. The way down is the
+normal one: `step_down` per cycle on the curve, an override at once.
+
 ## Hysteresis and minimum on-time
 
 Both keys post-process the **curve output only**. Override, critical, stall, failsafe,

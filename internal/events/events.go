@@ -45,13 +45,16 @@ const (
 	FailsafeEnd = "failsafe-end"
 	Start       = "start"  // the daemon started
 	Reload      = "reload" // a config was applied (editor, import)
+	Panic       = "panic"  // full cooling (span; by the operator only)
+	PanicEnd    = "panic-end"
+	PanicExtend = "panic-extend" // a start during full cooling: 10 min from then (point)
 )
 
 // Kinds lists every kind in display order.
-var Kinds = []string{Preset, Override, OverrideEnd, Assist, Alert, Critical, CriticalEnd, Ceiling, CeilingEnd, Failsafe, FailsafeEnd, Start, Reload}
+var Kinds = []string{Preset, Override, OverrideEnd, Assist, Alert, Critical, CriticalEnd, Ceiling, CeilingEnd, Failsafe, FailsafeEnd, Start, Reload, Panic, PanicEnd, PanicExtend}
 
 // spans are the kinds with a duration.
-var spans = []string{Override, Critical, Ceiling, Failsafe}
+var spans = []string{Override, Critical, Ceiling, Failsafe, Panic}
 
 // Known reports whether kind is one of Kinds.
 func Known(kind string) bool { return slices.Contains(Kinds, kind) }

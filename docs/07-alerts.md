@@ -251,6 +251,10 @@ What is recorded (`by` names the cause: `user:<name>`, `token:<name>`, `schedule
 | `ceiling` / `ceiling-end` | a channel entered the ceiling state; it left it (3 °C below) or a reload changed its sensor |
 | `failsafe` / `failsafe-end` | the write-error failsafe started; writes work again. The stop failsafe of `ExecStopPost` opens one too (*safe state after daemon end (…)*) |
 | `start` | the daemon started, with its version |
+| `panic` / `panic-end`, `panic-extend` | [full cooling](04-dashboard.md#full-cooling) started; ended (10 min passed, or stopped by whom); a start during it (10 min from then) as a point. Starts within 5 s count as one |
+
+**Full cooling sends no alert**: it is an operator action, not a fault. The log has a
+line at start, extension and end, the event log the span; `/healthz` stays `ok`.
 
 A span stays open until its end event. When the loop stops, the daemon ends its
 critical and ceiling spans (*ended (daemon stopped)*); an override and the failsafe of

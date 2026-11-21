@@ -257,7 +257,7 @@ func serveDevice(st *serveState) bool {
 	}
 
 	st.factory = newSensorFactory(st.hw, dev)
-	ctrl, err := newController(st.cfg, dev, st.factory, st.alerter, controlOpts{DryRun: st.dryRun, RunDir: st.rdir, HistoryFile: historyPath(st.state), DiskKind: diskKindResolver(st.hw), HWStatus: string(st.hwStatus.Status), Events: st.evq})
+	ctrl, err := newController(st.cfg, dev, st.factory, st.alerter, controlOpts{DryRun: st.dryRun, RunDir: st.rdir, HistoryFile: historyPath(st.state), DiskKind: diskKindResolver(st.hw), HWStatus: string(st.hwStatus.Status), Events: st.evq, PanicRefusal: panicRefusal(st.hw, dev)})
 	if err != nil {
 		log.Printf("controller: %v", err)
 		sendAlertCooled(st.rdir, st.alerter, "start", "n5-fangov could not start the controller: "+err.Error())
@@ -378,6 +378,7 @@ func serveWeb(st *serveState) {
 		Health:      newHealthView(cfgPath, runDir(), st.hw, st.dev, svc, st.alertMgr),
 		Interval:    controllerInterval(ctrl),
 		Events:      st.evlog,
+		Panic:       ctrl,
 	})
 	st.sched = sched
 	log.Printf("web: sessions %s, tokens %s", orMemory(sessionsPath(st.state)), orMemory(tokensPath(st.state)))
@@ -417,7 +418,8 @@ func serveRun(st *serveState) int {
 
 	// Event log: the previous process's open spans end before this one's
 	// start event (an override restored from its run file stays open).
-	endStaleSpans(st.evlog, st.evq, ctrl.Overrides())
+	_, _, panicOn := ctrl.PanicState()
+	endStaleSpans(st.evlog, st.evq, ctrl.Overrides(), panicOn)
 
 	// Regulation loop. Run performs the SafeStop itself when it returns.
 	ctrlDone := make(chan error, 1)

@@ -14,6 +14,7 @@ the running daemon and fall back to the files or `state.json` when it is down
 | `status` | — | channels, temperatures, duty, RPM, mode, assist (`-` no table, `off`, `0`, `+45 amdgpu`) (*socket*, else `state.json`) |
 | `set <ch> <duty\|NN%>` | — | manual override for one channel (*socket*; limits and stall guard still apply) |
 | `auto <ch\|all>` | — | back to the curve (*socket*) |
+| `panic` | `stop`, `status` | full cooling: every channel at 255 for 10 min (again = 10 min from now) — [below](#panic) (*socket* only) |
 | `assist <ch> on\|off` | — | switch the channel's [`[[assist]]`](06-configuration.md#assist) table (*socket* only: the daemon writes the `enabled` line and takes it on the next cycle; without an answering socket nothing is written) |
 | `curve` | — | print the configured curves |
 | `preview` | `--preset NAME`, `--assist CH=on\|off` (repeatable), `--span 24h\|7d`, `--json` | what the running curves (or a preset, or other assist switches) would have set over the recorded history — [below](#preview) (*socket* only) |
@@ -58,6 +59,25 @@ history`). Below the table: what the preview cannot show, and for an HDD channel
 assist on the measured effect of 16.11.2026, labelled as measured. `--json` prints the
 API answer. Without an answering socket the command fails; it reads no files itself
 (the history is the daemon's). Rules: [API: Preview](12-api.md#preview).
+
+## panic
+
+```
+n5-fangov panic           # every channel at 255 for 10 min; again: 10 min from now
+n5-fangov panic status
+n5-fangov panic stop      # back to curves and overrides now
+```
+
+```
+full cooling: every channel at 255 until 14:32:05 (10m0s)
+full cooling: on until 14:32:05 (9m41s left), started by cli
+```
+
+Through the daemon socket only. Without the daemon the command exits 1 with a clear
+message: nothing drives the fans then (the failsafe's safe duty applies), and no
+command writes full duty without the daemon. A refusal (profile `monitor`, read-only
+driver) is exit 1 with the reason. What it overrides and what comes back afterwards:
+[Configuration: which rule wins](06-configuration.md#which-rule-wins).
 
 ## events
 

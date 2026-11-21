@@ -136,6 +136,7 @@ Basic auth only, never a token.
 |---|---|---|
 | `PUT` | `/api/override/{name}` | manual duty (`{duty}` or `{percent}`; HDD-like channels ≥ 60) |
 | `DELETE` | `/api/override/{name}` | back to the curve |
+| `POST` | `/api/panic` | full cooling: `{"action":"start"}` (also to extend: 10 min from now) or `{"action":"stop"}`; answers `{active, until}`; 409 with the reason when the daemon cannot drive the fans — [below](#full-cooling) |
 | `POST` | `/api/presets/{name}/apply` | apply a preset (merge by pwm; 202 when a restart is needed) |
 | `PUT` | `/api/dashboard` | set the watched sensor ids |
 | `PUT` | `/api/assist/{name}` | switch the channel's `[[assist]]` table: `{"enabled": true}` / `false`; writes only that `enabled` line, applied on the next cycle; 404 without a table ([Assist](#assist)) |
@@ -324,6 +325,56 @@ time, an absent value is an empty cell.
 ```
 curl -H "Authorization: Bearer n5t_..." -o week.csv "https://n5host:8010/api/history.csv?minutes=10080"
 ```
+
+## Full cooling
+
+```
+curl -sk -X POST -H "Authorization: Bearer n5t_..." -H "Content-Type: application/json" \
+  -d '{"action":"start"}' https://n5host:8010/api/panic
+{"active":true,"until":1789500600}
+```
+
+`POST /api/panic` (scope `control`) sets every channel to 255 for 10 minutes, at once
+(the daemon runs a cycle immediately, no `step_up` ramp). `{"action":"start"}` during a
+running one sets the end to 10 minutes from now; starts within 5 s count as one.
+`{"action":"stop"}` ends it early. The answer is the state after the call: `{active,
+until}` (`until` unix seconds, 0 when none). `409` names why it cannot run: profile
+`monitor` or a read-only fan driver.
+
+While it runs, `GET /api/state` (signed in) carries `panic: {until, by}` and every
+channel that would run its curve or an override has mode `panic` (critical, stall and
+sensor-error keep their mode, at 255 as well); a set override stays in the channel's
+`override` (null when none); `panic_refused` names a refusal before you try. `/healthz` stays `ok`. Precedence and what applies afterwards:
+[Configuration: which rule wins](06-configuration.md#which-rule-wins).
+
+### From Home Assistant
+
+A button or an automation in Home Assistant: a token with scope `control`
+(`n5-fangov token create home-assistant --scope control`, kept in `secrets.yaml`) and
+two `rest_command`s in `configuration.yaml`:
+
+```yaml
+rest_command:
+  n5_full_cooling:
+    url: https://n5host:8010/api/panic
+    method: POST
+    headers:
+      Authorization: !secret n5_fangov_token   # "Bearer n5t_..."
+    content_type: application/json
+    payload: '{"action":"start"}'
+    verify_ssl: false   # or import the dashboard certificate
+  n5_full_cooling_stop:
+    url: https://n5host:8010/api/panic
+    method: POST
+    headers:
+      Authorization: !secret n5_fangov_token
+    content_type: application/json
+    payload: '{"action":"stop"}'
+    verify_ssl: false
+```
+
+Call `rest_command.n5_full_cooling` from a dashboard button or an automation (a hot
+room, a long backup job). The mode shows in the existing state sensors as `panic`.
 
 ## Events
 

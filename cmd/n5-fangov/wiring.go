@@ -679,6 +679,9 @@ type controlOpts struct {
 	DiskKind    func(dev string) string // disk:<dev> kinds for the built-in ceilings
 	HWStatus    string                  // hardware status of this box (hwstatus), snapshot hw_status
 	Events      events.Recorder         // the event queue; nil = no events
+
+	// PanicRefusal: why a full cooling cannot work (read-only driver); nil = none
+	PanicRefusal func() string
 }
 
 func newController(cfg config.Config, dev profile.Device, f sensorFactory, a alert.Sink, o controlOpts) (*control.Controller, error) {
@@ -692,6 +695,8 @@ func newController(cfg config.Config, dev profile.Device, f sensorFactory, a ale
 		Logger:      log.Default(),
 		Notify:      func() { noteNotify("WATCHDOG=1", sdnotify.Watchdog()) },
 		Status:      func(s string) { noteNotify("STATUS", sdnotify.Status(s)) },
+
+		PanicRefusal: o.PanicRefusal,
 	})
 }
 
@@ -784,6 +789,8 @@ type webDeps struct {
 	// Events backs GET /api/events and records the operator's actions;
 	// nil: 501.
 	Events *events.Log
+	// Panic backs POST /api/panic (the controller); nil: 501.
+	Panic *control.Controller
 }
 
 // logStore is the log read side (web.LogStore, DESIGN "Web and API"): implemented by
@@ -891,6 +898,9 @@ func newWebServer(d webDeps) webServer {
 	deps.Channels = d.Channels
 	if d.Events != nil {
 		deps.Events = d.Events
+	}
+	if d.Panic != nil {
+		deps.Panic = d.Panic
 	}
 	applyHealthDeps(&deps, d.Health, d.Interval)
 	s := web.New(deps)

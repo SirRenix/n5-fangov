@@ -243,8 +243,8 @@ const redrawAll = () => { for (const w of charts) w._st && w._st.draw(); drawSpa
 // never colour alone. Spans (start … -end per kind and channel; an open one runs to the right edge) are bands, point events a
 // thin line; every event gets a symbol, a DOM span over the canvas with title and aria-label. Events closer than evGap px merge
 // into one symbol with a count (the most severe group's shape); the tooltip lists them all
-const EVG = { op: ['Operation', '--man', 'c', '●', 'preset, override, assist, reload'], prot: ['Protection', '--crit', 't', '▲', 'alert, critical, ceiling, failsafe'], sys: ['System', '--ok', 's', '■', 'daemon start'] }, EVR = { op: 1, sys: 2, prot: 3 };
-const EVK = { preset: 'op', override: 'op', assist: 'op', reload: 'op', alert: 'prot', critical: 'prot', ceiling: 'prot', failsafe: 'prot', start: 'sys' }, SPANS = ['override', 'critical', 'ceiling', 'failsafe'];
+const EVG = { op: ['Operation', '--man', 'c', '●', 'preset, override, assist, reload, full cooling'], prot: ['Protection', '--crit', 't', '▲', 'alert, critical, ceiling, failsafe'], sys: ['System', '--ok', 's', '■', 'daemon start'] }, EVR = { op: 1, sys: 2, prot: 3 };
+const EVK = { preset: 'op', override: 'op', assist: 'op', reload: 'op', panic: 'op', 'panic-extend': 'op', alert: 'prot', critical: 'prot', ceiling: 'prot', failsafe: 'prot', start: 'sys' }, SPANS = ['override', 'critical', 'ceiling', 'failsafe', 'panic'];
 let evs = [];
 const evB = k => k.replace(/-end$/, ''), evG = e => EVK[evB(e.kind)] || 'sys', evOn = e => S.ev[evG(e)] !== false;
 // anonymous callers get no text: a neutral label from kind and channel
@@ -334,6 +334,20 @@ function renderHeader() {
 	const c = $('#h-status'); c.className = 'chip ' + st; if (c.textContent !== st) c.textContent = st; // role=status: no mutation without change
 	for (const u of $$('.uptime')) u.textContent = 'up ' + fmtUp(snap.uptime_s || 0);
 }
+// full cooling (POST /api/panic): header button, one click, no confirm (the safe direction; Stop undoes it). While it runs the
+// header takes the protection colour with the time left (server clock), +10 min (10 min from now) and Stop; its end — expired,
+// stopped here or in another session — shows a notice. panic_refused (profile monitor, read-only driver) greys the button out
+let pnUntil = 0;
+const pnState = () => { const p = signedIn() && snap && snap.panic, u = p ? p.until : 0, r = snap && snap.panic_refused, g = $('#pn-go');
+	if (pnUntil && !u && signedIn()) toast('Full cooling ended', 'ok'); pnUntil = u;
+	$('#ph').classList.toggle('pn-act', !!u); g.hidden = !!u; $('#pn-on').hidden = !u; g.setAttribute('aria-disabled', !!r);
+	g.title = r ? 'full cooling unavailable: ' + r : 'all fans at maximum for 10 min (loud)'; if (u) $('#pn-on').title = `full cooling until ${hm(u)} (${p.by})`; pnTick(); };
+const pnTick = () => { if (!pnUntil) return; const s = Math.max(0, Math.round(pnUntil - Date.now() / 1000 - (clkOff || 0)));
+	$('#pn-t').textContent = `${s / 60 | 0}:${String(s % 60).padStart(2, '0')}`; if (!s) poll(); };
+const pnAct = async a => { const st = a === 'stop'; if (st || $('#pn-go').getAttribute('aria-disabled') !== 'true') { if (await act(() => api('/api/panic', { method: 'POST', json: { action: a } }), st ? '' : 'Full cooling: every fan at maximum for 10 min')) poll(); } else toast($('#pn-go').title, 'warn'); };
+on('#pn-go', 'click', () => pnAct('start')); on('#pn-more', 'click', () => pnAct('start')); on('#pn-stop', 'click', () => pnAct('stop'));
+// a change accepted during full cooling waits for its end
+const pAft = () => pnUntil ? ' — applies after full cooling ends' : '';
 // the header's height (it wraps) feeds the sticky sub-navigation and scroll margin; the action bar's (0 hidden) lifts the toasts
 const ph = $('#ph'); new ResizeObserver(() => document.documentElement.style.setProperty('--hdr-h', ph.offsetHeight + 'px')).observe(ph);
 const ab = $('#actbar'); new ResizeObserver(() => document.documentElement.style.setProperty('--actbar-h', ab.offsetHeight + 'px')).observe(ab);
@@ -744,7 +758,7 @@ function buildEditors(keepNotice) { // keepNotice: the 202 / warnings notice of 
 		lv.range = h('input', { type: 'range', min: lv.min, max: L.duty, value: 0, disabled: true, 'aria-label': `${c.name} manual duty`, oninput: () => { lv.dirty = 1; lv.show(+lv.range.value); } });
 		lv.num = h('input', { type: 'number', min: lv.min, max: L.duty, value: 0, disabled: true, 'aria-label': `${c.name} manual duty value`, title: TIP.duty, oninput: () => { lv.dirty = 1; lv.show(clamp(+lv.num.value || 0, 0, L.duty), 1); } });
 		lv.set = h('button', { class: 'btn primary sm', disabled: true, onclick: async () => { const v = +lv.range.value; lv.dirty = 0;
-			if (await act(() => api('/api/override/' + c.name, { method: 'PUT', json: { duty: v } }), `${c.name}: manual ${v} (${pct(v)} %)`)) lv.pend(true, v); poll(); } }, 'Set');
+			if (await act(() => api('/api/override/' + c.name, { method: 'PUT', json: { duty: v } }), `${c.name}: manual ${v} (${pct(v)} %)${pAft()}`)) lv.pend(true, v); poll(); } }, 'Set');
 		lv.pctEl = h('span', { class: 'hint sm' });
 		lv.show = (v, keep) => { lv.range.value = v; if (!keep) lv.num.value = v; lv.pctEl.textContent = `${pct(v)} %`;
 			lv.low = lv.min > 0 && v < lv.min; lv.set.disabled = lv.low || lv.box.dataset.off === 'true';
@@ -753,9 +767,9 @@ function buildEditors(keepNotice) { // keepNotice: the 202 / warnings notice of 
 		// through lv.pend (renderLive). aria-busy, not disabled: the focus stays
 		lv.sw = h('button', { class: 'switch', role: 'switch', 'aria-checked': 'false', 'aria-label': `${c.name}: manual override`, onclick: async () => {
 			if (lv.busy) return; const on = !lv.on, live = snap && snap.channels.find(x => x.name === c.name) || {}; lv.busy = 1; lv.sw.setAttribute('aria-busy', 'true');
-			const d = Math.max(lv.min, live.duty >= 0 ? live.duty : live.target >= 0 ? live.target : lv.min); // duty -1 = write failed: hold the target, never 0
-			const r = on ? await act(() => api('/api/override/' + c.name, { method: 'PUT', json: { duty: d } }), `${c.name}: manual — holding ${d} (${pct(d)} %)`)
-				: await act(() => api('/api/override/' + c.name, { method: 'DELETE' }), `${c.name}: back to auto`);
+			const d = Math.max(lv.min, pnUntil && live.temp > -900 ? Math.round(interp(c.curve, live.temp)) : live.duty >= 0 ? live.duty : live.target >= 0 ? live.target : lv.min); // duty -1 = write failed: hold the target, never 0; full cooling: the curve's value, not its 255
+			const r = on ? await act(() => api('/api/override/' + c.name, { method: 'PUT', json: { duty: d } }), `${c.name}: manual — holding ${d} (${pct(d)} %)${pAft()}`)
+				: await act(() => api('/api/override/' + c.name, { method: 'DELETE' }), `${c.name}: back to auto${pAft()}`);
 			lv.busy = 0; lv.sw.removeAttribute('aria-busy'); if (r) { lv.dirty = 0; lv.pend(on, d); lv.state(on ? 'manual' : 'auto'); if (on) lv.show(d); } poll(); } },
 			h('span', { class: 'track', 'aria-hidden': 'true' }), h('span', null, h('b', null, 'Manual'), ' override'));
 		lv.on = false; lv.pend = (on, v) => { lv.on = on; lv.want = v; lv.until = Date.now() + 2 * Math.max(2, cfg && cfg.daemon ? durS(cfg.daemon.interval) : 10) * 1000; };
@@ -794,7 +808,7 @@ const gapPoint = curve => { const s = curve.slice().sort((a, b) => a[0] - b[0]);
 	const t = s.length > 1 ? Math.round((s[bi - 1][0] + s[bi][0]) / 2) : (s[0] ? s[0][0] : K.addDefault) + K.addStep; return [t, Math.round(interp(s, t))]; };
 // assist: the switch writes `enabled`, the snapshot follows a cycle later (held like lv.pend)
 const asSet = async (n, lv) => { const on = lv.asw.getAttribute('aria-checked') !== 'true'; lv.asw.setAttribute('aria-busy', 'true');
-	if (await act(() => api('/api/assist/' + n, { method: 'PUT', json: { enabled: on } }), `${n}: assist ${on ? 'on' : 'off'}`)) { lv.asOn = on; lv.asUntil = Date.now() + 2 * Math.max(2, cfg && cfg.daemon ? durS(cfg.daemon.interval) : 10) * 1000; lv.asw.setAttribute('aria-checked', on); }
+	if (await act(() => api('/api/assist/' + n, { method: 'PUT', json: { enabled: on } }), `${n}: assist ${on ? 'on' : 'off'}${pAft()}`)) { lv.asOn = on; lv.asUntil = Date.now() + 2 * Math.max(2, cfg && cfg.daemon ? durS(cfg.daemon.interval) : 10) * 1000; lv.asw.setAttribute('aria-checked', on); }
 	lv.asw.removeAttribute('aria-busy'); poll(); };
 const asLbl = id => (/^hwmon:([^:]+):/.exec(id) || [, id])[1];
 const asLine = (c, on) => { const a = c.assist, s = (a.sources || []).find(x => x.sensor === a.source); if (!on) return 'off';
@@ -806,11 +820,12 @@ function renderLive() { if (!snap) return;
 		lv.temp.className = 't ' + tempClass(c.temp, crit); clear(lv.temp).append(fmtT(c.temp), h('small', null, ' ' + unit()));
 		clear(lv.duty).append(String(c.duty), h('small', null, ` duty · ${pct(c.duty)} %`)); lv.rpm.textContent = c.rpm < 0 ? 'no tach' : `${c.rpm.toLocaleString('en')} rpm`;
 		// lag: the snapshot trails a PUT/DELETE by a cycle — flag and slider wait for it or the window; manual → on, auto → off, critical/stall keep the flag
-		const man = c.mode === 'manual', lag = lv.until > Date.now() && (man !== lv.on || man && c.target !== lv.want);
-		if (!lv.busy && !lag) { lv.until = 0; if (man) lv.on = true; else if (c.mode === 'auto') lv.on = false; }
+		// override (0.7): the switch follows the set override, also under critical or full cooling; an older daemon: the mode
+		const has = 'override' in c, man = has ? c.override !== null : c.mode === 'manual', hv = has && man ? c.override : c.target, lag = lv.until > Date.now() && (man !== lv.on || man && hv !== lv.want);
+		if (!lv.busy && !lag) { lv.until = 0; if (man) lv.on = true; else if (has || c.mode === 'auto') lv.on = false; }
 		lv.state(c.mode); if (c.ceiling_hit) modeBadge(lv.mode, c.mode, true), modeBadge(lv.hmode, c.mode, true);
-		lv.tgt.textContent = (lv.on ? `held ${man && !lag ? c.target : lv.range.value}` : `curve target ${c.target !== undefined ? c.target : '—'}`) + ' · mode';
-		if (!lv.dirty && !lv.busy && !lag) { if (!lv.on) lv.show(c.duty); else if (man) lv.show(c.target); }
+		lv.tgt.textContent = (lv.on ? `held ${man && !lag ? hv : lv.range.value}` : `curve target ${c.target !== undefined ? c.target : '—'}`) + ' · mode';
+		if (!lv.dirty && !lv.busy && !lag) { if (!lv.on) lv.show(c.duty); else if (man) lv.show(hv); }
 		const mn = minDuty(chList().find(x => x.name === c.name) || ed.c); if (mn !== lv.min) { lv.min = mn; lv.range.min = lv.num.min = mn; lv.show(+lv.range.value, 1); } // profile known now
 		// the daemon's ceiling arrives with the snapshot: header tooltip, and the editor redraws its line once it is known
 		if (c.ceiling > 0 && ed.ceil !== c.ceiling) { ed.ceil = c.ceiling; ed.sub.title = `ceiling ${fmtT(c.ceiling, 0)} ${unit()} (built-in floor below critical)`; ed.draw(); }
@@ -933,7 +948,7 @@ const nameOk = n => LIM.name.test(n) ? builtinNames.includes(n) ? `${n} is a bui
 const applyPreset = async p => { if (!await ask('Apply preset', `Apply preset ${p.name}? The curves change immediately.` + (edDirty ? '\nUnsaved curve edits are discarded.' : ''), { ok: 'Apply' })) return;
 	let r; try { r = await api(`/api/presets/${encodeURIComponent(p.name)}/apply`, { method: 'POST' }); } catch (e) { return toast(e.message, 'err'); }
 	const rs = r.status === 202; psNotice(rs ? 'Preset written — restart required: systemctl restart n5-fangov' : '');
-	toast(rs ? `Preset ${p.name} written — restart required` : `Preset ${p.name} applied`, rs ? 'warn' : 'ok'); await loadConfig(); loadEditor(); loadPresets(); };
+	toast(rs ? `Preset ${p.name} written — restart required` : `Preset ${p.name} applied${pAft()}`, rs ? 'warn' : 'ok'); await loadConfig(); loadEditor(); loadPresets(); };
 async function loadPresets() {
 	const host = $('#preset-row'); try {
 		psList = (await api('/api/presets')).body || []; builtinNames = psList.filter(p => p.builtin).map(p => p.name);
@@ -1188,7 +1203,7 @@ const resetHistory = () => { hist = []; lastTs = 0; histGen++; loadHistory(); };
 let timers = [], polling = false, repoll = false;
 async function poll() { // a call mid-poll queues one more round
 	if (polling) { repoll = true; return; } polling = true;
-	try { const r = await api('/api/state'), first = !snap; snap = r.body; if (snap.ts > 0) { const o = snap.ts - Date.now() / 1000; if (clkOff === null || o > clkOff || o < clkOff - 60) clkOff = o; } renderHeader(); renderCards(); renderLive(); renderSystem();
+	try { const r = await api('/api/state'), first = !snap; snap = r.body; if (snap.ts > 0) { const o = snap.ts - Date.now() / 1000; if (clkOff === null || o > clkOff || o < clkOff - 60) clkOff = o; } renderHeader(); pnState(); renderCards(); renderLive(); renderSystem();
 		if (cur === 'fans') drawEds(); if (first) renderCharts(); } // the history may precede the first snapshot
 	catch (e) {}
 	await pollSensors();
@@ -1203,7 +1218,7 @@ function schedule() {
 		setInterval(() => { if (cur === 'overview' || cur === 'alerts') loadAlerts(); }, T.alerts),
 		setInterval(() => { if (cur === 'schedules') loadSchedules(); }, T.schedules), setInterval(refreshFans, T.fans),
 		setInterval(() => { if (cur === 'overview' || cur === 'system') loadSystem(); }, T.system), // live parts: memory, load, link state
-		setInterval(() => { if (cur === 'log') loadLog(); }, T.log), setInterval(scTick, 1000), setInterval(() => { loadDrv(); if (cur === 'health') loadHealth(); }, T.drv)];
+		setInterval(() => { if (cur === 'log') loadLog(); }, T.log), setInterval(scTick, 1000), setInterval(pnTick, 1000), setInterval(() => { loadDrv(); if (cur === 'health') loadHealth(); }, T.drv)];
 }
 document.addEventListener('visibilitychange', schedule);
 
@@ -1334,7 +1349,7 @@ async function loadHealth() { if (!signedIn()) return; let H; try { H = (await a
 	const d = H.driver || {}, ev = H.last_events || {}; $('#hl-sum').textContent = 'check: ' + H.summary + ' · ' + abs(H.checked);
 	hlList($('#hl-checks'), H.checks); hlList($('#hl-gate'), H.gate); drv = d; drvState();
 	kv($('#hl-kv'), [['driver', (d.module || '—') + ' ' + (d.version || '')], ['srcversion', h('dd', { class: 'mono' }, d.srcversion || '—')], ['mode', d.mode || '—'],
-		['package builds', (d.expected || '—') + (d.pending ? ' — reload pending' : '')], ['daemon started', h('dd', null, tm(H.started))], ...Object.keys(ev).sort().map(k => ['last ' + k + ' alert', h('dd', null, tm(ev[k]))])]); hlEv(); }
+		['package builds', (d.expected || '—') + (d.pending ? ' — reload pending' : '')], ['daemon started', h('dd', null, tm(H.started))], ...H.panic ? [['full cooling', H.panic.slice(13)]] : [], ...Object.keys(ev).sort().map(k => ['last ' + k + ' alert', h('dd', null, tm(ev[k]))])]); hlEv(); }
 $$('#st-cert [data-cancel]').forEach(b => b.addEventListener('click', () => { b.closest('form').hidden = true; ctClearUpload(); }));
 for (const x of ['crt', 'cer']) on('#ct-' + x, 'click', () => act(() => download('/api/tls/cert.' + x, 'n5-fangov.' + x), n => `Downloaded ${n} — now import it (see How to trust)`));
 on('#ct-copy', 'click', () => navigator.clipboard.writeText($('#ct-fp').textContent).then(() => toast('Fingerprint copied', 'ok'), () => toast('Clipboard blocked — select the text', 'warn')));

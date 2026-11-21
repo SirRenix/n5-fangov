@@ -268,6 +268,8 @@ type Deps struct {
 	// Events backs GET /api/events and records the operator's actions
 	// (events_api.go); nil → 501, nothing recorded.
 	Events EventLog
+	// Panic backs POST /api/panic (panic_api.go); nil → 501.
+	Panic PanicCtl
 }
 
 // Server holds the mux and serves it on TCP and on the unix socket.

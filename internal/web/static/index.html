@@ -48,6 +48,10 @@
         <span class="prof mx" id="h-profile">—</span>
       </div>
       <div class="ph-r">
+        <span class="pn" id="h-pn" data-auth hidden>
+          <button class="btn sm" id="pn-go" type="button" aria-label="Full cooling" title="all fans at maximum for 10 min (loud)"><svg class="ic" aria-hidden="true"><use href="#i-fan"/></svg><span class="mx">Full cooling</span></button>
+          <span class="pn-on" id="pn-on" hidden><svg class="ic" aria-hidden="true"><use href="#i-fan"/></svg><span class="sr">full cooling, time left </span><span id="pn-t" role="timer">10:00</span><button class="btn sm" id="pn-more" type="button" title="full cooling 10 min from now" aria-label="full cooling 10 min from now">+10<span class="mx"> min</span></button><button class="btn sm" id="pn-stop" type="button" aria-label="Stop full cooling">Stop</button></span>
+        </span>
         <span class="chip" id="h-status" role="status">…</span>
         <span class="meta uptime mx" title="daemon uptime">up —</span>
         <span class="meta ver mx"><span class="version">v —</span><span class="badge beta" hidden>beta</span></span>

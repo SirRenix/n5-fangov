@@ -45,7 +45,7 @@ func register(name string, c command) { commands[name] = c }
 
 // order lists every public subcommand in usage order.
 var order = []string{
-	"setup", "serve", "status", "set", "auto", "assist", "curve", "preview", "log",
+	"setup", "serve", "status", "set", "auto", "panic", "assist", "curve", "preview", "log",
 	"check", "detect", "identify", "system", "test", "validate", "failsafe",
 	"passwd", "cert", "alerts", "token", "events", "export", "import", "version",
 }
@@ -57,7 +57,8 @@ var helpText = map[string]string{
 	"status":   "                       show channels, temperatures, duty, rpm, mode",
 	"set":      "<ch> <duty|NN%>        manual override for one channel",
 	"auto":     "<ch|all>               return channel(s) to the curve",
-	"assist":   "<ch> on|off            switch the channel's [[assist]] table (via the daemon)",
+	"panic":    "[stop|status]          full cooling: every channel at 255 for 10 min (again = 10 min from now; via the daemon)",
+	"assist":   "<ch> on|off           switch the channel's [[assist]] table (via the daemon)",
 	"curve":    "                       print the configured curves",
 	"preview":  "[--preset NAME] [--assist CH=on|off]... [--span 24h|7d] [--json]  what the curves would have done over the recorded history (via the daemon)",
 	"log":      "[-n N] [--export FILE] [--clear]  log file (journal when no file is configured)",

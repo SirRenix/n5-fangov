@@ -30,6 +30,7 @@ const (
 	ModeStall    Mode = "stall"
 	ModeSensor   Mode = "sensor-error"
 	ModeFailsafe Mode = "failsafe"
+	ModePanic    Mode = "panic" // full cooling (panic.go): 255 over curve, assist and override
 )
 
 // ChannelState is the per-channel part of a Snapshot.
@@ -55,6 +56,9 @@ type ChannelState struct {
 	// Assist is the channel's [[assist]] state; absent for a channel
 	// without a table (older clients ignore it).
 	Assist *AssistState `json:"assist,omitempty"`
+	// Override is the manual duty set for the channel, null when none;
+	// it stays set under critical, stall or full cooling, whose mode wins.
+	Override *int `json:"override"`
 }
 
 // AssistState is the assist part of a ChannelState. Boost is what the
@@ -92,6 +96,17 @@ type Snapshot struct {
 	Watched map[string]float64 `json:"watched"`
 	Alerts  map[string]int64   `json:"alerts"` // type → unix ts of last alert
 	Uptime  int64              `json:"uptime_s"`
+	// Panic is the running full cooling (panic.go), nil when none;
+	// PanicRefused says why a start would be refused ("" = it would run).
+	Panic        *PanicState `json:"panic,omitempty"`
+	PanicRefused string      `json:"panic_refused,omitempty"`
+}
+
+// PanicState is a running full cooling: its end (unix seconds) and who
+// started it (user:<name>, token:<name>, cli).
+type PanicState struct {
+	Until int64  `json:"until"`
+	By    string `json:"by"`
 }
 
 // HistoryPoint is one history entry for the charts: {ts, temp{}, duty{},

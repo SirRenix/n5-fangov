@@ -159,6 +159,9 @@ func (s *Server) routeTable() []route {
 			Responses: map[int]string{200: "override applied on the next cycle", 400: "invalid body or duty below the channel's minimum", 404: "unknown channel", 413: "body too large"}},
 		{Method: "DELETE", Path: "/api/override/{name}", Handler: s.deleteOverride, Class: classProtected, Scope: scopeControl,
 			Summary: "Return one channel to its curve", Responses: map[int]string{200: "override cleared", 400: "invalid name", 404: "unknown channel"}},
+		{Method: "POST", Path: "/api/panic", Handler: s.postPanic, Class: classProtected, Scope: scopeControl,
+			Summary: "Full cooling: every channel at 255 for 10 min (start again = 10 min from now), or stop it", Body: jsonBody("PanicAction", "start or stop"), Response: "Panic",
+			Responses: map[int]string{200: "the state after the call", 400: "bad action", 409: "refused: the daemon cannot drive the fans (profile monitor, read-only driver)", 501: "no full cooling"}},
 		{Method: "POST", Path: "/api/presets/{name}/apply", Handler: s.applyPreset, Class: classProtected, Scope: scopeControl,
 			Summary:   "Apply a preset: its channels replace the config channels with the same pwm, then reload",
 			Responses: map[int]string{200: "applied", 202: "written, restart required", 400: "invalid name", 404: "unknown preset", 500: "written but not reloaded", 501: "no preset store"}},
@@ -400,11 +403,12 @@ func openAPISchemas() map[string]any {
 			"duty":        integer("hardware duty 0..255; -1 while unknown"),
 			"target":      integer("computed duty before slew"),
 			"rpm":         integer("fan speed; -1 without tachometer"),
-			"mode":        strEnum("channel mode", "auto", "manual", "critical", "stall", "sensor-error", "failsafe"),
+			"mode":        strEnum("channel mode", "auto", "manual", "critical", "stall", "sensor-error", "failsafe", "panic"),
 			"hold_until":  integer("end of a running min_on hold (unix seconds, absent otherwise)"),
 			"ceiling":     integer("effective ceiling in °C: the sensor kind's built-in one (HDD 65, SSD 85, CPU 100), lowered by [[channel]] ceiling; signed in only"),
 			"ceiling_hit": boolean("the channel is in the ceiling state (255, mode critical) until the reading is 3 °C below the ceiling; signed in only"),
 			"assist":      ref("Assist"),
+			"override":    integer("manual duty set for the channel, null when none; stays set under critical, stall and full cooling, whose mode wins; signed in only"),
 		}),
 		"Assist": object("The channel's [[assist]] state; absent for a channel without a table. Anonymous callers get enabled and boost only", []string{"enabled", "boost"}, map[string]any{
 			"enabled": boolean("the table is switched on"),
@@ -461,6 +465,10 @@ func openAPISchemas() map[string]any {
 			"extra_temps": tsMap("profile temperatures by id (°C)", number("")),
 			"watched":     tsMap("dashboard sensors by id (°C)", number("")),
 			"alerts":      tsMap("last alert per kind (unix seconds)", integer("")),
+			"panic": object("the running full cooling (POST /api/panic); absent when none; signed in only", []string{"until", "by"}, map[string]any{
+				"until": integer("end (unix seconds)"), "by": str("who started it: user:<name>, token:<name>, cli"),
+			}),
+			"panic_refused": str("why a full cooling would be refused (profile monitor, read-only driver); absent when it would run; signed in only"),
 		}),
 		"HistoryPoint": object("One history point; maps are keyed by channel name (extra by sensor id)", []string{"ts", "temp", "duty", "rpm"}, map[string]any{
 			"ts":     integer("unix seconds"),
@@ -478,6 +486,13 @@ func openAPISchemas() map[string]any {
 			"text": str("short description: kind, channel, values, user or token name; never a path or an alert message; signed in only"),
 			"by":   str("cause: user:<name>, token:<name>, schedule, cli or daemon; signed in only"),
 			"end":  boolean("true on the event that ends a span"),
+		}),
+		"PanicAction": object("POST /api/panic body", []string{"action"}, map[string]any{
+			"action": strEnum("start (also to extend: 10 min from now) or stop", "start", "stop"),
+		}),
+		"Panic": object("POST /api/panic answer", []string{"active", "until"}, map[string]any{
+			"active": boolean("a full cooling runs after the call"),
+			"until":  integer("its end (unix seconds), 0 when none"),
 		}),
 		"Override": object("PUT /api/override/{name} body: exactly one of duty and percent", nil, map[string]any{
 			"duty":    integer("0..255"),

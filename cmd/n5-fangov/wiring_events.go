@@ -41,14 +41,18 @@ func serveEventLog(state string, dryRun bool) *events.Log {
 // endStaleSpans ends the spans the previous daemon left open (it stopped,
 // so its critical, ceiling and failsafe states and the stop failsafe of
 // ExecStopPost are over), except an override this daemon restored from its
-// run file. Called before the loop starts; the open spans are read from l
+// run file, and a full cooling it continued from panic.until (panicOn).
+// Called before the loop starts; the open spans are read from l
 // (no lock), the end events go through q, so the cleanup never holds the
 // start up on the file lock. The daemon's own stop ends critical and
 // ceiling already (control: Run); this is the fallback after a kill.
-func endStaleSpans(l *events.Log, q events.Recorder, overrides map[string]int) {
+func endStaleSpans(l *events.Log, q events.Recorder, overrides map[string]int, panicOn bool) {
 	n := 0
 	for _, e := range l.Open() {
 		if _, restored := overrides[e.Ch]; e.Kind == events.Override && restored {
+			continue
+		}
+		if e.Kind == events.Panic && panicOn {
 			continue
 		}
 		q.Add(events.Event{Kind: e.Kind + "-end", Ch: e.Ch, Text: "ended (daemon started)", By: events.ByDaemon})

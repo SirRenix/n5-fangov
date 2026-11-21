@@ -61,6 +61,7 @@ cmd/n5-fangov/
   wiring_account.go  accountStore, editConfig helper, state dir paths
   wiring_dashboard.go dashboardStore, hookedService (reload re-applies [alert] and the schedules)
   wiring_events.go   event log glue: alert marker hook, stale spans ended at start, stop failsafe marker, CLI log
+  wiring_panic.go    full cooling: read-only driver refusal, health line, `panic [stop|status]` CLI (socket only)
   wiring_tls.go      TLS deps, serveTLS adapter
   wiring_sysinfo.go  system collector
   about.go           aboutInfo (GET /api/about: name, version, licence, credits)
@@ -101,7 +102,7 @@ Files are named by topic, never by version or review round (`wiring_v3.go`, `v4_
 `*_fix_test.go` are gone); a test file carries the name of the file it tests
 (`session_test.go`, `token_test.go`) or of its topic (`api_bounds_test.go`).
 
-Subcommands (24, `main.go` `order`): `setup serve status set auto assist curve preview log
+Subcommands (25, `main.go` `order`): `setup serve status set auto panic assist curve preview log
 check detect identify system test validate failsafe passwd cert alerts token events export
 import version`; hidden: `help`, `alert
 <kind> <msg>` (used by the onfailure unit). Exit codes: 0 ok, 1 failure, 2 usage.
@@ -331,13 +332,56 @@ implausible / frozen → **that channel** at its safe duty, mode `sensor-error`,
 `sensor` on the transition only) → read assist sources (errors → that source adds 0) →
 read watched sensors (errors → value absent) → targets from curve (linear interpolation)
 → **curve post-processing** (hysteresis, `min_on`) → **assist** (below) → overrides →
-critical → **ceiling** (below) → stall check → slew (first cycle and manual
-direct) → write (unchanged duties rewritten every 6th cycle to undo external writes) →
+critical → **ceiling** (below) → **full cooling** (below) → stall check → slew (first
+cycle, manual and panic direct) → write (unchanged duties rewritten every 6th cycle to undo external writes) →
 verify → snapshot → history store (section 6a) → periodic log line (`log_every`). Sensors
 are re-resolved every 60 cycles. In code the cycle is four steps — `readSensors`,
 `computeTargets`, `checkStall`, `writeAndFinish` — called in that order by `cycle`; the
 safety rules 4–6 live in `computeTargets`/`checkStall`/`writePhase` unchanged; the ceiling
 rule and the emergency counter are the tail of `computeTargets` (`applyCeiling`).
+
+**Full cooling** (0.7.0, `panic.go`; "panic button"). `Panic(by)` sets every channel to
+255 for `PanicDuration` (10 min, fixed); a start during one sets the end to 10 min from
+then (no adding up); starts within 5 s of the last counted one are one (one log line, one
+event, the end still moves). `PanicStop(by)` ends it early; `PanicState()` reads it. By
+hand only, never automatic. Refused (`ErrPanicRefused` + reason → 409) under profile
+`monitor`, without channels, or when `Options.PanicRefusal` (serve: N5 Pro driver not
+`write-enabled`) names a reason; the snapshot carries that as `panic_refused`.
+- **Overlay**: `applyPanic` runs at the end of `computeTargets`, after critical and the
+  ceiling: target 255; mode `panic` where it was `auto` or `manual` (critical, stall and
+  sensor-error keep their mode; a sensor error's safe duty becomes 255). **No loop state
+  is frozen or dropped**: `regulate` keeps running underneath, so the hysteresis-held
+  reading, the `min_on` hold, assist with its hold, the override map, critical and the
+  ceiling state follow the readings as without it. When it ends, each channel has the
+  target it would have now, including an override, preset, schedule or assist change
+  accepted meanwhile. Mode panic is not slewed (255 at once, no `step_up`); the way down
+  is the normal one (`step_down` in auto, an override at once). The write-error failsafe
+  (`writeAndFinish`) and the stall check come after it unchanged.
+- **Immediate cycle**: a real start (not a repeat within 5 s, not an extension, not a
+  stop) wakes the loop (`kick`, buffered 1), at most once per interval (`lastKick`); `Run`
+  waits through `wait`, which cancels `Options.Wait` on a kick. A cycle that starts less
+  than 0.9 interval after the previous one (`cycleState.early`) regulates and writes, but
+  does not advance the counters that count cycles of one interval — stall (`stallCnt`,
+  `recov`), stale (`sameRaw`), emergency (`ceilCycles`) — so repeated starts can neither
+  raise a false stall alert on a fan spinning up nor hurry the emergency hook.
+- **End**: `panicCycle` at the start of a cycle ends an expired one (log, event
+  `panic-end` by `daemon`, run file removed). Snapshot: `panic {until, by}` (live in
+  `Snapshot()`), channels in mode `panic`; status line `pwm1=255(panic)`.
+- **Persistence**: `<run dir>/panic.until` (`<unix>\n<by>\n`, 0644) at every start; a
+  restart continues it (`loadPanic`: the rest is measured from now on the loop clock and
+  capped at 10 min, so a clock step after the restart cannot lengthen it); expired,
+  unparsable or more than 11 min ahead → removed with a log line, no full cooling; a
+  reboot clears /run. The file is written and removed under `c.mu` together with the
+  state change: a start racing a stop or an expiry cannot leave a stale file nor remove a
+  running one's. A dry run computes it and writes no file; after `Stop` a start is
+  refused and nothing is written. `panicRefusal` (may read sysfs) runs once per cycle
+  outside the lock (`panicRef`).
+- **Snapshot**: every channel carries `override` (the set duty, or null), also under
+  critical, stall and full cooling; the dashboard switch follows it, not the mode.
+- **No alert** (operator action); log lines at start, extension and end; events
+  `panic` / `panic-end` (span) and `panic-extend` (point), `by` the caller; serve's start
+  cleanup keeps a continued span open. `/healthz` stays `ok`; `GET /api/health` carries
+  `panic: "full cooling until 14:32 (admin)"` (live, outside the 15 s cache).
 
 **Ceilings and emergency** (0.4.1). Every channel has a **ceiling** temperature that no
 configuration can raise — the floor of the guard chain below `critical`:
@@ -728,6 +772,7 @@ dashboard reloads the whole span every tenth load. Kinds and sources:
 | `ceiling` / `ceiling-end` | per channel | `applyCeiling` on entered/left; `swapChannelConfig` ends it when a reload changes the sensor; `Run` ends it when the loop leaves | `hdd ceiling 65C (disk:sda 65.5C)` |
 | `failsafe` / `failsafe-end` | global | `writeAndFinish`: the first write-error failsafe of an episode (`inFS`), the first successful write after it; `failsafe` (ExecStopPost) opens one unless one is open | `failsafe (write error, 2 cycles)` |
 | `start` | — | `Run`, before the first cycle | `started 0.7.0` |
+| `panic` / `panic-end`, `panic-extend` | global span, point | `Panic` (by the caller; a start within 5 s of the last is none), `PanicStop`, `panicCycle` on expiry (`daemon`); a start during a running one is `panic-extend` | `full cooling until 14:32 (admin)` |
 | `reload` | — | web `putConfig` and `importConfig` on success without restart (a preset apply is `preset` only) | `config reloaded (admin)` |
 
 `by` is `user:<name>`, `token:<name>` or `cli` (the web `ackSource` of the caller),
@@ -988,6 +1033,7 @@ counts as signed in, `via: "none"`):
 | `DELETE /api/override/{name}` | protected | — | 200 `{ok, channel, mode}` |
 | `GET /api/presets` | protected | — | `[{name, channels[names], builtin, description}]` |
 | `GET /api/presets/{name}` | protected | — | `{name, builtin, description, channels[{name,pwm,sensor,curve,critical,stop,hysteresis,min_on}]}`; 404 |
+| `POST /api/panic` | protected, `control` | `{"action":"start"\|"stop"}` | 200 `{active, until}` (until unix, 0 = none); 400 other action; 409 refused with the reason (profile monitor, read-only driver); 501 not wired (section 6 "Full cooling") |
 | `POST /api/presets/{name}/apply` | protected | — | 200 `{ok, applied}` / 202 `{restart_required}`; 404 unknown or built-in of another profile |
 | `PUT /api/presets/{name}` | protected | empty, or JSON `{channels[{name,pwm,sensor,curve,critical,stop?,hysteresis?,min_on?}]}` ≤ 256 KiB | empty body: saves the current `[[channel]]` tables; JSON body (`PresetChannelSaver`, else 501): stores the composed channels **without applying** — rendered as `[[channel]]` TOML and parsed with the config rules, every warning the parser would substitute a default for is an error, and the channel names must be the running config's (a preset is applied to this host); 200 `{ok, saved}`; 400 `{error, errors[]}`; 409 built-in; 413 |
 | `POST /api/presets/{name}/rename` | protected | `{name}` | 200 `{ok, name}`; 409 built-in or target exists; 404 |
@@ -1125,7 +1171,17 @@ Every channel of the mock state carries `ceiling` (cpu 100, ssd 85, hdd 65) and
   `curves|manual|presets → fans`, `compat → about` (screenshot script). `#skip` focuses
   `main` without routing.
 - **Page header:** title from `PAGES` (`document.title` = `<page> · n5-fangov`), profile
-  title (verified state in its tooltip); right: status chip (`role="status"`, text
+  title (verified state in its tooltip); right: first the **full cooling** group `#h-pn`
+  (`data-auth`; `pnState` per poll, `pnTick` every second): *Full cooling* `#pn-go`
+  (one click, no confirm, `POST /api/panic {"action":"start"}`; tooltip "all fans at
+  maximum for 10 min (loud)"; `aria-disabled` with `panic_refused` as tooltip, a click
+  then only repeats the reason), while `snap.panic` runs `#pn-on` instead: icon, the time
+  left `m:ss` from `until` and the server clock offset, *+10 min* (start again) and
+  *Stop*; the header gets `.pn-act` (protection colour). A running → none transition
+  while signed in toasts *Full cooling ended* (expiry, Stop here or elsewhere). Toasts of
+  an override, assist or preset change made meanwhile end in *— applies after full
+  cooling ends* (`pAft`); the override switch then holds the curve's value, not the
+  running 255. Phone: icon and time only (`.mx`). Then the status chip (`role="status"`, text
   written only on change; `dry-run` wins over `status`), uptime, version + `beta` badge
   when `prerelease != ""`, the **certificate warning chip** `#h-cert` (`secState`:
   shown only while signed in and the certificate is in fallback, expires in < 30 days,
@@ -1557,7 +1613,7 @@ at 30 s so two cycles fit into 60 s. `n5-fangov-onfailure` reads
 kind), else `failed`; cooldown 30 min via `/run/n5-fangov/alert.<kind>`.
 
 Runtime files: `/run/n5-fangov/n5-fangov.sock` (CLI, root only), `state.json`,
-`override.<name>`, `alert.<kind>`; `/var/lib/n5-fangov/sessions.json`, `tokens.json`,
+`override.<name>`, `panic.until`, `alert.<kind>`; `/var/lib/n5-fangov/sessions.json`, `tokens.json`,
 `alerts.json`, `history.json`, `events.json` (0600; an unwritable state dir is logged once, the daemon
 runs without persistence; `.gitignore` and the pre-commit file guard list all five);
 `/etc/n5-fangov/{config.toml, presets/, tls/}`; `/var/log/n5-fangov/n5-fangov.log[.N]`.

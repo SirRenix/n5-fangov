@@ -74,6 +74,25 @@ drove the 0.3.1 work is `docs/AUDIT.md` (code) and `docs/DESIGN-AUDIT.md`
   the last 20 on the Health page ([Dashboard](docs/04-dashboard.md#event-markers),
   [Events and alerts](docs/07-alerts.md#events-and-alerts), [API](docs/12-api.md#events),
   [CLI](docs/05-cli.md#events)).
+- **Full cooling ("panic button"): every fan at maximum for 10 minutes.** *Full cooling*
+  in the dashboard header (signed in, every page, one click), `POST /api/panic`
+  `{"action":"start"|"stop"}` (scope `control`, answer `{active, until}`), `n5-fangov
+  panic [stop|status]` (socket only). 255 at once without the `step_up` ramp — the
+  daemon runs a cycle immediately —, over curve, assist, override, hysteresis and
+  `min_on`; critical, the ceiling and a sensor error stay at 255, the write-error
+  failsafe stays first. An overlay only: the daemon keeps computing everything
+  underneath, so afterwards each channel runs what it would run now (an override set
+  before or during it, a preset, schedule or assist change made meanwhile), down with
+  `step_down`. Starting again sets 10 minutes from now; starts within 5 s count as one.
+  Survives a daemon restart (`/run/n5-fangov/panic.until`), not a reboot. Refused with
+  409 and the reason under profile `monitor` or with a read-only driver (the button is
+  greyed out). Visible as mode `panic`, `panic {until, by}` in `/api/state`, `(panic)`
+  in the status line, a Health line, events `panic`/`panic-end`/`panic-extend`; no
+  alert, `/healthz` stays `ok`. The dashboard shows the time left, *+10 min* and *Stop*,
+  marks deferred changes (*applies after full cooling ends*) and tells every open
+  session when it ends. A Home Assistant `rest_command` example is in the API docs
+  ([Dashboard](docs/04-dashboard.md#full-cooling), [API](docs/12-api.md#full-cooling),
+  [CLI](docs/05-cli.md#panic), [precedence](docs/06-configuration.md#which-rule-wins)).
 
 ### Changed
 

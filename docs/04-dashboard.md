@@ -48,6 +48,29 @@ import. Toasts show at most three; a fourth drops the oldest.
 *More*; *More* opens a sheet with Health, System, Schedules, Log, About. Anonymous: Overview ·
 More (About).
 
+## Full cooling
+
+*Full cooling* in the page header (signed in, every page) sets every fan to maximum for
+10 minutes — loud, never dangerous. One click, no confirmation.
+
+- While it runs the header turns red with the time left (`9:41`), **+10 min** (10
+  minutes from now, not added up) and **Stop**. The channel tiles show mode `PANIC`.
+- An override, a preset, a schedule switch or the assist switch set meanwhile is taken
+  and saved but applies only when it ends; the message says *applies after full cooling
+  ends*. Afterwards every channel returns to what it would run now, down with
+  `step_down`.
+- When it ends — after 10 minutes, by *Stop* here or in another session — every open
+  dashboard shows *Full cooling ended*.
+- Greyed out with the reason as tooltip where the daemon cannot drive the fans (profile
+  `monitor`, read-only fan driver). On a phone the button is an icon, the time left next
+  to it.
+- It survives a restart of the daemon (`/run/n5-fangov/panic.until`), not a reboot. It
+  sends no alert; the log has a line at start, extension and end, the charts a band
+  ([event markers](#event-markers)), the Health page a line.
+
+Precedence: [Configuration: which rule wins](06-configuration.md#which-rule-wins). From
+the shell: `n5-fangov panic`; from Home Assistant: [API: Full cooling](12-api.md#full-cooling).
+
 ## Overview
 
 **Tiles**, one per channel: name, `pwmN · sensor`, mode badge (`AUTO`, `MANUAL`,
@@ -129,7 +152,8 @@ Signed in. The answer to "is everything in order?" in one place:
   stores it at once. The `dkms` check line shows `skipped` here for the same reason.
 - **Driver and daemon**: module, version, srcversion, write mode, the version the
   installed driver package builds (*reload pending* when they differ), daemon start, the
-  last `restart`, `failed`, `emergency`, `kernel` and `driver` alert.
+  last `restart`, `failed`, `emergency`, `kernel` and `driver` alert, and while it runs
+  *full cooling until 14:32 (admin)*. `/healthz` stays `ok` during full cooling.
 - **Recent events**: the last 20 [events](#event-markers), newest first, with group
   symbol, kind, age and text.
 
@@ -544,6 +568,8 @@ production page never requests, with documentation values (`n5host`, `192.0.2.x`
 | `&down=1` | state, history and sensors unreachable from 2 s after the boot: the connection banner |
 | `&drv=pending` | the loaded driver is not the build the package expects: yellow driver chip, *reload pending* on Health |
 | `&drv=ro` | the driver cannot write (`write-disabled`): yellow driver chip |
+| `&panic=1` | full cooling running, 9 minutes left |
+| `&pnoff=1` | full cooling refused (profile monitor): the button greyed out with the reason |
 | `&assist=1` | the hdd channel's `[[assist]]` table starts switched on with a warm GPU source: `+N` on the tile, the line under the switch |
 
 The mock implements every endpoint of the API, including tokens (`n5t_mock…`), alert

@@ -102,18 +102,18 @@ func (v *healthView) Driver() web.DriverInfo {
 // the subprocesses again.
 func (v *healthView) Health() map[string]any {
 	if h := v.cached(); h != nil {
-		return h
+		return v.withPanic(h)
 	}
 	v.build1.Lock()
 	defer v.build1.Unlock()
 	if h := v.cached(); h != nil {
-		return h
+		return v.withPanic(h)
 	}
 	h := v.build()
 	v.mu.Lock()
 	v.health, v.healthAt = h, v.now()
 	v.mu.Unlock()
-	return h
+	return v.withPanic(h)
 }
 
 // cached returns the health document while it is fresh, else nil.

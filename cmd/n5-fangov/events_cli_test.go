@@ -86,7 +86,7 @@ func TestEndStaleSpansAndStopFailsafe(t *testing.T) {
 	if len(fs) != 1 || fs[0].Text != "safe state after daemon end (exit-code)" || fs[0].By != events.ByCLI {
 		t.Fatalf("failsafe events %+v", fs)
 	}
-	endStaleSpans(l, l, map[string]int{"hdd": 150})
+	endStaleSpans(l, l, map[string]int{"hdd": 150}, false)
 	open := l.Open()
 	if len(open) != 1 || open[0].Ch != "hdd" {
 		t.Fatalf("open after start: %+v", open)
@@ -209,7 +209,7 @@ func TestDryRunWritesNoEvents(t *testing.T) {
 	before, _ := os.ReadFile(eventsPath(state))
 	dry := serveEventLog(state, true)
 	q := events.NewQueue(dry, nil)
-	endStaleSpans(dry, q, nil) // as serve does: the dry run's own (empty) log, so the live span stays open
+	endStaleSpans(dry, q, nil, false) // as serve does: the dry run's own (empty) log, so the live span stays open
 	q.Add(events.Event{Kind: events.Start, Text: "started (dry-run)"})
 	q.Close(5 * time.Second)
 	after, _ := os.ReadFile(eventsPath(state))
