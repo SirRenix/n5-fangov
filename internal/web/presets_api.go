@@ -199,6 +199,29 @@ func (s *Server) savePreset(w http.ResponseWriter, r *http.Request) {
 // channel set against the running config. It returns the parsed channels
 // or the list of errors.
 func (s *Server) presetChannels(in []presetChannelIn) ([]config.Channel, []string) {
+	parsed, errs := parseChannelDrafts(in)
+	if len(errs) > 0 {
+		return nil, errs
+	}
+	if s.deps.Config != nil {
+		raw, rerr := s.deps.Config.Raw()
+		if rerr == nil {
+			if cfg, _, perr := config.Parse(raw); perr == nil && len(cfg.Channels) > 0 {
+				want, have := channelKeySet(cfg.Channels), channelKeySet(parsed)
+				if !slices.Equal(want, have) {
+					return nil, []string{fmt.Sprintf("channel: names/pwm %v do not match the running config %v", have, want)}
+				}
+			}
+		}
+	}
+	return parsed, nil
+}
+
+// parseChannelDrafts validates composed channels with the config parser
+// (config.MarshalChannels → config.ParseChannels): every warning is an
+// error, a channel the parser drops is one too. Shared by the preset save
+// and the preview.
+func parseChannelDrafts(in []presetChannelIn) ([]config.Channel, []string) {
 	var errs []string
 	if len(in) == 0 {
 		return nil, []string{"channels: none given"}
@@ -248,17 +271,6 @@ func (s *Server) presetChannels(in []presetChannelIn) ([]config.Channel, []strin
 	}
 	if len(errs) > 0 {
 		return nil, errs
-	}
-	if s.deps.Config != nil {
-		raw, rerr := s.deps.Config.Raw()
-		if rerr == nil {
-			if cfg, _, perr := config.Parse(raw); perr == nil && len(cfg.Channels) > 0 {
-				want, have := channelKeySet(cfg.Channels), channelKeySet(parsed)
-				if !slices.Equal(want, have) {
-					return nil, []string{fmt.Sprintf("channel: names/pwm %v do not match the running config %v", have, want)}
-				}
-			}
-		}
 	}
 	return parsed, nil
 }

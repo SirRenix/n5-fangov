@@ -186,6 +186,34 @@ from the shell: `n5-fangov assist hdd on|off`.
 
 ![Fans, Manual override switched on for the HDD channel: held duty, slider at the minimum 60](screenshots/10-fans-manual-switch.png)
 
+### Preview
+
+Check a change against the recorded history before you apply it. Nothing is applied.
+
+- **Preview 24 h** sits in the channel card header while that channel has unsaved
+  edits: the chart opens under the card, recorded duty grey, the preview in the
+  channel's colour, the assist share as a filled area. Further edits recompute it 1 s
+  later while it is open. One request runs at a time; a change made meanwhile is sent
+  when it returns, an older answer is dropped.
+- The **chart icon** on a preset chip opens the preview of that preset for every
+  channel, under the Presets card.
+- **Preview** next to the Assist switch shows the channel with the switch inverted:
+  what assist on (or off) would have added. The inversion follows the switch as it is
+  when the preview is computed.
+- *24 h / 7 d* switches the span (1-min or 5-min means). Below the chart: `Ø 99 → 118,
+  P95 106 → 150, max 120 → 160, ≥ 200 …, assist … min` per channel (recorded → preview),
+  and the note what the preview cannot show — no feedback (more air would have lowered
+  the temperatures, so the preview shows rather too much duty), no ramp, past
+  overrides only in the recorded line; for 7 d, that hysteresis and min_on barely act
+  on 5-min means. Per channel the limits of its computation follow (an assist source
+  missing from the history, a mixed composite sensor judged on its maximum). A channel
+  without a preview, or a failed request, greys its chart out.
+- With assist on for an HDD channel a line carries the measured effect of 16.11.2026
+  (HDD fan 106 → 150: NVMe −2.3…2.7 K, drives −0.5…0.9 K after 8–15 min), labelled
+  *measured, not predicted*.
+
+The rules and limits: [API: Preview](12-api.md#preview). From the shell: `n5-fangov preview`.
+
 ### Apply, Revert, validation
 
 The action bar shows *no unsaved changes* or *unsaved changes* (the dot also sits on

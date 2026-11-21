@@ -241,6 +241,8 @@ type Deps struct {
 	Dashboard DashboardStore
 	// Assist backs PUT /api/assist/{name} (nil → 501).
 	Assist AssistStore
+	// Preview backs POST /api/preview (nil → 501).
+	Preview Previewer
 	// About is served verbatim by GET /api/about.
 	About About
 	// System returns the hardware inventory for GET /api/system (the

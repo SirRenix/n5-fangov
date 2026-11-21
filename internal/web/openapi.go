@@ -141,6 +141,10 @@ func (s *Server) routeTable() []route {
 			Summary: "The loaded fan driver: module, version, srcversion, write mode, the version the installed package expects", Response: "Driver", Responses: map[int]string{200: "driver view", 501: "no driver information"}},
 		{Method: "GET", Path: "/api/health", Handler: s.getHealth, Class: classProtected, Scope: scopeRead,
 			Summary: "Health page: the checks of `n5-fangov check`, the kernel gate stored by `check --after-update`, driver, daemon start, last restart/failed/emergency/kernel/driver alert", Responses: map[int]string{200: "health document", 501: "no health information"}},
+		{Method: "POST", Path: "/api/preview", Handler: s.postPreview, Class: classProtected, Scope: scopeRead,
+			Summary: "Curve preview: the target duty a draft (channels, a preset, assist switches) would have set over the recorded 24 h or 7 d; writes nothing, one computation at a time",
+			Body:    &bodySpec{ContentType: "application/json", Schema: "PreviewRequest", Description: "optional: channels or preset, assist, span; empty = the running config over 24 h", Optional: true}, Response: "Preview",
+			Responses: map[int]string{200: "series and summary per channel", 400: "invalid body, a channel that breaks the curve rules or is not running, channels and preset together, assist for a channel without a table, a span other than 24h/7d", 404: "unknown preset", 413: "body too large", 429: "another preview is being computed", 501: "no preview"}},
 		{Method: "GET", Path: "/api/tls", Handler: s.getTLS, Class: classProtected, Scope: scopeRead,
 			Summary: "Certificate mode, info, covered hosts and warnings", Responses: map[int]string{200: "certificate view", 501: "no certificate manager"}},
 		// ---- protected, control ------------------------------------------
@@ -404,6 +408,33 @@ func openAPISchemas() map[string]any {
 				"sensor": str("sensor id"),
 				"temp":   number("reading in °C; -999 when unreadable"),
 				"boost":  integer("the boost this source alone gives (also while assist is off)"),
+			})),
+		}),
+		"PreviewRequest": object("POST /api/preview body; every member optional", nil, map[string]any{
+			"channels": arrayOf(object("a draft channel, matched to the running channel by name; validated like PresetSave (pwm and stop default to the running channel's)", []string{"name", "sensor", "curve", "critical"}, map[string]any{
+				"name": str("running channel name"), "pwm": integer("optional, must be the running one"), "sensor": str("sensor id; another than the running one is read from the history's extra"),
+				"curve": arrayOf(arrayOf(integer("[temp_c, duty]"))), "critical": integer(""), "stop": str("optional"), "hysteresis": integer("0..10"), "min_on": str("duration"),
+			})),
+			"preset": str("the channels of this preset, merged by pwm like an apply; exclusive with channels"),
+			"assist": tsMap("assist switch per channel for the computation; the channel needs an [[assist]] table", boolean("")),
+			"span":   strEnum("24h (1-min means, default) or 7d (5-min means)", "24h", "7d"),
+		}),
+		"Preview": object("POST /api/preview answer", []string{"span", "step", "note", "order", "channels"}, map[string]any{
+			"span":  strEnum("", "24h", "7d"),
+			"step":  integer("seconds between points (60 or 300)"),
+			"note":  str("what the preview cannot show (no feedback, no ramp, past modes)"),
+			"order": arrayOf(str("channel names in config order")),
+			"channels": tsMap("per channel", object("", nil, map[string]any{
+				"series": arrayOf(object("", []string{"ts", "actual", "preview", "boost"}, map[string]any{
+					"ts": integer("unix seconds"), "actual": integer("recorded duty, null when unknown"), "preview": integer("target duty, null where the history has no temperature"), "boost": integer("assist share of the preview"),
+				})),
+				"summary": object("", nil, map[string]any{
+					"actual":  object("", nil, map[string]any{"mean": number(""), "p95": integer(""), "max": integer(""), "min_ge_200": integer("minutes at or above 200"), "assist_min": integer("minutes with an assist boost")}),
+					"preview": object("", nil, map[string]any{"mean": number(""), "p95": integer(""), "max": integer(""), "min_ge_200": integer(""), "assist_min": integer("")}),
+				}),
+				"error":    str("why this channel has no preview, e.g. sensor not in history"),
+				"notes":    arrayOf(str("limits of this channel's computation: an assist source missing from the history (adds 0 there), a mixed composite sensor judged on its recorded maximum against the lowest part ceiling")),
+				"measured": str("for an HDD channel with assist on: the measured effect of 16.11.2026, labelled as measured, not predicted"),
 			})),
 		}),
 		"AssistSwitch": object("PUT /api/assist/{name} body and answer", []string{"enabled"}, map[string]any{

@@ -16,6 +16,7 @@ the running daemon and fall back to the files or `state.json` when it is down
 | `auto <ch\|all>` | — | back to the curve (*socket*) |
 | `assist <ch> on\|off` | — | switch the channel's [`[[assist]]`](06-configuration.md#assist) table (*socket* only: the daemon writes the `enabled` line and takes it on the next cycle; without an answering socket nothing is written) |
 | `curve` | — | print the configured curves |
+| `preview` | `--preset NAME`, `--assist CH=on\|off` (repeatable), `--span 24h\|7d`, `--json` | what the running curves (or a preset, or other assist switches) would have set over the recorded history — [below](#preview) (*socket* only) |
 | `log` | `-n N` (default 50), `--export FILE` (`-` = stdout), `--clear` | log file; journal when no file is configured (`--clear` then impossible) — [Logs](10-troubleshooting.md#logs) |
 | `check` | `--quiet` (failures only), `--after-update`, `--unit-start` | self-check (`ExecStartPre`; with `N5FANGOV_UNIT_START=1`, which the unit sets, or `--unit-start` it sends the `driver`/`profile` alert itself): config, profile (fails on a read-only or missing N5 driver on a board the driver writes on; N5 Air and N5 PRO/F8NAB run as `monitor` under `auto`), hardware status, driver version and parameters, pwm writable, sensors, one line per `[[assist]]` table (`assist hdd   2 sources, off`; a warning per unreadable source), emergency hook, tls, log, dkms; `--after-update` is the apt hook's [kernel gate](02-kernel-driver.md#the-kernel-update-gate) |
 | `detect` | — | list profiles with their detection result (read-only) |
@@ -32,6 +33,30 @@ the running daemon and fall back to the files or `state.json` when it is down
 | `import FILE` | `--presets DIR` | restore a bundle (everything validated first), reload the daemon |
 | `version` | (also `-v`, `--version`) | print the version |
 | `help` | (also `-h`, `--help`) | usage |
+
+## preview
+
+```
+n5-fangov preview --preset n5pro-cool
+n5-fangov preview --assist hdd=on --span 7d
+```
+
+Asks the running daemon for the curve preview (`POST /api/preview`): the target duty
+the channels would have set over the recorded 24 h (or 7 d) — the running config
+without options, a preset with `--preset`, other assist switches with `--assist`.
+Nothing is applied. One line per channel, recorded → preview:
+
+```
+channel  actual Ø/P95/max   preview Ø/P95/max   min>=200   assist min
+hdd        99 / 106 / 120    118 / 150 / 160      0 → 12      0 → 184
+```
+
+`min>=200` and `assist min` are minutes at or above duty 200 and minutes with an
+assist boost. A channel that cannot be computed says why (`no preview: sensor not in
+history`). Below the table: what the preview cannot show, and for an HDD channel with
+assist on the measured effect of 16.11.2026, labelled as measured. `--json` prints the
+API answer. Without an answering socket the command fails; it reads no files itself
+(the history is the daemon's). Rules: [API: Preview](12-api.md#preview).
 
 ## identify
 

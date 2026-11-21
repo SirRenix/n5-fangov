@@ -182,7 +182,7 @@ window.n5mock = (() => {
 		collected: Math.floor(now), static_at: Math.floor(t0), errors: Q.get('syserr') ? ['lspci: exec: "lspci": executable file not found in $PATH (device names from ids only)'] : [] });
 	const openapi = () => ({ openapi: '3.1.0', info: { title: 'n5-fangov API', version: MV }, servers: [{ url: '/' }],
 		components: { securitySchemes: { bearer: { type: 'http', scheme: 'bearer' }, basic: { type: 'http', scheme: 'basic' }, cookie: { type: 'apiKey', in: 'cookie', name: 'n5fangov_session' } } },
-		paths: Object.fromEntries([['/api/state', 'get', 'Regulation snapshot', 'read'], ['/api/history', 'get', 'History points (minutes, since)', 'read'], ['/api/history.csv', 'get', 'History as CSV', 'read'], ['/api/override/{name}', 'put', 'Manual duty', 'control'], ['/api/assist/{name}', 'put', 'Assist on/off', 'control'],
+		paths: Object.fromEntries([['/api/state', 'get', 'Regulation snapshot', 'read'], ['/api/history', 'get', 'History points (minutes, since)', 'read'], ['/api/history.csv', 'get', 'History as CSV', 'read'], ['/api/override/{name}', 'put', 'Manual duty', 'control'], ['/api/assist/{name}', 'put', 'Assist on/off', 'control'], ['/api/preview', 'post', 'Curve preview', 'read'],
 			['/api/presets/{name}/apply', 'post', 'Apply a preset', 'control'], ['/api/schedules', 'get', 'Schedule status', 'read'], ['/api/tokens', 'get', 'List API tokens (session only)', '']]
 			.map(([path, m, summary, scope]) => [path, { [m]: { summary, 'x-scope': scope, responses: { 200: { description: 'OK' } } } }])) });
 	const GH = 'https://github.com/', PUB = /^\/api\/(version|about|session|login|logout|state|history|openapi\.json)$/;
@@ -240,6 +240,20 @@ window.n5mock = (() => {
 			if (!a) return fail(`channel "${n}" has no valid [[assist]] table`, 404);
 			if (typeof (opt.json || {}).enabled !== 'boolean') return fail('"enabled" (true or false) required', 400);
 			a.enabled = opt.json.enabled; return ok({ ok: true, channel: n, enabled: a.enabled }); }
+		// POST /api/preview: the mock's history through the draft curves (no hysteresis/min_on here), assist from the GPU source
+		if (p === '/api/preview') { const j = opt.json || {}, sp = j.span === '7d' ? '7d' : '24h', min = sp === '7d' ? 10080 : 1440, pre = j.preset && presets[j.preset];
+			if (j.preset && !pre) return fail('unknown preset ' + j.preset, 404);
+			const res = { span: sp, step: sp === '7d' ? 300 : 60, order: cfg.channel.map(c => c.name), channels: {},
+				note: 'Target duty from the recorded temperatures with the rules of the daemon; no feedback: more air would have lowered the temperatures, so the preview shows rather too much duty, never too little. The ramp is not modelled.' + (sp === '7d' ? ' 7 d works on 5-min means: hysteresis and min_on barely act, short peaks vanish.' : '') };
+			const pts = history(min, 0, true);
+			cfg.channel.forEach(hc => { const n = hc.name, c = (j.channels || []).find(x => x.name === n) || pre && pre.ch.find(x => +x.pwm === +hc.pwm) || hc, a = cfg.assist.find(x => x.channel === n), on = !!a && (j.assist && n in j.assist ? j.assist[n] : a.enabled);
+				const series = pts.map(pt => { const g = sv('hwmon:amdgpu:temp1', pt.ts) + (Q.get('assist') === '1' ? 14 : 0), b = on ? Math.round(Math.max(0, Math.min(45, (g - 50) / 8 * 45))) : 0;
+					return { ts: pt.ts, actual: pt.duty[n], preview: Math.min(255, Math.round(interp(c.curve, pt.temp[n])) + b), boost: b }; });
+				const sm = k => { const v = series.map(s => s[k]).sort((x, y) => x - y), st = res.step / 60;
+					return { mean: Math.round(v.reduce((x, y) => x + y, 0) / v.length * 10) / 10, p95: v[Math.ceil(.95 * v.length) - 1], max: v[v.length - 1], min_ge_200: v.filter(x => x >= 200).length * st, assist_min: k === 'preview' ? series.filter(s => s.boost).length * st : 0 }; };
+				res.channels[n] = { series, summary: { actual: sm('actual'), preview: sm('preview') },
+					measured: on && n === 'hdd' ? 'Measured, not predicted: HDD fan 106 → 150 lowered the NVMe by 2.3–2.7 K and the drives by 0.5–0.9 K after 8–15 min (reference N5 Pro, 2026-11-16).' : undefined }; });
+			return wait({ status: 200, body: res }); }
 		if (p === '/api/presets') return ok(Object.entries(presets).map(([name, v]) => ({ name, channels: v.ch.map(c => c.name), builtin: !!v.builtin, description: v.description })));
 		if (p.startsWith('/api/presets/')) { const n = p.split('/')[3], b = presets[n] && presets[n].builtin, sub = p.split('/')[4];
 			if (m === 'PUT') { if (b) return fail('built-in preset', 409); const chs = opt.json && opt.json.channels; // a JSON body = the composed channels (preset editor), validated like the config; empty = the running tables

@@ -35,6 +35,30 @@ drove the 0.3.1 work is `docs/AUDIT.md` (code) and `docs/DESIGN-AUDIT.md`
   measurement of 16.11.2026 (HDD fans ≈ 150 instead of ≈ 106 under AI load, NVMe 2–3 K
   cooler, idle unchanged) in `config.example.toml`, commented out
   ([Configuration](docs/06-configuration.md#assist)).
+- **Curve preview: what a curve, a preset or assist would have done over the recorded
+  24 h or 7 d.** `POST /api/preview` (scope `read`, writes nothing, one at a time — 429
+  for a second) takes draft channel tables (validated like a preset body), a preset or
+  assist switches and returns per channel the recorded duty, the preview target and
+  the assist share per point, with mean, P95, max, minutes ≥ 200 and assist minutes
+  for both lines. The preview runs the daemon's own rules (curve, hysteresis, min_on,
+  assist with its hold, critical, ceiling), extracted into pure functions the loop
+  calls too; gaps stay gaps, a draft sensor is read from the recorded extra sensors.
+  It shows no feedback (rather too much duty), no ramp and no past overrides — the
+  answer says so. With assist on for an HDD channel it carries the effect measured on
+  16.11.2026, labelled as measured. CLI: `n5-fangov preview [--preset NAME] [--assist
+  CH=on|off]... [--span 24h|7d] [--json]` through the daemon socket
+  ([API](docs/12-api.md#preview), [CLI](docs/05-cli.md#preview)). Dashboard:
+  *Preview 24 h* in a changed curve editor, *Preview* in each preset's menu and next to
+  the Assist switch; a chart under the card (recorded grey, preview in colour, assist
+  share as an area), a 24 h / 7 d toggle, the summary and the notes; recomputed 1 s
+  after an edit while open ([Dashboard](docs/04-dashboard.md)).
+
+### Changed
+
+- **`app.js` budget 136 → 152 KiB** for the 0.7.0 dashboard parts (assist, preview, and
+  the event marks, panic button and config versions still to come), a decided raise
+  (operator 2026-11-21). The next growth beyond it splits `app.js` into modules loaded
+  on demand instead of raising the limit again.
 
 ### Fixed
 

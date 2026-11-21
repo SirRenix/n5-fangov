@@ -296,6 +296,9 @@ input[type=checkbox]{accent-color:var(--info)}
 .fan .live .warn.on{color:var(--warn)}
 .fan .live[data-off=true] .man{opacity:var(--opacity-disabled);pointer-events:none}
 .fan .live .as{display:grid;gap:var(--sp-1);border-top:var(--bw) solid var(--line);padding-top:var(--sp-2)} /* assist: switch + one line, only with an [[assist]] table */
+.pv{display:grid;gap:var(--sp-2);margin-bottom:var(--gap)} /* curve preview panel under a card: full width, the summary below the chart */
+.pv .card-h{display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap}.pv .card-h h2{margin:0;flex:1}
+.pv-c{display:grid;gap:var(--sp-2)}.pv-off{opacity:var(--opacity-disabled)} /* a chart whose last answer failed */.pv-s{white-space:pre-line;margin:0;font-size:var(--fs-13)}.pv-n{margin:0}
 .tile .row .v .asb{color:var(--man);font-size:var(--fs-12);font-weight:var(--fw-semibold)}
 /* curve editor */
 .ed{display:grid;gap:var(--sp-25)}

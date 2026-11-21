@@ -86,26 +86,23 @@ func (c *Controller) bindAssists(cfg config.Config) {
 			continue
 		}
 		old := ch.assist
-		rt := &assistRT{cfg: *ac}
-		rt.cfg.Sources = append([]config.AssistSource(nil), ac.Sources...)
+		rt := newAssistRT(*ac)
 		if old != nil {
 			rt.last, rt.holding, rt.holdVal, rt.holdSrc = old.last, old.holding, old.holdVal, old.holdSrc
 			rt.holdStart, rt.holdUntil = old.holdStart, old.holdUntil
 		}
-		for _, sc := range rt.cfg.Sources {
-			s := &assistSrc{cfg: sc}
+		for _, s := range rt.srcs {
 			if old != nil {
 				for _, os := range old.srcs {
-					if os.cfg.Sensor == sc.Sensor {
+					if os.cfg.Sensor == s.cfg.Sensor {
 						s.sensor, s.temp, s.ok, s.held, s.heldOK, s.bad = os.sensor, os.temp, os.ok, os.held, os.heldOK, os.bad
 						break
 					}
 				}
 			}
 			if s.sensor == nil {
-				s.sensor = c.resolveAssist(ch.cfg.Name, sc.Sensor)
+				s.sensor = c.resolveAssist(ch.cfg.Name, s.cfg.Sensor)
 			}
-			rt.srcs = append(rt.srcs, s)
 		}
 		rt.dropStaleHold()
 		switch {
@@ -193,9 +190,8 @@ func (c *Controller) readAssist(chans []*channel) {
 		if a == nil {
 			continue
 		}
-		a.raw, a.rawSrc = 0, ""
 		for _, s := range a.srcs {
-			why := ""
+			why, val := "", 0
 			if s.sensor == nil {
 				s.sensor = c.resolveAssist(ch.cfg.Name, s.cfg.Sensor)
 			}
@@ -210,10 +206,10 @@ func (c *Controller) readAssist(chans []*channel) {
 			} else if !sensor.Plausible(v) {
 				why = fmt.Sprintf("implausible %d mdegC", v)
 			} else {
-				s.temp, s.ok = v, true
+				val = v
 			}
 			if why != "" {
-				s.ok, s.heldOK, s.boost = false, false, 0
+				s.observe(0, false, a.cfg.Hysteresis)
 				if !s.bad {
 					s.bad = true
 					c.log.Printf("assist %s: source %s unreadable (%s), contributes 0", ch.cfg.Name, s.cfg.Sensor, why)
@@ -224,12 +220,45 @@ func (c *Controller) readAssist(chans []*channel) {
 				s.bad = false
 				c.log.Printf("assist %s: source %s readable again", ch.cfg.Name, s.cfg.Sensor)
 			}
-			s.boost = sourceBoost(s.cfg, s.heldTemp(a.cfg.Hysteresis))
-			if s.boost > a.raw {
-				a.raw, a.rawSrc = s.boost, s.cfg.Sensor
-			}
+			s.observe(val, true, a.cfg.Hysteresis)
+		}
+		a.maxOfSources()
+	}
+}
+
+// observe takes one reading of a source (ok false: unreadable — the
+// source adds 0 and its held reading starts afresh) and computes the
+// source's boost at its hysteresis-held reading. Pure; shared by the loop
+// (readAssist) and the preview.
+func (s *assistSrc) observe(milli int, ok bool, hyst int) {
+	if !ok {
+		s.ok, s.heldOK, s.boost = false, false, 0
+		return
+	}
+	s.temp, s.ok = milli, true
+	s.boost = sourceBoost(s.cfg, s.heldTemp(hyst))
+}
+
+// maxOfSources sets the raw boost of the cycle: the maximum over the
+// sources (the first source wins a tie), 0 when none gives one.
+func (a *assistRT) maxOfSources() {
+	a.raw, a.rawSrc = 0, ""
+	for _, s := range a.srcs {
+		if s.ok && s.boost > a.raw {
+			a.raw, a.rawSrc = s.boost, s.cfg.Sensor
 		}
 	}
+}
+
+// newAssistRT is the runtime state of a table without readers (the loop
+// resolves them in bindAssists, the preview feeds recorded values).
+func newAssistRT(ac config.Assist) *assistRT {
+	rt := &assistRT{cfg: ac}
+	rt.cfg.Sources = append([]config.AssistSource(nil), ac.Sources...)
+	for _, sc := range rt.cfg.Sources {
+		rt.srcs = append(rt.srcs, &assistSrc{cfg: sc})
+	}
+	return rt
 }
 
 // heldTemp is heldTemp of the channel for one source: the held value

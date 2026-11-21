@@ -485,6 +485,48 @@ and `min_on` stays the base:
   `assist{channel: boost}` (absent at 0); the readings of the sources go into `extra`
   like watched sensors unless the id is already there or is a channel's sensor.
 
+**Preview** (0.7.0, `internal/control/preview.go`). The target duty a draft config
+would have set over the recorded history, computed by the loop's **own** functions —
+no second copy of the rules:
+
+- `regulate(ch, now, ovr, hasOvr)` is the pure target rule (curve at `heldTemp`,
+  `minOnHold`, `applyAssist`, override, critical); `computeTargets` calls it per channel
+  and adds the alert. `(*channel).ceilingStep()` is the pure ceiling state change (enter
+  at the ceiling, leave 3 °C below, 255 / `critical`, hold dropped); `applyCeiling` adds
+  the alert, the log line, the cycle counter and the emergency hook.
+  `(*channel).forget()` is the unknown-temperature reset. For assist,
+  `(*assistSrc).observe(milli, ok, hyst)` and `(*assistRT).maxOfSources()` are shared
+  by `readAssist` and the preview; `newAssistRT` builds a table without readers.
+- `ComputePreview(PreviewInput)` (pure) runs a fresh `channel` per draft channel over
+  the history tier: per point the assist sources are observed, then `regulate` and
+  `ceilingStep`. A running channel's sensor is read from `temp[<channel>]` (also when an
+  assist source or another channel names it), any other id from `extra[<id>]`; a draft
+  sensor in neither → `error: "sensor not in history"`. A point without a reading is
+  `forget()` (like a sensor error), a gap of more than 1.5 steps starts a fresh channel
+  (like a restart). The ceiling is judged on the recorded value against the lowest part
+  ceiling (the history keeps no parts; no exact alternative without per-part history),
+  so a mixed composite can show 255 where the loop would not — that channel gets a
+  `notes[]` line, as does an enabled assist source missing from the history (adds 0;
+  never recorded, or missing at N points with its first recorded time). Overrides,
+  failsafe and the slew are not part of it; the recorded line carries them. The input
+  is the tier, not the cycles: in production a 1-min point is the mean of six 10-s
+  cycles, so hysteresis and `min_on` act on means; the equality tests
+  (`TestPreviewMatchesLoop`, `…ErrorsAndGap` with sensor errors and a restart,
+  `TestPreviewDraftMatchesLoop` with a draft and a preset) run the loop at 60 s so a
+  cycle is a point.
+- `Controller.Preview(draft, span)` reads the running config and `hist.Range(span)` under
+  their own locks and touches no loop state; `span` 24 h = 1-min tier, 7 d = 5-min tier.
+  One at a time (`previewing`, `ErrPreviewBusy` → 429).
+- Result per channel: `series[{ts, actual, preview, boost}]`, `summary{actual, preview}`
+  of `mean`, `p95` (nearest rank), `max`, `min_ge_200`, `assist_min` (minutes; actual =
+  the recorded boost), `error`, and `measured` (`PreviewMeasured`, the 16.11.2026
+  measurement, labelled as measured) for a channel whose built-in ceiling is the HDD one
+  with assist on. `TestPreviewMatchesLoop` pins preview = loop targets on the same
+  per-minute data.
+- cmd `previewer` builds the draft: a preset merged by pwm (`mergeChannelsByPWM`, only
+  running channels), draft channels by name (running ceiling kept), assist switches
+  (no table → 400).
+
 `pwm4` on the N5 Pro (PCIe header, no tachometer) is an **optional** channel: the config
 may carry `[[channel]] pwm = 4` (any name, any sensor; `stop = "auto"` writes
 `pwm4_enable = 2` like pwm1/2 — observed idle state on the reference host 16.09.2026:
@@ -805,7 +847,7 @@ Scopes, cumulative:
 
 | Scope | Allows |
 |---|---|
-| `read` (default) | `GET` on `version`, `about`, `session`, `openapi.json`, `state`, `history`, `history.csv`, `system`, `sensors`, `profiles`, `presets`, `presets/{name}`, `alerts`, `dashboard`, `schedules`, `tls` (info only, not the certificate downloads), `driver`, `health` |
+| `read` (default) | `GET` on `version`, `about`, `session`, `openapi.json`, `state`, `history`, `history.csv`, `system`, `sensors`, `profiles`, `presets`, `presets/{name}`, `alerts`, `dashboard`, `schedules`, `tls` (info only, not the certificate downloads), `driver`, `health`; `POST /api/preview` (computes, writes nothing) |
 | `control` | read + `PUT`/`DELETE /api/override/{name}`, `POST /api/presets/{name}/apply`, `PUT /api/dashboard`, `PUT /api/assist/{name}`, `POST /api/alerts/ack` |
 | `admin` | everything the dashboard can do **except** token and account management: `/api/tokens*`, `/api/account/*`, `/api/login`, `/api/logout` answer 403 to any token (a leaked admin token cannot mint tokens or change the password) |
 
@@ -828,7 +870,7 @@ type and, where the body is JSON, a schema from `components.schemas`, the respon
 listed in the endpoint table with descriptions, `x-class` (`public`, `filtered`,
 `protected`) and `x-scope`. Component schemas: `Error`, `State`, `Channel`,
 `HistoryPoint`, `Override`, `Version`, `Session`, `Token`, `TokenCreate`, `TokenCreated`,
-`Alerts`, `AlertsUpdate`, `AlertsAck`, `Healthz`, `Driver`, `Schedules`, `Dashboard`, `Assist`, `AssistSwitch`. Test `TestOpenAPICoversRoutes`: every
+`Alerts`, `AlertsUpdate`, `AlertsAck`, `Healthz`, `Driver`, `Schedules`, `Dashboard`, `Assist`, `AssistSwitch`, `PreviewRequest`, `Preview`. Test `TestOpenAPICoversRoutes`: every
 registered pattern appears in the document and vice versa; `TestOpenAPIShape`: version,
 summaries, responses, scope values.
 
@@ -886,6 +928,7 @@ counts as signed in, `via: "none"`):
 | `DELETE /api/presets/{name}` | protected | — | 200; 409 built-in; 404 |
 | `GET /api/sensors` | protected | — | `[{id, description, temp?, kind?}]` (catalogue with live readings; `kind` `ssd`/`hdd` for `disk:*`, section 5) |
 | `GET /api/dashboard` / `PUT /api/dashboard` | protected | `{sensors[]}` | `{sensors}` / `{ok, sensors, warnings[]}`; 400 above 8 or unparsable id |
+| `POST /api/preview` | protected, `read` | optional JSON `{channels[], preset, assist{}, span: 24h\|7d}` ≤ 256 KiB; channels validated like the preset body (pwm/stop default to the running channel), not with `preset` | 200 `{span, step, note, order[], channels{<name>: {series[{ts, actual, preview, boost}], summary{actual, preview}, error?, measured?}}}` (section 6 "Preview"); 400 invalid body, curve rules, unknown channel, assist without a table, bad span; 404 unknown preset; 429 another preview runs; 501 no previewer. Writes nothing |
 | `PUT /api/assist/{name}` | protected, `control` | `{enabled: bool}` ≤ 4 KiB (unknown members 400) | writes only the `enabled` line of the channel's `[[assist]]` table (section 3), then `Controller.SetAssistEnabled` (next cycle): 200 `{ok, channel, enabled}`; 404 no valid table in the file; 500 not written, or written but the running daemon has no such table (`ReloadError`); 501 no store |
 | `GET /api/profiles` | protected | — | `[{name, title, verified, hw_status, notes, active}]` (`hw_status` of this machine per profile, `verified` = validated or tested) |
 | `GET /api/log?lines=N` | protected | 1..5000 | `{lines[], source: file\|journal}` |
@@ -963,7 +1006,7 @@ first and collects locally otherwise.
 
 ## 11. Dashboard (internal/web/static)
 
-No framework, no build step; `app.js` ≤ **136 KiB**, `mock.js` ≤ **48 KiB**, `app.css` ≤
+No framework, no build step; `app.js` ≤ **152 KiB**, `mock.js` ≤ **48 KiB**, `app.css` ≤
 **48 KiB** (test `web_test.go`; `index.html` carries the SVG sprite and has no budget),
 CSP `script-src 'self'`, no `innerHTML`, no inline handlers. Colours, spacing, radii and
 type scale are tokens in one `:root` block (dark; light overrides under
@@ -1094,7 +1137,17 @@ Every channel of the mock state carries `ceiling` (cpu 100, ssd 85, hdd 65) and
   `role="switch"` *Assist* (`PUT /api/assist/{name}`, the same two-interval pending
   window, `lv.asOn`/`lv.asUntil`) and one line — `+45 from amdgpu (58.7 °C)`, `0 (sources
   below start)`, `0 (a source is unreadable)`, `0 (<mode> wins)`, `off`. The tile shows
-  `+N` (`.asb`) after the duty while `assist.boost > 0`. Sticky action bar `#actbar`: dirty indicator (also
+  `+N` (`.asb`) after the duty while `assist.boost > 0`. **Preview** (0.7.0, section 6
+  "Preview"): one panel at a time (`<template id="t-pv">`, `PV`), opened under a card by
+  *Preview 24 h* (card header, while the channel is dirty; recomputed 1 s after an edit),
+  the chart icon of a preset chip (all channels) or *Preview* beside the Assist switch
+  (the switch inverted, read live at request time); *24 h / 7 d*; per channel a chart
+  (recorded `--fg3`, preview in the series colour, assist share `--man`), the summary,
+  the channel's `notes[]` and `measured`, and the answer's `note`. One request in
+  flight (`PV.busy`): a change meanwhile is queued and sent when it returns, an answer
+  whose body (draft + span) is no longer the latest is dropped, the chart axis is the
+  span the answer was asked for; a channel error or a failed request greys the chart
+  (`.pv-off`). Sticky action bar `#actbar`: dirty indicator (also
   `#nav-dirty` on the sidebar entry, the bottom bar and the selector entry), *Revert*
   (`loadEditor`), *Apply to daemon*. Client validation (`validateChannel`, shared with
   the preset editor) before the PUT: `curve_points_min..max` points, integers only,
@@ -1306,9 +1359,11 @@ optional body of `PUT /api/presets/{name}`, section 9).
   /api/presets/{name}` with a JSON body, validated with the config's channel rules against
   the running channel set. The hint under the Presets heading names both directions
   (Apply writes into the daemon, New preset… saves without applying; 0.4.0 gate G6).
-- **Budgets:** `app.js` ≤ 136 KiB (raised from 128 KiB during 0.4.0 for the badge
-  lists, the active set, *Save as preset…* and the toggle pattern — a decided raise, noted
-  in the CHANGELOG, not a silent one), `mock.js` ≤ 48 KiB, `app.css` ≤ 48 KiB
+- **Budgets:** `app.js` ≤ 152 KiB (raised from 128 KiB during 0.4.0 for the badge
+  lists, the active set, *Save as preset…* and the toggle pattern, and from 136 KiB for
+  0.7.0 for assist, preview, event marks, panic button and config versions — decided
+  raises, noted in the CHANGELOG, not silent ones; the next growth splits `app.js` into
+  modules loaded on demand instead of a further raise), `mock.js` ≤ 48 KiB, `app.css` ≤ 48 KiB
   (`web_test.go`); `index.html` has none. Do not raise a limit to make a change fit.
 - **Icons:** one inline SVG sprite at the top of `index.html` (`<svg hidden><symbol
   id="i-…">`), used as `<svg class="ic" aria-hidden="true"><use href="#i-gear"/></svg>`

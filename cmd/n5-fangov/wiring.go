@@ -763,6 +763,7 @@ type webDeps struct {
 	Alerts      *alertManager   // /api/alerts (nil: 501)
 	Dashboard   *dashboardStore // /api/dashboard (nil: 501)
 	Assist      *assistStore    // /api/assist (nil: 501)
+	Preview     *previewer      // /api/preview (nil: 501)
 	// System backs GET /api/system (hardware inventory; see wiring_sysinfo.go). nil: 501.
 	System *systemCollector
 	// Schedules backs GET /api/schedules (scheduler.go). nil: 501.
@@ -901,6 +902,9 @@ func applyStoreDeps(deps *web.Deps, d webDeps) {
 	}
 	if d.Assist != nil {
 		deps.Assist = d.Assist
+	}
+	if d.Preview != nil {
+		deps.Preview = d.Preview
 	}
 	deps.About = aboutInfo()
 }

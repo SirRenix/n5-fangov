@@ -278,6 +278,8 @@ type Controller struct {
 	// deferred Stop. Lock order where both are taken: c.mu, then hwMu.
 	hwMu    sync.Mutex
 	stopped atomic.Bool // set by Stop: the loop skips all further writes
+	// previewing: a curve preview runs (Preview, one at a time)
+	previewing atomic.Bool
 
 	// lastCycle is the unix-nanosecond time at which the last cycle
 	// finished (0 before the first); see LastCycle.
@@ -770,11 +772,8 @@ func (c *Controller) computeTargets(cs *cycleState) {
 	for _, ch := range chans {
 		if !ch.tempOK {
 			// unknown temperature: safe duty, no curve, no override
-			// (critical cannot be judged without a reading); the held
-			// temperature and a running hold are dropped, the next good
-			// reading starts afresh
-			ch.heldOK, ch.haveCurve, ch.holding = false, false, false
-			ch.assistIdle()
+			// (critical cannot be judged without a reading)
+			ch.forget()
 			ch.target = c.safeDuty(ch)
 			ch.mode = ModeSensor
 			if ch.ceilHit {
@@ -785,19 +784,8 @@ func (c *Controller) computeTargets(cs *cycleState) {
 			}
 			continue
 		}
-		ch.mode = ModeAuto
-		ch.target = ch.applyAssist(minOnHold(ch, Interpolate(ch.cfg.Curve, heldTemp(ch)), now), now)
-		if v, has := ovr[ch.cfg.Name]; has {
-			// an override replaces the target; a hold that started before
-			// it must not outlive it, assist rests
-			ch.holding = false
-			ch.assistIdle()
-			ch.target = v
-			ch.mode = ModeManual
-		}
-		if ch.temp >= ch.cfg.Critical*1000 {
-			ch.target = 255
-			ch.mode = ModeCritical
+		v, has := ovr[ch.cfg.Name]
+		if regulate(ch, now, v, has) {
 			crit = true
 		}
 		critParts = append(critParts, fmt.Sprintf("%s=%s", ch.cfg.Name, fmtTemp(ch.temp)))
@@ -806,6 +794,41 @@ func (c *Controller) computeTargets(cs *cycleState) {
 	if crit {
 		c.raise("temp", "critical temperature reached: "+strings.Join(critParts, " ")+" -> 255")
 	}
+}
+
+// forget drops the per-channel post-processing state after an unknown
+// temperature (sensor error in the loop, a missing reading in the
+// preview): the held temperature, a running min_on hold and assist; the
+// next good reading starts afresh.
+func (ch *channel) forget() {
+	ch.heldOK, ch.haveCurve, ch.holding = false, false, false
+	ch.assistIdle()
+}
+
+// regulate is the pure target rule for a channel with a known temperature
+// (ch.temp, ch.tempOK): the curve at the hysteresis-held temperature, the
+// min_on hold, the assist boost, the override (ovr when hasOvr) and
+// critical — in that order, rules 4 and 5. It sets ch.target and ch.mode
+// and reports whether critical was reached. No hardware, no alerts: the
+// loop (computeTargets) and the preview (preview.go) both call it, the
+// ceiling rule follows in ceilingStep.
+func regulate(ch *channel, now time.Time, ovr int, hasOvr bool) (crit bool) {
+	ch.mode = ModeAuto
+	ch.target = ch.applyAssist(minOnHold(ch, Interpolate(ch.cfg.Curve, heldTemp(ch)), now), now)
+	if hasOvr {
+		// an override replaces the target; a hold that started before it
+		// must not outlive it, assist rests
+		ch.holding = false
+		ch.assistIdle()
+		ch.target = ovr
+		ch.mode = ModeManual
+	}
+	if ch.temp >= ch.cfg.Critical*1000 {
+		ch.target = 255
+		ch.mode = ModeCritical
+		crit = true
+	}
+	return crit
 }
 
 // ceilingOf is the effective ceiling of a channel config: per part the
@@ -879,6 +902,28 @@ func (ch *channel) hottestPart() (hot sensor.Part, hotCeil int, found, allBelow 
 // transition and names the part. While in the state the emergency counter
 // runs (emergency).
 func (c *Controller) applyCeiling(ch *channel, d config.Daemon) {
+	entered, left := ch.ceilingStep()
+	switch {
+	case entered:
+		c.raise("ceiling", fmt.Sprintf("%s: %s at %s reached the ceiling %dC (critical %dC) -> 255",
+			ch.cfg.Name, ch.partLabel(ch.ceilPart), fmtTemp(ch.ceilPartTemp), ch.ceilPartCeil, ch.cfg.Critical))
+	case left:
+		c.log.Printf("%s: %s below the ceiling again (%s < %dC), regulation resumed", ch.cfg.Name, ch.partLabel(ch.ceilPart), fmtTemp(ch.temp), ch.ceilPartCeil-ceilingRecover)
+	}
+	if !ch.ceilHit {
+		return
+	}
+	ch.ceilCycles++
+	c.emergency(ch, d)
+}
+
+// ceilingStep is the pure state change of the ceiling rule for a channel
+// with a known temperature (ch.parts): it enters the state when a part is
+// at/above its ceiling, leaves it when every part is ceilingRecover
+// degrees below, and while in the state sets 255 / mode critical and ends
+// a min_on hold. entered/left report the transitions (the loop alerts and
+// logs them in applyCeiling; the preview ignores them).
+func (ch *channel) ceilingStep() (entered, left bool) {
 	hot, hotCeil, found, allBelow := ch.hottestPart()
 	if found {
 		ch.ceilPart, ch.ceilPartTemp, ch.ceilPartCeil = hot.ID, hot.Value, hotCeil
@@ -887,20 +932,17 @@ func (c *Controller) applyCeiling(ch *channel, d config.Daemon) {
 	case !ch.ceilHit && found:
 		ch.ceilHit = true
 		ch.ceilCycles = 0
-		c.raise("ceiling", fmt.Sprintf("%s: %s at %s reached the ceiling %dC (critical %dC) -> 255",
-			ch.cfg.Name, ch.partLabel(hot.ID), fmtTemp(hot.Value), hotCeil, ch.cfg.Critical))
+		entered = true
 	case ch.ceilHit && allBelow:
-		c.log.Printf("%s: %s below the ceiling again (%s < %dC), regulation resumed", ch.cfg.Name, ch.partLabel(ch.ceilPart), fmtTemp(ch.temp), ch.ceilPartCeil-ceilingRecover)
 		ch.ceilHit, ch.ceilCycles, ch.emergencyFired = false, 0, false
+		left = true
 	}
-	if !ch.ceilHit {
-		return
+	if ch.ceilHit {
+		ch.target = 255
+		ch.mode = ModeCritical
+		ch.holding = false
 	}
-	ch.target = 255
-	ch.mode = ModeCritical
-	ch.holding = false
-	ch.ceilCycles++
-	c.emergency(ch, d)
+	return entered, left
 }
 
 // partLabel names a part in log and alert texts: the id alone for a

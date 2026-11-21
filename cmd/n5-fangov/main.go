@@ -45,7 +45,7 @@ func register(name string, c command) { commands[name] = c }
 
 // order lists every public subcommand in usage order.
 var order = []string{
-	"setup", "serve", "status", "set", "auto", "assist", "curve", "log",
+	"setup", "serve", "status", "set", "auto", "assist", "curve", "preview", "log",
 	"check", "detect", "identify", "system", "test", "validate", "failsafe",
 	"passwd", "cert", "alerts", "token", "export", "import", "version",
 }
@@ -59,6 +59,7 @@ var helpText = map[string]string{
 	"auto":     "<ch|all>               return channel(s) to the curve",
 	"assist":   "<ch> on|off            switch the channel's [[assist]] table (via the daemon)",
 	"curve":    "                       print the configured curves",
+	"preview":  "[--preset NAME] [--assist CH=on|off]... [--span 24h|7d] [--json]  what the curves would have done over the recorded history (via the daemon)",
 	"log":      "[-n N] [--export FILE] [--clear]  log file (journal when no file is configured)",
 	"check":    "[--quiet] [--after-update] [--unit-start]  self-check; --after-update: DKMS module for every kernel (apt hook); --unit-start: send the start alert like the unit's ExecStartPre (the unit sets N5FANGOV_UNIT_START=1)",
 	"detect":   "                       list profiles with detection result (read-only)",

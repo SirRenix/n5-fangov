@@ -168,7 +168,7 @@ function chart(wrap, series, opt) {
 		const pad = C.pad, pw = W - pad.l - pad.r, ph = H - pad.t - pad.b;
 		const all = series.flatMap(s => s.data);
 		if (!all.length) { ctx.fillStyle = fg3; ctx.font = UI.font('--fs-12'); ctx.fillText('no history — points arrive with every daemon cycle', pad.l, H / 2); return; }
-		const now = Date.now() / 1000, rg = R(), x0 = Math.min(now - rg.windowS, all[0][0]), x1 = now;
+		const now = Date.now() / 1000, rg = opt.rg || R(), x0 = Math.min(now - rg.windowS, all[0][0]), x1 = now;
 		let yMin = opt.yMin, yMax = opt.yMax;
 		if (yMin === undefined || yMax === undefined) {
 			let lo = Infinity, hi = -Infinity; for (const [, v] of all) { if (v < lo) lo = v; if (v > hi) hi = v; }
@@ -216,8 +216,8 @@ function chart(wrap, series, opt) {
 		const move = ev => {
 			const r = cv.getBoundingClientRect(), x = ev.clientX - r.left, s = wrap._st;
 			if (!s.X || x < s.pad.l || x > s.pad.l + s.pw) return leave();
-			const now = Date.now() / 1000, ws = R().windowS, x0 = now - ws; s.hover = x0 + (x - s.pad.l) / s.pw * ws; s.draw();
-			clear(tip); tip.append(h('div', { class: 't' }, R().fmt(s.hover)));
+			const rg = s.opt.rg || R(), now = Date.now() / 1000, ws = rg.windowS, x0 = now - ws; s.hover = x0 + (x - s.pad.l) / s.pw * ws; s.draw();
+			clear(tip); tip.append(h('div', { class: 't' }, rg.fmt(s.hover)));
 			for (const sr of s.series) { const p = nearest(sr.data, s.hover); if (!p) continue;
 				const key = h('i'); key.style.background = cssVar(sr.color);
 				tip.append(h('div', null, h('span', null, key, sr.name), h('b', null, s.opt.fmt(p[1])))); }
@@ -587,11 +587,39 @@ on('#ov-csv', 'click', () => act(() => download('/api/history.csv?minutes=' + R(
 
 // Fans page (§11a): one card per channel — the curve editor (edited in °C whatever the display unit; edState = working copy,
 // edDirty = unsaved) on the left, "Live & override" on the right; below 700 px the channel selector shows one card at a time
+// curve preview (POST /api/preview, nothing applied): kind ed = the editor's draft of one channel (recomputed 1 s after an edit),
+// pre = a preset (all channels), as = one channel with the live assist switch inverted (PV.on() at request time); one panel at a
+// time, under its card. One request in flight: a change meanwhile is sent when it returns, an answer whose body (draft + span)
+// is no longer the latest is dropped; the span of the answer is the one it was asked for
+const PV = { sp: '24h', w: {} };
+const pvBody = () => { const c = PV.kind === 'ed' && ED[PV.ch] && ED[PV.ch].c, b = { span: PV.sp };
+	if (c) b.channels = [{ name: c.name, sensor: c.sensor, curve: c.curve, critical: +c.critical, stop: stopN(c.stop), hysteresis: +c.hysteresis || 0, min_on: c.min_on }];
+	else if (PV.kind === 'pre') b.preset = PV.ch; else if (PV.kind === 'as') b.assist = { [PV.ch]: PV.on() }; return b; };
+const pvClose = () => { if (PV.el) PV.el.remove(); for (const k in PV.w) charts.splice(charts.indexOf(PV.w[k]), 1); PV.el = null; PV.w = {}; };
+const pvOpen = (card, kind, ch, on) => { pvClose(); Object.assign(PV, { kind, ch, on, el: $('#t-pv').content.firstElementChild.cloneNode(true) }); card.after(PV.el);
+	for (const b of PV.el.querySelectorAll('[data-sp]')) b.onclick = () => { PV.sp = b.dataset.sp; pvRun(); };
+	$('[data-pvx]', PV.el).onclick = pvClose; pvRun(); PV.el.scrollIntoView({ block: 'nearest' }); };
+const pvSched = () => { if (PV.el && PV.kind === 'ed') { clearTimeout(PV.t); PV.t = setTimeout(pvRun, 1000); } };
+async function pvRun() { const el = PV.el; if (!el) return; if (PV.busy) { PV.q = 1; return; }
+	for (const b of el.querySelectorAll('[data-sp]')) { const on = b.dataset.sp === PV.sp; b.classList.toggle('on', on); b.setAttribute('aria-pressed', on); }
+	const body = pvBody(), tok = JSON.stringify(body), sp = body.span; let r, err; PV.busy = 1; PV.q = 0;
+	try { r = (await api('/api/preview', { method: 'POST', json: body })).body; } catch (e) { err = e; }
+	PV.busy = 0; if (el !== PV.el || PV.q || JSON.stringify(pvBody()) !== tok) return pvRun();
+	if (err) { for (const k in PV.w) PV.w[k].classList.add('pv-off'); $('.pv-s', el).textContent = err.message; return; }
+	const sum = [];
+	r.order.forEach((n, i) => { const x = r.channels[n]; if (PV.kind !== 'pre' && n !== PV.ch) return; const notes = (x.notes || []).map(t => `\n${n}: ${t}`).join('');
+		if (x.error) { if (PV.w[n]) PV.w[n].classList.add('pv-off'); return sum.push(`${n}: no preview — ${x.error}` + notes); }
+		let w = PV.w[n]; if (!w) $('.pv-c', el).append(h('h3', null, n), w = PV.w[n] = h('div', { class: 'chart' }, h('canvas', { role: 'img', 'aria-label': `${n}: recorded and preview duty` }), h('div', { class: 'tip', hidden: true })));
+		w.classList.remove('pv-off'); const d = (k, f) => x.series.filter(p => p[k] !== null).map(p => [p.ts, f ? p.boost : p[k]]), a = x.summary.actual, p = x.summary.preview;
+		chart(w, [{ name: n + ' recorded', color: '--fg3', data: d('actual') }, { name: n + ' preview', color: seriesColor(i), data: d('preview') }, { name: 'assist', color: '--man', data: d('preview', 1) }], { fmt: v => Math.round(v), yMin: 0, yMax: 255, rg: RANGES[sp] });
+		sum.push(`${n}: Ø ${Math.round(a.mean)} → ${Math.round(p.mean)}, P95 ${a.p95} → ${p.p95}, max ${a.max} → ${p.max}, ≥ 200: ${a.min_ge_200} → ${p.min_ge_200} min, assist ${a.assist_min} → ${p.assist_min} min` + notes + (x.measured ? '\n' + x.measured : '')); });
+	$('.pv-s', el).textContent = sum.join('\n'); $('.pv-n', el).textContent = r.note; }
 const ED = {}, drawEds = () => { for (const k in ED) ED[k].draw(); }; let edState = null, edStash = null, edDirty = false;
 const cvNotice = notice('#cv-notice'), K = UI.curve;
 const chDirty = name => { const e = ED[name], o = chList().find(x => x.name === name); return !!(e && o) && chKey([e.c]) !== chKey([o]); };
 const dirty = v => { edDirty = !!v; $('#cv-dirty').hidden = !v; $('#cv-clean').hidden = !!v; $('#cv-saveas').hidden = !v; for (const d of $$('#nav-dirty, #bnav .dirty')) d.hidden = !v;
-	for (const b of $$('#ch-sel button')) b.lastChild.hidden = !v || !chDirty(b.dataset.ch); };
+	for (const b of $$('#ch-sel button')) b.lastChild.hidden = !v || !chDirty(b.dataset.ch);
+	for (const k in ED) ED[k].pv.hidden = !v || !chDirty(k); pvSched(); };
 addEventListener('beforeunload', ev => { if (edDirty || scDirty) ev.preventDefault(); });
 // Go durations ("1m0s") ↔ seconds; min_on is kept in the daemon's canonical form, the select lists the common values
 const durS = s => { const m = /^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+(?:\.\d+)?)s)?$/.exec(s || ''); return m && m[0] ? (+m[1] || 0) * 3600 + (+m[2] || 0) * 60 + (+m[3] || 0) : 0; };
@@ -626,7 +654,7 @@ const selMode = () => { const on = SEL.mq.matches, sel = $('#ch-sel'); sel.hidde
 	drawEds(); };
 SEL.mq.addEventListener('change', selMode);
 function buildEditors(keepNotice) { // keepNotice: the 202 / warnings notice of an apply survives the reload of the editors (cleared by Revert, page switch, next apply)
-	const host = clear($('#fan-cards')), sel = clear($('#ch-sel')); for (const k in ED) delete ED[k];
+	pvClose(); const host = clear($('#fan-cards')), sel = clear($('#ch-sel')); for (const k in ED) delete ED[k];
 	if (!keepNotice) cvNotice('');
 	edState.forEach((c, i) => {
 		const ed = ED[c.name] = { c, i }, L = LIM, dt = () => dirty(1);
@@ -690,10 +718,12 @@ function buildEditors(keepNotice) { // keepNotice: the 202 / warnings notice of 
 			h('div', { class: 'tgt' }, lv.tgt, lv.mode), lv.sw,
 			h('div', { class: 'man' }, h('div', { class: 'rg' }, lv.range, lv.num, lv.pctEl), h('div', { class: 'actions' }, lv.set)), lv.warn,
 			lv.as = h('div', { class: 'as', hidden: true }, lv.asw = h('button', { class: 'switch', role: 'switch', 'aria-checked': 'false', 'aria-label': `${c.name}: assist`, title: TIP.assist, onclick: () => asSet(c.name, lv) },
-				h('span', { class: 'track', 'aria-hidden': 'true' }), h('b', null, 'Assist')), lv.asl = h('p', { class: 'hint sm' })));
+				h('span', { class: 'track', 'aria-hidden': 'true' }), h('b', null, 'Assist')), lv.asl = h('p', { class: 'hint sm' }),
+				h('button', { class: 'btn sm link', title: 'the last 24 h with the switch inverted', onclick: () => pvOpen(ed.card, 'as', c.name, () => lv.asw.getAttribute('aria-checked') !== 'true') }, 'Preview')));
 		lv.show(0);
 		ed.card = h('div', { class: 'card fan' },
-			h('div', { class: 'fh' }, h('h2', { class: 'name' }, c.name), ed.sub = h('span', { class: 'sub' }, `pwm${c.pwm} · ${c.sensor || '?'}`), h('span', { class: 'badges' }, lv.pre, lv.hmode)),
+			h('div', { class: 'fh' }, h('h2', { class: 'name' }, c.name), ed.sub = h('span', { class: 'sub' }, `pwm${c.pwm} · ${c.sensor || '?'}`), h('span', { class: 'badges' }, lv.pre, lv.hmode),
+				ed.pv = h('button', { class: 'btn sm', hidden: true, onclick: () => pvOpen(ed.card, 'ed', c.name) }, ico('chart'), 'Preview 24 h')),
 			h('div', { class: 'ed' },
 				h('div', { class: 'fields' }, h('label', null, 'sensor', sl), h('label', { title: TIP.critical }, 'critical °C', crit), h('label', { title: TIP.stop }, 'stop', stop),
 					h('label', { title: TIP.hyst }, 'hysteresis °C', hyst), h('label', { title: TIP.minOn }, 'min on', mo)),
@@ -869,6 +899,7 @@ async function loadPresets() {
 				recommended(p) ? h('span', { class: 'star', role: 'img', 'aria-label': 'recommended', title: 'recommended' }, ico('star')) : null,
 				h('span', { class: 'pn' }, p.name), p.builtin ? h('span', { class: 'badge builtin' }, 'built-in') : null, p.description ? h('span', { class: 'pd', title: p.description }, p.description) : null,
 				h('button', { class: 'btn sm', disabled: on, title: on ? 'already active' : `apply ${p.name}`, onclick: () => applyPreset(p) }, on ? 'active' : 'Apply'),
+				h('button', { class: 'btn icon link', 'aria-label': `${p.name}: preview`, title: 'Preview', onclick: () => pvOpen(host.parentNode, 'pre', p.name) }, ico('chart')),
 				h('button', { class: 'btn icon link', 'aria-label': `${p.name}: ${p.builtin ? 'details' : 'edit'}`, title: p.builtin ? 'Details' : 'Edit', onclick: () => openPresetEditor(p.name) }, ico(p.builtin ? 'external' : 'edit')),
 				p.builtin ? null : h('button', { class: 'btn icon link danger', 'aria-label': `${p.name}: delete`, title: 'Delete', onclick: async () => { if (!await ask('Delete preset', `Delete preset ${p.name}?`, { ok: 'Delete', danger: true })) return;
 					if (await act(() => api('/api/presets/' + encodeURIComponent(p.name), { method: 'DELETE' }), `Preset ${p.name} deleted`)) loadPresets(); } }, ico('trash')))); }

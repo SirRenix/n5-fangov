@@ -357,6 +357,7 @@ func serveWeb(st *serveState) {
 		Alerts:      st.alertMgr,
 		Dashboard:   dashboard,
 		Assist:      newAssistStore(cfgPath, ctrl, tlsMgr.pinConfig),
+		Preview:     &previewer{ctrl: ctrl, presets: presets},
 		System:      newSystemCollector(st.hw, st.dev),
 		Schedules:   sched,
 		Channels:    ctrl.Channels,

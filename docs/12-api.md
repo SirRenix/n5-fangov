@@ -127,6 +127,7 @@ Basic auth only, never a token.
 | `GET` | `/api/health` | the checks of `n5-fangov check`, the kernel gate as `check --after-update` stored it, the driver, daemon start, last restart/failed/emergency/kernel/driver alert (computed at most every 15 s) |
 | `GET` | `/api/dashboard` | the watched sensor ids |
 | `GET` | `/api/tls` | certificate mode, info, warnings, fallback flag |
+| `POST` | `/api/preview` | curve preview over the recorded history: draft channels, a preset or assist switches; writes nothing, one at a time (429) — [below](#preview) |
 
 **Scope `control`**
 
@@ -229,6 +230,54 @@ writes only the `enabled` line, comments and the other tables keep their bytes
 every source below `start`. `sources[].boost` is what each source alone gives, also
 while assist is off; `temp` is `-999` for an unreadable source. Anonymous callers get
 `enabled` and `boost` only. A channel without a table has no `assist` member.
+
+## Preview
+
+```
+curl -H "Authorization: Bearer n5t_..." -H "Content-Type: application/json" \
+  -X POST --data '{"assist": {"hdd": true}, "span": "24h"}' https://n5host:8010/api/preview
+```
+
+Scope `read`; nothing is written. Every member is optional — no body computes the
+running config, so the preview line can be checked against the recorded one:
+
+| Member | Meaning |
+|---|---|
+| `channels` | draft channel tables as the curve editor holds them (`name`, `sensor`, `curve`, `critical`, `hysteresis`, `min_on`; `pwm` and `stop` default to the running channel's). A part of the channels is fine, the rest runs as configured. Validated like a [preset body](#saving-a-preset-with-a-body): 400 with `errors[]`; a name the daemon does not run is 400 |
+| `preset` | the channels of this preset, merged by pwm like an apply (running names; post-processing and ceiling stay where the preset says nothing). Not together with `channels` (400); unknown 404 |
+| `assist` | `{"hdd": true}`: the assist switch per channel for the computation; the values come from the running `[[assist]]` table, a channel without one is 400 |
+| `span` | `24h` (1-min means, default) or `7d` (5-min means); anything else 400 |
+
+The computation runs the daemon's own rules — curve at the hysteresis-held
+temperature, `min_on`, assist with its hysteresis and hold, critical, ceiling — point
+by point over the history tier. A draft sensor other than the running one is read from
+the recorded extra sensors (assist sources are recorded automatically); missing there,
+the channel gets `"error": "sensor not in history"`. A gap in the history (restart,
+outage) stays a gap, and hysteresis and holds start afresh after it. One computation at
+a time; a second request gets 429 instead of waiting.
+
+Answer: `{span, step, note, order[], channels: {<name>: {series[{ts, actual, preview,
+boost}], summary: {actual, preview}, error?, measured?, notes[]?}}}`. `actual` is the recorded duty
+(null when unknown), `preview` the target (null where the history has no temperature),
+`boost` the assist share. Each summary line carries `mean`, `p95`, `max`,
+`min_ge_200` and `assist_min` (minutes). `measured` is set for an HDD channel with
+assist on: the effect measured on 16.11.2026, labelled as measured, not predicted.
+
+What the preview cannot show (`note`): feedback — more air would have lowered the
+temperatures, so it shows rather too much duty, never too little; the ramp
+(`step_up`/`step_down`); past overrides, failsafe and sensor errors, which only the
+recorded line carries. On `7d` hysteresis and `min_on` barely act on 5-min means and
+short peaks vanish. Also on `24h` a point is the mean of the 10-s cycles of its minute,
+so hysteresis and `min_on` act on means, not on single readings. A ceiling of a
+composite sensor is judged on the recorded maximum against the lowest part ceiling
+(the history keeps no per-part readings), so a mixed composite (an NVMe and an HDD) can
+show 255 where the daemon would not.
+
+`notes[]` per channel lists such limits of that channel's computation: an assist
+source of an enabled table missing from the history (it adds 0 there — never recorded,
+or missing at N points with the time it was first recorded; sources are recorded only
+since the table exists), and the mixed-composite ceiling above. The dashboard and the
+CLI show them under the summary.
 
 ## /healthz
 
