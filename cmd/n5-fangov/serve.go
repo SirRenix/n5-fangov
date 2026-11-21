@@ -331,7 +331,7 @@ func serveWeb(st *serveState) {
 	// (hookedService), so Set below sees the start-up config and later
 	// ones. Run starts in serveRun after READY.
 	sched := newScheduler(nil, func(msg string) { sendAlertCooled(rdir, alerter, "schedule", msg) }, log.Printf, time.Now)
-	svc := hookedService{Service: ctrl, alerts: st.alertMgr, sched: sched}
+	svc := hookedService{Service: ctrl, alerts: st.alertMgr, sched: sched, cfgPath: cfgPath}
 	presets := dirPresetStore{dir: defaultPresetDir, cfgPath: cfgPath, svc: svc, pin: tlsMgr.pinConfig, profile: st.dev.Profile().Name()}
 	sched.apply = presets.Apply
 	sched.Set(schedule.FromConfig(st.cfg.Schedules))
@@ -356,6 +356,7 @@ func serveWeb(st *serveState) {
 		Account:     accounts,
 		Alerts:      st.alertMgr,
 		Dashboard:   dashboard,
+		Assist:      newAssistStore(cfgPath, ctrl, tlsMgr.pinConfig),
 		System:      newSystemCollector(st.hw, st.dev),
 		Schedules:   sched,
 		Channels:    ctrl.Channels,

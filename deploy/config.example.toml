@@ -149,3 +149,30 @@ min_on = "60s"          # ... and keep a step-up for a minute so the disks actua
 #
 # [[schedule]]
 # preset = "n5pro-balanced"       # no from/to: the fallback
+
+# Assist: raise a channel by the heat of other sources, on top of its curve (never lower). Per
+# source the boost rises linearly from 0 at start to boost at full, at a hysteresis-held reading of
+# that source; the channel gets the maximum over its sources (not the sum), held for min_on after a
+# rise. Only in mode auto: an override, critical, the ceiling, stall and failsafe win. An unreadable
+# source adds 0. A table of its own beside [[channel]], so presets and the curve editor leave it
+# alone; the switch (dashboard Fans page, `n5-fangov assist hdd on|off`, PUT /api/assist/hdd) only
+# rewrites `enabled`. At most one table per channel, 1..4 sources. Reload, no restart.
+# Values from a measurement on the N5 Pro (16.11.2026): under AI load (GPU ~59 C, NVMe ~50 C) the
+# HDD fans run ~150 instead of ~106, which takes 2-3 K off the NVMe; at idle nothing changes.
+# [[assist]]
+# channel = "hdd"                 # an existing [[channel]]
+# enabled = false                 # default false
+# hysteresis = 2                  # 0..10 C per source, default 2
+# min_on = "2m"                   # 0s..30m, default 2m
+#
+# [[assist.source]]
+# sensor = "hwmon:amdgpu:temp1"   # one sensor id (forms as in [dashboard] sensors), not the channel's own
+# start = 50                      # C, the boost starts here
+# full = 58                       # C, full boost from here (start < full)
+# boost = 45                      # PWM points at full, 1..100
+#
+# [[assist.source]]
+# sensor = "nvme:max"
+# start = 46
+# full = 50
+# boost = 45

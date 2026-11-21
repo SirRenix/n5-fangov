@@ -232,6 +232,10 @@ type channel struct {
 	holdTarget int
 	holdStart  time.Time
 	holdUntil  time.Time
+
+	// assist is the channel's [[assist]] state (assist.go); nil without a
+	// table. Loop-only, rebound by applyPendingLocked.
+	assist *assistRT
 }
 
 // Controller runs the regulation loop. It implements Service.
@@ -365,6 +369,7 @@ func New(cfg config.Config, dev profile.Device, sensors SensorFactory, alerter A
 	c.cfg.Channels, notes = SanitizeChannels(dev.Profile().Name(), c.cfg.Channels)
 	c.chans, dropped = c.buildChannels(c.cfg)
 	c.reportNotes("config corrected at start", append(notes, dropped...))
+	c.bindAssists(c.cfg)
 	c.watched = c.buildWatched(c.cfg.Dashboard.Sensors)
 	if c.opts.RunDir != "" {
 		c.loadOverrides()
@@ -723,6 +728,7 @@ func (c *Controller) readSensors(cs *cycleState) {
 		}
 		ch.sensorBad = bad
 	}
+	c.readAssist(chans)
 	cs.extra = c.readExtra()
 	cs.watchedVals = c.readWatched(watched, n)
 	c.readRPMs(chans)
@@ -752,10 +758,10 @@ func (c *Controller) readSensors(cs *cycleState) {
 }
 
 // computeTargets sets every channel's target and mode from the curve (at
-// the hysteresis-held temperature, then the min_on hold), the override
-// and the critical temperature (rules 4 and 5); a channel whose
-// temperature is unknown goes to its safe duty. Critical is judged on the
-// raw reading.
+// the hysteresis-held temperature, then the min_on hold, then the assist
+// boost), the override and the critical temperature (rules 4 and 5); a
+// channel whose temperature is unknown goes to its safe duty. Critical is
+// judged on the raw reading.
 func (c *Controller) computeTargets(cs *cycleState) {
 	chans, ovr := cs.chans, cs.ovr
 	crit := false
@@ -768,6 +774,7 @@ func (c *Controller) computeTargets(cs *cycleState) {
 			// temperature and a running hold are dropped, the next good
 			// reading starts afresh
 			ch.heldOK, ch.haveCurve, ch.holding = false, false, false
+			ch.assistIdle()
 			ch.target = c.safeDuty(ch)
 			ch.mode = ModeSensor
 			if ch.ceilHit {
@@ -779,11 +786,12 @@ func (c *Controller) computeTargets(cs *cycleState) {
 			continue
 		}
 		ch.mode = ModeAuto
-		ch.target = minOnHold(ch, Interpolate(ch.cfg.Curve, heldTemp(ch)), now)
+		ch.target = ch.applyAssist(minOnHold(ch, Interpolate(ch.cfg.Curve, heldTemp(ch)), now), now)
 		if v, has := ovr[ch.cfg.Name]; has {
 			// an override replaces the target; a hold that started before
-			// it must not outlive it
+			// it must not outlive it, assist rests
 			ch.holding = false
+			ch.assistIdle()
 			ch.target = v
 			ch.mode = ModeManual
 		}
@@ -1201,7 +1209,11 @@ func (c *Controller) statusLine(chans []*channel) string {
 		if ch.tempOK {
 			t = fmtTemp(ch.temp)
 		}
-		parts = append(parts, fmt.Sprintf("%s=%s->pwm%d=%d(%s)", ch.cfg.Name, t, ch.cfg.PWM, ch.cur, ch.mode))
+		mode := string(ch.mode)
+		if b, src := ch.assistBoost(); b > 0 {
+			mode += fmt.Sprintf(" +%d %s", b, AssistLabel(src))
+		}
+		parts = append(parts, fmt.Sprintf("%s=%s->pwm%d=%d(%s)", ch.cfg.Name, t, ch.cfg.PWM, ch.cur, mode))
 		rpms = append(rpms, strconv.Itoa(ch.rpm))
 	}
 	return strings.Join(parts, "  ") + "  rpm=" + strings.Join(rpms, "/")
@@ -1296,6 +1308,16 @@ func (c *Controller) reresolve(chans []*channel) {
 		if s := c.resolveSensor(ch.cfg); s != nil {
 			ch.sensor = s
 			ch.ceiling, ch.partCeil = c.ceilingOf(ch.cfg)
+		}
+		// assist sources on the same cadence: a composite id (nvme:max,
+		// drivetemp:max) resolved before every device appeared picks up the
+		// rest; a failure keeps the reader that works
+		if ch.assist != nil {
+			for _, s := range ch.assist.srcs {
+				if r := c.resolveAssist(ch.cfg.Name, s.cfg.Sensor); r != nil {
+					s.sensor = r
+				}
+			}
 		}
 	}
 }
@@ -1681,8 +1703,9 @@ func (c *Controller) Overrides() map[string]int {
 }
 
 // Reload parses rawTOML and applies it. Daemon parameters, curves, sensors,
-// critical, stop, hysteresis and min_on values are swapped atomically
-// between cycles (a changed min_on re-times a running hold). When the
+// critical, stop, hysteresis and min_on values and the [[assist]] tables
+// are swapped atomically between cycles (a changed min_on re-times a
+// running hold). When the
 // channel set (names or pwm numbers) or the profile differ, nothing is
 // applied and ErrRestartRequired is returned. Parse warnings are logged; a
 // syntax error is returned unchanged.
@@ -1757,6 +1780,7 @@ func (c *Controller) applyPendingLocked() {
 	}
 	c.swapChannelConfig(ups)
 	c.retimeHolds(ups)
+	c.bindAssists(c.cfg)
 	if firstSensorChanged {
 		c.haveRaw, c.sameRaw = false, 0
 	}
@@ -1906,6 +1930,7 @@ func (c *Controller) buildSnapshotLocked(status Status, extra, watched map[strin
 		if ch.holding && ch.mode == ModeAuto {
 			cs.HoldUntil = ch.holdUntil.Unix()
 		}
+		cs.Assist = ch.assistState()
 		s.Channels = append(s.Channels, cs)
 	}
 	return s
@@ -1916,6 +1941,10 @@ func (c *Controller) pushHistoryLocked(chans []*channel, watched map[string]floa
 	if len(watched) > 0 {
 		p.Extra = maps.Clone(watched)
 	}
+	chanSensor := map[string]bool{}
+	for _, ch := range chans {
+		chanSensor[ch.cfg.Sensor] = true
+	}
 	for _, ch := range chans {
 		if ch.tempOK {
 			p.Temp[ch.cfg.Name] = float64(ch.temp) / 1000
@@ -1923,6 +1952,29 @@ func (c *Controller) pushHistoryLocked(chans []*channel, watched map[string]floa
 		p.Duty[ch.cfg.Name] = ch.cur
 		if ch.rpm >= 0 {
 			p.RPM[ch.cfg.Name] = ch.rpm
+		}
+		if b, _ := ch.assistBoost(); b > 0 {
+			if p.Assist == nil {
+				p.Assist = map[string]int{}
+			}
+			p.Assist[ch.cfg.Name] = b
+		}
+		// assist sources are recorded like the channel sensors (the curve
+		// preview recomputes from them); an id already recorded as a
+		// watched sensor or as a channel sensor is not recorded twice
+		if ch.assist != nil {
+			for _, s := range ch.assist.srcs {
+				if !s.ok || chanSensor[s.cfg.Sensor] {
+					continue
+				}
+				if _, have := p.Extra[s.cfg.Sensor]; have {
+					continue
+				}
+				if p.Extra == nil {
+					p.Extra = map[string]float64{}
+				}
+				p.Extra[s.cfg.Sensor] = float64(s.temp) / 1000
+			}
 		}
 	}
 	c.hist.Push(p)

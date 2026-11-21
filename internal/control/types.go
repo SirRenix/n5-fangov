@@ -52,6 +52,28 @@ type ChannelState struct {
 	// state: 255 / mode critical until the reading is 3 degrees below it.
 	Ceiling    int  `json:"ceiling"`
 	CeilingHit bool `json:"ceiling_hit"`
+	// Assist is the channel's [[assist]] state; absent for a channel
+	// without a table (older clients ignore it).
+	Assist *AssistState `json:"assist,omitempty"`
+}
+
+// AssistState is the assist part of a ChannelState. Boost is what the
+// target carries this cycle (0 when off, outside mode auto or with every
+// source below start); Source names the source it comes from ("" at 0).
+// Sources shows every source with its reading (-999 when unreadable) and
+// the boost it alone would give, also while assist is off.
+type AssistState struct {
+	Enabled bool                `json:"enabled"`
+	Boost   int                 `json:"boost"`
+	Source  string              `json:"source,omitempty"`
+	Sources []AssistSourceState `json:"sources"`
+}
+
+// AssistSourceState is one assist source in the snapshot.
+type AssistSourceState struct {
+	Sensor string  `json:"sensor"`
+	Temp   float64 `json:"temp"`
+	Boost  int     `json:"boost"`
 }
 
 // Snapshot is the daemon state exposed to CLI and web.

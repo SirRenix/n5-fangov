@@ -14,6 +14,28 @@ drove the 0.3.1 work is `docs/AUDIT.md` (code) and `docs/DESIGN-AUDIT.md`
 
 ## [Unreleased]
 
+### Added
+
+- **Assist: raise a channel by the heat of other sources.** A new top-level
+  `[[assist]]` table per channel (beside `[[channel]]`, so presets, the curve editor and
+  *Apply to daemon* leave it alone) with 1..4 `[[assist.source]]` entries: per source a
+  boost from 0 at `start` to `boost` at `full` (°C, at a hysteresis-held reading), the
+  channel gets the maximum, held for `min_on` after a rise; target = min(255, curve +
+  boost), mode `auto` only — override, critical, ceiling, stall, failsafe and a sensor
+  error of the channel win. Default off. An unreadable source adds 0 (log line, no
+  alert); an invalid table is dropped with a warning. Switch: the Fans page (a switch
+  and one line under *Live & override*, only for a channel with a table), `n5-fangov
+  assist <ch> on|off`, `PUT /api/assist/{name}` (scope `control`); it rewrites only the
+  `enabled` line and takes effect on the next cycle. Visible in the status line
+  (`hdd=40.0C->pwm3=150(auto +45 amdgpu)`), the `assist` column of `status`, `assist{}`
+  per channel in `GET /api/state`, `+N` on the Overview tile, one `check` line per table,
+  and the history (`assist{}` per point, absent at 0; the source readings in `extra`
+  without listing them in `[dashboard] sensors`). The history file format is unchanged:
+  a 0.6 file loads, 0.6 ignores the new member. Example with the values of the
+  measurement of 16.11.2026 (HDD fans ≈ 150 instead of ≈ 106 under AI load, NVMe 2–3 K
+  cooler, idle unchanged) in `config.example.toml`, commented out
+  ([Configuration](docs/06-configuration.md#assist)).
+
 ### Fixed
 
 - **Alerts from command line runs no longer vanish from the list** (#54, since 0.3).

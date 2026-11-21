@@ -109,7 +109,7 @@ Basic auth only, never a token.
 | `GET` | `/api/session` | public | who the caller is: `authenticated`, `mode`, `user`, `via` (`cookie`/`basic`/`bearer`/`none`), `scope` and `token_id` for a token |
 | `GET` | `/api/openapi.json` | public | the OpenAPI document |
 | `GET` | `/healthz` | public | liveness for monitors, [below](#healthz) |
-| `GET` | `/api/state` | filtered | snapshot: status, `hw_status` (`validated`/`tested`/`experimental`/`unknown`; `verified` = validated or tested, kept for compatibility), channels (temperature, duty, target, RPM, mode; signed in also `held_temp`, `hold_until`, `ceiling`, `ceiling_hit`, EC and watched temperatures, alert stamps) |
+| `GET` | `/api/state` | filtered | snapshot: status, `hw_status` (`validated`/`tested`/`experimental`/`unknown`; `verified` = validated or tested, kept for compatibility), channels (temperature, duty, target, RPM, mode, `assist {enabled, boost}` for a channel with an `[[assist]]` table; signed in also `held_temp`, `hold_until`, `ceiling`, `ceiling_hit`, the assist `source` and `sources[]`, EC and watched temperatures, alert stamps) |
 | `GET` | `/api/history` | filtered | history points (`minutes`, `since`; anonymous: without `extra`) |
 
 **Scope `read`**
@@ -136,6 +136,7 @@ Basic auth only, never a token.
 | `DELETE` | `/api/override/{name}` | back to the curve |
 | `POST` | `/api/presets/{name}/apply` | apply a preset (merge by pwm; 202 when a restart is needed) |
 | `PUT` | `/api/dashboard` | set the watched sensor ids |
+| `PUT` | `/api/assist/{name}` | switch the channel's `[[assist]]` table: `{"enabled": true}` / `false`; writes only that `enabled` line, applied on the next cycle; 404 without a table ([Assist](#assist)) |
 | `POST` | `/api/alerts/ack` | acknowledge alerts: `{"ids":[41,42]}` or `{"all":true,"up_to":42}` (the newest id the client has seen); display only, [Alerts](07-alerts.md#acknowledging) |
 
 **Scope `admin`**
@@ -202,6 +203,33 @@ curl -u admin -H "X-N5-Fangov-Csrf: 1" -H "Content-Type: application/json" \
   -X PUT --data @summer.json https://n5host:8010/api/presets/summer
 ```
 
+## Assist
+
+```
+curl -H "Authorization: Bearer n5t_..." -H "Content-Type: application/json" \
+  -X PUT --data '{"enabled": true}' https://n5host:8010/api/assist/hdd
+```
+
+Scope `control`. 200 `{"ok": true, "channel": "hdd", "enabled": true}`; 404 when the
+channel has no valid `[[assist]]` table in `config.toml`; 400 for a body other than
+`{"enabled": true|false}`; 500 when the file could not be written, or was written but
+the running daemon has no such table (edited by hand without a reload). The daemon
+writes only the `enabled` line, comments and the other tables keep their bytes
+([Assist](06-configuration.md#assist)).
+
+`GET /api/state` carries per channel with a table:
+
+```json
+"assist": {"enabled": true, "boost": 45, "source": "hwmon:amdgpu:temp1",
+           "sources": [{"sensor": "hwmon:amdgpu:temp1", "temp": 58.7, "boost": 45},
+                       {"sensor": "nvme:max", "temp": 49.2, "boost": 40}]}
+```
+
+`boost` is what the target carries this cycle: 0 when off, outside mode `auto` or with
+every source below `start`. `sources[].boost` is what each source alone gives, also
+while assist is off; `temp` is `-999` for an unreadable source. Anonymous callers get
+`enabled` and `boost` only. A channel without a table has no `assist` member.
+
 ## /healthz
 
 `GET` or `HEAD /healthz` answers without credentials, also with `auth = "basic"`, and
@@ -226,9 +254,11 @@ curl -sk https://n5host:8010/healthz
 
 ## History and CSV
 
-`GET /api/history?minutes=N&since=TS` returns `[{ts, temp{}, duty{}, rpm{}, extra{}}]`:
-maps by channel name, `extra` by watched sensor id (omitted when empty; anonymous
-callers never get it). `minutes` is 1..10080 (7 days; default 120) and selects the
+`GET /api/history?minutes=N&since=TS` returns `[{ts, temp{}, duty{}, rpm{}, extra{}, assist{}}]`:
+maps by channel name, `extra` by sensor id — the watched sensors and the assist sources
+(omitted when empty; anonymous callers never get it) — and `assist` the boost per
+channel (a channel without a boost is absent, the map too when no channel has one; the
+averaged tiers carry the mean boost of the bucket). `minutes` is 1..10080 (7 days; default 120) and selects the
 tier: up to 2 h one point per cycle, up to 24 h one-minute means, above that
 five-minute means. `since` (unix seconds) returns only newer points; the dashboard's
 2 h view polls this way every 30 s. Points are kept across restarts in

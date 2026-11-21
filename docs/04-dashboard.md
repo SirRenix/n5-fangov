@@ -56,7 +56,8 @@ share of the lower of `critical` and the [ceiling](06-configuration.md#ceilings-
 `held …` while a [hysteresis](06-configuration.md#hysteresis-and-minimum-on-time) holds
 the curve at another value, a `hold` badge with the remaining minimum on-time, a
 **sparkline** of the last 2 h, the duty bar with a target marker while the slew is
-moving (`33 % (85 → 107)`), and the RPM (`no tach` without tachometer, `0 rpm` in red).
+moving (`33 % (85 → 107)`), `+N` after it while [assist](06-configuration.md#assist)
+adds N to the curve target, and the RPM (`no tach` without tachometer, `0 rpm` in red).
 
 **History**: range switch `2 h · 24 h · 7 d` (remembered in this browser) and, signed
 in, *CSV*. 2 h is one point per cycle, polled every 30 s; 24 h and 7 d are one-minute
@@ -173,6 +174,15 @@ pairs sit under the table.
   any client.
 
 The same from the shell: `n5-fangov set` / `auto` ([CLI](05-cli.md)).
+
+**Assist** (under the override, only when the channel has an
+[`[[assist]]`](06-configuration.md#assist) table): a switch and one line —
+`+45 from amdgpu (58.7 °C)` while a boost is added, `0 (sources below start)`,
+`0 (a source is unreadable)`, `0 (manual wins)` outside mode auto, or `off`. The switch
+is `PUT /api/assist/{channel}`; the daemon writes only `enabled` in `config.toml` and
+takes it on the next cycle (the switch shows the client's state until the snapshot
+agrees). Sources and values are edited in the file, there is no editor here. The same
+from the shell: `n5-fangov assist hdd on|off`.
 
 ![Fans, Manual override switched on for the HDD channel: held duty, slider at the minimum 60](screenshots/10-fans-manual-switch.png)
 
@@ -476,6 +486,7 @@ production page never requests, with documentation values (`n5host`, `192.0.2.x`
 | `&down=1` | state, history and sensors unreachable from 2 s after the boot: the connection banner |
 | `&drv=pending` | the loaded driver is not the build the package expects: yellow driver chip, *reload pending* on Health |
 | `&drv=ro` | the driver cannot write (`write-disabled`): yellow driver chip |
+| `&assist=1` | the hdd channel's `[[assist]]` table starts switched on with a warm GPU source: `+N` on the tile, the line under the switch |
 
 The mock implements every endpoint of the API, including tokens (`n5t_mock…`), alert
 acknowledgement (two of the recent alerts start acknowledged), driver and health,

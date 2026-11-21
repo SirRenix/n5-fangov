@@ -239,6 +239,8 @@ type Deps struct {
 	Alerts AlertMgr
 	// Dashboard backs /api/dashboard (nil → 501).
 	Dashboard DashboardStore
+	// Assist backs PUT /api/assist/{name} (nil → 501).
+	Assist AssistStore
 	// About is served verbatim by GET /api/about.
 	About About
 	// System returns the hardware inventory for GET /api/system (the
@@ -868,14 +870,23 @@ type publicChannel struct {
 	Target int          `json:"target"`
 	RPM    int          `json:"rpm"`
 	Mode   control.Mode `json:"mode"`
+	// Assist is the switch and the boost only: the source ids name the
+	// operator's hardware like the extra sensors.
+	Assist *publicAssist `json:"assist,omitempty"`
+}
+
+type publicAssist struct {
+	Enabled bool `json:"enabled"`
+	Boost   int  `json:"boost"`
 }
 
 // publicPoint is a history point without the extra sensors.
 type publicPoint struct {
-	TS   int64              `json:"ts"`
-	Temp map[string]float64 `json:"temp"`
-	Duty map[string]int     `json:"duty"`
-	RPM  map[string]int     `json:"rpm"`
+	TS     int64              `json:"ts"`
+	Temp   map[string]float64 `json:"temp"`
+	Duty   map[string]int     `json:"duty"`
+	RPM    map[string]int     `json:"rpm"`
+	Assist map[string]int     `json:"assist,omitempty"`
 }
 
 func (s *Server) getState(w http.ResponseWriter, r *http.Request) {
@@ -887,7 +898,11 @@ func (s *Server) getState(w http.ResponseWriter, r *http.Request) {
 	if !CallerFrom(r.Context()).Authenticated {
 		out := publicState{TS: snap.TS, Status: snap.Status, Profile: snap.Profile, Verified: snap.Verified, HWStatus: snap.HWStatus, DryRun: snap.DryRun, Uptime: snap.Uptime, Channels: make([]publicChannel, 0, len(snap.Channels))}
 		for _, c := range snap.Channels {
-			out.Channels = append(out.Channels, publicChannel{Name: c.Name, PWM: c.PWM, Sensor: c.Sensor, Temp: c.Temp, Duty: c.Duty, Target: c.Target, RPM: c.RPM, Mode: c.Mode})
+			pc := publicChannel{Name: c.Name, PWM: c.PWM, Sensor: c.Sensor, Temp: c.Temp, Duty: c.Duty, Target: c.Target, RPM: c.RPM, Mode: c.Mode}
+			if c.Assist != nil {
+				pc.Assist = &publicAssist{Enabled: c.Assist.Enabled, Boost: c.Assist.Boost}
+			}
+			out.Channels = append(out.Channels, pc)
 		}
 		writeJSON(w, http.StatusOK, out)
 		return
@@ -929,7 +944,7 @@ func (s *Server) getHistory(w http.ResponseWriter, r *http.Request) {
 		out := make([]publicPoint, 0, len(pts))
 		for _, p := range pts {
 			if p.TS > since {
-				out = append(out, publicPoint{TS: p.TS, Temp: p.Temp, Duty: p.Duty, RPM: p.RPM})
+				out = append(out, publicPoint{TS: p.TS, Temp: p.Temp, Duty: p.Duty, RPM: p.RPM, Assist: p.Assist})
 			}
 		}
 		writeJSON(w, http.StatusOK, out)

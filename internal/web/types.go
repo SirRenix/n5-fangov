@@ -143,6 +143,15 @@ type DashboardStore interface {
 	SetSensors(ids []string) (warnings []string, err error)
 }
 
+// AssistStore is the assist switch (implemented in cmd): SetEnabled writes
+// the enabled line of the channel's [[assist]] table in the config file
+// and applies it to the controller (next cycle). An error wrapping
+// fs.ErrNotExist means the channel has no [[assist]] table (404); ErrStore
+// or an OS error a write failure (500).
+type AssistStore interface {
+	SetEnabled(channel string, on bool) error
+}
+
 // About is the public project card (GET /api/about). No host data.
 type About struct {
 	Name       string   `json:"name"`

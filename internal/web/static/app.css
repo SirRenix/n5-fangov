@@ -295,6 +295,8 @@ input[type=checkbox]{accent-color:var(--info)}
 .fan .live .warn{color:var(--fg3);font-size:var(--fs-12);margin:0}
 .fan .live .warn.on{color:var(--warn)}
 .fan .live[data-off=true] .man{opacity:var(--opacity-disabled);pointer-events:none}
+.fan .live .as{display:grid;gap:var(--sp-1);border-top:var(--bw) solid var(--line);padding-top:var(--sp-2)} /* assist: switch + one line, only with an [[assist]] table */
+.tile .row .v .asb{color:var(--man);font-size:var(--fs-12);font-weight:var(--fw-semibold)}
 /* curve editor */
 .ed{display:grid;gap:var(--sp-25)}
 .ed .fields{display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-2) var(--sp-35);margin-top:var(--sp-1)}

@@ -42,21 +42,22 @@ const TIP = { duty: 'duty = PWM value 0..255 written to the channel (100 % = 255
 	critical: 'critical = temperature that forces 100 % at once', sensor: 'temperature source of this curve', slew: 'current → target: moved in step_up/step_down steps per cycle',
 	ceiling: 'ceiling = built-in floor below critical (HDD 65, SSD 85, CPU 100 °C, or lower if configured): 255 at once, whatever critical says',
 	hyst: 'hysteresis = the curve follows the reading only when it moved by at least this many °C (0 = off)', minOn: 'min_on = a rise of the curve target is held at least this long (off = no hold)',
-	held: 'the hysteresis-held temperature the curve is evaluated at', hold: 'min_on: the curve target is held for the remaining time' };
+	held: 'the hysteresis-held temperature the curve is evaluated at', hold: 'min_on: the curve target is held for the remaining time',
+	assist: 'assist = duty added to the curve by the heat of other sources ([[assist]]), mode auto only' };
 const Q = new URLSearchParams(location.search), MOCK = Q.get('mock') === '1';
 const REF = { // N5 Pro duty→RPM (measured)
 	cpu: [[85, 2000], [140, 3120], [179, 3830], [217, 4445], [255, 5073]],
 	ssd: [[74, 2130], [140, 3280], [179, 3790], [217, 4230], [255, 4687]],
 	hdd: [[87, 1237], [105, 1650], [140, 2250], [179, 2725], [217, 3160], [255, 3540]] };
 
-// history ranges: minutes for the API, window/grid/label format for the charts, polling (2 h: since every 30 s; 24 h / 7 d: full reload every 60 s)
+// history ranges: API minutes, chart window/grid/labels, polling (2 h: since every 30 s; 24 h / 7 d: reload every 60 s)
 const hm = ts => new Date(ts * 1000).toTimeString().slice(0, 5);
 const ddmm = ts => { const d = new Date(ts * 1000); return `${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')} ${hm(ts)}`; };
 // maxPoints 0 = raw tier: the cap follows the daemon's interval once the config is known (maxPts), otherwise only the window trims
 const RANGES = { '2h': { label: '2 h', minutes: 120, windowS: 7200, gridS: 1800, maxPoints: 0, poll: 30000, since: true, fmt: hm },
 	'24h': { label: '24 h', minutes: 1440, windowS: 86400, gridS: 4 * 3600, maxPoints: 1500, poll: 60000, fmt: ts => new Date(ts * 1000).toLocaleDateString('en', { weekday: 'short' }) + ' ' + hm(ts) },
 	'7d': { label: '7 d', minutes: 10080, windowS: 7 * 86400, gridS: 86400, maxPoints: 2100, poll: 60000, fmt: ddmm } };
-// settings (whitelisted values; anything else falls back to the default); nav = sidebar expanded or icon rail; sensors = Overview sensor groups the user opened / closed
+// settings (whitelisted, else the default); nav = sidebar or icon rail; sensors = Overview groups opened/closed
 const S = { unit: 'C', interval: 5, theme: 'system', range: '2h', nav: 'side', sensors: {} }, S_OK = { unit: ['C', 'F'], interval: [5, 10, 30], theme: ['system', 'dark', 'light'], range: Object.keys(RANGES), nav: ['side', 'rail'] };
 try { const j = JSON.parse(localStorage.getItem('n5-fangov') || '{}'); for (const k in S_OK) if (S_OK[k].includes(j[k])) S[k] = j[k]; for (const g in j.sensors || {}) if (typeof j.sensors[g] === 'boolean') S.sensors[g] = j.sensors[g]; } catch (e) {}
 const R = () => RANGES[S.range];
@@ -104,11 +105,11 @@ const ask = (title, text, opt) => new Promise(res => { opt = opt || {}; if (cfRe
 const cfEnd = v => { const r = cfRes; cfRes = null; if (cfd.open) cfd.close(); if (r) r(v); };
 on('#cf-ok', 'click', () => cfEnd(true)); on('#cf-cancel', 'click', () => cfEnd(false)); on('#cf-close', 'click', () => cfEnd(false));
 backdrop(cfd); cfd.addEventListener('close', () => cfEnd(false));
-// Escape is answered here, not by the browser: a confirm opened without a user activation (e.g. from an Escape in the preset editor) would otherwise
-// share one close watcher group with the dialog below it and one Escape would close both
+// Escape is answered here: a confirm opened without a user activation would share a close watcher group with the dialog below
+// and one Escape would close both
 cfd.addEventListener('keydown', ev => { if (ev.key === 'Escape') { ev.preventDefault(); cfEnd(false); } });
 
-// API: cookie session; a 401 while signed in = session gone (unsaved curve and schedule edits are stashed and restored after the next sign-in)
+// API: cookie session; a 401 while signed in = session gone (unsaved curve/schedule edits are restored after the next sign-in)
 const anon = mode => ({ authenticated: false, mode: mode || 'basic', user: '' });
 let failures = 0, sess = anon();
 const signedIn = () => !!sess.authenticated;
@@ -285,7 +286,7 @@ function renderHeader() {
 	const c = $('#h-status'); c.className = 'chip ' + st; if (c.textContent !== st) c.textContent = st; // role=status: no mutation without change
 	for (const u of $$('.uptime')) u.textContent = 'up ' + fmtUp(snap.uptime_s || 0);
 }
-// the page header's height (it wraps) feeds the sticky settings sub-navigation and the section scroll margin; the sticky action bar's (0 while hidden) lifts the toasts
+// the header's height (it wraps) feeds the sticky sub-navigation and scroll margin; the action bar's (0 hidden) lifts the toasts
 const ph = $('#ph'); new ResizeObserver(() => document.documentElement.style.setProperty('--hdr-h', ph.offsetHeight + 'px')).observe(ph);
 const ab = $('#actbar'); new ResizeObserver(() => document.documentElement.style.setProperty('--actbar-h', ab.offsetHeight + 'px')).observe(ab);
 // daemon limits → hints, field bounds, slider minimums
@@ -309,9 +310,8 @@ const navBtn = (p, extra) => h('button', { 'aria-current': p.id === cur ? 'page'
 const dirtyDot = () => h('i', { class: 'dirty', hidden: !edDirty, title: 'unsaved changes', role: 'img', 'aria-label': 'unsaved changes' });
 // 700–1099 px: the icon rail is forced (the 220 px sidebar leaves the header no room); the stored preference applies from 1100 px
 const RAIL_MQ = matchMedia(`(max-width:${UI.bp.lg - .02}px)`); RAIL_MQ.addEventListener('change', () => buildNav());
-// the sidebar toggle (panel-left icon): at the right end of the brand row while expanded, in the rail directly under the logo — one
-// trigger, always in the sidebar (Proxmox / UniFi / Portainer pattern; operator decision rc4). The [ key toggles (toggleNav) when the
-// focus is not in a field or a dialog. 700–1099 px: the rail is forced and has no toggle; the logo's tooltip says why.
+// the sidebar toggle: right end of the brand row, in the rail under the logo — one trigger, always in the sidebar (operator
+// decision rc4). The [ key toggles outside fields and dialogs. 700–1099 px: the rail is forced, no toggle; the logo's tooltip says why.
 const navForced = () => RAIL_MQ.matches, navRail = () => navForced() || S.nav === 'rail';
 const toggleNav = () => { if (navForced()) return; S.nav = navRail() ? 'side' : 'rail'; saveS(); $('#s-nav').value = S.nav; buildNav(); $('#nav .tog').focus(); };
 document.addEventListener('keydown', ev => { if (ev.key !== '[' || ev.ctrlKey || ev.metaKey || ev.altKey || ev.repeat) return;
@@ -320,9 +320,8 @@ function buildNav() {
 	const nav = clear($('#nav')), forced = navForced(), rail = navRail(); $('#shell').classList.toggle('rail', rail);
 	const tg = (rail ? 'Expand sidebar' : 'Collapse sidebar'), tip = tg + ' · [', forcedTip = 'Sidebar collapses below 1100 px';
 	const tog = () => h('button', { class: 'btn icon link tog', title: tip, 'aria-label': tg, 'aria-expanded': String(!rail), 'aria-keyshortcuts': '[', onclick: toggleNav }, ico('panel'));
-	// brand row: logo, name, toggle at the right; in the rail the same toggle sits directly under the logo — one trigger, always in the
-	// sidebar (operator decision rc4: nothing in the page header). 700–1099 px: no toggle, the logo's tooltip says why; an empty slot of
-	// the toggle's size keeps the entries in place when the window crosses 1100 px (append(null) would insert the text "null")
+	// brand row: logo, name, toggle; in the rail the toggle sits under the logo. Forced rail: an empty slot of the toggle's size keeps
+	// the entries in place across 1100 px (append(null) would insert the text "null")
 	nav.append(h('div', { class: 'brand-row' }, h('span', { class: 'logo', title: forced ? forcedTip : null }, ico('fan')), h('span', { class: 'brand' }, 'n5-fangov'), rail ? null : tog()));
 	if (rail) nav.append(forced ? h('span', { class: 'tog', 'aria-hidden': 'true' }) : tog(), h('div', { class: 'grp-sep' }));
 	let lastG = null;
@@ -339,8 +338,8 @@ function buildNav() {
 const openMore = rest => { const ul = clear($('#more-list'));
 	for (const p of rest) ul.append(h('li', null, h('button', { 'aria-current': p.id === cur ? 'page' : null, onclick: () => { $('#more').close(); goUser(p.id); } }, ico(p.ic), p.t, h('span', { class: 'grp-t', 'aria-hidden': 'true' }, p.g))));
 	$('#more').showModal(); ($('#more-list [aria-current]') || $('#more-list button')).focus(); };
-// go: switch the page (auth-gated), mark the nav entries, keep the hash, optionally scroll to a section; false for an unknown/forbidden page.
-// No hash yet (boot) or a fallback page: replaceState, not a push (a push re-triggers itself on Back). goUser (nav, links, Back/Forward) also moves the focus to the heading.
+// go: switch the page (auth-gated), mark the nav, keep the hash, optionally scroll to a section; false for an unknown/forbidden page.
+// No hash yet or a fallback page: replaceState (a push re-triggers on Back). goUser (nav, links, Back/Forward) also focuses the heading.
 let byUser = false; const goUser = (id, sec) => { byUser = true; try { return go(id, sec); } finally { byUser = false; } };
 function go(id, sec, replace) {
 	const p = PAGES.find(x => x.id === id && (signedIn() || x.anon)); if (!p) return false;
@@ -412,7 +411,7 @@ on('#h-signout', 'click', async () => { const un = [edDirty && 'curve', scDirty 
 	sess = anon(sess.mode); toast('Signed out', 'ok'); applyAuth(); $('#h-signin').focus(); });
 
 // overview
-// tiles (§11a): one .tile per channel, built once and updated in place; the sparkline is the last 2 h of `hist` in the channel's series colour
+// tiles (§11a): one .tile per channel, updated in place; sparkline = last 2 h of `hist` in the series colour; "+N" = assist boost
 const cards = {}, SPARK_S = RANGES['2h'].windowS;
 function spark(cv, data, color, padR) { // padR: room for the range label at the right edge, so the line end never runs under it
 	const dpr = window.devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight; if (!W || !H) return;
@@ -458,7 +457,8 @@ function renderCards() {
 		k.bar.style.width = pct(c.duty) + '%'; k.bar.className = { critical: 'crit', failsafe: 'crit', stall: 'stall', auto: 'auto' }[c.mode] || '';
 		const slewing = c.target !== undefined && c.target !== c.duty && c.mode !== 'stall';
 		k.tgt.hidden = !slewing; k.tgt.style.left = `calc(${pct(c.target)}% - 1px)`;
-		clear(k.duty).append(`${pct(c.duty)} % `, h('span', { class: 'tg', title: slewing ? TIP.slew : TIP.duty }, `(${c.duty}${slewing ? ' → ' + c.target : ''})`));
+		const ab = c.assist && c.assist.boost;
+		clear(k.duty).append(`${pct(c.duty)} % `, h('span', { class: 'tg', title: slewing ? TIP.slew : TIP.duty }, `(${c.duty}${slewing ? ' → ' + c.target : ''})`), ab > 0 ? h('span', { class: 'asb', title: TIP.assist }, ` +${ab}`) : '');
 		clear(k.rpm).append(c.rpm < 0 ? 'no tach' : c.rpm === 0 ? h('span', { class: 't-crit' }, '0 rpm') : c.rpm.toLocaleString('en') + ' rpm');
 		drawSpark(k);
 	});
@@ -534,8 +534,7 @@ const groupOf = s => { if (s.kind === 'ssd') return 'SSD · NVMe'; if (s.kind ==
 const SN = { key: null, rows: {}, grp: {} };
 const concrete = () => sensors.filter(s => !s.id.includes('<')); // id patterns (with <) are not selectable
 const snDesc = id => { const s = sensors.find(x => x.id === id); return s && s.description ? s.description.replace(/\s*\(now [^)]*\)\s*$/, '') : id; }; // catalogue description for legends and rows, the id as fallback
-// one <details> per group (summary: name · count · live max); open by default when the group holds a channel sensor (composite parts included) or a
-// charted one, a group the user toggles keeps its state in S.sensors (localStorage)
+// one <details> per group (name · count · live max); open by default with a channel sensor (parts included) or a charted one; toggles kept in S.sensors
 function renderSensors() {
 	const host = $('#sensors'), sensors = concrete(), key = sensors.map(s => s.id).join(','), max = LIM.dashboard_sensors_max;
 	$('#sn-hint').textContent = `chart = record in the history (${dash.length}/${max})`;
@@ -605,8 +604,8 @@ const minOnSel = (c, onchange) => { const mo = h('select', { title: TIP.minOn, o
 const tomlChannel = c => { const ps = parts(c.sensor);
 	return `[[channel]]\nname = "${c.name}"\npwm = ${c.pwm}\nsensor = ${ps.length > 1 ? `[${ps.map(x => `"${x}"`).join(', ')}]` : `"${ps[0] || ''}"`}\ncurve = [${c.curve.map(p => `[${p[0]}, ${p[1]}]`).join(', ')}]\ncritical = ${c.critical}\nstop = ${stopN(c.stop) === 'auto' ? '"auto"' : stopN(c.stop)}\n`
 		+ (c.hysteresis > 0 ? `hysteresis = ${c.hysteresis}\n` : '') + (durS(c.min_on) ? `min_on = "${c.min_on}"\n` : '') + (c.ceiling > 0 ? `ceiling = ${c.ceiling}\n` : ''); }; // ceiling: kept as configured (no editor field), the daemon can only lower it
-// every [[channel]] table is dropped as a block; the block ends at the next table header of ANY kind — [section] or [[other]], e.g. [[schedule]] —
-// so the other array tables survive the rewrite. A header carries a bare/quoted key path only: an array element line ("[45, 85],") has a comma and is no header.
+// each [[channel]] table is dropped up to the next header of any kind ([x], [[schedule]], [[assist]], [[assist.source]]), so the
+// other tables survive. An array element line ("[45, 85],") has a comma and is no header.
 const TOML_HDR = /^\[\[?\s*[\w.\-"' ]+\s*\]\]?\s*(#.*)?$/, CH_HDR = /^\[\[\s*channel\s*\]\]/;
 const stripChannels = raw => { const out = []; let skip = false;
 	for (const ln of raw.split('\n')) { const t = ln.trim();
@@ -618,7 +617,7 @@ const chCopy = c => ({ name: c.name, pwm: +c.pwm, sensor: parts(c.sensor).join('
 	hysteresis: +c.hysteresis || 0, min_on: normDur(c.min_on), ceiling: +c.ceiling || 0 });
 const fromCfg = () => chList().map(chCopy);
 function loadEditor(keepNotice) { edState = fromCfg(); dirty(false); buildEditors(keepNotice); }
-// the channel selector below 700 px: one card at a time, the selected channel keeps across rebuilds; a resize across the breakpoint switches modes
+// channel selector below 700 px: one card at a time, the selection survives rebuilds; crossing the breakpoint switches modes
 const SEL = { mq: matchMedia(`(max-width:${UI.bp.sm - .02}px)`), ch: null };
 const selMode = () => { const on = SEL.mq.matches, sel = $('#ch-sel'); sel.hidden = !on;
 	if (on && !(SEL.ch in ED)) SEL.ch = Object.keys(ED)[0] || null;
@@ -674,8 +673,8 @@ function buildEditors(keepNotice) { // keepNotice: the 202 / warnings notice of 
 		lv.show = (v, keep) => { lv.range.value = v; if (!keep) lv.num.value = v; lv.pctEl.textContent = `${pct(v)} %`;
 			lv.low = lv.min > 0 && v < lv.min; lv.set.disabled = lv.low || lv.box.dataset.off === 'true';
 			lv.warn.textContent = lv.min ? `HDD-like channel: minimum ${lv.min} (not handed back to the EC; lower values are refused)` : 'Critical-temperature and stall guards still apply and override any manual value.'; lv.warn.classList.toggle('on', lv.low); };
-		// the switch: Manual holds the duty the channel runs now (PUT /api/override with the snapshot duty), Auto is the DELETE. The snapshot mode follows
-		// with the next cycle, so the switch shows the client flag lv.on, held through a pending window (lv.pend) — see renderLive. aria-busy, not disabled: the focus stays
+		// Manual = PUT /api/override with the running duty, Auto = DELETE; the mode follows a cycle later, so the switch shows lv.on held
+		// through lv.pend (renderLive). aria-busy, not disabled: the focus stays
 		lv.sw = h('button', { class: 'switch', role: 'switch', 'aria-checked': 'false', 'aria-label': `${c.name}: manual override`, onclick: async () => {
 			if (lv.busy) return; const on = !lv.on, live = snap && snap.channels.find(x => x.name === c.name) || {}; lv.busy = 1; lv.sw.setAttribute('aria-busy', 'true');
 			const d = Math.max(lv.min, live.duty >= 0 ? live.duty : live.target >= 0 ? live.target : lv.min); // duty -1 = write failed: hold the target, never 0
@@ -689,7 +688,9 @@ function buildEditors(keepNotice) { // keepNotice: the 202 / warnings notice of 
 		lv.box = h('div', { class: 'live', 'data-off': 'true' }, h('h3', null, `Live & override — ${c.name}`),
 			h('div', { class: 'now' }, lv.temp, h('span', { class: 'arrow', 'aria-hidden': 'true' }, '→'), lv.duty, lv.rpm),
 			h('div', { class: 'tgt' }, lv.tgt, lv.mode), lv.sw,
-			h('div', { class: 'man' }, h('div', { class: 'rg' }, lv.range, lv.num, lv.pctEl), h('div', { class: 'actions' }, lv.set)), lv.warn);
+			h('div', { class: 'man' }, h('div', { class: 'rg' }, lv.range, lv.num, lv.pctEl), h('div', { class: 'actions' }, lv.set)), lv.warn,
+			lv.as = h('div', { class: 'as', hidden: true }, lv.asw = h('button', { class: 'switch', role: 'switch', 'aria-checked': 'false', 'aria-label': `${c.name}: assist`, title: TIP.assist, onclick: () => asSet(c.name, lv) },
+				h('span', { class: 'track', 'aria-hidden': 'true' }), h('b', null, 'Assist')), lv.asl = h('p', { class: 'hint sm' })));
 		lv.show(0);
 		ed.card = h('div', { class: 'card fan' },
 			h('div', { class: 'fh' }, h('h2', { class: 'name' }, c.name), ed.sub = h('span', { class: 'sub' }, `pwm${c.pwm} · ${c.sensor || '?'}`), h('span', { class: 'badges' }, lv.pre, lv.hmode)),
@@ -713,13 +714,20 @@ function buildEditors(keepNotice) { // keepNotice: the 202 / warnings notice of 
 const gapPoint = curve => { const s = curve.slice().sort((a, b) => a[0] - b[0]); let bi = 1, bw = -1;
 	for (let k = 1; k < s.length; k++) if (s[k][0] - s[k - 1][0] > bw) { bw = s[k][0] - s[k - 1][0]; bi = k; }
 	const t = s.length > 1 ? Math.round((s[bi - 1][0] + s[bi][0]) / 2) : (s[0] ? s[0][0] : K.addDefault) + K.addStep; return [t, Math.round(interp(s, t))]; };
+// assist: the switch writes `enabled`, the snapshot follows a cycle later (held like lv.pend)
+const asSet = async (n, lv) => { const on = lv.asw.getAttribute('aria-checked') !== 'true'; lv.asw.setAttribute('aria-busy', 'true');
+	if (await act(() => api('/api/assist/' + n, { method: 'PUT', json: { enabled: on } }), `${n}: assist ${on ? 'on' : 'off'}`)) { lv.asOn = on; lv.asUntil = Date.now() + 2 * Math.max(2, cfg && cfg.daemon ? durS(cfg.daemon.interval) : 10) * 1000; lv.asw.setAttribute('aria-checked', on); }
+	lv.asw.removeAttribute('aria-busy'); poll(); };
+const asLbl = id => (/^hwmon:([^:]+):/.exec(id) || [, id])[1];
+const asLine = (c, on) => { const a = c.assist, s = (a.sources || []).find(x => x.sensor === a.source); if (!on) return 'off';
+	if (a.boost > 0) return `+${a.boost} from ${asLbl(a.source)}` + (s && s.temp > -900 ? ` (${fmtT(s.temp)} ${unit()})` : '');
+	return c.mode !== 'auto' ? `0 (${c.mode} wins)` : (a.sources || []).some(x => !(x.temp > -900)) ? '0 (a source is unreadable)' : '0 (sources below start)'; };
 // live block: every poll (no editor rebuild); the slider follows the running duty until the operator touches it
 function renderLive() { if (!snap) return;
 	for (const c of snap.channels) { const ed = ED[c.name]; if (!ed) continue; const { lv } = ed, crit = critOf(c.name);
 		lv.temp.className = 't ' + tempClass(c.temp, crit); clear(lv.temp).append(fmtT(c.temp), h('small', null, ' ' + unit()));
 		clear(lv.duty).append(String(c.duty), h('small', null, ` duty · ${pct(c.duty)} %`)); lv.rpm.textContent = c.rpm < 0 ? 'no tach' : `${c.rpm.toLocaleString('en')} rpm`;
-		// lag: the snapshot trails a PUT/DELETE by a cycle — flag and slider wait for the daemon to agree or the window to pass; manual → on, auto → off,
-		// critical/stall leave the flag alone (the override persists underneath, the switch still turns it off)
+		// lag: the snapshot trails a PUT/DELETE by a cycle — flag and slider wait for it or the window; manual → on, auto → off, critical/stall keep the flag
 		const man = c.mode === 'manual', lag = lv.until > Date.now() && (man !== lv.on || man && c.target !== lv.want);
 		if (!lv.busy && !lag) { lv.until = 0; if (man) lv.on = true; else if (c.mode === 'auto') lv.on = false; }
 		lv.state(c.mode); if (c.ceiling_hit) modeBadge(lv.mode, c.mode, true), modeBadge(lv.hmode, c.mode, true);
@@ -728,9 +736,10 @@ function renderLive() { if (!snap) return;
 		const mn = minDuty(chList().find(x => x.name === c.name) || ed.c); if (mn !== lv.min) { lv.min = mn; lv.range.min = lv.num.min = mn; lv.show(+lv.range.value, 1); } // profile known now
 		// the daemon's ceiling arrives with the snapshot: header tooltip, and the editor redraws its line once it is known
 		if (c.ceiling > 0 && ed.ceil !== c.ceiling) { ed.ceil = c.ceiling; ed.sub.title = `ceiling ${fmtT(c.ceiling, 0)} ${unit()} (built-in floor below critical)`; ed.draw(); }
+		lv.as.hidden = !c.assist; if (c.assist) { const on = lv.asUntil > Date.now() && c.assist.enabled !== lv.asOn ? lv.asOn : c.assist.enabled; lv.asw.setAttribute('aria-checked', on); lv.asl.textContent = asLine(c, on); }
 		ed.ref(); }
 }
-// a critical above the daemon's ceiling is accepted, the ceiling just acts first: one warning line per channel for the notice (never blocks)
+// a critical above the ceiling is accepted (the ceiling acts first): one warning line per channel, never blocks
 const ceilingWarnings = (chs = edState) => chs.flatMap(c => { const l = ceilOf(c.name); return l && +c.critical > l ? [`${c.name}: critical ${c.critical} above the ${+c.ceiling > 0 && +c.ceiling <= l ? 'configured' : 'built-in'} ceiling ${l} — the ceiling acts first`] : []; }); // same wording as `check` (DESIGN §6)
 function fillSensorSelects() {
 	// a composite id "a,b" is one option (never dropped by the editor); the catalogue's single ids follow
@@ -770,7 +779,7 @@ function drawCurve(ed) {
 		ctx.fillStyle = cssVar('--fg2'); ctx.textAlign = r ? 'right' : 'left'; ctx.textBaseline = 'bottom'; ctx.fillText(`now ${live.temp.toFixed(1)} °C → ${Math.round(interp(pts, live.temp))}`, x + (r ? -K.labelGap : K.labelGap), y - C.labelGap); }
 	syncPts(ed, g);
 }
-// keyboard: one focusable overlay per point (Tab reaches it, arrows move it by 1 °C / 5 duty, Shift × 5); pointer events fall through to the canvas drag
+// keyboard: a focusable overlay per point (arrows 1 °C / 5 duty, Shift × 5); pointer events fall through to the canvas drag
 function syncPts(ed, g) {
 	const { c, ptsEl } = ed, L = LIM;
 	while (ptsEl.children.length > c.curve.length) ptsEl.lastChild.remove();
@@ -826,17 +835,15 @@ on('#cv-revert', 'click', () => { loadEditor(); toast('Reverted', ''); });
 // presets: chips under the channel cards (built-ins: badge, no save-over, no delete); active = every channel equals the daemon config,
 // the badge on a channel names the first preset whose channel matches (chKey); details are cached per name (PD)
 const chKey = chs => JSON.stringify((chs || []).map(c => [c.name, +c.pwm, parts(c.sensor).join(','), (c.curve || []).map(p => [+p[0], +p[1]]), +c.critical, stopN(c.stop), +c.hysteresis || 0, durS(c.min_on)]).sort());
-// what Apply makes of a preset here (cmd mergeChannelsByPWM): a preset channel replaces the config channel with the same pwm and takes its name; a table
-// without hysteresis and min_on (both 0 — the file omits them) keeps the config channel's post-processing; other config channels stay, new pwms are
-// appended. "active" and the channel badge compare against this merge, not the raw preset.
+// Apply's merge (cmd mergeChannelsByPWM): a preset channel replaces the config channel of its pwm and takes its name; without hysteresis
+// and min_on it keeps the config's; new pwms are appended. "active" and the badge compare against this merge.
 const mergePre = (pc, hc) => Object.assign({}, pc, { name: hc.name }, +pc.hysteresis || durS(pc.min_on) ? null : { hysteresis: hc.hysteresis, min_on: hc.min_on });
 const applied = (chs, host) => { const pcs = chs || []; return host.map(hc => { const pc = pcs.find(x => +x.pwm === +hc.pwm); return pc ? mergePre(pc, hc) : hc; }).concat(pcs.filter(pc => !host.some(hc => +hc.pwm === +pc.pwm))); };
 const psNotice = notice('#ps-notice'), PD = {}, psGet = name => PD[name] ? Promise.resolve(PD[name]) : api('/api/presets/' + encodeURIComponent(name)).then(r => (PD[name] = r.body));
 let psList = [], psSig = '';
 const psReset = () => { for (const k in PD) delete PD[k]; psList = []; builtinNames = []; psSig = ''; $('#ps-active').hidden = true; }; // sign-out
 const recommended = p => /^recommended/i.test(p.description || '') || p.name === 'n5pro-balanced';
-// a channel can belong to several presets (a user preset that shares a channel with a built-in): the badge lists every match, user presets first, in
-// the row order; the active set is every preset whose merge equals the whole running config
+// a channel can belong to several presets: the badge lists every match (user presets first); active = every preset whose merge is the running config
 const userFirst = ps => ps.filter(p => !p.builtin).concat(ps.filter(p => p.builtin));
 const presetsOf = c => { const k = chKey([c]); return userFirst(psList.filter(p => { const d = PD[p.name], pc = d && (d.channels || []).find(x => +x.pwm === +c.pwm); return pc && chKey([mergePre(pc, c)]) === k; })).map(p => p.name); };
 const activeSets = () => { const host = chList(), k = chKey(host); return userFirst(psList.filter(p => PD[p.name] && chKey(applied(PD[p.name].channels, host)) === k)).map(p => p.name); };
@@ -868,16 +875,15 @@ async function loadPresets() {
 	} catch (e) { psSig = ''; clear(host).append(h('p', { class: 'empty' }, 'presets: ' + e.message)); }
 }
 on('#ps-new', 'click', () => openPresetEditor(null));
-// Save as preset… (action bar, while dirty): the editor opens with Start from = the editor, locked; the curve editor keeps its unsaved changes
+// Save as preset… (while dirty): Start from = the editor, locked; the curve editor keeps its changes
 on('#cv-saveas', 'click', () => { for (const k in ED) ED[k].sort(); openPresetEditor(null, 'editor'); });
-// the Fans page re-reads config and presets every 30 s while current (a preset applied from another browser or the CLI, a preset saved elsewhere):
-// a clean editor follows the daemon, a dirty one keeps its edits — the badges and the active set always show what the daemon runs
+// the Fans page re-reads config and presets every 30 s while current: a clean editor follows the daemon, a dirty one keeps its edits
 async function refreshFans() { if (cur !== 'fans' || !signedIn() || !cfg) return; const before = chKey(chList()); await loadConfig();
 	if (chKey(chList()) !== before && !edDirty && cur === 'fans') loadEditor(true); if (cur === 'fans') loadPresets(); }
-// preset editor dialog (New preset…): "Start from" (the daemon's running curves by default, the editor's unsaved values or any preset), name, one block per channel with the
-// curve table; Save = PUT /api/presets/{name} with the composed channels (nothing is applied); built-in presets open read-only
+// preset editor (New preset…): Start from (running curves, the editor's values or a preset), name, a block per channel;
+// Save = PUT /api/presets/{name} (nothing applied); built-ins open read-only
 const ped = $('#preset-ed'), peNotice = notice('#pe-notice');
-// unsaved edits (peDirty) ask before the dialog goes: Cancel, Escape (keydown, before the dialog's own cancel) and the backdrop share peClose
+// unsaved edits (peDirty) ask first: Cancel, Escape (keydown, before the dialog's cancel) and the backdrop share peClose
 let peDirty = false;
 const peClose = async () => { if (peDirty && !await ask('Discard changes', 'Unsaved preset edits are discarded.', { ok: 'Discard', danger: true })) return; peDirty = false; ped.close(); };
 ped.addEventListener('keydown', ev => { if (ev.key === 'Escape') { ev.preventDefault(); peClose(); } });
@@ -898,7 +904,7 @@ function openPresetEditor(name, from) { // from = 'editor': Save as preset… �
 		h('div', { class: 'act' }, h('button', { class: 'btn', onclick: peClose }, ro ? 'Close' : 'Cancel'), ro ? null : h('button', { class: 'btn primary', onclick: save }, name ? 'Save changes' : 'Save preset')));
 	const fill = v => { const from = v === 'editor' ? edState || fromCfg() : v === 'daemon' ? chList() : (PD[v.slice(2)] || {}).channels || [];
 		pe.chans = from.map(chCopy); clear(chBox); peNotice(''); for (const c of pe.chans) chBox.append(peChannel(c, ro)); };
-	// Save: PUT under the current name first, the rename last — either failure leaves a consistent preset; a new preset never overwrites one unasked
+	// Save: PUT under the current name, then the rename — either failure leaves a consistent preset; never overwrites unasked
 	async function save() { const n = nm.value.trim(), bad = nameOk(n); const errs = bad ? [bad] : validateCurves(pe.chans);
 		if (errs.length) { peNotice('Not saved — fix these first:\n' + errs.join('\n'), 'err'); if (bad) nm.focus(); return; }
 		if (!name && psList.some(p => p.name === n) && !await ask('Overwrite preset', `Preset ${n} exists — replace it with these values?`, { ok: 'Overwrite', danger: true })) return;
@@ -928,7 +934,7 @@ const peChannel = (c, ro) => { const L = LIM, tbody = h('tbody');
 			h('label', { title: TIP.hyst }, 'hysteresis °C', inp('hysteresis', { type: 'number', min: 0, max: L.hysteresis_max, step: 1 })), h('label', { title: TIP.minOn }, 'min on', Object.assign(minOnSel(c, () => {}), { disabled: ro }))),
 		h('div', { class: 'ptl2' }, h('table', null, h('thead', null, h('tr', null, h('th', null, '°C'), h('th', { title: TIP.duty }, 'duty'), h('th'), h('th'))), tbody), ro ? null : add)); };
 
-// Schedules page: editor + status. Save splices the [[schedule]] tables like Apply splices [[channel]] (stripSchedules mirrors stripChannels), PUT ?strict=1; no restart (DESIGN 6b)
+// Schedules page: editor + status; Save splices [[schedule]] like Apply splices [[channel]], PUT ?strict=1 (DESIGN 6b)
 const SC_HDR = /^\[\[\s*schedule\s*\]\]/, SC_DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
 const stripSchedules = raw => { const out = []; let skip = false;
 	for (const ln of raw.split('\n')) { const t = ln.trim();
@@ -970,8 +976,7 @@ function scBuild(focus) { // focus: [row, selector] after a structural change
 			h('td', { class: 'rowact' }, h('button', { class: 'btn icon link', 'aria-label': `remove entry ${i + 1}`, onclick: () => { scState.splice(i, 1); scSetDirty(1); scBuild([Math.min(i, scState.length - 1), '.rowact button']); } }, ico('trash'))))); });
 	if (focus) { const r = tb.rows[focus[0]]; ((r && r.querySelector(focus[1])) || $('#sc-add')).focus(); }
 }
-// the daemon's clock: /api/state carries the snapshot's unix ts (up to one cycle old), so the largest ts − browser-now seen is the skew; the offset of the
-// host zone comes from the schedules' timezone ("CEST +02:00"); ticks every second while the page is current, "browser time" before the first snapshot
+// daemon clock: the largest snapshot ts − browser-now is the skew, the zone offset comes from the schedules' timezone; ticks while current
 let clkOff = null;
 const hostOff = () => { const m = /([+-])(\d\d):(\d\d)$/.exec(scStat && scStat.timezone || ''); return m ? (m[1] === '-' ? -1 : 1) * (m[2] * 3600 + m[3] * 60) : null; };
 // next / last switch: absolute in the host zone + its abbreviation ("CEST"), the browser's zone while the timezone is unknown
@@ -1086,7 +1091,7 @@ async function loadConfig() {
 }
 // a reset bumps the generation; a late answer of the old load is dropped
 let histGen = 0;
-// raw tier: one point per daemon cycle, so the cap follows [daemon] interval (2..30 s → 3600..240 points) plus a margin for jitter; anonymous (no config): the window only
+// raw tier: one point per cycle, the cap follows [daemon] interval plus a jitter margin; anonymous (no config): the window only
 const maxPts = rg => { if (rg.maxPoints) return rg.maxPoints; const iv = cfg && cfg.daemon ? durS(cfg.daemon.interval) : 0; return iv > 0 ? Math.ceil(rg.windowS / iv) + 12 : Infinity; };
 // 2 h: incremental (since); 24 h / 7 d: the averaged tier is reloaded whole (bucket means change until the bucket closes)
 async function loadHistory() {
@@ -1122,7 +1127,7 @@ function schedule() {
 }
 document.addEventListener('visibilitychange', schedule);
 
-// settings page: Display (persisted in localStorage), then the sections the former dialogs held; sub-navigation marks the section in view
+// settings page: Display (localStorage), then the former dialogs' sections; the sub-navigation marks the one in view
 // a click pins its section for a moment: the last sections cannot reach the top of the viewport, the observer would mark the one above
 let subLock = 0;
 const subVis = new Set(), subIO = new IntersectionObserver(es => { for (const e of es) e.isIntersecting ? subVis.add(e.target.id) : subVis.delete(e.target.id);

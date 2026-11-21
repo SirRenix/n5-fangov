@@ -27,6 +27,10 @@ type Point struct {
 	// Extra holds the watched dashboard sensors ([dashboard].sensors) by
 	// id, degrees C; absent ids could not be read that cycle.
 	Extra map[string]float64 `json:"extra,omitempty"`
+	// Assist holds the assist boost added to a channel's target by
+	// channel name; a channel without a boost (0) is absent, and so is the
+	// map when no channel carried one. A 0.6 file has none; 0.6 ignores it.
+	Assist map[string]int `json:"assist,omitempty"`
 }
 
 // Tier spans and bucket widths.
@@ -278,6 +282,12 @@ func clonePoint(p Point) Point {
 			out.Extra[k] = v
 		}
 	}
+	if len(p.Assist) > 0 {
+		out.Assist = make(map[string]int, len(p.Assist))
+		for k, v := range p.Assist {
+			out.Assist[k] = v
+		}
+	}
 	return out
 }
 
@@ -293,13 +303,17 @@ type tier struct {
 	open     *acc
 }
 
-// acc accumulates the raw points of one bucket.
+// acc accumulates the raw points of one bucket. assist sums the boosts by
+// channel; a point without a channel's boost counts as 0 there, so the
+// bucket value is the mean boost over all n points.
 type acc struct {
-	start int64
-	temp  map[string]sum
-	duty  map[string]sum
-	rpm   map[string]sum
-	extra map[string]sum
+	start  int64
+	n      int
+	temp   map[string]sum
+	duty   map[string]sum
+	rpm    map[string]sum
+	extra  map[string]sum
+	assist map[string]float64
 }
 
 type sum struct {
@@ -308,7 +322,7 @@ type sum struct {
 }
 
 func newAcc(start int64) *acc {
-	return &acc{start: start, temp: map[string]sum{}, duty: map[string]sum{}, rpm: map[string]sum{}, extra: map[string]sum{}}
+	return &acc{start: start, temp: map[string]sum{}, duty: map[string]sum{}, rpm: map[string]sum{}, extra: map[string]sum{}, assist: map[string]float64{}}
 }
 
 // add folds a raw point into the bucket. A negative duty is the
@@ -331,6 +345,10 @@ func (a *acc) add(p Point) {
 	for k, v := range p.Extra {
 		a.extra[k] = a.extra[k].add(v)
 	}
+	for k, v := range p.Assist {
+		a.assist[k] += float64(v)
+	}
+	a.n++
 }
 
 func (s sum) add(v float64) sum { return sum{total: s.total + v, n: s.n + 1} }
@@ -353,6 +371,14 @@ func (a *acc) point() Point {
 		p.Extra = make(map[string]float64, len(a.extra))
 		for k, s := range a.extra {
 			p.Extra[k] = math.Round(s.mean()*1000) / 1000
+		}
+	}
+	for k, total := range a.assist {
+		if v := int(math.Round(total / float64(a.n))); v > 0 {
+			if p.Assist == nil {
+				p.Assist = map[string]int{}
+			}
+			p.Assist[k] = v
 		}
 	}
 	return p

@@ -158,6 +158,9 @@ func (s *Server) routeTable() []route {
 		{Method: "PUT", Path: "/api/dashboard", Handler: s.putDashboard, Class: classProtected, Scope: scopeControl,
 			Summary: "Set the extra sensors recorded for the dashboard chart", Body: jsonBody("Dashboard", "sensor ids, at most 8"), Response: "Dashboard",
 			Responses: map[int]string{200: "saved; unresolvable ids reported as warnings", 400: "too many or malformed ids", 500: "config not written", 501: "no dashboard store"}},
+		{Method: "PUT", Path: "/api/assist/{name}", Handler: s.putAssist, Class: classProtected, Scope: scopeControl,
+			Summary: "Switch the channel's [[assist]] table on or off (only its enabled line is written); applied on the next cycle", Body: jsonBody("AssistSwitch", "enabled true or false"), Response: "AssistSwitch",
+			Responses: map[int]string{200: "written and applied on the next cycle", 400: "invalid name or body", 404: "the channel has no [[assist]] table", 413: "body too large", 500: "config not written, or written but not applied", 501: "no assist store"}},
 		// ---- protected, admin --------------------------------------------
 		{Method: "GET", Path: "/api/config", Handler: s.getConfig, Class: classProtected, Scope: scopeAdmin,
 			Summary: "Config file text and parsed values (password_hash redacted)", Responses: map[int]string{200: "raw and parsed config", 500: "config unreadable", 501: "no config store"}},
@@ -391,6 +394,22 @@ func openAPISchemas() map[string]any {
 			"hold_until":  integer("end of a running min_on hold (unix seconds, absent otherwise)"),
 			"ceiling":     integer("effective ceiling in °C: the sensor kind's built-in one (HDD 65, SSD 85, CPU 100), lowered by [[channel]] ceiling; signed in only"),
 			"ceiling_hit": boolean("the channel is in the ceiling state (255, mode critical) until the reading is 3 °C below the ceiling; signed in only"),
+			"assist":      ref("Assist"),
+		}),
+		"Assist": object("The channel's [[assist]] state; absent for a channel without a table. Anonymous callers get enabled and boost only", []string{"enabled", "boost"}, map[string]any{
+			"enabled": boolean("the table is switched on"),
+			"boost":   integer("PWM points added to the curve target this cycle; 0 when off, outside mode auto or with every source below start"),
+			"source":  str("sensor id the boost comes from; absent at 0; signed in only"),
+			"sources": arrayOf(object("one source; signed in only", []string{"sensor", "temp", "boost"}, map[string]any{
+				"sensor": str("sensor id"),
+				"temp":   number("reading in °C; -999 when unreadable"),
+				"boost":  integer("the boost this source alone gives (also while assist is off)"),
+			})),
+		}),
+		"AssistSwitch": object("PUT /api/assist/{name} body and answer", []string{"enabled"}, map[string]any{
+			"enabled": boolean("switch assist on (true) or off (false)"),
+			"ok":      boolean("answer"),
+			"channel": str("answer: the channel"),
 		}),
 		"State": object("Snapshot (GET /api/state); anonymous callers get ts, status, profile, verified, hw_status, uptime_s, dry_run and the channels without extra_temps, watched, alerts and hwmon_path", []string{"ts", "status", "profile", "verified", "hw_status", "dry_run", "uptime_s", "channels"}, map[string]any{
 			"ts":          integer("unix seconds"),
@@ -407,11 +426,12 @@ func openAPISchemas() map[string]any {
 			"alerts":      tsMap("last alert per kind (unix seconds)", integer("")),
 		}),
 		"HistoryPoint": object("One history point; maps are keyed by channel name (extra by sensor id)", []string{"ts", "temp", "duty", "rpm"}, map[string]any{
-			"ts":    integer("unix seconds"),
-			"temp":  tsMap("temperature per channel (°C)", number("")),
-			"duty":  tsMap("duty per channel", integer("")),
-			"rpm":   tsMap("rpm per channel", integer("")),
-			"extra": tsMap("extra sensors (°C); signed in only", number("")),
+			"ts":     integer("unix seconds"),
+			"temp":   tsMap("temperature per channel (°C)", number("")),
+			"duty":   tsMap("duty per channel", integer("")),
+			"rpm":    tsMap("rpm per channel", integer("")),
+			"extra":  tsMap("extra sensors (°C): the dashboard sensors and the assist sources; signed in only", number("")),
+			"assist": tsMap("assist boost per channel (absent at 0)", integer("")),
 		}),
 		"Override": object("PUT /api/override/{name} body: exactly one of duty and percent", nil, map[string]any{
 			"duty":    integer("0..255"),

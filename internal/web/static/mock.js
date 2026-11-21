@@ -1,6 +1,6 @@
 // n5-fangov dashboard mock — loaded by app.js only with ?mock=1, never referenced by index.html.
 // Publishes window.n5mock(path, opt) → Promise<{status, body, filename?}>; api() calls it instead of fetch.
-// Flags: &user=1 &auth=none &tls=off|file|soon|fallback &tab= &syserr=1 &reject=1 &restart=1 &expire=1 &schedfail=1 &pwm4=1 &lag=1 &down=1 &ceiling=1
+// Flags: &user=1 &auth=none &tls=off|file|soon|fallback &tab= &syserr=1 &reject=1 &restart=1 &expire=1 &schedfail=1 &pwm4=1 &lag=1 &down=1 &ceiling=1 &assist=1
 // Names and addresses are documentation values (n5host, 192.0.2.x, n5.lan, example.test).
 'use strict';
 window.n5mock = (() => {
@@ -16,7 +16,9 @@ window.n5mock = (() => {
 			{ name: 'cpu', pwm: 1, sensor: 'k10temp', curve: [[45, 85], [80, 255]], critical: 88, stop: 'auto', hysteresis: 0, min_on: '0s' },
 			{ name: 'ssd', pwm: 2, sensor: 'nvme:max', curve: [[40, 74], [70, 255]], critical: 75, stop: 'auto', hysteresis: 2, min_on: '1m0s' },
 			{ name: 'hdd', pwm: 3, sensor: 'drivetemp:max,disk:sda', curve: [[36, 105], [46, 255]], critical: 56, stop: 87, hysteresis: 3, min_on: '5m0s' }],
-		schedule: [{ preset: 'n5pro-quiet', from: '22:00', to: '07:00', days: [] }, { preset: 'n5pro-cool', from: '13:00', to: '18:00', days: ['sat', 'sun'] }, { preset: 'n5pro-balanced', from: '', to: '', days: [] }] };
+		schedule: [{ preset: 'n5pro-quiet', from: '22:00', to: '07:00', days: [] }, { preset: 'n5pro-cool', from: '13:00', to: '18:00', days: ['sat', 'sun'] }, { preset: 'n5pro-balanced', from: '', to: '', days: [] }],
+		// [[assist]] on the hdd channel (the values of the 16.11. measurement); &assist=1: switched on with a warm GPU (+14 °C), so the boost shows
+		assist: [{ channel: 'hdd', enabled: Q.get('assist') === '1', hysteresis: 2, min_on: '2m0s', source: [{ sensor: 'hwmon:amdgpu:temp1', start: 50, full: 58, boost: 45 }, { sensor: 'nvme:max', start: 46, full: 50, boost: 45 }] }] };
 	if (Q.get('pwm4') === '1') cfg.channel.push({ name: 'pcie', pwm: 4, sensor: 'ec:board', curve: [[30, 60], [60, 200]], critical: 80, stop: 120, hysteresis: 0, min_on: '0s' });
 	if (Q.get('schedfail')) cfg.schedule[0].preset = 'night'; // the failed switch below names this entry: a preset the store lacks ("(missing)" in the editor)
 	const shift = n => cfg.channel.map(c => Object.assign({}, c, { curve: c.curve.map(p => [p[0] + n, p[1]]) }));
@@ -54,7 +56,15 @@ window.n5mock = (() => {
 	const tomlCh = c => `[[channel]]\nname = "${c.name}"\npwm = ${c.pwm}\nsensor = ${c.sensor.includes(',') ? tomlV(c.sensor.split(',')) : tomlV(c.sensor)}\ncurve = [${c.curve.map(p => `[${p[0]}, ${p[1]}]`).join(', ')}]\ncritical = ${c.critical}\nstop = ${c.stop === 'auto' ? '"auto"' : c.stop}\n`
 		+ (c.hysteresis ? `hysteresis = ${c.hysteresis}\n` : '') + (c.min_on && c.min_on !== '0s' ? `min_on = "${c.min_on}"\n` : '') + (c.ceiling ? `ceiling = ${c.ceiling}\n` : '');
 	const tomlSched = s => `[[schedule]]\npreset = "${s.preset}"\n` + (s.from ? `from = "${s.from}"\nto = "${s.to}"\n` : '') + (s.days.length ? `days = ${tomlV(s.days)}\n` : '');
-	const raw = () => sec('daemon') + sec('web') + sec('log') + cfg.channel.map(tomlCh).join('\n') + '\n' + cfg.schedule.map(tomlSched).join('\n');
+	const tomlAs = a => `[[assist]]\nchannel = "${a.channel}"\nenabled = ${a.enabled}\nhysteresis = ${a.hysteresis}\nmin_on = "${a.min_on}"\n` + a.source.map(s => `\n[[assist.source]]\nsensor = "${s.sensor}"\nstart = ${s.start}\nfull = ${s.full}\nboost = ${s.boost}\n`).join('');
+	const raw = () => sec('daemon') + sec('web') + sec('log') + cfg.channel.map(tomlCh).join('\n') + '\n' + cfg.schedule.map(tomlSched).join('\n') + '\n' + cfg.assist.map(tomlAs).join('\n');
+	// assist like the daemon: per source 0 → boost between start and full, the maximum counts, mode auto only (no hysteresis / min_on in the mock)
+	const assistOf = (ch, now) => { const a = cfg.assist.find(x => x.channel === ch.name); if (!a) return;
+		const srcs = a.source.map(s => { const tv = +(sv(s.sensor, now) + (Q.get('assist') === '1' && s.sensor === 'hwmon:amdgpu:temp1' ? 14 : 0)).toFixed(1);
+			return { sensor: s.sensor, temp: tv, boost: tv <= s.start ? 0 : tv >= s.full ? s.boost : Math.round(s.boost * (tv - s.start) / (s.full - s.start)) }; });
+		const top = srcs.reduce((x, y) => y.boost > x.boost ? y : x, { boost: 0 }), b = a.enabled && ch.mode === 'auto' ? top.boost : 0;
+		if (b) Object.assign(ch, { target: Math.min(255, ch.target + b), duty: Math.min(255, ch.duty + b) });
+		ch.assist = M.in ? { enabled: a.enabled, boost: b, source: b ? top.sensor : undefined, sources: srcs } : { enabled: a.enabled, boost: b }; };
 	// PUT /api/config: parse the [[channel]] and [[schedule]] tables back (strict: the daemon's rules, rule 8 would substitute defaults with a warning);
 	// like the daemon, the mock keeps only what the body carries — a client that drops the [[schedule]] tables loses them (visible in raw() and on the Schedules card)
 	const kv = (blk, k) => { const m = new RegExp(`^${k}\\s*=\\s*(.+)$`, 'm').exec(blk); return m ? m[1].trim() : ''; };
@@ -172,7 +182,7 @@ window.n5mock = (() => {
 		collected: Math.floor(now), static_at: Math.floor(t0), errors: Q.get('syserr') ? ['lspci: exec: "lspci": executable file not found in $PATH (device names from ids only)'] : [] });
 	const openapi = () => ({ openapi: '3.1.0', info: { title: 'n5-fangov API', version: MV }, servers: [{ url: '/' }],
 		components: { securitySchemes: { bearer: { type: 'http', scheme: 'bearer' }, basic: { type: 'http', scheme: 'basic' }, cookie: { type: 'apiKey', in: 'cookie', name: 'n5fangov_session' } } },
-		paths: Object.fromEntries([['/api/state', 'get', 'Regulation snapshot', 'read'], ['/api/history', 'get', 'History points (minutes, since)', 'read'], ['/api/history.csv', 'get', 'History as CSV', 'read'], ['/api/override/{name}', 'put', 'Manual duty', 'control'],
+		paths: Object.fromEntries([['/api/state', 'get', 'Regulation snapshot', 'read'], ['/api/history', 'get', 'History points (minutes, since)', 'read'], ['/api/history.csv', 'get', 'History as CSV', 'read'], ['/api/override/{name}', 'put', 'Manual duty', 'control'], ['/api/assist/{name}', 'put', 'Assist on/off', 'control'],
 			['/api/presets/{name}/apply', 'post', 'Apply a preset', 'control'], ['/api/schedules', 'get', 'Schedule status', 'read'], ['/api/tokens', 'get', 'List API tokens (session only)', '']]
 			.map(([path, m, summary, scope]) => [path, { [m]: { summary, 'x-scope': scope, responses: { 200: { description: 'OK' } } } }])) });
 	const GH = 'https://github.com/', PUB = /^\/api\/(version|about|session|login|logout|state|history|openapi\.json)$/;
@@ -204,6 +214,7 @@ window.n5mock = (() => {
 					// hysteresis: the held reading lags the raw one; min_on: a running hold now and then
 					if (c.hysteresis) { const held = Math.round(pt.temp[n]) - 1; if (Math.abs(held - pt.temp[n]) >= .1) ch.held_temp = held; }
 					if (c.min_on !== '0s' && hold && n === 'hdd') ch.hold_until = Math.floor(now - (now | 0) % 300 + 90);
+					assistOf(ch, now);
 					return ch; }) };
 			if (M.in) Object.assign(body, { hwmon_path: '/sys/class/hwmon/hwmon14', extra_temps: { 'ec:cpu': +(pt.temp.cpu + 1.5).toFixed(1) }, alerts: { stall: Math.floor(now - 720) }, watched: pt.extra || {} });
 			return ok(body); }
@@ -225,6 +236,10 @@ window.n5mock = (() => {
 			if (m === 'DELETE') { lag(); delete overrides[n]; return ok({ ok: true, channel: n, mode: 'auto' }); }
 			if ((n === 'hdd' || cfg.channel.some(c => c.name === n && c.stop !== 'auto')) && opt.json.duty < 60) return fail(`channel ${n} (fixed stop duty / not chip-regulated): manual duty must be at least 60`, 400);
 			lag(); overrides[n] = opt.json.duty; return ok({ ok: true, channel: n, duty: opt.json.duty, mode: 'manual' }); }
+		if (p.startsWith('/api/assist/')) { const n = p.split('/')[3], a = cfg.assist.find(x => x.channel === n); // PUT {enabled}: only that line of the table changes
+			if (!a) return fail(`channel "${n}" has no valid [[assist]] table`, 404);
+			if (typeof (opt.json || {}).enabled !== 'boolean') return fail('"enabled" (true or false) required', 400);
+			a.enabled = opt.json.enabled; return ok({ ok: true, channel: n, enabled: a.enabled }); }
 		if (p === '/api/presets') return ok(Object.entries(presets).map(([name, v]) => ({ name, channels: v.ch.map(c => c.name), builtin: !!v.builtin, description: v.description })));
 		if (p.startsWith('/api/presets/')) { const n = p.split('/')[3], b = presets[n] && presets[n].builtin, sub = p.split('/')[4];
 			if (m === 'PUT') { if (b) return fail('built-in preset', 409); const chs = opt.json && opt.json.channels; // a JSON body = the composed channels (preset editor), validated like the config; empty = the running tables

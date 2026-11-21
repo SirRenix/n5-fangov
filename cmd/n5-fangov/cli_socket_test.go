@@ -229,14 +229,15 @@ func TestCLIStatus(t *testing.T) {
 	if strings.Contains(out, "source:") || strings.Contains(out, "DRY-RUN") {
 		t.Errorf("live status must not name a fallback source or dry-run:\n%s", out)
 	}
-	// the tach-less channel prints "-" for rpm and "?" for the temperature
+	// the tach-less channel prints "-" for rpm and "?" for the temperature,
+	// "-" in the assist column (no [[assist]] table)
 	pcie := ""
 	for _, line := range strings.Split(out, "\n") {
 		if strings.Contains(line, "pcie") {
 			pcie = line
 		}
 	}
-	if fields := strings.Fields(pcie); len(fields) != 8 || fields[2] != "?" || fields[6] != "-" || fields[7] != "auto" {
+	if fields := strings.Fields(pcie); len(fields) != 9 || fields[2] != "?" || fields[6] != "-" || fields[7] != "auto" || fields[8] != "-" {
 		t.Errorf("pcie line: %q", pcie)
 	}
 	// extra argument → usage

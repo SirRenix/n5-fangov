@@ -1,9 +1,12 @@
 // dashboard_api.go holds the endpoints behind the dashboard cards:
-// /api/dashboard (watched sensors), /api/about and /api/system.
+// /api/dashboard (watched sensors), /api/assist (the assist switch),
+// /api/about and /api/system.
 package web
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"runtime"
 )
@@ -54,6 +57,43 @@ func (s *Server) putDashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "sensors": nonNil(d.Sensors()), "warnings": nonNil(warnings)})
+}
+
+// putAssist: {"enabled": bool} switches the channel's [[assist]] table
+// (only its enabled line is written); 404 without a table, the controller
+// takes it on the next cycle.
+func (s *Server) putAssist(w http.ResponseWriter, r *http.Request) {
+	if s.deps.Assist == nil {
+		writeError(w, http.StatusNotImplemented, "no assist store")
+		return
+	}
+	name := r.PathValue("name")
+	if !channelName.MatchString(name) {
+		writeError(w, http.StatusBadRequest, "invalid channel name")
+		return
+	}
+	var b struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if !decodeJSON(w, r, &b) {
+		return
+	}
+	if b.Enabled == nil {
+		writeError(w, http.StatusBadRequest, `"enabled" (true or false) required`)
+		return
+	}
+	if err := s.deps.Assist.SetEnabled(name, *b.Enabled); err != nil {
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			writeError(w, http.StatusNotFound, err.Error())
+		case isReloadError(err):
+			writeError(w, http.StatusInternalServerError, err.Error())
+		default:
+			writeError(w, storeStatus(err), err.Error())
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "channel": name, "enabled": *b.Enabled})
 }
 
 // ---- about ------------------------------------------------------------------

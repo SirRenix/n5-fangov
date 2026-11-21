@@ -69,7 +69,7 @@ internal/hwmon/      sysfs discovery + read/write helpers (root from N5FANGOV_SY
 internal/profile/    Profile/Device interfaces; n5pro, nct67xx, it87xx, monitor; Detect()
 internal/sensor/     sensor sources: k10temp, coretemp, nvme:max, drivetemp:max, disk:<dev>, ec:*,
                      hwmon:<name>:tempN, composite "a,b" (maximum)
-internal/control/    controller loop: curve, curve post-processing (hysteresis, min_on), slew, override,
+internal/control/    controller loop: curve, curve post-processing (hysteresis, min_on), assist, slew, override,
                      critical, stall, plausibility, failsafe, watched sensors, snapshot, alert stamps;
                      cycle split into readSensors / computeTargets / checkStall / writeAndFinish
 internal/history/    tiered history store (raw 2 h, 1-min 24 h, 5-min 7 d), JSON persistence, CSV
@@ -181,6 +181,24 @@ generated text must parse without warnings, else nothing is written.
 | `from`, `to` | `HH:MM` strings (24 h, local time of the host; a one-digit hour is accepted and stored as `HH:MM`), both or neither (empty strings count as absent; a value that is not a string — a bare TOML time literal `22:00:00`, an integer — drops the entry with a warning, it never reads as absent); `from == to` → entry dropped; `to < from` = the window crosses midnight | — | reload |
 | `days` | subset of `mon tue wed thu fri sat sun` (lower-cased, distinct); the day of the window is the day `from` falls in; missing = every day; on the fallback the key is ignored with a warning (`days ignored on the fallback`) and cleared | all | reload |
 
+`[[assist]]` (0.7.0, section 6 "Assist"): a top-level array of tables **beside**
+`[[channel]]`, never inside it — presets, the curve editor's *Apply to daemon* and
+`ReplaceChannels` rewrite the `[[channel]]` tables and leave `[[assist]]` byte-identical
+(a `[[assist]]`/`[[assist.source]]` header closes a channel block). Keys: `channel` (an
+existing `[[channel]]` name), `enabled` (bool, default `false`), `hysteresis` (0..10 °C,
+default 2), `min_on` (`0s`..`30m`, default `2m`), and 1..4 `[[assist.source]]` tables of
+`sensor` (one sensor id, `config.ValidSensorID`: no `,`, no `<…>`, no quotes, backslashes
+or control characters; not the channel's own sensor nor a part of it; each once),
+`start` < `full` (°C, −20..120) and `boost` (1..100). An identity problem (channel
+missing or unknown, a second table for the same channel, sources missing, more than 4,
+or any source rule broken) **drops the table** with a warning; `enabled`, `hysteresis`
+and `min_on` fall back to their defaults with a warning (rule 8). The parser cannot see
+sysfs: whether a source resolves is the controller's and `check`'s business.
+`config.SetAssistEnabled(raw, channel, on)` rewrites only the `enabled` line of that
+table (indentation and trailing comment kept; inserted after the `channel` line when
+absent); the table's own keys are the lines between its `[[assist]]` header and the next
+header. `Marshal` writes the tables (setup keeps them); config JSON carries `assist[]`.
+
 Schedule rules: at most 16 entries; an entry without `from`/`to` is the **fallback** that
 applies whenever no window matches — at most one, a second one is dropped with a warning;
 an invalid entry is dropped with a warning (rule 8), the others stay. An entry with an
@@ -194,7 +212,13 @@ their keys live). A changed channel set or profile makes `Service.Reload` return
 `[[schedule]]` are still taken from the written file (the reload hook in cmd hands them to
 the alert manager and the scheduler on success and on 202 alike — the file is the truth
 for the two sections that need no restart). `[[schedule]]` tables are read by the
-scheduler (cmd) from every reload.
+scheduler (cmd) from every reload. Ordering (0.7.0): the reload hook takes `configFileMu`
+and reloads the file **as it is now**, not the text the writer wrote before releasing
+the lock (preset apply — also from the scheduler —, `PUT /api/config`, import); the
+single-key stores (assist switch, dashboard sensors, alert transport) hand their value
+to the daemon inside the same critical section as their write (`editConfigThen`). Every
+reload and every store apply is thus ordered by its file write, and the daemon ends on
+the file's state (a stale reload can no longer switch assist back).
 
 Presets: name `^[a-z0-9_-]{1,64}$`. A preset file holds `[[channel]]` tables with every
 channel key; `hysteresis` and `min_on` are written only when set (`Marshal` omits them at
@@ -299,9 +323,10 @@ generic patterns that do not parse as ids. `Parse(id)` yields a `Source`; the co
 
 Per cycle: `sd_notify WATCHDOG=1` → read channel sensors (unresolved / unreadable /
 implausible / frozen → **that channel** at its safe duty, mode `sensor-error`, alert
-`sensor` on the transition only) → read watched sensors (errors → value absent) → targets
-from curve (linear interpolation) → **curve post-processing** (hysteresis, `min_on`) →
-overrides → critical → **ceiling** (below) → stall check → slew (first cycle and manual
+`sensor` on the transition only) → read assist sources (errors → that source adds 0) →
+read watched sensors (errors → value absent) → targets from curve (linear interpolation)
+→ **curve post-processing** (hysteresis, `min_on`) → **assist** (below) → overrides →
+critical → **ceiling** (below) → stall check → slew (first cycle and manual
 direct) → write (unchanged duties rewritten every 6th cycle to undo external writes) →
 verify → snapshot → history store (section 6a) → periodic log line (`log_every`). Sensors
 are re-resolved every 60 cycles. In code the cycle is four steps — `readSensors`,
@@ -422,6 +447,44 @@ stall, failsafe, slew and the safe duty are exactly as before):
   of the channel config; a reduced `hysteresis` takes effect on the next reading, a
   reduced `min_on` shortens a running hold (`holdUntil = max(holdStart + newD, now)`).
 
+**Assist** (0.7.0, `internal/control/assist.go`; config section 3). A channel's target is
+raised by the heat of other sources; no second regulator — the curve after hysteresis
+and `min_on` stays the base:
+
+- Per source a boost `0 → boost`, linear (rounded) between `start` and `full`
+  (`sourceBoost`), at a **hysteresis-held reading of that source** (the channel rule,
+  per source, with the table's `hysteresis`). The channel's raw boost is the **maximum**
+  over its sources (not the sum); a rise of it is held for the table's `min_on` like
+  `minOnHold` (a further rise restarts the timer; after an idle cycle, at start and after
+  a switch-on the previous value counts as 0, so the first boost starts a hold).
+- Target = `min(255, curve target + boost)` in mode `auto` only; assist never lowers.
+  An override replaces the target and idles assist (hold dropped); critical, the
+  ceiling, stall and failsafe set the target themselves; a sensor error of the
+  channel's own sensor puts it at the safe duty without assist. The reported boost
+  (`ChannelState.Assist.Boost`, the status line, the history) is 0 outside mode `auto`.
+- Sources are read every cycle after the channel sensors, also while the table is off
+  (the snapshot shows what each source would give). A source that is unresolved,
+  unreadable or implausible adds 0: one log line when the episode starts and one when it
+  ends, **no alert**; an unresolved one is retried every cycle, a read error re-resolves.
+- `bindAssists` attaches the tables to the managed channels at `New` and in
+  `applyPendingLocked` (reload, `SetAssistEnabled`): a source with an unchanged id keeps
+  its reader and held reading; switching off idles at once (the slew takes the duty down
+  by `step_down`); a changed `min_on` re-times a running hold like `retimeHolds`; a hold
+  whose source was removed or whose source's `boost` is now below the held value is
+  **dropped** (not clamped) — the next cycle starts from the live readings. Sources are
+  re-resolved with the channel sensors every 60 cycles (`reresolve`), also while they
+  read fine (a composite resolved before all its devices appeared). A table
+  for a channel the device does not manage is logged once and ignored.
+  `SetAssistEnabled(name, on)` clones the running (or pending) config with that flag
+  and hands it to the pending swap — the next cycle takes it; `ErrNoAssist` without a
+  table.
+- Status line: `hdd=40.0C->pwm3=150(auto +45 amdgpu)` while a boost is added (the
+  source's short label: the chip name of `hwmon:<name>:tempN`, else the id).
+  `ChannelState.Assist` = `{enabled, boost, source, sources[{sensor, temp, boost}]}`
+  (`temp` −999 when unreadable; absent for a channel without a table). History: per point
+  `assist{channel: boost}` (absent at 0); the readings of the sources go into `extra`
+  like watched sensors unless the id is already there or is a channel's sensor.
+
 `pwm4` on the N5 Pro (PCIe header, no tachometer) is an **optional** channel: the config
 may carry `[[channel]] pwm = 4` (any name, any sensor; `stop = "auto"` writes
 `pwm4_enable = 2` like pwm1/2 — observed idle state on the reference host 16.09.2026:
@@ -438,7 +501,7 @@ above keeps it across an apply.
 ### 6a. History (internal/history)
 
 ```go
-type Point struct{…}                         // {ts, temp{}, duty{}, rpm{}, extra{}}; control.HistoryPoint is an alias of it
+type Point struct{…}                         // {ts, temp{}, duty{}, rpm{}, extra{}, assist{}}; control.HistoryPoint is an alias of it
                                              // (history must not import control: control holds the store)
 type Store struct{…}
 func New(path string, interval time.Duration, now func() time.Time, logf func(string, ...any)) *Store
@@ -457,7 +520,10 @@ A bucket is the arithmetic mean of the raw points that fall into it (temp per ch
 extra id, duty and rpm rounded to int; a value absent in every raw point stays absent; a
 negative duty — the controller's `-1` for "unknown after a failed write" — stays in the
 raw point but is skipped by the means, so a channel unknown throughout a bucket has no
-duty there); `ts` = bucket start; temperatures are rounded to three decimals. Buckets
+duty there); `ts` = bucket start; temperatures are rounded to three decimals. `assist`
+(0.7.0: the boost per channel, absent at 0) is the mean over **all** raw points of the
+bucket (a point without it counts 0), absent when that rounds to 0; the format number
+stays 1 — a 0.6 file loads (no `assist` member) and 0.6 ignores the new member. Buckets
 close when the
 first point of the next bucket arrives; the open bucket is included in `Range` with its
 running mean and is written to the file as a plain point — `Load` rebuilds it from the
@@ -486,7 +552,7 @@ file `state.json` is unchanged.
   lacks, adds the missing N5 Pro channels, forces `stop = 140` on N5 Pro pwm3; notes go out
   as one `config-channels` alert (deliberately not `config`: serve stamps that kind for
   parse warnings a moment earlier).
-- `Reload(rawTOML)` swaps curves, sensors, `[daemon]` and `[dashboard]` values atomically;
+- `Reload(rawTOML)` swaps curves, sensors, `[daemon]`, `[dashboard]` and `[[assist]]` values atomically;
   a changed channel set or profile returns `ErrRestartRequired` and applies nothing.
 - Alert cooldown lives here: `raise(kind, msg)` checks the stamp `RunDir/alert.<kind>`
   (and its in-memory copy) against `alert_cooldown`; alerts are sent asynchronously.
@@ -511,9 +577,12 @@ a running `min_on` hold; `ceiling` (°C, int, always present) is the channel's e
 ceiling — for a composite sensor the **lowest** part ceiling, informational: the rule
 judges each part on its own — and `ceiling_hit` (bool, always present) whether the
 channel is in the ceiling state (section 6 "Ceilings and emergency"; both signed-in
-fields, the filtered anonymous view does not carry them). History point:
-`{ts, temp{}, duty{}, rpm{}, extra{}}` maps by channel name (`extra` by sensor id,
-omitted when empty).
+fields, the filtered anonymous view does not carry them). `assist` (optional, only for a
+channel with an `[[assist]]` table) is `{enabled, boost, source, sources[{sensor, temp,
+boost}]}`; the anonymous view carries `{enabled, boost}` only (the source ids name the
+hardware like the extra sensors). History point: `{ts, temp{}, duty{}, rpm{}, extra{},
+assist{}}` maps by channel name (`extra` by sensor id, omitted when empty; `assist` the
+boost per channel, absent at 0, also for anonymous callers).
 
 Alert kinds (one line each, listed by the Alerts page; cooldown = `alert_cooldown` unless
 noted):
@@ -737,7 +806,7 @@ Scopes, cumulative:
 | Scope | Allows |
 |---|---|
 | `read` (default) | `GET` on `version`, `about`, `session`, `openapi.json`, `state`, `history`, `history.csv`, `system`, `sensors`, `profiles`, `presets`, `presets/{name}`, `alerts`, `dashboard`, `schedules`, `tls` (info only, not the certificate downloads), `driver`, `health` |
-| `control` | read + `PUT`/`DELETE /api/override/{name}`, `POST /api/presets/{name}/apply`, `PUT /api/dashboard`, `POST /api/alerts/ack` |
+| `control` | read + `PUT`/`DELETE /api/override/{name}`, `POST /api/presets/{name}/apply`, `PUT /api/dashboard`, `PUT /api/assist/{name}`, `POST /api/alerts/ack` |
 | `admin` | everything the dashboard can do **except** token and account management: `/api/tokens*`, `/api/account/*`, `/api/login`, `/api/logout` answer 403 to any token (a leaked admin token cannot mint tokens or change the password) |
 
 Out of scope → 403 `{"error":"token scope read does not allow PUT /api/override/cpu","scope":"read","required":"control"}`.
@@ -759,7 +828,7 @@ type and, where the body is JSON, a schema from `components.schemas`, the respon
 listed in the endpoint table with descriptions, `x-class` (`public`, `filtered`,
 `protected`) and `x-scope`. Component schemas: `Error`, `State`, `Channel`,
 `HistoryPoint`, `Override`, `Version`, `Session`, `Token`, `TokenCreate`, `TokenCreated`,
-`Alerts`, `AlertsUpdate`, `AlertsAck`, `Healthz`, `Driver`, `Schedules`, `Dashboard`. Test `TestOpenAPICoversRoutes`: every
+`Alerts`, `AlertsUpdate`, `AlertsAck`, `Healthz`, `Driver`, `Schedules`, `Dashboard`, `Assist`, `AssistSwitch`. Test `TestOpenAPICoversRoutes`: every
 registered pattern appears in the document and vice versa; `TestOpenAPIShape`: version,
 summaries, responses, scope values.
 
@@ -767,7 +836,9 @@ summaries, responses, scope values.
 (`config.Parse`), `Presets` (`PresetStore` + optional `PresetDetailer`, `PresetRenamer`, `PresetChannelSaver`),
 `Log LogStore`, `Bundle`, `Profiles`, `Sensors`, `Version`, `Auth AuthConfig`,
 `AllowedHosts`, `TLS`, `TLSMgr`, `TLSHosts`, `Logf`, `SessionFile`, `TokenFile`,
-`Account`, `Alerts`, `Dashboard`, `Schedules` (`ScheduleStatus func() any`; nil → 501),
+`Account`, `Alerts`, `Dashboard`, `Assist` (`AssistStore`: `SetEnabled(channel, on)`; cmd
+`assistStore` writes the line with `config.SetAssistEnabled` under the config file lock,
+then `Controller.SetAssistEnabled`), `Schedules` (`ScheduleStatus func() any`; nil → 501),
 `About`, `System func() any`, `Channels func() []string` (history CSV column order; nil →
 the snapshot's channel order), `Driver func() any` and `Health func() any` (cmd
 `healthView`, `wiring_health.go`; nil → 501), `HealthGrace` (the `/healthz` grace, cmd: 3 ×
@@ -781,7 +852,7 @@ counts as signed in, `via: "none"`):
 | Class | Anonymous | Signed in (cookie, Basic or token within scope) |
 |---|---|---|
 | public | full | full |
-| public, filtered | reduced (`state`: `ts, status, profile, verified, hw_status, uptime_s, dry_run, channels[name,pwm,sensor,temp,duty,target,rpm,mode]`; `history`: points without `extra`) | full |
+| public, filtered | reduced (`state`: `ts, status, profile, verified, hw_status, uptime_s, dry_run, channels[name,pwm,sensor,temp,duty,target,rpm,mode,assist{enabled,boost}]`; `history`: points without `extra`) | full |
 | protected | 401 | full |
 | static (`/`, `app.js`, `app.css`, `mock.js`) | full | full |
 
@@ -795,13 +866,13 @@ counts as signed in, `via: "none"`):
 | `POST /api/login` | public, CSRF, limiter | `{user, password, remember}` ≤ 4 KiB | 200 `{ok, user, expires, remember}` + `Set-Cookie`; 401 `invalid user or password`; 429; 403 for a token caller |
 | `POST /api/logout` | public, CSRF | — | 204; cookie cleared, session revoked; 403 for a token caller |
 | `GET /api/state` | filtered | — | snapshot (section 6) |
-| `GET /api/history?minutes=120&since=TS` | filtered | `minutes` 1..10080 (default 120); tier by span (section 6a) | `[{ts, temp{}, duty{}, rpm{}, extra{}}]`, only `ts > since` |
+| `GET /api/history?minutes=120&since=TS` | filtered | `minutes` 1..10080 (default 120); tier by span (section 6a) | `[{ts, temp{}, duty{}, rpm{}, extra{}, assist{}}]`, only `ts > since` |
 | `GET /api/history.csv?minutes=N` | protected, `read` | `minutes` as above | text/csv attachment `n5-fangov-history-<host>-<ts>.csv` (`<ts>` = `YYYYMMDD-HHMMSS` in the host's **local** time, the same clock as the `time` column; the log export and the settings bundle names use the same stamp): header `ts,time,<ch>_temp,<ch>_duty,<ch>_rpm,…,<extra id>…` (channels in daemon order, then extra ids sorted), `time` RFC 3339 local, empty cell = absent |
 | `GET /api/tokens` | protected, session only | — | `{tokens[{id, name, scope, created, expires (null = never), last_used, last_ip, expired}]}`; 403 for a token caller |
 | `POST /api/tokens` | protected, session only, CSRF | `{name, scope: read\|control\|admin, ttl_days: 0..3650}` (scope default `read`, ttl default 90, 0 = never) ≤ 4 KiB | 201 `{ok, token, id, name, scope, expires, warning?}` (`warning` = "token never expires" for 0); 400 rule; 409 `auth is none`, name taken or 50 tokens; 403 token caller (list and revoke work with `auth = "none"`, create does not) |
 | `DELETE /api/tokens/{id}` | protected, session only, CSRF | `{id}` = 8 hex | 200 `{ok, revoked}`; 404 |
 | `GET /api/schedules` | protected, `read` | — | `{entries[{preset, from, to, days[], fallback, active}], active: idx\|-1, next: {ts, preset}\|null, last: {ts, preset, ok, error}\|null, timezone}`; 501 without a scheduler |
-| `GET /api/config` | protected | — | `{raw, config{daemon, web, log, alert, dashboard, channel[], warnings[]}}`; `password_hash` is `<unchanged>` in both |
+| `GET /api/config` | protected | — | `{raw, config{daemon, web, log, alert, dashboard, channel[], schedule[], assist[], warnings[]}}`; `password_hash` is `<unchanged>` in both |
 | `PUT /api/config[?strict=1]` | protected | raw TOML ≤ 256 KiB; `<unchanged>` restores the stored hash | 400 `{error, errors[]}` on a syntax error (nothing written); with `strict=1` also on any `[[channel]]` value that would be replaced by a default (warnings on the other tables stay `warnings[]`); else write (tls keys pinned, `[alert]` re-applied) → reload: 200 `{ok, restart_required:false, warnings[]}` or 202 `{restart_required:true}` |
 | `GET /api/config/export` | protected | — | JSON attachment `n5-fangov-settings-<ts>.json`: `{format:1, version, exported, config, presets{}}`, hash redacted |
 | `POST /api/config/import` | protected | the bundle | everything validated first; 200 / 202 / 400 `{error: "import rejected: …", errors[]}` |
@@ -815,6 +886,7 @@ counts as signed in, `via: "none"`):
 | `DELETE /api/presets/{name}` | protected | — | 200; 409 built-in; 404 |
 | `GET /api/sensors` | protected | — | `[{id, description, temp?, kind?}]` (catalogue with live readings; `kind` `ssd`/`hdd` for `disk:*`, section 5) |
 | `GET /api/dashboard` / `PUT /api/dashboard` | protected | `{sensors[]}` | `{sensors}` / `{ok, sensors, warnings[]}`; 400 above 8 or unparsable id |
+| `PUT /api/assist/{name}` | protected, `control` | `{enabled: bool}` ≤ 4 KiB (unknown members 400) | writes only the `enabled` line of the channel's `[[assist]]` table (section 3), then `Controller.SetAssistEnabled` (next cycle): 200 `{ok, channel, enabled}`; 404 no valid table in the file; 500 not written, or written but the running daemon has no such table (`ReloadError`); 501 no store |
 | `GET /api/profiles` | protected | — | `[{name, title, verified, hw_status, notes, active}]` (`hw_status` of this machine per profile, `verified` = validated or tested) |
 | `GET /api/log?lines=N` | protected | 1..5000 | `{lines[], source: file\|journal}` |
 | `GET /api/log/export` | protected | — | text attachment `n5-fangov-<host>-<ts>.log` (current file; journal: newest 100000 lines) |
@@ -1017,7 +1089,12 @@ Every channel of the mock state carries `ceiling` (cpu 100, ssd 85, hdd 65) and
   (`lv.pend`) because the snapshot's `mode` follows a cycle later; `critical`/`stall`
   leave the flag alone, so the override stays switchable off; slider, number and *Set*
   are disabled (not only dimmed) while off, *Set* also below the minimum; `aria-busy`
-  during the call, never disabled. Sticky action bar `#actbar`: dirty indicator (also
+  during the call, never disabled. Below it, only for a channel whose snapshot carries
+  `assist` (0.7.0, operator decision: switch and values only, no editor): a second
+  `role="switch"` *Assist* (`PUT /api/assist/{name}`, the same two-interval pending
+  window, `lv.asOn`/`lv.asUntil`) and one line — `+45 from amdgpu (58.7 °C)`, `0 (sources
+  below start)`, `0 (a source is unreadable)`, `0 (<mode> wins)`, `off`. The tile shows
+  `+N` (`.asb`) after the duty while `assist.boost > 0`. Sticky action bar `#actbar`: dirty indicator (also
   `#nav-dirty` on the sidebar entry, the bottom bar and the selector entry), *Revert*
   (`loadEditor`), *Apply to daemon*. Client validation (`validateChannel`, shared with
   the preset editor) before the PUT: `curve_points_min..max` points, integers only,
