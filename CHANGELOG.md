@@ -12,7 +12,14 @@ drove the 0.3.1 work is `docs/AUDIT.md` (code) and `docs/DESIGN-AUDIT.md`
 (dashboard); the reviews of the 0.4.0 redesign are referenced as `C01`… (code) and
 `D01`… (design), the findings of its release gate as `G1`…`G12`, in the 0.4.0 section.
 
-## [Unreleased]
+## [0.7.0-rc1] — 2026-11-22
+
+Five of the six 0.7.0 points: the #54 fix, assist, the curve preview, event markers and
+full cooling. Config versions with undo follow in a later release candidate. Without an
+`[[assist]]` table and without a full-cooling start the regulation behaves as in 0.6.0: the
+rules moved into pure functions that the loop and the preview share, the outputs are
+unchanged (replay of the reference measurement of 2026-11-16). Release candidate: 0.7.0
+follows when all points ran on the reference host.
 
 ### Added
 
@@ -96,8 +103,8 @@ drove the 0.3.1 work is `docs/AUDIT.md` (code) and `docs/DESIGN-AUDIT.md`
 
 ### Changed
 
-- **`app.js` budget 136 → 152 KiB** for the 0.7.0 dashboard parts (assist, preview, and
-  the event marks, panic button and config versions still to come), a decided raise
+- **`app.js` budget 136 → 152 KiB** for the 0.7.0 dashboard parts (assist, preview,
+  event marks, panic button; config versions still to come), a decided raise
   (operator 2026-11-21). The next growth beyond it splits `app.js` into modules loaded
   on demand instead of raising the limit again.
 
@@ -1608,7 +1615,8 @@ of `v0.2.0`.
   security review `H1`–`H3`, `M1`–`M4`, `L1`–`L6` (Host header, CSRF, socket mode 0750,
   body limits, …).
 
-[Unreleased]: https://github.com/SirRenix/n5-fangov/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/SirRenix/n5-fangov/compare/v0.7.0-rc1...HEAD
+[0.7.0-rc1]: https://github.com/SirRenix/n5-fangov/releases/tag/v0.7.0-rc1
 [0.6.0]: https://github.com/SirRenix/n5-fangov/releases/tag/v0.6.0
 [0.6.0-rc1]: https://github.com/SirRenix/n5-fangov/releases/tag/v0.6.0-rc1
 [0.4.1]: https://github.com/SirRenix/n5-fangov/releases/tag/v0.4.1
