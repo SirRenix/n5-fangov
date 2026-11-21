@@ -34,7 +34,8 @@ when the daemon raises it (priority err), then `ALERT[<kind>] sent via <transpor
 <text>` when the sink has handed it on. With transport `off` the second line reads
 `suppressed (transport off)`; a failed delivery adds `alert: …` after it. An alert
 inside its cooldown writes nothing (a start alert: `suppressed (last one … ago,
-cooldown …)`). Test alerts go to the sink directly and produce only the `sent via` line.
+cooldown …)`). Test alerts skip the cooldown, are kept under the recent alerts like any other alert
+(open, with an id), and produce only the `sent via` line.
 
 ## Transports
 

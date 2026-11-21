@@ -4,9 +4,10 @@ The N5 Pro needs an out-of-tree kernel module for its fans. This page covers the
 module, DKMS, install, verify, the kernel-update gate and removal. Other boards:
 [Other boards](#other-boards).
 
-Tested 2026-11-02 on the reference N5 Pro (N5 PRO / F8NAA, BIOS 1.05, EC 0.14): package
-`minisforum-n5-it5571-dkms` `0.2.1+sr2-1`, built by DKMS for Proxmox kernels 7.0.14-26-pve
-and 7.0.12-1-pve, installed over `0.2.1+sr1-1` and reloaded with the regulator stopped.
+Tested 2026-11-09 on the reference N5 Pro (N5 PRO / F8NAA, BIOS 1.05, EC 0.14): package
+`minisforum-n5-it5571-dkms` `0.2.1+sr3-1`, built by DKMS for Proxmox kernels 7.0.14-26-pve
+(running) and 7.0.12-1-pve (fallback), installed over `0.2.1+sr2-1` and reloaded with the
+regulator stopped; n5-fangov 0.6.0-rc1 ran on it until the 0.6.0 release.
 The driver's hardware status stays `experimental`; its test results (TESTSPEC runs of
 `0.2.1+sr1`) are in the driver repository's `befunde/RESULTS.md`. Other kernel or driver
 versions are untested. The

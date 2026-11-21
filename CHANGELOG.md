@@ -12,6 +12,27 @@ drove the 0.3.1 work is `docs/AUDIT.md` (code) and `docs/DESIGN-AUDIT.md`
 (dashboard); the reviews of the 0.4.0 redesign are referenced as `C01`… (code) and
 `D01`… (design), the findings of its release gate as `G1`…`G12`, in the 0.4.0 section.
 
+## [0.6.0] — 2026-11-21
+
+Code equals 0.6.0-rc1, which ran on the reference host from 2026-11-02 (driver
+0.2.1+sr2, from 2026-11-09 0.2.1+sr3) without a restart or warning; release-gate update
+re-test in `docs/RELEASE-GATE.md`. Hardware status of the N5 Pro
+stays `experimental`; the embedded hardware-status table is unchanged (driver
+`befunde/RESULTS.md`, table sha256 `8a5a63e7…`, the same at `v0.2.1-sr3`).
+
+### Security
+
+- Toolchain pinned to **Go 1.26.11** (`go.mod`): fixes GO-2026-6859, an HTTP/1 server
+  crash through a header race in `net/http` `MaxBytesReader`, reachable through the
+  dashboard listener. govulncheck on the 0.6.0-rc1 code built with 1.26.10 reported it;
+  built with 1.26.11 it reports nothing. No change to the code.
+
+### Changed
+
+- Docs: a test alert is kept under the recent alerts like any other (alerts page said
+  it went to the sink directly); kernel driver page names the tested combination with
+  driver 0.2.1+sr3.
+
 ## [0.6.0-rc1] — 2026-11-02
 
 Operating features on the reference host's wish list (operator 2026-09-28 and 2026-11-02):
@@ -1482,7 +1503,8 @@ of `v0.2.0`.
   security review `H1`–`H3`, `M1`–`M4`, `L1`–`L6` (Host header, CSRF, socket mode 0750,
   body limits, …).
 
-[Unreleased]: https://github.com/SirRenix/n5-fangov/compare/v0.6.0-rc1...HEAD
+[Unreleased]: https://github.com/SirRenix/n5-fangov/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/SirRenix/n5-fangov/releases/tag/v0.6.0
 [0.6.0-rc1]: https://github.com/SirRenix/n5-fangov/releases/tag/v0.6.0-rc1
 [0.4.1]: https://github.com/SirRenix/n5-fangov/releases/tag/v0.4.1
 [0.4.0]: https://github.com/SirRenix/n5-fangov/releases/tag/v0.4.0
