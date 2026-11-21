@@ -14,7 +14,7 @@ reference host.
 
 | Component | Release candidate | Release | Before the host test |
 |---|---|---|---|
-| n5-fangov | `v0.5.0-rc2` (Debian `0.5.0~rc2`) | `v0.5.0` | CI green, `go test ./...` incl. the replay test |
+| n5-fangov | `v0.6.0-rc1` (Debian `0.6.0~rc1`) | `v0.6.0` | CI green, `go test ./...` incl. the replay test |
 | Driver package | `v0.2.1-sr1-rc2` (Debian `0.2.1+sr1~rc2-1`) | `v0.2.1-sr1` (`0.2.1+sr1-1`) | delta-review report of the shipped source that meets the exit criterion of `docs/DRIVER-REVIEW-CHECKLIST.md` §6; `packaging/test/test-deb.sh` PASS; DKMS build for the running and the fallback kernel |
 
 Driver stability is part of the gate (driver repository `docs/TESTSPEC.md` §5a):
@@ -138,6 +138,7 @@ by the deploy tests).
 | 2026-09-18/19 | v0.4.0-rc1 … rc5 | rows 1–7, 9, 10 passed on rc1; row 8 skipped (boot chain unchanged since 0.3.1); rc2–rc5 carried the dashboard findings from the row 6 re-tests, each re-tested on the host; 0.4.0 tagged from rc5 |
 | 2026-09-19 | v0.4.1-rc1 | U1–U5 passed (package update over 0.4.0; `check` advisory; `ceiling = 30` → 255, mode `critical`, alert `ceiling`; emergency hook in the `logger` form fired from inside the sandbox, exit 0); two findings fixed in 0.4.1 (see CHANGELOG) |
 | 2026-09-25 | v0.4.2 (rc1 build) | A1, U1–U6, Z1–Z3 passed (package update over 0.4.1; `setup` keeps on a copy of the live config, `--fresh` keeps nothing; `check` summary with warnings, exit 0; rail, Schedules card and pages in the dashboard); tagged as 0.4.2 without a published rc |
+| 2026-11-02 … 11-21 | v0.6.0-rc1 | A1 (package update over 0.5.0, 2026-11-02), Z1–Z3 passed after 19 days of operation (`NRestarts=0`, no warning in the journal, config unchanged but for a deliberate `[dashboard] sensors` edit); driver reloaded from 0.2.1+sr2 to 0.2.1+sr3 on 2026-11-09 under rc1; acknowledging (one and all), Health page, driver chip, About credits and phone width checked by the operator; test alert delivered via `pve-notify` and listed as open; row 8 (reboot) not run: driver 0.2.1+sr2 changed the boot chain (no `modules-load.d` file), autoload shown by the DMI modalias only, checked at the next regular boot (operator decision 2026-11-16); 0.6.0 tagged with the rc1 code, toolchain raised to Go 1.26.11 (GO-2026-6859), so A1 and Z1–Z3 are repeated with the release package |
 
 Still not exercised on the host: the public `curl` path of row 3 against the released
 assets, the `systemctl poweroff` form of the hook, the tokens backup on purge.
