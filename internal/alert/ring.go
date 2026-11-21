@@ -2,15 +2,12 @@ package alert
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"io"
-	"os"
 	"sort"
 	"sync"
 	"time"
 
-	"github.com/SirRenix/n5-fangov/internal/fsutil"
+	"github.com/SirRenix/n5-fangov/internal/ringfile"
 )
 
 // RingSize is how many delivered alerts the Ring keeps (the dashboard's
@@ -46,35 +43,36 @@ type Record struct {
 // takes the flock on <path>.lock, reads the file, merges it into memory
 // and then writes (so no record and no acknowledgement is lost and an ID
 // is handed out once, #54); a read notices a changed file by its mtime and
-// size and merges it first.
+// size and merges it first. The file mechanism is internal/ringfile, shared
+// with the event log.
 type Ring struct {
 	inner  Sink
-	path   string
+	file   *ringfile.File[Record]
 	logger Logger
 	now    func() time.Time
+	// onRecord sees every new record after it is stored (SetOnRecord);
+	// nil = none.
+	onRecord func(Record)
 
-	mu         sync.Mutex
-	recs       []Record // ascending ID
-	lastID     uint64   // highest ID handed out or seen
-	warnedIO   bool
-	warnedLock bool
-	stampMod   time.Time // mtime and size of the file as last read or written
-	stampSize  int64
+	mu     sync.Mutex
+	recs   []Record // ascending ID
+	lastID uint64   // highest ID handed out or seen
 }
-
-// lockWait bounds the wait for the history file lock. A holder that hangs
-// longer only costs the serialization: the write goes ahead, logged once.
-const lockWait = 2 * time.Second
 
 // NewRing wraps inner. path "" = memory only. logger nil = silent.
 func NewRing(inner Sink, path string, logger Logger) *Ring {
 	if logger == nil {
 		logger = nopLogger{}
 	}
-	r := &Ring{inner: inner, path: path, logger: logger, now: time.Now}
+	r := &Ring{inner: inner, file: ringfile.New[Record](path, "alert history", "history", logger), logger: logger, now: time.Now}
 	r.load()
 	return r
 }
+
+// SetOnRecord installs fn, called with every new record after it is stored
+// (outside the ring's lock; the event log marks alerts with it). Set it
+// before the ring is used.
+func (r *Ring) SetOnRecord(fn func(Record)) { r.onRecord = fn }
 
 // Name is the wrapped sink's name.
 func (r *Ring) Name() string {
@@ -149,16 +147,25 @@ func (r *Ring) Last() map[string]int64 {
 }
 
 func (r *Ring) record(rec Record) {
+	rec = r.store(rec)
+	if r.onRecord != nil {
+		r.onRecord(rec)
+	}
+}
+
+// store numbers rec and writes it under the file lock (read, merge, write).
+func (r *Ring) store(rec Record) Record {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	unlock := r.lockLocked()
+	unlock := r.file.Lock()
 	defer unlock()
 	r.mergeFileLocked()
 	r.lastID++
 	rec.ID = r.lastID
 	r.recs = append(r.recs, rec)
 	r.trimLocked()
-	r.saveLocked()
+	r.file.Write(r.recs)
+	return rec
 }
 
 // trimLocked keeps the newest RingSize records. Caller holds r.mu.
@@ -168,65 +175,12 @@ func (r *Ring) trimLocked() {
 	}
 }
 
-// lockLocked takes the file lock of the history; the returned func
-// releases it. Memory-only rings and a lock that cannot be had (logged
-// once) return a no-op. Caller holds r.mu.
-func (r *Ring) lockLocked() func() {
-	if r.path == "" {
-		return func() {}
-	}
-	unlock, err := lockFile(r.path+".lock", lockWait)
-	if err != nil {
-		if !r.warnedLock {
-			r.warnedLock = true
-			r.logger.Printf("alert history %s: lock: %v (writing without it)", r.path, err)
-		}
-		return func() {}
-	}
-	r.warnedLock = false
-	return unlock
-}
-
-// saveLocked mirrors the ring to the JSON file. Caller holds r.mu (and,
-// for a write after a merge, the file lock).
-func (r *Ring) saveLocked() {
-	if r.path == "" {
-		return
-	}
-	b, err := json.Marshal(r.recs)
-	if err != nil {
-		return
-	}
-	if err := writePrivate(r.path, append(b, '\n')); err != nil {
-		if !r.warnedIO {
-			r.warnedIO = true
-			r.logger.Printf("alert history %s: %v (history kept in memory only)", r.path, err)
-		}
-		return
-	}
-	r.warnedIO = false
-	r.stampLocked()
-}
-
-// stampLocked remembers the file's mtime and size. Caller holds r.mu.
-func (r *Ring) stampLocked() {
-	if st, err := os.Stat(r.path); err == nil {
-		r.stampMod, r.stampSize = st.ModTime(), st.Size()
-	}
-}
-
 // refreshLocked merges the file when another ring changed it since this
-// one last read or wrote it (one stat; the file is replaced atomically, so
-// a read without the lock sees a whole file). Caller holds r.mu.
+// one last read or wrote it (ringfile.File.Changed). Caller holds r.mu.
 func (r *Ring) refreshLocked() {
-	if r.path == "" {
-		return
+	if r.file.Changed() {
+		r.mergeFileLocked()
 	}
-	st, err := os.Stat(r.path)
-	if err != nil || (st.ModTime().Equal(r.stampMod) && st.Size() == r.stampSize) {
-		return
-	}
-	r.mergeFileLocked()
 }
 
 // load reads the mirror file; a missing or unreadable file starts empty.
@@ -240,29 +194,8 @@ func (r *Ring) load() {
 // A missing file changes nothing; an unparsable one is logged and ignored.
 // Caller holds r.mu.
 func (r *Ring) mergeFileLocked() {
-	if r.path == "" {
-		return
-	}
-	// stat and read on one handle: a rename by another ring in between
-	// must not pair the new stamp with the old content
-	f, err := os.Open(r.path)
-	if err != nil {
-		return
-	}
-	st, err := f.Stat()
-	if err != nil {
-		_ = f.Close()
-		return
-	}
-	b, err := io.ReadAll(f)
-	_ = f.Close()
-	if err != nil {
-		return
-	}
-	r.stampMod, r.stampSize = st.ModTime(), st.Size()
-	var file []Record
-	if err := json.Unmarshal(b, &file); err != nil {
-		r.logger.Printf("alert history %s: %v (ignored)", r.path, err)
+	file, ok := r.file.Read()
+	if !ok {
 		return
 	}
 	r.recs, r.lastID = mergeRecords(r.recs, file, r.lastID)
@@ -372,7 +305,7 @@ func (r *Ring) Open() int {
 func (r *Ring) Ack(ids []uint64, by string) (acked int, unknown []uint64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	unlock := r.lockLocked()
+	unlock := r.file.Lock()
 	defer unlock()
 	r.mergeFileLocked()
 	idx := make(map[uint64]int, len(r.recs))
@@ -395,7 +328,7 @@ func (r *Ring) Ack(ids []uint64, by string) (acked int, unknown []uint64) {
 		}
 	}
 	if acked > 0 {
-		r.saveLocked()
+		r.file.Write(r.recs)
 	}
 	return acked, nil
 }
@@ -406,7 +339,7 @@ func (r *Ring) Ack(ids []uint64, by string) (acked int, unknown []uint64) {
 func (r *Ring) AckUpTo(upTo uint64, by string) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	unlock := r.lockLocked()
+	unlock := r.file.Lock()
 	defer unlock()
 	r.mergeFileLocked()
 	ts := r.now().Unix()
@@ -418,12 +351,7 @@ func (r *Ring) AckUpTo(upTo uint64, by string) int {
 		}
 	}
 	if acked > 0 {
-		r.saveLocked()
+		r.file.Write(r.recs)
 	}
 	return acked
-}
-
-// writePrivate writes data to path with mode 0600 (temp file + rename).
-func writePrivate(path string, data []byte) error {
-	return fsutil.WriteAtomic(path, data, 0o600)
 }

@@ -9,6 +9,8 @@ import (
 	"io/fs"
 	"net/http"
 	"runtime"
+
+	"github.com/SirRenix/n5-fangov/internal/events"
 )
 
 // maxDashboardSensors mirrors the config rule (0..8 ids).
@@ -93,6 +95,11 @@ func (s *Server) putAssist(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	state := "off"
+	if *b.Enabled {
+		state = "on"
+	}
+	s.event(r, events.Assist, name, "assist "+name+" "+state)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "channel": name, "enabled": *b.Enabled})
 }
 

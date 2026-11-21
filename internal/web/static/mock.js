@@ -122,6 +122,15 @@ window.n5mock = (() => {
 	const recent = [[720, 'stall', 'hdd: rpm=0 at duty 105, raised to 255'], [5400, 'temp', 'cpu 91.5 °C ≥ critical 88, forced to 255', 'pve-notify: exit status 1'], [11220, 'sensor', 'drivetemp:max: no devices'], [93600, 'start', 'n5-fangov ' + MV + ' started'], [3 * 86400, 'tls', 'certificate unreadable']]
 		.map(([ago, kind, msg, error], i, all) => Object.assign({ id: all.length - i, ts: Math.floor(t0 - ago), kind, msg }, error ? { error } : {}, i > 2 ? { ack_ts: Math.floor(t0 - 3600), ack_by: 'user:admin' } : {}));
 	let alertId = recent.length; const newAlert = a => recent.unshift(Object.assign({ id: ++alertId }, a)); // ids: arrival order, as the ring
+	// GET /api/events (chart marks): a sample week, the three events within 60 s merge into one symbol, the cpu override is still
+	// open, the oldest is an end whose start left the log; the mock's override, assist, preset and config answers append (ev)
+	const EV = [[120000, 'override-end', 'ssd', 'ssd back to the curve (admin)', 'user:admin'], [93600, 'start', '', 'started ' + MV, 'daemon'], [21600, 'preset', '', 'preset n5pro-quiet (schedule 22:00-07:00)', 'schedule'], [10800, 'override', 'hdd', 'hdd manual 150 (admin)', 'user:admin'],
+		[9000, 'override-end', 'hdd', 'hdd back to the curve (admin)', 'user:admin'], [7200, 'alert', '', 'alert temp (suppressed by the cooldown)', 'daemon'], [6000, 'critical', 'ssd', 'ssd critical 76.0C (limit 75C)', 'daemon'],
+		[5700, 'critical-end', 'ssd', 'ssd below critical (71.5C)', 'daemon'], [3000, 'ceiling', 'hdd', 'hdd ceiling 65C (disk:sda 65.5C)', 'daemon'], [2700, 'ceiling-end', 'hdd', 'hdd below the ceiling (61.0C)', 'daemon'],
+		[1800, 'assist', 'hdd', 'assist hdd on (admin)', 'user:admin'], [1260, 'preset', '', 'preset n5pro-cool (admin)', 'user:admin'], [1230, 'reload', '', 'config reloaded (admin)', 'user:admin'],
+		[1200, 'alert', '', 'alert stall', 'daemon'], [600, 'override', 'cpu', 'cpu manual 200 (token home-assistant)', 'token:home-assistant']]
+		.map(([ago, kind, ch, text, by], i) => ({ id: i + 1, ts: Math.floor(t0 - ago), kind, ch: ch || undefined, text, by, end: kind.endsWith('-end') || undefined }));
+	const ev = (kind, ch, text) => EV.push({ id: EV.length + 1, ts: Math.floor(Date.now() / 1000), kind, ch, text: text + ' (admin)', by: 'user:admin', end: kind.endsWith('-end') || undefined });
 	// &drv=pending: the module still has to be reloaded (sr1 loaded, the package builds sr2); &drv=ro: the driver cannot write
 	const DRV = { module: 'minisforum_n5_it5571', loaded: true, version: '0.2.1+sr2', srcversion: 'CDDEDE26904251994A0DE35', mode: Q.get('drv') === 'ro' ? 'write-disabled' : 'write-enabled', expected: '0.2.1+sr2', pending: false };
 	if (Q.get('drv') === 'pending') Object.assign(DRV, { version: '0.2.1+sr1', srcversion: '22C5CA61EBD0012B034369B', pending: true });
@@ -219,13 +228,15 @@ window.n5mock = (() => {
 			if (M.in) Object.assign(body, { hwmon_path: '/sys/class/hwmon/hwmon14', extra_temps: { 'ec:cpu': +(pt.temp.cpu + 1.5).toFixed(1) }, alerts: { stall: Math.floor(now - 720) }, watched: pt.extra || {} });
 			return ok(body); }
 		if (p === '/api/history') { const min = Math.min(10080, Math.max(1, +u.searchParams.get('minutes') || 120)); return ok(history(min, +u.searchParams.get('since') || 0, M.in)); }
+		if (p === '/api/events') { const cut = now - Math.min(10080, Math.max(1, +u.searchParams.get('minutes') || 120)) * 60, since = +u.searchParams.get('since') || 0;
+			return ok(EV.filter(e => e.ts > since && e.ts >= cut).map(e => M.in ? e : { ts: e.ts, kind: e.kind, ch: e.ch, end: e.end })); }
 		if (!M.in && !PUB.test(p)) return fail('unauthorized', 401);
 		if (p === '/api/history.csv') { const min = Math.min(10080, Math.max(1, +u.searchParams.get('minutes') || 120)); return ok(csv(min), `n5-fangov-history-n5host-${new Date(t0 * 1000).toISOString().slice(0, 19).replace(/[-:]/g, '').replace('T', '-')}.csv`); }
 		if (p === '/api/config' && m === 'GET') return ok({ config: cfg, raw: raw() });
 		if (p === '/api/config' && m === 'PUT') { const chs = parseChannels(opt.body || ''), errs = check(chs);
 			if (u.searchParams.get('strict') === '1' && errs.length) return fail('config rejected', 400, { errors: errs });
 			// &restart=1: 202 although the channel set is unchanged (the daemon answers so for a profile change too); a changed channel set is written but not applied
-			const restart = Q.get('restart') === '1' || chs.length !== cfg.channel.length; if (chs.length === cfg.channel.length) cfg.channel = chs; cfg.schedule = parseSchedules(opt.body || '');
+			const restart = Q.get('restart') === '1' || chs.length !== cfg.channel.length; if (chs.length === cfg.channel.length) cfg.channel = chs; cfg.schedule = parseSchedules(opt.body || ''); if (!restart) ev('reload', undefined, 'config reloaded');
 			return wait({ status: restart ? 202 : 200, body: { ok: true, restart_required: restart, warnings: errs } }); }
 		if (p === '/api/sensors') return ok(Object.entries(SENS).map(([id, [d, , , kind]]) => Object.assign({ id, description: `${d} (now ${sv(id, now)} °C)`, temp: sv(id, now) }, kind ? { kind } : {})).concat(PAT));
 		if (p === '/api/dashboard') { if (m === 'PUT') { const ids = (opt.json || {}).sensors || []; if (ids.length > 8) return fail('at most 8 sensors', 400);
@@ -233,13 +244,13 @@ window.n5mock = (() => {
 			return ok({ sensors: dash }); }
 		if (p.startsWith('/api/override/')) { const n = p.split('/')[3];
 			const lag = () => { if (Q.get('lag') === '1') ovLag[n] = { ov: overrides[n], left: 2 }; }; // &lag=1: the state answers keep the old mode for two polls
-			if (m === 'DELETE') { lag(); delete overrides[n]; return ok({ ok: true, channel: n, mode: 'auto' }); }
+			if (m === 'DELETE') { lag(); if (n in overrides) ev('override-end', n, n + ' back to the curve'); delete overrides[n]; return ok({ ok: true, channel: n, mode: 'auto' }); }
 			if ((n === 'hdd' || cfg.channel.some(c => c.name === n && c.stop !== 'auto')) && opt.json.duty < 60) return fail(`channel ${n} (fixed stop duty / not chip-regulated): manual duty must be at least 60`, 400);
-			lag(); overrides[n] = opt.json.duty; return ok({ ok: true, channel: n, duty: opt.json.duty, mode: 'manual' }); }
+			lag(); overrides[n] = opt.json.duty; ev('override', n, `${n} manual ${opt.json.duty}`); return ok({ ok: true, channel: n, duty: opt.json.duty, mode: 'manual' }); }
 		if (p.startsWith('/api/assist/')) { const n = p.split('/')[3], a = cfg.assist.find(x => x.channel === n); // PUT {enabled}: only that line of the table changes
 			if (!a) return fail(`channel "${n}" has no valid [[assist]] table`, 404);
 			if (typeof (opt.json || {}).enabled !== 'boolean') return fail('"enabled" (true or false) required', 400);
-			a.enabled = opt.json.enabled; return ok({ ok: true, channel: n, enabled: a.enabled }); }
+			a.enabled = opt.json.enabled; ev('assist', n, `assist ${n} ${a.enabled ? 'on' : 'off'}`); return ok({ ok: true, channel: n, enabled: a.enabled }); }
 		// POST /api/preview: the mock's history through the draft curves (no hysteresis/min_on here), assist from the GPU source
 		if (p === '/api/preview') { const j = opt.json || {}, sp = j.span === '7d' ? '7d' : '24h', min = sp === '7d' ? 10080 : 1440, pre = j.preset && presets[j.preset];
 			if (j.preset && !pre) return fail('unknown preset ' + j.preset, 404);
@@ -263,7 +274,7 @@ window.n5mock = (() => {
 			if (m === 'DELETE') { if (b) return fail('built-in preset', 409); if (!presets[n]) return fail('no such preset', 404); delete presets[n]; return ok({ ok: true }); }
 			if (m === 'GET') { if (!presets[n]) return fail('unknown preset ' + n, 404); return ok({ name: n, builtin: !!b, description: presets[n].description, channels: presets[n].ch }); }
 			if (sub === 'rename') { const nn = opt.json.name; if (b || (presets[nn] && presets[nn].builtin)) return fail('built-in preset', 409); if (!presets[n]) return fail('unknown preset ' + n, 404); if (presets[nn]) return fail('preset exists', 409); presets[nn] = presets[n]; delete presets[n]; return ok({ ok: true, name: nn }); }
-			if (presets[n]) cfg.channel = presets[n].ch.map(c => Object.assign({}, c)); return wait({ status: n === 'summer' ? 202 : 200, body: { ok: true } }); }
+			if (presets[n]) { cfg.channel = presets[n].ch.map(c => Object.assign({}, c)); if (n !== 'summer') ev('preset', undefined, 'preset ' + n); } return wait({ status: n === 'summer' ? 202 : 200, body: { ok: true } }); }
 		if (p === '/api/schedules') return ok(schedStatus());
 		if (p.startsWith('/api/tokens')) return mockTokens(p, m, opt);
 		if (p === '/api/log' && m === 'DELETE') { logs.length = 0; return ok({ cleared: true, note: 'journal untouched' }); }

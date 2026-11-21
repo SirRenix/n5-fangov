@@ -223,6 +223,51 @@ Alerts sent by a command line run while the daemon runs (the apt hook's
 every writer takes the lock `alerts.json.lock`, reads the file, merges it and writes it
 back, and the daemon picks up a changed file on the next read of the list.
 
+## Events and alerts
+
+Alerts tell you that something needs you; **events** record what happened, with a
+time, for the [chart markers](04-dashboard.md#event-markers). An alert is one kind of
+event among others.
+
+| | Alerts | Events |
+|---|---|---|
+| Purpose | notify (PVE, mail, webhook) | mark the charts, answer "what happened at 14:02?" |
+| Content | kind and message (may name paths, sensors, errors) | kind, channel, values, user or token name; never a path, an alert message or a secret |
+| Cooldown | one per kind and window (`alert_cooldown`) | none; every state change is recorded once, on the edge |
+| File | `alerts.json`, the last 50 | `events.json`, 7 days, at most 2000 |
+| Anonymous | not visible | kind, channel and time only |
+
+What is recorded (`by` names the cause: `user:<name>`, `token:<name>`, `schedule`,
+`cli`, `daemon`):
+
+| Kind | When |
+|---|---|
+| `preset` | a preset applied from the dashboard, the API, the CLI or a schedule switch (`by` = `schedule`) |
+| `override` / `override-end` | manual duty set; back to the curve (a clear without an override records nothing) |
+| `assist` | the assist switch of a channel, on or off |
+| `reload` | a config applied from the editor (`PUT /api/config`, also `n5-fangov import`) or a dashboard import; a preset apply is a `preset`, not a `reload` |
+| `alert` | every alert that went out (failed deliveries say *not delivered*), and the first one per kind and cooldown window that the cooldown **suppressed** (*suppressed by the cooldown*) |
+| `critical` / `critical-end` | a channel reached its critical temperature; the first good reading below it ends it (a failed read does not) |
+| `ceiling` / `ceiling-end` | a channel entered the ceiling state; it left it (3 °C below) or a reload changed its sensor |
+| `failsafe` / `failsafe-end` | the write-error failsafe started; writes work again. The stop failsafe of `ExecStopPost` opens one too (*safe state after daemon end (…)*) |
+| `start` | the daemon started, with its version |
+
+A span stays open until its end event. When the loop stops, the daemon ends its
+critical and ceiling spans (*ended (daemon stopped)*); an override and the failsafe of
+the stop stay open over the downtime. At start the daemon ends whatever the previous run
+left open (*ended (daemon started)*: after a kill, the stop failsafe), except an
+override it restored from its run file. `serve --dry-run` keeps its events in memory
+only: it may run next to the live daemon and must not touch its log.
+
+Retention counts from the time of the event being written. A new event more than 7 days
+after the newest one (a long stop, or the clock stepped forward) or more than a day
+before it (the clock stepped back) skips the age trim once: a step that is corrected
+before the next event drops nothing; after a real week of downtime the old events go
+with the second event. The 2000 cap always holds. The CLI writes only the stop failsafe and the alerts of a run without the daemon
+(onfailure unit, apt hook); like `alerts.json`, every writer takes the lock
+`events.json.lock`, reads, merges and writes. A write that fails is logged once; the
+regulation never waits for it. From the shell: [`n5-fangov events`](05-cli.md#events).
+
 ## The PVE template
 
 The two template files (`n5-fangov-subject.txt.hbs`, `n5-fangov-body.txt.hbs`) are

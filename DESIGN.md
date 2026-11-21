@@ -51,6 +51,7 @@ cmd/n5-fangov/
   failsafe.go        failsafe (ExecStopPost)
   cert.go/cert_cli.go, tlsmgr.go   certificate manager (TLSMgr) and `cert` CLI
   alerts_cli.go      alerts status|test|template
+  events_cli.go      events [--since] [--kind]... [--json] (socket, else events.json read-only)
   token_cli.go       token create|list|revoke (socket; the daemon owns tokens.json)
   system_cli.go      system [--json]
   bundle.go          export, import (settings bundle)
@@ -59,6 +60,7 @@ cmd/n5-fangov/
   wiring_alerts.go   alertManager (transport swap, ring, template probe, test)
   wiring_account.go  accountStore, editConfig helper, state dir paths
   wiring_dashboard.go dashboardStore, hookedService (reload re-applies [alert] and the schedules)
+  wiring_events.go   event log glue: alert marker hook, stale spans ended at start, stop failsafe marker, CLI log
   wiring_tls.go      TLS deps, serveTLS adapter
   wiring_sysinfo.go  system collector
   about.go           aboutInfo (GET /api/about: name, version, licence, credits)
@@ -75,6 +77,8 @@ internal/control/    controller loop: curve, curve post-processing (hysteresis, 
 internal/history/    tiered history store (raw 2 h, 1-min 24 h, 5-min 7 d), JSON persistence, CSV
 internal/schedule/   [[schedule]] evaluation: active entry for a time, next switch
 internal/alert/      alert sinks (PVE::Notify, mail, webhook, log, off), Swappable, Ring (history), PVE templates
+internal/events/     event log behind the chart markers: Log (ring in events.json), Queue (non-blocking writer)
+internal/ringfile/   the shared-file mechanism of alerts.json and events.json: flock, read, merge, write, refresh by mtime/size
 internal/ipc/        unix socket listener/client for the CLI (same mux as web, no auth)
 internal/logfile/    rotating log file (O_NOFOLLOW, size rotation, Lines/Export/Clear)
 internal/tlscert/    certificates: EnsureAuto, Store (hot swap), ValidatePair, ServerConfig, Info
@@ -97,8 +101,9 @@ Files are named by topic, never by version or review round (`wiring_v3.go`, `v4_
 `*_fix_test.go` are gone); a test file carries the name of the file it tests
 (`session_test.go`, `token_test.go`) or of its topic (`api_bounds_test.go`).
 
-Subcommands (19, `main.go` `order`): `setup serve status set auto curve log check detect
-system test failsafe passwd cert alerts token export import version`; hidden: `help`, `alert
+Subcommands (24, `main.go` `order`): `setup serve status set auto assist curve preview log
+check detect identify system test validate failsafe passwd cert alerts token events export
+import version`; hidden: `help`, `alert
 <kind> <msg>` (used by the onfailure unit). Exit codes: 0 ok, 1 failure, 2 usage.
 `token create NAME [--scope read|control|admin] [--ttl DAYS]` prints the secret once
 (stdout, nothing else on stdout so it can be captured), `token list` (table: id, name,
@@ -692,6 +697,64 @@ days[], fallback, active}], active: idx|-1, next{ts, preset}|null (preset "" whe
 is active after the switch; null when nothing changes within 8 days), last{ts, preset,
 ok, error}|null, timezone}` with `timezone` = zone abbreviation and offset (`CEST +02:00`).
 
+### 6c. Events (internal/events, internal/ringfile)
+
+```go
+type Event struct { ID uint64; TS int64; Kind, Ch, Text, By string; End bool }  // json id, ts, kind, ch?, text, by?, end?
+type Recorder interface { Add(e Event) }
+func New(path string, logger Logger) *Log        // loads; writes nothing before the first Add
+func ReadFile(path string) (*Log, error)          // read-only (CLI offline): an unreadable file is an error, a missing one empty
+func (l *Log) Add(e Event)                       // TS 0 = now, End from the kind, next ID; flock, read, merge, write
+func (l *Log) Since(span time.Duration, since int64) []Event   // ts > since, within span (≤ 7 d), oldest first
+func (l *Log) Recent(n int) []Event; Open() []Event; EndOpen(keep, text, by) int
+func NewQueue(l *Log, logger Logger) *Queue      // Add never blocks (256 queued, a full queue drops, logged once); Flush, Close
+```
+
+The event log is the record behind the chart markers: `<state dir>/events.json` (0600),
+**7 days and at most 2000 entries** (the cap by ID; the age trim runs on a write, relative
+to the new event, and is skipped for a write whose event lies more than 7 d after or more
+than 1 d before the newest stored one — a clock step corrected before the next event
+drops nothing; merges never trim by age, reads filter by age against now). `since`
+compares `ts`: after a clock step back an incremental reader can miss events, so the
+dashboard reloads the whole span every tenth load. Kinds and sources:
+
+| Kind | Span | Recorded by | Text (example) |
+|---|---|---|---|
+| `preset` | — | web `applyPreset` (caller), scheduler on a successful switch (`by` = `schedule`) | `preset n5pro-cool (schedule 13:00-18:00)` |
+| `override` / `override-end` | per channel | web `putOverride` / `deleteOverride` (an end only when an override span is open or the service reports one) | `hdd manual 150 (admin)` |
+| `assist` | — (has a channel) | web `putAssist` | `assist hdd on (admin)` |
+| `alert` | — | the alert ring's record hook for every recorded alert (daemon and CLI rings; `(not delivered)` on a delivery error); controller `raise` for an alert the cooldown suppressed, **once per kind and cooldown window** (`suppMarked`, cleared by the next delivery) | `alert temp (suppressed by the cooldown)` |
+| `critical` / `critical-end` | per channel | `computeTargets`: the edge of `regulate`'s result (`ch.critOn`); a failed read keeps the state; `Run` ends it when the loop leaves (`endSpansAtStop`) | `ssd critical 76.0C (limit 75C)` |
+| `ceiling` / `ceiling-end` | per channel | `applyCeiling` on entered/left; `swapChannelConfig` ends it when a reload changes the sensor; `Run` ends it when the loop leaves | `hdd ceiling 65C (disk:sda 65.5C)` |
+| `failsafe` / `failsafe-end` | global | `writeAndFinish`: the first write-error failsafe of an episode (`inFS`), the first successful write after it; `failsafe` (ExecStopPost) opens one unless one is open | `failsafe (write error, 2 cycles)` |
+| `start` | — | `Run`, before the first cycle | `started 0.7.0` |
+| `reload` | — | web `putConfig` and `importConfig` on success without restart (a preset apply is `preset` only) | `config reloaded (admin)` |
+
+`by` is `user:<name>`, `token:<name>` or `cli` (the web `ackSource` of the caller),
+`schedule` or `daemon`. Texts name kind, channel, values and the user or token name —
+never a path, an alert message or a secret. Every state change is one event on its edge,
+never one per cycle. The controller records through the `Queue` (`Options.Events`), so
+neither the file lock nor a slow disk reaches the loop; a failed write is logged once
+(`ringfile`) and the event stays in memory. serve ends the previous process's open spans
+before `Run` (read from the log, the end events through the queue so the start never
+waits on the lock; text `ended (daemon started)`), keeping an override restored from
+its run file; the queue is drained on every exit of `serve`. `serve --dry-run` holds no
+writer lock and may run next to the live daemon: its log is memory only
+(`serveEventLog`). CLI runs without the daemon write
+through the same file (onfailure `alert`, apt hook: the alert hook; `failsafe`: the stop
+marker) and read it (`n5-fangov events`, `ReadFile`: a permission error is exit 1, a
+missing file "no events"). Merge by ID like the alert ring: an unknown
+ID is taken over, the same ID with the same ts/kind/ch/text is one event, another
+content keeps memory's and renumbers the file's.
+
+`internal/ringfile` is the file half of both rings (`File[T]`): `Lock()` (flock on
+`<path>.lock`, 2 s, a failure logged once and the write goes ahead), `Read()` (stat and
+read on one handle, stamp mtime/size, unparsable = logged and ignored; every failure is
+"nothing read"), `ReadErr()` (the same, but an open, read or parse error is returned and
+a missing file is `found = false`; for the read-only CLI), `Changed()`,
+`Write()` (0600 temp + rename, failure logged once). The owner keeps its records, mutex
+and merge rule.
+
 ## 7. Alerts (internal/alert)
 
 ```go
@@ -709,7 +772,9 @@ type Ring struct{…}        // NewRing(inner, path, logger): records every aler
                            // shared file: every write under flock <path>.lock reads, merges by ID
                            // (same ID + ts/kind/msg = one record, ack kept; other content: the merging ring's own
                            // record keeps the ID, the file's is renumbered or, older than a full ring, dropped)
-                           // and writes; reads merge when mtime/size changed (#54);
+                           // and writes; reads merge when mtime/size changed (#54; the file side is
+                           // internal/ringfile, shared with the event log); SetOnRecord(fn) sees
+                           // every new record (serve and the CLI mark alerts in the event log);
                            // Ack(ids, by) (n, unknown) — an unknown id acknowledges nothing; AckUpTo(id, by) n;
                            // Open() n. Acknowledgement is display state only: no sink, cooldown or failsafe
                            // reads it; a new record is always open
@@ -909,6 +974,7 @@ counts as signed in, `via: "none"`):
 | `POST /api/logout` | public, CSRF | — | 204; cookie cleared, session revoked; 403 for a token caller |
 | `GET /api/state` | filtered | — | snapshot (section 6) |
 | `GET /api/history?minutes=120&since=TS` | filtered | `minutes` 1..10080 (default 120); tier by span (section 6a) | `[{ts, temp{}, duty{}, rpm{}, extra{}, assist{}}]`, only `ts > since` |
+| `GET /api/events?minutes=120&since=TS` | filtered | `minutes` and `since` as `/api/history` | `[{id, ts, kind, ch?, text, by?, end?}]` oldest first, only `ts > since` (section 6c); anonymous: `[{ts, kind, ch?, end?}]`; 501 without an event log |
 | `GET /api/history.csv?minutes=N` | protected, `read` | `minutes` as above | text/csv attachment `n5-fangov-history-<host>-<ts>.csv` (`<ts>` = `YYYYMMDD-HHMMSS` in the host's **local** time, the same clock as the `time` column; the log export and the settings bundle names use the same stamp): header `ts,time,<ch>_temp,<ch>_duty,<ch>_rpm,…,<extra id>…` (channels in daemon order, then extra ids sorted), `time` RFC 3339 local, empty cell = absent |
 | `GET /api/tokens` | protected, session only | — | `{tokens[{id, name, scope, created, expires (null = never), last_used, last_ip, expired}]}`; 403 for a token caller |
 | `POST /api/tokens` | protected, session only, CSRF | `{name, scope: read\|control\|admin, ttl_days: 0..3650}` (scope default `read`, ttl default 90, 0 = never) ≤ 4 KiB | 201 `{ok, token, id, name, scope, expires, warning?}` (`warning` = "token never expires" for 0); 400 rule; 409 `auth is none`, name taken or 50 tokens; 403 token caller (list and revoke work with `auth = "none"`, create does not) |
@@ -1089,7 +1155,22 @@ Every channel of the mock state carries `ceiling` (cpu 100, ssd 85, hdd 65) and
   (RPM autoscaled / duty 0..255), extra sensors as a third chart of the same kind
   (`#extra-card`, hidden until `dash` is non-empty; legend entries with a remove `×`
   → `PUT /api/dashboard`; legend names from the catalogue description); three columns
-  from 1500 px. Signed in: Sensors card (catalogue grouped CPU / SSD·NVMe / HDD / GPU /
+  from 1500 px. **Event markers** (section 6c) in the temperature and fan charts and the
+  preview charts (`opt.ev`): `GET /api/events?minutes=10080` with every history load
+  (`evs`; incremental with `since` = newest − 1 s, deduplicated by id; the whole span at
+  start, after a sign-in or out and every tenth load; a failure keeps the last list; one
+  redraw per poll); groups `EVG` op ● circle `--man` (preset,
+  override, assist, reload), prot ▲ triangle `--crit` (alert, critical, ceiling,
+  failsafe), sys ■ square `--ok` (start) — colour never alone. `evDraw`: spans (start …
+  `-end` per kind + channel; an end without its start begins at the left edge, an open
+  span ends at the right one) as bands (`evBand` alpha), point events as a 1 px line
+  (`evLine` alpha); every event a symbol, a DOM `span.evm` over the canvas with
+  `title` / `aria-label` (`role="img"`), events closer than `evGap` (6 px) merged into one
+  with `data-n` and the most severe group's shape. The chart tooltip lists the events
+  within 6 px of the pointer (`rg.fmt` time + text). Anonymous events carry no text: a
+  neutral label from kind and channel (`evTxt`); sign-out strips the texts at once.
+  Filter chips `#ev-chips` (*Operation · Protection · System*, `aria-pressed`) in the
+  history bar, stored in `S.ev` (group → boolean, absent = on). Signed in: Sensors card (catalogue grouped CPU / SSD·NVMe / HDD / GPU /
   NIC / EC·board / other by `kind`, id prefix and hwmon name; one `<details class="sg">`
   per group, summary `name · count · max N °C` (the live maximum, updated per poll),
   open by default when the group holds a channel sensor — `parts()` of every `cfg`
@@ -1243,6 +1324,8 @@ Every channel of the mock state carries `ceiling` (cpu 100, ssd 85, hdd 65) and
   `kv` (module + version, srcversion, mode, package builds + *reload pending*, daemon
   started, last restart/failed/emergency/kernel/driver alert). `GET /api/health` on entry
   and every minute while current; a successful load also refreshes the driver chip.
+  *Recent events* (`#hl-ev`, `hlEv`): the newest 20 of the loaded events, newest first,
+  group glyph + kind in the group colour, age, text.
 - **Log:** filter (`n of m match`), auto-scroll, `last N lines · source: file|journal`,
   *Refresh*, *Export*; WARN/ERROR colouring; re-read every 10 s while current. *Clear
   log* is in Settings → Danger zone (`#lg-clear`, disabled with `source = journal`).
@@ -1475,11 +1558,11 @@ kind), else `failed`; cooldown 30 min via `/run/n5-fangov/alert.<kind>`.
 
 Runtime files: `/run/n5-fangov/n5-fangov.sock` (CLI, root only), `state.json`,
 `override.<name>`, `alert.<kind>`; `/var/lib/n5-fangov/sessions.json`, `tokens.json`,
-`alerts.json`, `history.json` (0600; an unwritable state dir is logged once, the daemon
-runs without persistence; `.gitignore` and the pre-commit file guard list all four);
+`alerts.json`, `history.json`, `events.json` (0600; an unwritable state dir is logged once, the daemon
+runs without persistence; `.gitignore` and the pre-commit file guard list all five);
 `/etc/n5-fangov/{config.toml, presets/, tls/}`; `/var/log/n5-fangov/n5-fangov.log[.N]`.
 The settings bundle (`export`/`import`) carries config and presets only — never tokens,
-sessions or history. The password hash is redacted (`<unchanged>`, restored on import from
+sessions, history or events. The password hash is redacted (`<unchanged>`, restored on import from
 the running config); **the bundle carries the webhook URL** as it stands in the config
 (with the receiver's key): it is a setting the bundle exists to move between hosts, and the
 placeholder mechanism is the password's — treat the file like the config.

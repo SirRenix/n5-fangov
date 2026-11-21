@@ -26,6 +26,7 @@ const (
 	tokensFileName   = "tokens.json"
 	alertsFileName   = "alerts.json"
 	historyFileName  = "history.json"
+	eventsFileName   = "events.json"
 )
 
 // stateDir returns the state directory: N5FANGOV_STATE_DIR, else the
@@ -91,6 +92,15 @@ func historyPath(dir string) string {
 		return ""
 	}
 	return filepath.Join(dir, historyFileName)
+}
+
+// eventsPath is <state dir>/events.json, the event log behind the chart
+// markers (internal/events).
+func eventsPath(dir string) string {
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, eventsFileName)
 }
 
 // readConfigRaw reads the config file; a missing file reads as empty

@@ -13,6 +13,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/SirRenix/n5-fangov/internal/events"
 )
 
 // class is the visibility of a route with auth = basic (DESIGN.md
@@ -116,6 +118,10 @@ func (s *Server) routeTable() []route {
 			Summary: "History points of the last minutes (extra sensors only when signed in)", Response: "HistoryPoint",
 			Params:    []paramSpec{{Name: "minutes", Type: "integer", Description: "span in minutes, 1..10080; the tier follows the span: raw up to 2 h, 1-min means up to 24 h, 5-min means beyond (default 120)"}, {Name: "since", Type: "integer", Description: "only points with ts > since (unix seconds)"}},
 			Responses: map[int]string{200: "array of history points", 400: "bad query"}},
+		{Method: "GET", Path: "/api/events", Handler: s.getEvents, Class: classFiltered, Scope: scopeRead,
+			Summary: "Events of the last minutes for the chart markers, oldest first (ts, kind, ch and end only for anonymous callers)", Response: "Event",
+			Params:    []paramSpec{{Name: "minutes", Type: "integer", Description: "span in minutes, 1..10080 (default 120), as for /api/history"}, {Name: "since", Type: "integer", Description: "only events with ts > since (unix seconds)"}},
+			Responses: map[int]string{200: "array of events", 400: "bad query", 501: "no event log"}},
 		// ---- protected, read ---------------------------------------------
 		{Method: "GET", Path: "/api/history.csv", Handler: s.historyCSV, Class: classProtected, Scope: scopeRead,
 			Summary:   "History as CSV (ts, time, per channel temp/duty/rpm, extra sensors)",
@@ -316,7 +322,7 @@ func buildOpenAPI(version string, table []route) ([]byte, error) {
 				resp["content"] = map[string]any{"application/json": map[string]any{"schema": map[string]any{"$ref": "#/components/schemas/Error"}}}
 			case code/100 == 2 && r.Response != "":
 				schema := map[string]any{"$ref": "#/components/schemas/" + r.Response}
-				if r.Response == "HistoryPoint" {
+				if r.Response == "HistoryPoint" || r.Response == "Event" {
 					schema = map[string]any{"type": "array", "items": schema}
 				}
 				resp["content"] = map[string]any{"application/json": map[string]any{"schema": schema}}
@@ -463,6 +469,15 @@ func openAPISchemas() map[string]any {
 			"rpm":    tsMap("rpm per channel", integer("")),
 			"extra":  tsMap("extra sensors (°C): the dashboard sensors and the assist sources; signed in only", number("")),
 			"assist": tsMap("assist boost per channel (absent at 0)", integer("")),
+		}),
+		"Event": object("One event of the log behind the chart markers; anonymous callers get ts, kind, ch and end only", []string{"ts", "kind"}, map[string]any{
+			"id":   integer("number in arrival order; signed in only"),
+			"ts":   integer("unix seconds"),
+			"kind": strEnum("what happened; a span (override, critical, ceiling, failsafe) ends with its -end event", events.Kinds...),
+			"ch":   str("channel, for per-channel kinds"),
+			"text": str("short description: kind, channel, values, user or token name; never a path or an alert message; signed in only"),
+			"by":   str("cause: user:<name>, token:<name>, schedule, cli or daemon; signed in only"),
+			"end":  boolean("true on the event that ends a span"),
 		}),
 		"Override": object("PUT /api/override/{name} body: exactly one of duty and percent", nil, map[string]any{
 			"duty":    integer("0..255"),

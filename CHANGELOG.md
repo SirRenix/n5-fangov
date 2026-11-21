@@ -52,6 +52,28 @@ drove the 0.3.1 work is `docs/AUDIT.md` (code) and `docs/DESIGN-AUDIT.md`
   the Assist switch; a chart under the card (recorded grey, preview in colour, assist
   share as an area), a 24 h / 7 d toggle, the summary and the notes; recomputed 1 s
   after an edit while open ([Dashboard](docs/04-dashboard.md)).
+- **Event markers in the charts.** A new event log, `<state dir>/events.json` (0600,
+  7 days, at most 2000), records preset switches (dashboard, API, CLI, schedule),
+  override set and cleared, the assist switch, every alert — also one the cooldown
+  suppressed, once per window —, critical and ceiling entered and left, the write-error
+  failsafe and the stop failsafe of `ExecStopPost`, daemon starts and config reloads,
+  each once on its edge with the cause (`user:<name>`, `token:<name>`, `schedule`,
+  `cli`, `daemon`) and a short text without paths, alert messages or secrets. At start
+  the daemon ends the spans of the previous run (an override restored from its run file
+  stays open); its own stop ends the critical and ceiling spans. The controller records
+  through a non-blocking queue: a slow disk or a failed write never reaches the loop.
+  A clock step corrected before the next event drops nothing from the log;
+  `serve --dry-run` keeps its events in memory. Daemon and CLI share the file the way
+  `alerts.json` does since #54; that mechanism moved into one package both rings use.
+  API: `GET /api/events?minutes=&since=` (scope `read`; anonymous callers get time, kind,
+  channel and end only). CLI: `n5-fangov events [--since 24h|7d|DURATION] [--kind K]...
+  [--json]` (socket, else the file, read-only). Dashboard: markers in the temperature,
+  fan and preview charts — a line and a symbol per event, a band per span, colour and
+  shape per group (*Operation* ●, *Protection* ▲, *System* ■), events closer than 6 px
+  merged with a count, listed in the tooltip; filter chips per group, kept per browser;
+  the last 20 on the Health page ([Dashboard](docs/04-dashboard.md#event-markers),
+  [Events and alerts](docs/07-alerts.md#events-and-alerts), [API](docs/12-api.md#events),
+  [CLI](docs/05-cli.md#events)).
 
 ### Changed
 

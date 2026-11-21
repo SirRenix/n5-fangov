@@ -368,7 +368,7 @@ forbid. `make verify-deploy` checks the units ([Build](11-development.md#build))
 | `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK`, `RestrictNamespaces=yes` | socket, TCP/HTTP(S), netlink for the interface list (the fallback when the TLS certificate needs the box's addresses), nothing else |
 | `MemoryDenyWriteExecute=yes`, `SystemCallArchitectures=native`, `SystemCallFilter=@system-service` | no JIT/exec tricks, native syscalls only, no module loading |
 | `CapabilityBoundingSet=` (empty) | the daemon runs as uid 0 but holds no capability: it never loads modules (modules-load.d does), never chowns; root's own files and the root-owned sysfs attributes need none |
-| `UMask=0077`, `LogsDirectory=n5-fangov` (`0750`), `RuntimeDirectory=n5-fangov` (`0750`), `StateDirectory=n5-fangov` (`0700`) | files private by default; `/var/lib/n5-fangov` holds `sessions.json` and `tokens.json` (hashed secrets, hence 0700), `alerts.json` and `history.json` (all 0600). `serve --state-dir DIR` / `N5FANGOV_STATE_DIR` move it; an unwritable one is logged once and the daemon runs without persistence |
+| `UMask=0077`, `LogsDirectory=n5-fangov` (`0750`), `RuntimeDirectory=n5-fangov` (`0750`), `StateDirectory=n5-fangov` (`0700`) | files private by default; `/var/lib/n5-fangov` holds `sessions.json` and `tokens.json` (hashed secrets, hence 0700), `alerts.json`, `history.json` and `events.json` (all 0600). `serve --state-dir DIR` / `N5FANGOV_STATE_DIR` move it; an unwritable one is logged once and the daemon runs without persistence |
 
 ## Alert delivery under the sandbox
 

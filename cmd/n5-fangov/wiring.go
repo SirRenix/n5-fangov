@@ -26,6 +26,7 @@ import (
 	"github.com/SirRenix/n5-fangov/internal/alert"
 	"github.com/SirRenix/n5-fangov/internal/config"
 	"github.com/SirRenix/n5-fangov/internal/control"
+	"github.com/SirRenix/n5-fangov/internal/events"
 	"github.com/SirRenix/n5-fangov/internal/hwmon"
 	"github.com/SirRenix/n5-fangov/internal/hwstatus"
 	"github.com/SirRenix/n5-fangov/internal/ipc"
@@ -571,7 +572,8 @@ func knownSensors(fs *hwmon.FS, dev profile.Device) []sensorInfo {
 // config file (offline paths: the onfailure `alert` command, the apt
 // hook's `check --after-update`), so "off" or "log" are honoured there
 // too. An unreadable config means transport "auto". The delivery is
-// also recorded in the state directory's history when that file exists.
+// also recorded in the state directory's history when that file exists,
+// and marked in the event log (cliEventLog).
 func newAlerter() alert.Sink {
 	cfg, _, _ := config.Load(defaultConfigPath)
 	sink, _ := alert.NewForConfig(alertConfig(cfg.Alert), log.Default())
@@ -579,7 +581,9 @@ func newAlerter() alert.Sink {
 	if _, err := os.Stat(path); err != nil {
 		path = ""
 	}
-	return alert.NewRing(sink, path, log.Default())
+	r := alert.NewRing(sink, path, log.Default())
+	r.SetOnRecord(alertMarker(cliEventLog(), events.ByCLI))
+	return r
 }
 
 // sendAlert delivers one alert immediately (no cooldown). Used by the
@@ -674,6 +678,7 @@ type controlOpts struct {
 	HistoryFile string                  // <state dir>/history.json; "" = memory only
 	DiskKind    func(dev string) string // disk:<dev> kinds for the built-in ceilings
 	HWStatus    string                  // hardware status of this box (hwstatus), snapshot hw_status
+	Events      events.Recorder         // the event queue; nil = no events
 }
 
 func newController(cfg config.Config, dev profile.Device, f sensorFactory, a alert.Sink, o controlOpts) (*control.Controller, error) {
@@ -683,6 +688,7 @@ func newController(cfg config.Config, dev profile.Device, f sensorFactory, a ale
 		HistoryFile: o.HistoryFile,
 		DiskKind:    o.DiskKind,
 		HWStatus:    o.HWStatus,
+		Events:      o.Events,
 		Logger:      log.Default(),
 		Notify:      func() { noteNotify("WATCHDOG=1", sdnotify.Watchdog()) },
 		Status:      func(s string) { noteNotify("STATUS", sdnotify.Status(s)) },
@@ -775,6 +781,9 @@ type webDeps struct {
 	// nil: 501. Interval sets the /healthz grace (healthGraceCycles cycles).
 	Health   *healthView
 	Interval time.Duration
+	// Events backs GET /api/events and records the operator's actions;
+	// nil: 501.
+	Events *events.Log
 }
 
 // logStore is the log read side (web.LogStore, DESIGN "Web and API"): implemented by
@@ -880,6 +889,9 @@ func newWebServer(d webDeps) webServer {
 		deps.Schedules = d.Schedules.Status
 	}
 	deps.Channels = d.Channels
+	if d.Events != nil {
+		deps.Events = d.Events
+	}
 	applyHealthDeps(&deps, d.Health, d.Interval)
 	s := web.New(deps)
 	return webServer{TCP: s.Handler(), Socket: s.SocketHandler(), serve: s.Serve, serveTLS: serveTLSFunc(s)}

@@ -1,6 +1,6 @@
 //go:build !unix
 
-package alert
+package ringfile
 
 import "time"
 

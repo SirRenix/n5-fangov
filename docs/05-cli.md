@@ -29,6 +29,7 @@ the running daemon and fall back to the files or `state.json` when it is down
 | `cert` | `info` \| `export [--der] [FILE]` \| `regen [--new-key]` \| `upload CERT KEY` \| `reset` | dashboard certificate (*socket* = hot swap, else on the files plus a restart hint) — [CLI equivalents](08-https-security.md#cli-equivalents) |
 | `alerts` | `status` \| `test` \| `template` \| `ack ID...` \| `ack --all` | alert transport (`status` shows the webhook URL with its query redacted, the recent alerts with id and acknowledgement), test alert, PVE notification template, acknowledge alerts (*socket*, else on the files) — [From the shell](07-alerts.md#from-the-shell) |
 | `token` | `create NAME [--scope read\|control\|admin] [--ttl DAYS]` \| `list` \| `revoke ID` | API tokens (*socket* only: the daemon owns `tokens.json`) — [below](#api-tokens) |
+| `events` | `--since 24h\|7d\|DURATION` (default 24h), `--kind K` (repeatable), `--json` | the event log behind the chart markers, oldest first (*socket*, else `events.json`, read-only) — [below](#events) |
 | `export [FILE]` | `--presets DIR` | settings bundle (config + presets, hash redacted) as JSON; `-`/no file = stdout — [Backup and restore](09-updates.md#backup-and-restore) |
 | `import FILE` | `--presets DIR` | restore a bundle (everything validated first), reload the daemon |
 | `version` | (also `-v`, `--version`) | print the version |
@@ -57,6 +58,34 @@ history`). Below the table: what the preview cannot show, and for an HDD channel
 assist on the measured effect of 16.11.2026, labelled as measured. `--json` prints the
 API answer. Without an answering socket the command fails; it reads no files itself
 (the history is the daemon's). Rules: [API: Preview](12-api.md#preview).
+
+## events
+
+```
+n5-fangov events
+n5-fangov events --since 7d --kind override --kind critical
+n5-fangov events --since 90m --json
+```
+
+Prints the [event log](07-alerts.md#events-and-alerts), one line per event, oldest
+first: local time, kind, channel (`-` for none), text and cause in brackets.
+
+```
+2026-11-21 14:02:00  preset        -      preset n5pro-cool (schedule 13:00-18:00)  [schedule]
+2026-11-21 14:20:31  override      hdd    hdd manual 150 (admin)  [user:admin]
+2026-11-21 14:35:02  override-end  hdd    hdd back to the curve (admin)  [user:admin]
+3 event(s), source: daemon
+```
+
+- `--since`: `24h` (default), `7d` (`Nd` = days) or any duration from `1m` to `7d`.
+- `--kind`: one of `preset override assist alert critical ceiling failsafe start reload`
+  or an `-end` kind; a span kind includes its end event. Repeat it for several.
+- `--json`: the events as an array, the fields of [`GET /api/events`](12-api.md#events).
+
+With the daemon the command asks the socket; without it, it reads
+`/var/lib/n5-fangov/events.json` and writes nothing (the last line names the file). A
+file it may not read (not root) is an error with exit 1, not an empty list; a missing
+file is `no events`.
 
 ## identify
 
@@ -225,7 +254,7 @@ unknown id). `2` usage error.
 | Variable | Default | Holds |
 |---|---|---|
 | `N5FANGOV_RUN_DIR` | `/run/n5-fangov` | socket, `state.json`, override and alert stamps |
-| `N5FANGOV_STATE_DIR` | `$STATE_DIRECTORY` from systemd, else `/var/lib/n5-fangov` | `sessions.json`, `tokens.json`, `alerts.json`, `history.json` |
+| `N5FANGOV_STATE_DIR` | `$STATE_DIRECTORY` from systemd, else `/var/lib/n5-fangov` | `sessions.json`, `tokens.json`, `alerts.json`, `history.json`, `events.json` |
 | `N5FANGOV_SYSFS` | `/sys` | sysfs root; tests point it at `testdata/sysfs/n5pro` |
 
 Relative paths are taken from the working directory; under the unit that is `/`.

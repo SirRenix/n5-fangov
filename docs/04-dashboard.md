@@ -66,7 +66,33 @@ and five-minute means, reloaded every 60 s. The history survives restarts
 downloads the selected range ([History and CSV](12-api.md#history-and-csv)).
 
 **Charts**: *Temperature*, *Fan speed* (`RPM` / `Duty` switch) and, signed in and once
-a sensor is watched, *Extra sensors* for the ids in `[dashboard] sensors`.
+a sensor is watched, *Extra sensors* for the ids in `[dashboard] sensors`. Temperature
+and fan speed carry the [event markers](#event-markers).
+
+### Event markers
+
+The charts show what happened while the lines moved: a preset switch, an override, the
+assist switch, an alert, a critical or ceiling state, a failsafe, a daemon start.
+
+- **Groups**, each with its own colour and shape: *Operation* ● (preset, override,
+  assist, reload), *Protection* ▲ (alert, critical, ceiling, failsafe), *System* ■
+  (daemon start).
+- **Point events**: a thin vertical line and the symbol at the top of the chart.
+- **Spans** (override, critical, ceiling, failsafe): a shaded band from start to end, per
+  channel; one that is still running ends at the right edge.
+- **Hover** (on a phone: drag a finger) near a symbol: the chart tooltip lists the events under the pointer, e.g.
+  `14:02 preset n5pro-cool (schedule 22:00-07:00)`. Events closer than 6 px share one
+  symbol with a count; the most severe group gives the shape. The symbol's title lists
+  them as well.
+- **Filter**: the chips *Operation · Protection · System* above the charts switch a
+  group on or off; the choice is kept in this browser. All are on by default.
+- Not signed in, the markers show the kind only (`Preset`, `Override hdd`), no text and
+  no user.
+
+The markers also appear in the [preview](#preview) chart. The daemon keeps the events
+in `/var/lib/n5-fangov/events.json` (7 days, at most 2000); what is recorded and when:
+[Alerts: events and alerts](07-alerts.md#events-and-alerts). From the shell:
+`n5-fangov events`.
 
 ![Overview with the 24 h range: averaged charts, Www HH:MM axis, CSV button](screenshots/26-overview-24h.png)
 
@@ -104,6 +130,8 @@ Signed in. The answer to "is everything in order?" in one place:
 - **Driver and daemon**: module, version, srcversion, write mode, the version the
   installed driver package builds (*reload pending* when they differ), daemon start, the
   last `restart`, `failed`, `emergency`, `kernel` and `driver` alert.
+- **Recent events**: the last 20 [events](#event-markers), newest first, with group
+  symbol, kind, age and text.
 
 The page reloads every minute while it is open.
 
@@ -208,6 +236,8 @@ Check a change against the recorded history before you apply it. Nothing is appl
   on 5-min means. Per channel the limits of its computation follow (an assist source
   missing from the history, a mixed composite sensor judged on its maximum). A channel
   without a preview, or a failed request, greys its chart out.
+- The [event markers](#event-markers) of the span sit in the chart, with the same
+  filter as on the Overview.
 - With assist on for an HDD channel a line carries the measured effect of 16.11.2026
   (HDD fan 106 → 150: NVMe −2.3…2.7 K, drives −0.5…0.9 K after 8–15 min), labelled
   *measured, not predicted*.
@@ -517,7 +547,9 @@ production page never requests, with documentation values (`n5host`, `192.0.2.x`
 | `&assist=1` | the hdd channel's `[[assist]]` table starts switched on with a warm GPU source: `+N` on the tile, the line under the switch |
 
 The mock implements every endpoint of the API, including tokens (`n5t_mock…`), alert
-acknowledgement (two of the recent alerts start acknowledged), driver and health,
+acknowledgement (two of the recent alerts start acknowledged), events (a sample week
+with a merged symbol and an open cpu override; its override, assist, preset and config
+answers add events), driver and health,
 schedules, the history tiers, CSV, the webhook status, `disk:*` sensors and the preset
 body; it validates curves, stop and min on with the daemon's rules. Its presets are the
 three built-ins, `summer` and `alternative` (cpu and ssd from `n5pro-balanced`, its own

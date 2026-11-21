@@ -29,7 +29,7 @@ const UI = Object.freeze({
 	timing: { toast: 5000, toastErr: 12000, toastLong: 15000, toastNotice: 8000, alerts: 60000, drv: 60000, system: 30000, log: 10000, schedules: 60000, fans: 30000, blobRevoke: 30000, subLock: 1000 },
 	toastMax: 3,
 	chart: { yMargin: .15, yRound: 5, minSpanTemp: 15, minSpanRpm: 1000, minSpan: 10, pad: { l: 40, r: 58, t: 8, b: 22 },
-		lineW: 2, fillAlpha: .08, dotR: 4.5, dotStroke: 2, labelH: 13, labelGap: 6, tipGap: 12, dash: { hover: [3, 3], crit: [4, 3], now: [2, 3] }, ceilAlpha: .55,
+		lineW: 2, fillAlpha: .08, dotR: 4.5, dotStroke: 2, labelH: 13, labelGap: 6, tipGap: 12, dash: { hover: [3, 3], crit: [4, 3], now: [2, 3] }, ceilAlpha: .55, evGap: 6, evBand: .1, evLine: .5,
 		sparkPad: 2, sparkW: 1.5, sparkFill: .12, sparkDot: 2.5 },
 	curve: { pad: { l: 34, r: 12, t: 10, b: 22 }, xMin: 100, xPad: 10, xStep: 20, yStep: 51, hitR: 14, hitRTouch: 22, addStep: 5, addDefault: 40, fillAlpha: .1, labelGap: 8, keyT: 1, keyD: 5, keyShift: 5 },
 	limits: { min_hdd_override: 60, critical_min: 30, critical_max: 150, curve_points_min: 2, curve_points_max: 8, dashboard_sensors_max: 8, password_min: 8, password_max: 128, hysteresis_max: 10, min_on_max_s: 3600,
@@ -58,8 +58,9 @@ const RANGES = { '2h': { label: '2 h', minutes: 120, windowS: 7200, gridS: 1800,
 	'24h': { label: '24 h', minutes: 1440, windowS: 86400, gridS: 4 * 3600, maxPoints: 1500, poll: 60000, fmt: ts => new Date(ts * 1000).toLocaleDateString('en', { weekday: 'short' }) + ' ' + hm(ts) },
 	'7d': { label: '7 d', minutes: 10080, windowS: 7 * 86400, gridS: 86400, maxPoints: 2100, poll: 60000, fmt: ddmm } };
 // settings (whitelisted, else the default); nav = sidebar or icon rail; sensors = Overview groups opened/closed
-const S = { unit: 'C', interval: 5, theme: 'system', range: '2h', nav: 'side', sensors: {} }, S_OK = { unit: ['C', 'F'], interval: [5, 10, 30], theme: ['system', 'dark', 'light'], range: Object.keys(RANGES), nav: ['side', 'rail'] };
-try { const j = JSON.parse(localStorage.getItem('n5-fangov') || '{}'); for (const k in S_OK) if (S_OK[k].includes(j[k])) S[k] = j[k]; for (const g in j.sensors || {}) if (typeof j.sensors[g] === 'boolean') S.sensors[g] = j.sensors[g]; } catch (e) {}
+// ev = event mark groups shown (op/prot/sys; absent = on)
+const S = { unit: 'C', interval: 5, theme: 'system', range: '2h', nav: 'side', sensors: {}, ev: {} }, S_OK = { unit: ['C', 'F'], interval: [5, 10, 30], theme: ['system', 'dark', 'light'], range: Object.keys(RANGES), nav: ['side', 'rail'] };
+try { const j = JSON.parse(localStorage.getItem('n5-fangov') || '{}'); for (const k in S_OK) if (S_OK[k].includes(j[k])) S[k] = j[k]; for (const k of ['sensors', 'ev']) for (const g in j[k] || {}) if (typeof j[k][g] === 'boolean') S[k][g] = j[k][g]; } catch (e) {}
 const R = () => RANGES[S.range];
 const saveS = () => { try { localStorage.setItem('n5-fangov', JSON.stringify(S)); } catch (e) {} };
 const tC = v => S.unit === 'F' ? v * 9 / 5 + 32 : v;
@@ -191,6 +192,7 @@ function chart(wrap, series, opt) {
 			const x = Math.round(X(t)) + .5; ctx.strokeStyle = line; seg(ctx, x, pad.t, x, pad.t + ph);
 			if (x - lastX < minGap) continue; lastX = x; ctx.fillStyle = fg3; ctx.fillText(rg.fmt(t), x, pad.t + ph + C.labelGap);
 		}
+		if (opt.ev) evDraw(ctx, wrap, X, x0, x1, pad.t, ph);
 		const labels = [];
 		for (const s of series) {
 			if (!s.data.length) continue;
@@ -221,6 +223,7 @@ function chart(wrap, series, opt) {
 			for (const sr of s.series) { const p = nearest(sr.data, s.hover); if (!p) continue;
 				const key = h('i'); key.style.background = cssVar(sr.color);
 				tip.append(h('div', null, h('span', null, key, sr.name), h('b', null, s.opt.fmt(p[1])))); }
+			for (const m of s.mk || []) if (Math.abs(m.x - x) <= C.evGap) for (const e of m.e) tip.append(h('div', { class: 'tev' }, h('span', { class: 'gl g-' + evG(e) }, EVG[evG(e)][3]), rg.fmt(e.ts) + ' ' + evTxt(e)));
 			tip.hidden = false; const tw = tip.offsetWidth, g = C.tipGap; tip.style.left = (x + g + tw > r.width ? x - tw - g : x + g) + 'px'; tip.style.top = Math.min(ev.clientY - r.top + g, r.height - tip.offsetHeight - 4) + 'px';
 		};
 		const leave = () => { const s = wrap._st; if (s.hover === null) return; s.hover = null; tip.hidden = true; s.draw(); };
@@ -236,6 +239,51 @@ const nearest = (data, t) => { if (!data.length) return null; let lo = 0, hi = d
 	while (hi - lo > 1) { const m = (lo + hi) >> 1; data[m][0] < t ? lo = m : hi = m; }
 	return Math.abs(data[lo][0] - t) < Math.abs(data[hi][0] - t) ? data[lo] : data[hi]; };
 const redrawAll = () => { for (const w of charts) w._st && w._st.draw(); drawSparks(); drawEds(); };
+// event marks (GET /api/events, DESIGN "Events"): group = colour + shape + glyph (op ● circle, prot ▲ triangle, sys ■ square),
+// never colour alone. Spans (start … -end per kind and channel; an open one runs to the right edge) are bands, point events a
+// thin line; every event gets a symbol, a DOM span over the canvas with title and aria-label. Events closer than evGap px merge
+// into one symbol with a count (the most severe group's shape); the tooltip lists them all
+const EVG = { op: ['Operation', '--man', 'c', '●', 'preset, override, assist, reload'], prot: ['Protection', '--crit', 't', '▲', 'alert, critical, ceiling, failsafe'], sys: ['System', '--ok', 's', '■', 'daemon start'] }, EVR = { op: 1, sys: 2, prot: 3 };
+const EVK = { preset: 'op', override: 'op', assist: 'op', reload: 'op', alert: 'prot', critical: 'prot', ceiling: 'prot', failsafe: 'prot', start: 'sys' }, SPANS = ['override', 'critical', 'ceiling', 'failsafe'];
+let evs = [];
+const evB = k => k.replace(/-end$/, ''), evG = e => EVK[evB(e.kind)] || 'sys', evOn = e => S.ev[evG(e)] !== false;
+// anonymous callers get no text: a neutral label from kind and channel
+const evTxt = e => e.text || evB(e.kind)[0].toUpperCase() + evB(e.kind).slice(1) + (e.ch ? ' ' + e.ch : '') + (e.end ? ' ended' : '');
+function evDraw(ctx, wrap, X, x0, x1, top, ph) {
+	const list = evs.filter(evOn), open = {}, bands = [], mk = [];
+	for (const e of list) { const b = evB(e.kind), k = b + ' ' + (e.ch || ''); if (!SPANS.includes(b)) continue;
+		if (e.end) { bands.push([open[k] ? open[k].ts : x0, e.ts, e]); delete open[k]; } else { if (open[k]) bands.push([open[k].ts, e.ts, e]); open[k] = e; } }
+	for (const k in open) bands.push([open[k].ts, x1, open[k]]);
+	ctx.globalAlpha = C.evBand;
+	for (const [a, b, e] of bands) if (b >= x0 && a <= x1) { const l = X(Math.max(a, x0)); ctx.fillStyle = cssVar(EVG[evG(e)][1]); ctx.fillRect(l, top, Math.max(1, X(Math.min(b, x1)) - l), ph); }
+	ctx.globalAlpha = C.evLine; ctx.lineWidth = 1;
+	for (const e of list) { if (e.ts < x0 || e.ts > x1) continue; const x = X(e.ts), m = mk[mk.length - 1];
+		if (!SPANS.includes(evB(e.kind))) { const lx = Math.round(x) + .5; ctx.strokeStyle = cssVar(EVG[evG(e)][1]); seg(ctx, lx, top, lx, top + ph); }
+		if (m && x - m.x < C.evGap) m.e.push(e); else mk.push({ x, e: [e] }); }
+	ctx.globalAlpha = 1; wrap._st.mk = mk;
+	let ov = $('.evl', wrap); if (!ov) wrap.append(ov = h('div', { class: 'evl' }));
+	const key = mk.map(m => Math.round(m.x) + ':' + m.e.map(e => e.ts + evTxt(e)).join()).join(); if (ov._k === key) return; ov._k = key; clear(ov);
+	for (const m of mk) { const g = m.e.reduce((a, e) => EVR[evG(e)] > EVR[a] ? evG(e) : a, 'op'), t = m.e.map(e => ddmm(e.ts) + ' ' + evTxt(e)).join('\n');
+		const s = h('span', { class: 'evm ' + EVG[g][2] + ' g-' + g, title: t, role: 'img', 'aria-label': t, 'data-n': m.e.length > 1 ? m.e.length : null }); s.style.left = m.x + 'px'; ov.append(s); }
+}
+// filter chips over the charts, kept per browser in the settings (S.ev); all groups on by default
+const evChips = () => { const host = clear($('#ev-chips'));
+	for (const g in EVG) { const on = S.ev[g] !== false;
+		host.append(h('button', { class: 'btn sm' + (on ? ' on' : ''), 'aria-pressed': String(on), title: `${EVG[g][4]} — click to ${on ? 'hide' : 'show'}`, onclick: () => { S.ev[g] = !on; saveS(); evChips(); redrawAll(); } },
+			h('span', { class: 'gl g-' + g, 'aria-hidden': 'true' }, EVG[g][3]), EVG[g][0])); } };
+// always 7 d (the preview spans up to that, the log keeps no more), loaded with the history; an older daemon (404) leaves none.
+// Incremental with since (a second back, deduplicated: an event of the same second may come later); the whole span at start,
+// after a sign-in or out (texts) and on every 10th load (a clock step back can hide events from since). true = changed
+let evAt = 0, evN = 0;
+async function loadEvents() { const full = !evAt || !(evN++ % 10); let b;
+	try { b = (await api('/api/events?minutes=10080' + (full ? '' : '&since=' + (evAt - 1)))).body || []; } catch (e) { return false; }
+	const key = e => e.id || `${e.ts} ${e.kind} ${e.ch} ${e.end}`, have = new Set(full ? [] : evs.map(key)), add = b.filter(e => !have.has(key(e)));
+	if (!full && !add.length) return false;
+	const cut = Date.now() / 1000 - 7 * 86400; evs = (full ? b : evs.concat(add)).filter(e => e.ts >= cut).sort((x, y) => x.ts - y.ts || (x.id || 0) - (y.id || 0));
+	evAt = evs.length ? evs[evs.length - 1].ts : 0; return true; }
+// Health: the newest 20, newest first
+const hlEv = () => { const el = clear($('#hl-ev')), l = evs.slice(-20).reverse(); if (!l.length) el.append(h('li', { class: 'empty' }, 'no events in the last 7 days'));
+	for (const e of l) { const g = evG(e); el.append(h('li', { class: 'g-' + g }, h('b', null, h('span', { class: 'gl', 'aria-hidden': 'true' }, EVG[g][3]), ' ' + evB(e.kind) + (e.end ? ' end' : '')), h('span', null, tm(e.ts), ' · ', evTxt(e)))); } };
 
 // state
 let snap = null, cfg = null, cfgRaw = '', profiles = [], sensors = [], version = '', tls = null, dash = [], alerts = null, builtinNames = [];
@@ -378,9 +426,9 @@ async function applyAuth() {
 	const on = signedIn(), basic = sess.mode !== 'none';
 	for (const el of $$('[data-auth]:not(.pg)')) el.hidden = !on;
 	for (const [id, show] of [['#h-signin', !on && basic], ['#h-signout', on && basic], ['#h-user', on && basic]]) $(id).hidden = !show;
-	$('#h-user-n').textContent = sess.user || ''; buildNav();
+	$('#h-user-n').textContent = sess.user || ''; buildNav(); evAt = 0;
 	if (!on) psReset();
-	if (!on) { cert = null; cfg = null; edState = null; dirty(false); scReset(); alerts = null; sysinfo = null; dash = []; profiles = []; SN.key = null; for (const k in ED) delete ED[k]; for (const id of ['#fan-cards', '#ch-sel', '#preset-row', '#log', '#sc-tbl tbody', '#sc-kv', '#ac-tok tbody']) clear($(id));
+	if (!on) { cert = null; cfg = null; edState = null; dirty(false); scReset(); alerts = null; sysinfo = null; dash = []; profiles = []; evs = evs.map(e => ({ ts: e.ts, kind: e.kind, ch: e.ch, end: e.end })); SN.key = null; for (const k in ED) delete ED[k]; for (const id of ['#fan-cards', '#ch-sel', '#preset-row', '#log', '#sc-tbl tbody', '#sc-kv', '#ac-tok tbody']) clear($(id));
 		// protected content leaves the DOM, not only the view
 		for (const el of $$('#p-health ul, #p-health dl, #p-system dl, #p-system tbody, #p-alerts dl, #p-alerts tbody, #p-alerts ul, #profiles tbody, #sensors, #sys, #alerts, #ac-sessions tbody, #ct-kv, #ct-san, #al-tpl')) clear(el);
 		for (const id of ['#ct-fp', '#ac-user', '#ac-tk-nn', '#sy-when', '#hl-sum']) $(id).textContent = ''; ctClearUpload(); acReset(); $('#al-form').reset(); alDirty = false; if (ped.open) ped.close();
@@ -567,11 +615,11 @@ function renderCharts() {
 	const tf = { fmt: (v, ax) => v.toFixed(ax ? 0 : 1) + (ax ? '' : ' ' + unit()), minSpan: C.minSpanTemp };
 	const ts = mk('temp', tC), last = ' · last ' + R().label; legend($('#lg-temp'), ts);
 	$('#ch-temp-title').textContent = 'Temperature' + last; $('#ch-extra-title').textContent = 'Extra sensors' + last;
-	chart($('#ch-temp'), ts, tf);
+	chart($('#ch-temp'), ts, Object.assign({ ev: 1 }, tf));
 	const fs = mk(fanMetric); legend($('#lg-fan'), fs);
 	$('#ch-fan-title').textContent = (fanMetric === 'rpm' ? 'Fan speed' : 'Duty') + last;
 	// rpm autoscales like the temperature (a 0-based axis squeezes 2000–3300 rpm into the top third), duty keeps 0..255
-	chart($('#ch-fan'), fs, fanMetric === 'rpm' ? { fmt: (v, ax) => ax ? String(Math.round(v)) : Math.round(v) + ' rpm', minSpan: C.minSpanRpm, floor: 0 } : { fmt: (v, ax) => ax ? String(Math.round(v)) : `${Math.round(v)} (${pct(v)} %)`, yMin: 0, yMax: LIM.duty });
+	chart($('#ch-fan'), fs, fanMetric === 'rpm' ? { fmt: (v, ax) => ax ? String(Math.round(v)) : Math.round(v) + ' rpm', minSpan: C.minSpanRpm, floor: 0, ev: 1 } : { fmt: (v, ax) => ax ? String(Math.round(v)) : `${Math.round(v)} (${pct(v)} %)`, yMin: 0, yMax: LIM.duty, ev: 1 });
 	// extra sensors chart, only while something is watched
 	const on = signedIn() && dash.length > 0; $('#extra-card').hidden = !on; if (!on) return;
 	const es = dash.map((id, i) => ({ id, name: snDesc(id), color: seriesColor(names.length + i), data: hist.filter(p => p.extra && p.extra[id] > -900).map(p => [p.ts, tC(p.extra[id])]) }));
@@ -582,7 +630,7 @@ $$('#fan-seg button').forEach(b => b.addEventListener('click', () => { fanMetric
 // range selector: the tier changes with the range, so the history is reloaded and the poll timer re-armed
 const setRange = r => { if (!RANGES[r]) return; S.range = r; saveS(); segOn('#rg-seg button', $(`#rg-seg button[data-range="${r}"]`)); $('#ov-csv').title = `Download the last ${RANGES[r].label} as CSV`; };
 $$('#rg-seg button').forEach(b => b.addEventListener('click', () => { if (b.dataset.range === S.range) return; setRange(b.dataset.range); resetHistory(); schedule(); }));
-setRange(S.range);
+setRange(S.range); evChips();
 on('#ov-csv', 'click', () => act(() => download('/api/history.csv?minutes=' + R().minutes, 'n5-fangov-history.csv'), n => `History exported as ${n}`));
 
 // Fans page (§11a): one card per channel — the curve editor (edited in °C whatever the display unit; edState = working copy,
@@ -611,7 +659,7 @@ async function pvRun() { const el = PV.el; if (!el) return; if (PV.busy) { PV.q 
 		if (x.error) { if (PV.w[n]) PV.w[n].classList.add('pv-off'); return sum.push(`${n}: no preview — ${x.error}` + notes); }
 		let w = PV.w[n]; if (!w) $('.pv-c', el).append(h('h3', null, n), w = PV.w[n] = h('div', { class: 'chart' }, h('canvas', { role: 'img', 'aria-label': `${n}: recorded and preview duty` }), h('div', { class: 'tip', hidden: true })));
 		w.classList.remove('pv-off'); const d = (k, f) => x.series.filter(p => p[k] !== null).map(p => [p.ts, f ? p.boost : p[k]]), a = x.summary.actual, p = x.summary.preview;
-		chart(w, [{ name: n + ' recorded', color: '--fg3', data: d('actual') }, { name: n + ' preview', color: seriesColor(i), data: d('preview') }, { name: 'assist', color: '--man', data: d('preview', 1) }], { fmt: v => Math.round(v), yMin: 0, yMax: 255, rg: RANGES[sp] });
+		chart(w, [{ name: n + ' recorded', color: '--fg3', data: d('actual') }, { name: n + ' preview', color: seriesColor(i), data: d('preview') }, { name: 'assist', color: '--man', data: d('preview', 1) }], { fmt: v => Math.round(v), yMin: 0, yMax: 255, rg: RANGES[sp], ev: 1 });
 		sum.push(`${n}: Ø ${Math.round(a.mean)} → ${Math.round(p.mean)}, P95 ${a.p95} → ${p.p95}, max ${a.max} → ${p.max}, ≥ 200: ${a.min_ge_200} → ${p.min_ge_200} min, assist ${a.assist_min} → ${p.assist_min} min` + notes + (x.measured ? '\n' + x.measured : '')); });
 	$('.pv-s', el).textContent = sum.join('\n'); $('.pv-n', el).textContent = r.note; }
 const ED = {}, drawEds = () => { for (const k in ED) ED[k].draw(); }; let edState = null, edStash = null, edDirty = false;
@@ -1126,13 +1174,14 @@ let histGen = 0;
 const maxPts = rg => { if (rg.maxPoints) return rg.maxPoints; const iv = cfg && cfg.daemon ? durS(cfg.daemon.interval) : 0; return iv > 0 ? Math.ceil(rg.windowS / iv) + 12 : Infinity; };
 // 2 h: incremental (since); 24 h / 7 d: the averaged tier is reloaded whole (bucket means change until the bucket closes)
 async function loadHistory() {
-	const g = histGen, rg = R(), inc = !!(rg.since && lastTs);
+	const g = histGen, rg = R(), inc = !!(rg.since && lastTs), evp = loadEvents();
 	try { const r = await api(`/api/history?minutes=${rg.minutes}` + (inc ? '&since=' + lastTs : '')); if (g !== histGen) return;
 		const pts = (r.body || []).filter(p => !inc || p.ts > lastTs).sort((a, b) => a.ts - b.ts);
 		if (!inc) hist = [];
 		if (pts.length) { hist = hist.concat(pts); lastTs = hist[hist.length - 1].ts; }
 		const cut = Date.now() / 1000 - rg.windowS, cap = maxPts(rg); while (hist.length && (hist[0].ts < cut || hist.length > cap)) hist.shift();
-		renderCharts(); drawSparks();
+		const evNew = await evp; renderCharts(); drawSparks(); // one redraw per poll: the charts take the new events with it
+		if (evNew) { for (const k in PV.w) PV.w[k]._st.draw(); if (cur === 'health') hlEv(); }
 	} catch (e) {}
 }
 const resetHistory = () => { hist = []; lastTs = 0; histGen++; loadHistory(); };
@@ -1285,7 +1334,7 @@ async function loadHealth() { if (!signedIn()) return; let H; try { H = (await a
 	const d = H.driver || {}, ev = H.last_events || {}; $('#hl-sum').textContent = 'check: ' + H.summary + ' · ' + abs(H.checked);
 	hlList($('#hl-checks'), H.checks); hlList($('#hl-gate'), H.gate); drv = d; drvState();
 	kv($('#hl-kv'), [['driver', (d.module || '—') + ' ' + (d.version || '')], ['srcversion', h('dd', { class: 'mono' }, d.srcversion || '—')], ['mode', d.mode || '—'],
-		['package builds', (d.expected || '—') + (d.pending ? ' — reload pending' : '')], ['daemon started', h('dd', null, tm(H.started))], ...Object.keys(ev).sort().map(k => ['last ' + k + ' alert', h('dd', null, tm(ev[k]))])]); }
+		['package builds', (d.expected || '—') + (d.pending ? ' — reload pending' : '')], ['daemon started', h('dd', null, tm(H.started))], ...Object.keys(ev).sort().map(k => ['last ' + k + ' alert', h('dd', null, tm(ev[k]))])]); hlEv(); }
 $$('#st-cert [data-cancel]').forEach(b => b.addEventListener('click', () => { b.closest('form').hidden = true; ctClearUpload(); }));
 for (const x of ['crt', 'cer']) on('#ct-' + x, 'click', () => act(() => download('/api/tls/cert.' + x, 'n5-fangov.' + x), n => `Downloaded ${n} — now import it (see How to trust)`));
 on('#ct-copy', 'click', () => navigator.clipboard.writeText($('#ct-fp').textContent).then(() => toast('Fingerprint copied', 'ok'), () => toast('Clipboard blocked — select the text', 'warn')));

@@ -71,6 +71,7 @@
       <button data-range="2h" aria-pressed="false">2 h</button><button data-range="24h" aria-pressed="false">24 h</button><button data-range="7d" aria-pressed="false">7 d</button>
     </div>
     <span class="hint sm mx">2 h at every cycle, 24 h as 1-min and 7 d as 5-min means</span>
+    <div class="evf" id="ev-chips" role="group" aria-label="Event markers in the charts"></div>
     <button class="btn sm" id="ov-csv" type="button" data-auth hidden><svg class="ic" aria-hidden="true"><use href="#i-download"/></svg>CSV</button>
   </div>
   <div class="charts charts3">
@@ -131,6 +132,7 @@
     <div class="card"><h2>Kernel gate</h2><ul class="hl" id="hl-gate"></ul></div>
     <div class="card"><h2>Driver and daemon</h2><dl class="kv" id="hl-kv"></dl></div>
   </div>
+  <div class="card"><div class="card-h"><h2>Recent events</h2><span class="hint sm">the last 20, newest first · the chart markers</span></div><ul class="hl ev" id="hl-ev"></ul></div>
 </section>
 
 <section id="p-fans" class="pg" data-auth hidden>

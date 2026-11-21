@@ -34,6 +34,7 @@ import (
 
 	"github.com/SirRenix/n5-fangov/internal/config"
 	"github.com/SirRenix/n5-fangov/internal/control"
+	"github.com/SirRenix/n5-fangov/internal/events"
 	"github.com/SirRenix/n5-fangov/internal/ipc"
 	"github.com/SirRenix/n5-fangov/internal/logfile"
 	"github.com/SirRenix/n5-fangov/internal/tlscert"
@@ -264,6 +265,9 @@ type Deps struct {
 	// HealthGrace is how long GET /healthz answers "starting" with 200
 	// before a daemon without a finished cycle counts as stuck (503).
 	HealthGrace time.Duration
+	// Events backs GET /api/events and records the operator's actions
+	// (events_api.go); nil → 501, nothing recorded.
+	Events EventLog
 }
 
 // Server holds the mux and serves it on TCP and on the unix socket.
@@ -1136,6 +1140,7 @@ func (s *Server) putConfig(w http.ResponseWriter, r *http.Request) {
 	err = s.deps.Service.Reload(body)
 	switch {
 	case err == nil:
+		s.event(r, events.Reload, "", "config reloaded")
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "restart_required": false, "warnings": nonNil(warnings)})
 	case errors.Is(err, control.ErrRestartRequired):
 		writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "restart_required": true, "message": err.Error(), "warnings": nonNil(warnings)})
@@ -1250,6 +1255,7 @@ func (s *Server) putOverride(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	s.event(r, events.Override, name, fmt.Sprintf("%s manual %d", name, duty))
 	// The override is applied by the loop on its next cycle; mode reports
 	// what the channel is doing now (critical/stall are not "manual").
 	mode := control.ModeManual
@@ -1273,9 +1279,18 @@ func (s *Server) deleteOverride(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "unknown channel "+name)
 		return
 	}
+	// a clear of a channel that was on its curve records nothing
+	had := s.overrideOpen(name)
+	if o, ok := s.deps.Service.(interface{ Overrides() map[string]int }); ok {
+		_, set := o.Overrides()[name]
+		had = had || set
+	}
 	if err := s.deps.Service.ClearOverride(name); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+	if had {
+		s.event(r, events.OverrideEnd, name, name+" back to the curve")
 	}
 	mode := control.ModeAuto
 	if c := s.channel(name); c != nil {
@@ -1335,6 +1350,7 @@ func (s *Server) applyPreset(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	s.event(r, events.Preset, "", "preset "+name)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "applied": name})
 }
 
@@ -1491,6 +1507,7 @@ func (s *Server) importConfig(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "restart_required": true, "message": "restart required: systemctl restart n5-fangov", "warnings": nonNil(warnings)})
 		return
 	}
+	s.event(r, events.Reload, "", "config reloaded (import)")
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "restart_required": false, "warnings": nonNil(warnings)})
 }
 

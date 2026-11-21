@@ -111,6 +111,7 @@ Basic auth only, never a token.
 | `GET` | `/healthz` | public | liveness for monitors, [below](#healthz) |
 | `GET` | `/api/state` | filtered | snapshot: status, `hw_status` (`validated`/`tested`/`experimental`/`unknown`; `verified` = validated or tested, kept for compatibility), channels (temperature, duty, target, RPM, mode, `assist {enabled, boost}` for a channel with an `[[assist]]` table; signed in also `held_temp`, `hold_until`, `ceiling`, `ceiling_hit`, the assist `source` and `sources[]`, EC and watched temperatures, alert stamps) |
 | `GET` | `/api/history` | filtered | history points (`minutes`, `since`; anonymous: without `extra`) |
+| `GET` | `/api/events` | filtered | events for the chart markers (`minutes`, `since`; anonymous: `ts`, `kind`, `ch`, `end` only), [below](#events) |
 
 **Scope `read`**
 
@@ -323,6 +324,36 @@ time, an absent value is an empty cell.
 ```
 curl -H "Authorization: Bearer n5t_..." -o week.csv "https://n5host:8010/api/history.csv?minutes=10080"
 ```
+
+## Events
+
+```
+curl -sk -H "Authorization: Bearer n5t_..." "https://n5host:8010/api/events?minutes=1440"
+```
+
+`GET /api/events?minutes=N&since=TS` (scope `read`, filtered) returns the events behind
+the [chart markers](04-dashboard.md#event-markers), oldest first, with the parameters
+and limits of `/api/history` (`minutes` 1..10080, default 120; `since` = only `ts > since`):
+
+```
+[{"id":41,"ts":1789500120,"kind":"override","ch":"hdd","text":"hdd manual 150 (admin)","by":"user:admin"},
+ {"id":42,"ts":1789501020,"kind":"override-end","ch":"hdd","text":"hdd back to the curve (admin)","by":"user:admin","end":true}]
+```
+
+- `kind`: `preset`, `override`, `assist`, `alert`, `critical`, `ceiling`, `failsafe`,
+  `start`, `reload`; a span (`override`, `critical`, `ceiling`, `failsafe`) ends with its
+  `-end` event, which carries `end: true`. When each is recorded:
+  [Events and alerts](07-alerts.md#events-and-alerts).
+- `ch` is present for per-channel kinds; `by` is `user:<name>`, `token:<name>`,
+  `schedule`, `cli` or `daemon`; `text` names kind, channel, values and the user, never
+  a path or an alert message.
+- Anonymous callers get `ts`, `kind`, `ch` and `end` only. Without an event log: 501.
+- `since` compares timestamps. After the clock steps back, events written meanwhile can
+  carry a `ts` at or before the `since` you already hold: reload the whole span now and
+  then (the dashboard does every tenth load).
+
+The log is `/var/lib/n5-fangov/events.json` (0600): 7 days, at most 2000 events. A
+`serve --dry-run` keeps its events in memory and never writes the file.
 
 ## Home Assistant
 

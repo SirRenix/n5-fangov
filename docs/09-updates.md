@@ -64,7 +64,7 @@ ignores them. Going back to a release that predates a key makes it a warning
 (`hysteresis`, `min_on`, `ceiling`, `[[schedule]]`, the `[alert]` webhook keys). A
 `sensor` **array** is not a string for an older parser: run `n5-fangov check` after
 the rollback and keep the single-id form on channels you may roll back with.
-`tokens.json` and `history.json` are left alone. Sessions are dropped when the
+`tokens.json`, `history.json` and `events.json` are left alone. Sessions are dropped when the
 credential epoch changes. If `setup` replaced the config, the previous one is
 `config.toml.bak-<timestamp>` next to it.
 

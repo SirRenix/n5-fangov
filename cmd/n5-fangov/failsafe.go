@@ -80,6 +80,8 @@ func cmdFailsafe(args []string) int {
 	} else {
 		fmt.Printf("failsafe: safe state set on %s\n", dev.Profile().Name())
 	}
+	// the chart marker: a failsafe span until the next daemon start
+	markStopFailsafe(cliEventLog(), result)
 
 	// The daemon's snapshot no longer describes reality.
 	_ = os.Remove(statePath(runDir()))

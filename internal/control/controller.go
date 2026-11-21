@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/SirRenix/n5-fangov/internal/config"
+	"github.com/SirRenix/n5-fangov/internal/events"
 	"github.com/SirRenix/n5-fangov/internal/fsutil"
 	"github.com/SirRenix/n5-fangov/internal/history"
 	"github.com/SirRenix/n5-fangov/internal/hwstatus"
@@ -25,6 +26,7 @@ import (
 	"github.com/SirRenix/n5-fangov/internal/profile"
 	"github.com/SirRenix/n5-fangov/internal/sdnotify"
 	"github.com/SirRenix/n5-fangov/internal/sensor"
+	"github.com/SirRenix/n5-fangov/internal/version"
 )
 
 // SensorReader is what the controller needs from a temperature source.
@@ -89,6 +91,12 @@ type Options struct {
 	// "" = unknown. The snapshot carries it as hw_status and derives the
 	// compatibility field verified from it.
 	HWStatus string
+
+	// Events records the daemon's events (internal/events, DESIGN
+	// "Events"): start, critical and ceiling entered/left, failsafe
+	// entered/left, alerts the cooldown suppressed. Add must not block
+	// (serve passes an events.Queue); nil = none.
+	Events events.Recorder
 }
 
 // Limits on temperature plausibility in millidegrees; defined once in
@@ -217,6 +225,10 @@ type channel struct {
 	ceilPartCeil   int
 	ceilCycles     int
 	emergencyFired bool
+	// critOn is the critical state as the event log saw it: set on the
+	// cycle a reading reaches critical, cleared on the first good reading
+	// below it (a failed read keeps it). Loop-only.
+	critOn bool
 
 	// Curve post-processing (DESIGN "Curve post-processing"), loop-only
 	// state. held is the hysteresis-held temperature the curve is evaluated
@@ -266,6 +278,11 @@ type Controller struct {
 	watched    []*watchedSensor
 	watchDirty bool
 
+	// suppMarked (under mu): an alert of the kind was suppressed by the
+	// cooldown and marked in the event log since its last delivery (one
+	// marker per cooldown window, not one per cycle).
+	suppMarked map[string]bool
+
 	logMu   sync.Mutex
 	lastMsg map[string]string
 	// readErrs rate-limits the driver read-error warnings (readerr.go);
@@ -288,7 +305,8 @@ type Controller struct {
 	// loop-only state (touched by the Run goroutine only)
 	n        int
 	wrErr    int
-	fsFail   int // consecutive cycles in which failsafeAll wrote nothing
+	fsFail   int  // consecutive cycles in which failsafeAll wrote nothing
+	inFS     bool // the write-error failsafe is in effect (event log edge)
 	lastRaw  int
 	sameRaw  int
 	haveRaw  bool
@@ -357,6 +375,7 @@ func New(cfg config.Config, dev profile.Device, sensors SensorFactory, alerter A
 		lastMsg:   map[string]string{},
 		extra:     dev.ExtraTemps(),
 	}
+	c.suppMarked = map[string]bool{}
 	c.cfg = cfg.Clone()
 	c.hist = history.New(opts.HistoryFile, c.cfg.Daemon.Interval, opts.Now, c.log.Printf)
 	if opts.RunDir != "" {
@@ -556,10 +575,16 @@ func (c *Controller) Run(ctx context.Context) (err error) {
 			c.log.Printf("%sPANIC in regulation loop: %v\n%s", logfile.PrefixErr, r, debug.Stack())
 			err = fmt.Errorf("control: panic in regulation loop: %v", r)
 		}
+		c.endSpansAtStop()
 		c.Stop()
 	}()
 	c.log.Printf("start: profile=%s hwmon=%s channels=%s interval=%s dryrun=%v",
 		c.dev.Profile().Name(), c.dev.HwmonPath(), strings.Join(c.Channels(), ","), c.interval(), c.opts.DryRun)
+	text := "started " + version.Version
+	if c.opts.DryRun {
+		text += " (dry-run)"
+	}
+	c.event(events.Start, "", text)
 	for {
 		if err := c.cycle(); err != nil {
 			return err
@@ -567,6 +592,23 @@ func (c *Controller) Run(ctx context.Context) (err error) {
 		c.saveHistory()
 		if !c.opts.Wait(ctx, c.interval()) {
 			return ctx.Err()
+		}
+	}
+}
+
+// endSpansAtStop ends the critical and ceiling spans of the event log when
+// the loop leaves (on the loop goroutine, which owns the channel state):
+// the downtime after a stop is not a critical or ceiling state. A loop that
+// never returns (killed, stuck) leaves them to serve's start-time cleanup.
+func (c *Controller) endSpansAtStop() {
+	defer func() { _ = recover() }() // a broken channel state costs the markers, not the safe stop
+	for _, ch := range c.chans {
+		if ch.critOn {
+			ch.critOn = false
+			c.event(events.CriticalEnd, ch.cfg.Name, ch.cfg.Name+" critical ended (daemon stopped)")
+		}
+		if ch.ceilHit {
+			c.event(events.CeilingEnd, ch.cfg.Name, ch.cfg.Name+" ceiling ended (daemon stopped)")
 		}
 	}
 }
@@ -785,8 +827,17 @@ func (c *Controller) computeTargets(cs *cycleState) {
 			continue
 		}
 		v, has := ovr[ch.cfg.Name]
-		if regulate(ch, now, v, has) {
+		chCrit := regulate(ch, now, v, has)
+		if chCrit {
 			crit = true
+		}
+		switch {
+		case chCrit && !ch.critOn:
+			ch.critOn = true
+			c.event(events.Critical, ch.cfg.Name, fmt.Sprintf("%s critical %s (limit %dC)", ch.cfg.Name, fmtTemp(ch.temp), ch.cfg.Critical))
+		case !chCrit && ch.critOn:
+			ch.critOn = false
+			c.event(events.CriticalEnd, ch.cfg.Name, fmt.Sprintf("%s below critical (%s)", ch.cfg.Name, fmtTemp(ch.temp)))
 		}
 		critParts = append(critParts, fmt.Sprintf("%s=%s", ch.cfg.Name, fmtTemp(ch.temp)))
 		c.applyCeiling(ch, cs.d)
@@ -905,9 +956,11 @@ func (c *Controller) applyCeiling(ch *channel, d config.Daemon) {
 	entered, left := ch.ceilingStep()
 	switch {
 	case entered:
+		c.event(events.Ceiling, ch.cfg.Name, fmt.Sprintf("%s ceiling %dC (%s %s)", ch.cfg.Name, ch.ceilPartCeil, ch.partLabel(ch.ceilPart), fmtTemp(ch.ceilPartTemp)))
 		c.raise("ceiling", fmt.Sprintf("%s: %s at %s reached the ceiling %dC (critical %dC) -> 255",
 			ch.cfg.Name, ch.partLabel(ch.ceilPart), fmtTemp(ch.ceilPartTemp), ch.ceilPartCeil, ch.cfg.Critical))
 	case left:
+		c.event(events.CeilingEnd, ch.cfg.Name, fmt.Sprintf("%s below the ceiling (%s)", ch.cfg.Name, fmtTemp(ch.temp)))
 		c.log.Printf("%s: %s below the ceiling again (%s < %dC), regulation resumed", ch.cfg.Name, ch.partLabel(ch.ceilPart), fmtTemp(ch.temp), ch.ceilPartCeil-ceilingRecover)
 	}
 	if !ch.ceilHit {
@@ -1130,6 +1183,10 @@ func (c *Controller) writeAndFinish(cs *cycleState) error {
 		c.log.Printf("pwm write error (%d consecutive)", c.wrErr)
 		status = StatusWriteError
 		if c.wrErr >= writeErrorsBeforeFailsafe {
+			if !c.inFS {
+				c.inFS = true
+				c.event(events.Failsafe, "", fmt.Sprintf("failsafe (write error, %d cycles)", c.wrErr))
+			}
 			c.raise("write", "repeated pwm write errors -> all channels 255; check driver/EC (dmesg, journalctl -u n5-fangov)")
 			c.reresolve(chans)
 			lost = c.noteFailsafe(c.failsafeAll(chans, ModeFailsafe))
@@ -1140,6 +1197,10 @@ func (c *Controller) writeAndFinish(cs *cycleState) error {
 			// only a successful write proves the device is back; a cycle
 			// without any write attempt says nothing
 			c.wrErr = 0
+			if c.inFS {
+				c.inFS = false
+				c.event(events.FailsafeEnd, "", "failsafe ended (writes work again)")
+			}
 		}
 	}
 	if nBad > 0 && nBad == len(chans) {
@@ -1858,6 +1919,9 @@ func (c *Controller) swapChannelConfig(ups []chanUpdate) {
 	for i, ch := range c.chans {
 		ups[i].oldMinOn = ch.cfg.MinOn
 		if ups[i].newSensor {
+			if ch.ceilHit {
+				c.event(events.CeilingEnd, ch.cfg.Name, ch.cfg.Name+" ceiling state reset (sensor changed)")
+			}
 			ch.sensor = ups[i].sensor
 			ch.heldOK, ch.haveCurve, ch.holding = false, false, false
 			// the ceiling state belongs to the old reading
@@ -2090,11 +2154,19 @@ func (c *Controller) raise(kind, msg string) {
 		}
 	}
 	if suppressed {
+		// one marker per cooldown window: the critical alert, say, is
+		// raised every cycle while it lasts
+		mark := !c.suppMarked[kind]
+		c.suppMarked[kind] = true
 		c.mu.Unlock()
+		if mark {
+			c.event(events.Alert, "", "alert "+kind+" (suppressed by the cooldown)")
+		}
 		return
 	}
 	c.alerts[kind] = now
 	c.alertAt[kind] = nowT
+	delete(c.suppMarked, kind)
 	c.mu.Unlock()
 	if c.opts.RunDir != "" {
 		stamp := filepath.Join(c.opts.RunDir, "alert."+kind)
@@ -2110,6 +2182,16 @@ func (c *Controller) raise(kind, msg string) {
 		return
 	}
 	go c.deliver(kind, msg)
+}
+
+// event hands one daemon event to Options.Events (non-blocking: serve
+// passes a queue). Delivered alerts are marked by the alert ring
+// (serve), the ones the cooldown suppressed here in raise.
+func (c *Controller) event(kind, ch, text string) {
+	if c.opts.Events == nil {
+		return
+	}
+	c.opts.Events.Add(events.Event{TS: c.opts.Now().Unix(), Kind: kind, Ch: ch, Text: text, By: events.ByDaemon})
 }
 
 // deliver runs a sink on its own goroutine. The Sink contract says "never
