@@ -39,6 +39,9 @@ type dirPresetStore struct {
 	svc     control.Service
 	pin     func([]byte) []byte // see fileConfigStore
 	profile string              // active profile name (built-in filter); "" = none
+	// noVersion: the scheduler's copy; its preset switches store no config
+	// version (they recur daily and would fill the ring)
+	noVersion bool
 }
 
 // List returns the built-in presets of the active profile first, then
@@ -220,7 +223,11 @@ func (s dirPresetStore) write(name string, chans []config.Channel) ([]byte, int,
 	if s.pin != nil {
 		raw = s.pin(raw)
 	}
-	if err := config.Save(s.cfgPath, raw); err != nil {
+	why := "preset " + name
+	if s.noVersion {
+		why = "" // the scheduler: no version (it restores its preset itself)
+	}
+	if err := saveConfigWhy(s.cfgPath, raw, why); err != nil {
 		return nil, 0, err
 	}
 	return raw, len(cfg.Channels), nil

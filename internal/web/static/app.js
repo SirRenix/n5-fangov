@@ -243,8 +243,8 @@ const redrawAll = () => { for (const w of charts) w._st && w._st.draw(); drawSpa
 // never colour alone. Spans (start … -end per kind and channel; an open one runs to the right edge) are bands, point events a
 // thin line; every event gets a symbol, a DOM span over the canvas with title and aria-label. Events closer than evGap px merge
 // into one symbol with a count (the most severe group's shape); the tooltip lists them all
-const EVG = { op: ['Operation', '--man', 'c', '●', 'preset, override, assist, reload, full cooling'], prot: ['Protection', '--crit', 't', '▲', 'alert, critical, ceiling, failsafe'], sys: ['System', '--ok', 's', '■', 'daemon start'] }, EVR = { op: 1, sys: 2, prot: 3 };
-const EVK = { preset: 'op', override: 'op', assist: 'op', reload: 'op', panic: 'op', 'panic-extend': 'op', alert: 'prot', critical: 'prot', ceiling: 'prot', failsafe: 'prot', start: 'sys' }, SPANS = ['override', 'critical', 'ceiling', 'failsafe', 'panic'];
+const EVG = { op: ['Operation', '--man', 'c', '●', 'preset, override, assist, reload, restore, full cooling'], prot: ['Protection', '--crit', 't', '▲', 'alert, critical, ceiling, failsafe'], sys: ['System', '--ok', 's', '■', 'daemon start'] }, EVR = { op: 1, sys: 2, prot: 3 };
+const EVK = { preset: 'op', override: 'op', assist: 'op', reload: 'op', restore: 'op', panic: 'op', 'panic-extend': 'op', alert: 'prot', critical: 'prot', ceiling: 'prot', failsafe: 'prot', start: 'sys' }, SPANS = ['override', 'critical', 'ceiling', 'failsafe', 'panic'];
 let evs = [];
 const evB = k => k.replace(/-end$/, ''), evG = e => EVK[evB(e.kind)] || 'sys', evOn = e => S.ev[evG(e)] !== false;
 // anonymous callers get no text: a neutral label from kind and channel
@@ -670,6 +670,12 @@ const pvOpen = (card, ...a) => { pvClose(); if (PVM) return PVM.open(card, ...a)
 	(pvL = pvL || js('pv.js').then(() => PVM = window.n5pv({ h, $, api, chart, charts, RANGES, seriesColor, ED, stopN, cssVar, docs })))
 		.then(() => n === pvN && PVM.open(card, ...a), () => { pvL = null; if (n === pvN) card.after(pvErr = h('section', { class: 'card pv' }, h('p', { class: 'notice err' }, 'Preview unavailable: pv.js could not be loaded'))); }); };
 const pvSched = () => PVM && PVM.sched(), pvDraw = () => PVM && PVM.redraw();
+// config versions: cv.js on first use (Settings card, Undo toast), one load in flight like pv.js
+let VSM = null, vsL = null;
+const vsMod = () => VSM ? Promise.resolve(VSM) : (vsL = vsL || js('cv.js').then(() => VSM = window.n5cv({ h, api, ask, toast, UI, cfgRefresh })).catch(e => { vsL = null; throw e; }));
+// the newest version id before a write (-1: none readable); the toast after it offers Undo only for a version newer than that
+const vsTop = () => api('/api/config/versions').then(r => r.body.length ? r.body[0].id : 0, () => -1);
+const undo = (msg, before) => before < 0 ? toast(msg, 'ok') : vsMod().then(m => m.undo(msg, before), () => toast(msg, 'ok'));
 const ED = {}, drawEds = () => { for (const k in ED) ED[k].draw(); }; let edState = null, edStash = null, edDirty = false;
 const cvNotice = notice('#cv-notice'), K = UI.curve;
 const chDirty = name => { const e = ED[name], o = chList().find(x => x.name === name); return !!(e && o) && chKey([e.c]) !== chKey([o]); };
@@ -803,7 +809,7 @@ const gapPoint = curve => { const s = curve.slice().sort((a, b) => a[0] - b[0]);
 	const t = s.length > 1 ? Math.round((s[bi - 1][0] + s[bi][0]) / 2) : (s[0] ? s[0][0] : K.addDefault) + K.addStep; return [t, Math.round(interp(s, t))]; };
 // assist: the switch writes `enabled`, the snapshot follows a cycle later (held like lv.pend)
 const asSet = async (n, lv) => { const on = lv.asw.getAttribute('aria-checked') !== 'true'; lv.asw.setAttribute('aria-busy', 'true');
-	if (await act(() => api('/api/assist/' + n, { method: 'PUT', json: { enabled: on } }), `${n}: assist ${on ? 'on' : 'off'}${pAft()}`)) { lv.asOn = on; lv.asUntil = Date.now() + 2 * Math.max(2, cfg && cfg.daemon ? durS(cfg.daemon.interval) : 10) * 1000; lv.asw.setAttribute('aria-checked', on); }
+	const v0 = await vsTop(); if (await act(() => api('/api/assist/' + n, { method: 'PUT', json: { enabled: on } }))) { undo(`${n}: assist ${on ? 'on' : 'off'}${pAft()}`, v0); lv.asOn = on; lv.asUntil = Date.now() + 2 * Math.max(2, cfg && cfg.daemon ? durS(cfg.daemon.interval) : 10) * 1000; lv.asw.setAttribute('aria-checked', on); }
 	lv.asw.removeAttribute('aria-busy'); poll(); };
 const asLbl = id => (/^hwmon:([^:]+):/.exec(id) || [, id])[1];
 // value line: under a boost its source with "full at", else every source with "starts at" (start/full since 0.7.0-rc2)
@@ -916,10 +922,10 @@ on('#cv-apply', 'click', async () => {
 	if (errs.length) return cvNotice('Not applied — fix these first:\n' + errs.join('\n'), 'err');
 	await loadConfig(); // fresh raw: [dashboard], [alert], [[schedule]] may have changed since the last read
 	const body = stripChannels(cfgRaw) + edState.map(tomlChannel).join('\n');
-	try { const r = await api('/api/config?strict=1', { method: 'PUT', body, headers: { 'Content-Type': 'application/toml' } });
+	const v0 = await vsTop(); try { const r = await api('/api/config?strict=1', { method: 'PUT', body, headers: { 'Content-Type': 'application/toml' } });
 		const cw = ceilingWarnings(), warn = (r.body && Array.isArray(r.body.warnings) && r.body.warnings.length ? 'Config warnings outside the channel tables:\n' + r.body.warnings.join('\n') + '\n' : '') + cw.join('\n');
 		cvNotice((r.status === 202 ? 'Written — restart required (channel set or profile changed): systemctl restart n5-fangov\n' : '') + warn, '');
-		toast(r.status === 202 ? 'Curves written — restart required' : warn ? 'Applied with warnings' : 'Curves applied', r.status === 202 || warn ? 'warn' : 'ok'); await loadConfig(); loadEditor(true); loadPresets();
+		r.status === 202 || warn ? toast(r.status === 202 ? 'Curves written — restart required' : 'Applied with warnings', 'warn') : undo('Curves applied', v0); await loadConfig(); loadEditor(true); loadPresets();
 	} catch (e) { cvNotice(e.message, 'err'); } // notice is role=alert: no toast on top
 });
 on('#cv-revert', 'click', () => { loadEditor(); toast('Reverted', ''); });
@@ -945,9 +951,9 @@ const presetBadges = () => { for (const c of chList()) { const ed = ED[c.name]; 
 	el.append(h('i', { class: 'dot', 'aria-hidden': 'true' }), 'Active set: ', as.length ? h('b', null, as.join(' · ')) : h('b', null, 'custom'), as.length ? (as.length > 1 ? ' — the daemon runs these values (several presets match)' : ' — the daemon runs exactly these values') : ' (matches no preset)'); };
 const nameOk = n => LIM.name.test(n) ? builtinNames.includes(n) ? `${n} is a built-in preset — pick another name` : '' : 'Name: a-z, 0-9, _ and -, at most 64 characters';
 const applyPreset = async p => { if (!await ask('Apply preset', `Apply preset ${p.name}? The curves change immediately.` + (edDirty ? '\nUnsaved curve edits are discarded.' : ''), { ok: 'Apply' })) return;
-	let r; try { r = await api(`/api/presets/${encodeURIComponent(p.name)}/apply`, { method: 'POST' }); } catch (e) { return toast(e.message, 'err'); }
+	const v0 = await vsTop(); let r; try { r = await api(`/api/presets/${encodeURIComponent(p.name)}/apply`, { method: 'POST' }); } catch (e) { return toast(e.message, 'err'); }
 	const rs = r.status === 202; psNotice(rs ? 'Preset written — restart required: systemctl restart n5-fangov' : '');
-	toast(rs ? `Preset ${p.name} written — restart required` : `Preset ${p.name} applied${pAft()}`, rs ? 'warn' : 'ok'); await loadConfig(); loadEditor(); loadPresets(); };
+	rs ? toast(`Preset ${p.name} written — restart required`, 'warn') : undo(`Preset ${p.name} applied${pAft()}`, v0); await loadConfig(); loadEditor(); loadPresets(); };
 async function loadPresets() {
 	const host = $('#preset-row'); try {
 		psList = (await api('/api/presets')).body || []; builtinNames = psList.filter(p => p.builtin).map(p => p.name);
@@ -1094,7 +1100,7 @@ on('#sc-save', 'click', async () => { if (!scState) return; const errs = scValid
 	if (errs.length) return scErr('Not saved — fix these first:\n' + errs.join('\n'), 'err');
 	await loadConfig(); // splice into the file as it is now
 	const body = stripSchedules(cfgRaw) + scState.map(tomlSchedule).join('\n');
-	try { const r = await api('/api/config?strict=1', { method: 'PUT', body, headers: { 'Content-Type': 'application/toml' } });
+	const v0 = await vsTop(); try { const r = await api('/api/config?strict=1', { method: 'PUT', body, headers: { 'Content-Type': 'application/toml' } });
 		const warn = r.body && Array.isArray(r.body.warnings) && r.body.warnings.length ? 'Config warnings:\n' + r.body.warnings.join('\n') : '';
 		scErr((r.status === 202 ? 'Written — restart required: systemctl restart n5-fangov\n' : '') + warn, '');
 		toast(r.status === 202 ? 'Schedule written — restart required' : warn ? 'Schedule saved with warnings' : 'Schedule saved', r.status === 202 || warn ? 'warn' : 'ok');
@@ -1253,6 +1259,9 @@ on('#s-interval', 'change', ev => { S.interval = +ev.target.value; saveS(); sche
 on('#s-theme', 'change', ev => { S.theme = ev.target.value; saveS(); document.documentElement.dataset.theme = S.theme; redrawAll(); });
 matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => { if (S.theme === 'system') redrawAll(); });
 document.documentElement.dataset.theme = S.theme;
+// after an import or a restore: config, editor and presets re-read (unsaved curve edits go, like after an apply)
+const cfgRefresh = async () => { await loadConfig(); edState = null; dirty(false); if (cur === 'fans') { loadEditor(); loadPresets(); } poll(); };
+on('#vs-show', 'click', () => vsMod().then(m => m.show($('#vs-list')), () => toast('cv.js could not be loaded', 'err')));
 // settings bundle
 const gNotice = notice('#g-notice');
 on('#s-export', 'click', () => { act(() => download('/api/config/export', 'n5-fangov-settings.json'), n => `Settings exported as ${n}`); });
@@ -1266,7 +1275,7 @@ on('#s-file', 'change', async () => {
 	try { const r = await api('/api/config/import', { method: 'POST', body: text, headers: { 'Content-Type': 'application/json' } });
 		if (r.status === 202) { gNotice('Settings imported — restart required: systemctl restart n5-fangov'); toast('Imported — restart required', 'warn', UI.timing.toastErr); }
 		else { toast('Settings imported', 'ok'); }
-		await loadConfig(); edState = null; dirty(false); if (cur === 'fans') { loadEditor(); loadPresets(); } poll();
+		await cfgRefresh();
 	} catch (e) { toast(e.message, 'err', UI.timing.toastLong); }
 });
 

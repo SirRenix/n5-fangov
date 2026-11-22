@@ -17,7 +17,7 @@ The operator documentation lives in `docs/`:
   `ProtectKernelTunables` must stay `no`.
 - [File layout](../docs/01-install.md#file-layout) — what the daemon writes at runtime:
   `/var/lib/n5-fangov/` (`sessions.json`, `tokens.json`, `alerts.json`,
-  `history.json`) is removed by `uninstall.sh` and the package; `--purge` also removes
+  `history.json`, `config-versions/`) is removed by `uninstall.sh` and the package; `--purge` also removes
   `/etc/n5-fangov` and the logs.
 
 `make verify-deploy` checks the units and the hook ([Development](../docs/11-development.md#build)).

@@ -71,7 +71,7 @@ static server and open `index.html?mock=1`; the flags (`&user=1`, `&auth=none`,
 new endpoints get a mock branch in the same change. Its version string is one constant
 in `mock.js`, bumped with the release.
 
-**Budgets:** `app.js` ≤ 152 KiB, `pv.js` ≤ 24 KiB, `mock.js` ≤ 48 KiB, `app.css` ≤ 48 KiB
+**Budgets:** `app.js` ≤ 152 KiB, `pv.js` and `cv.js` ≤ 24 KiB each, `mock.js` ≤ 48 KiB, `app.css` ≤ 48 KiB
 raw (`web_test.go`); `index.html` carries the SVG sprite and has no budget. Do not raise a
 limit to make a change fit; a raise is a CHANGELOG entry. Move something to
 `index.html` markup or drop it. `app.js` went to 152 KiB for 0.7.0 and stays there.
@@ -85,8 +85,10 @@ sched, redraw}`); the stub in `app.js` does nothing before the load and shows a 
 error in place of the panel when the load fails. A new module needs: the file in
 `internal/web/static/`, the `//go:embed` line and the allow-list in `web.go` (same
 content type and caching as `app.js`), a budget test in `web_test.go`, and a mock check
-(`?mock=1` must keep working with it). Today: `pv.js`, the curve preview. Candidates
-for the next ones: the config versions and rarely used dialogs.
+(`?mock=1` must keep working with it). Today: `pv.js`, the curve preview, and `cv.js`,
+the config versions card and the Undo toast (`window.n5cv(X)` → `{show, undo}`). The
+mock answers the versions API itself (`mock.js`: a version of the mock state before every
+write). Candidates for the next ones: rarely used dialogs.
 
 ## Screenshots
 

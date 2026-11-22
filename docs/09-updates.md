@@ -89,6 +89,13 @@ needs `systemctl restart n5-fangov` (the command says so). The API offers the sa
 (`GET /api/config/export`, `POST /api/config/import`), and Settings → *Backup* has both
 as buttons ([Backup](04-dashboard.md#backup)).
 
+The bundle never carries the [config versions](04-dashboard.md#config-versions): the
+daemon keeps the last 10 texts of `config.toml` in `/var/lib/n5-fangov/config-versions/` (`NNNN.toml` + `index.json`, 0600, directory 0700), each taken before one of its own
+writes or on a hand edit. They are a local undo, not a backup: they go with the state
+directory on uninstall and purge, like `history.json`. `n5-fangov config versions` lists
+them, `config diff ID` compares one with the current file, `config restore ID` writes it back
+through the daemon.
+
 ## Uninstall
 
 `deploy/uninstall.sh` runs from the repository checkout the install ran from:

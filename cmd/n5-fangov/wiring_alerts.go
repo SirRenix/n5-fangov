@@ -231,7 +231,7 @@ func (m *alertManager) InstallTemplate() (string, error) {
 func (m *alertManager) Configure(s web.AlertSettings) (web.AlertStatus, error) {
 	var a config.Alert
 	var verr error
-	err := editConfigThen(m.cfgPath, m.pin, "alert", func(raw []byte) []byte {
+	err := editConfigThen(m.cfgPath, m.pin, "alert", "alerts", func(raw []byte) []byte {
 		var base config.Alert
 		if cfg, _, perr := config.Parse(raw); perr == nil {
 			base = cfg.Alert

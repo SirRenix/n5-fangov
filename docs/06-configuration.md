@@ -78,6 +78,10 @@ curves, sensors, `[daemon]`, `[alert]`, `[dashboard]`, the `[[schedule]]` list a
 changed channel set or profile answers *restart required*; the daemon keeps running the
 old set until then.
 
+Before each of its writes the daemon keeps the text it replaces as a version, and a
+change made by hand as *external edit*; the last 10 can be compared and restored
+([Config versions](04-dashboard.md#config-versions), `n5-fangov config`).
+
 Example channel:
 
 ```toml

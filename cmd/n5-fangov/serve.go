@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/SirRenix/n5-fangov/internal/alert"
+	"github.com/SirRenix/n5-fangov/internal/cfgver"
 	"github.com/SirRenix/n5-fangov/internal/config"
 	"github.com/SirRenix/n5-fangov/internal/control"
 	"github.com/SirRenix/n5-fangov/internal/events"
@@ -64,6 +65,7 @@ func cmdServe(args []string) int {
 		}
 	}
 	st := &serveState{cfgPath: *cfgPath, dryRun: *dryRun, rdir: *rdir, listen: *listen, sdir: *sdir}
+	defer cfgVersions.Store(nil)
 	ok := serveConfig(st)
 	if st.evq != nil {
 		defer st.evq.Close(2 * time.Second) // also on a failed start: the alert markers reach the file
@@ -180,6 +182,12 @@ func serveConfig(st *serveState) bool {
 	// configured transport behind a swappable sink (the panel and every
 	// config reload re-apply [alert]), wrapped in the ring the panel reads.
 	st.state = ensureStateDir(st.sdir)
+	// config versions: a hand edit since the last write is stored now
+	if dir := configVersionsPath(st.state); dir != "" {
+		v := cfgver.Open(dir, log.Printf)
+		v.Start(st.cfgPath)
+		cfgVersions.Store(v)
+	}
 	st.evlog = serveEventLog(st.state, st.dryRun)
 	st.evq = events.NewQueue(st.evlog, log.Default())
 	st.alertMgr = newAlertManager(st.cfgPath, alertsPath(st.state), cfg.Alert, nil)
@@ -346,7 +354,8 @@ func serveWeb(st *serveState) {
 	sched := newScheduler(nil, func(msg string) { sendAlertCooled(rdir, alerter, "schedule", msg) }, log.Printf, time.Now)
 	sched.events = st.evlog
 	svc := hookedService{Service: ctrl, alerts: st.alertMgr, sched: sched, cfgPath: cfgPath}
-	presets := dirPresetStore{dir: defaultPresetDir, cfgPath: cfgPath, svc: svc, pin: tlsMgr.pinConfig, profile: st.dev.Profile().Name()}
+	// the scheduler's (and the preview's) store: a scheduled switch stores no config version
+	presets := dirPresetStore{dir: defaultPresetDir, cfgPath: cfgPath, svc: svc, pin: tlsMgr.pinConfig, profile: st.dev.Profile().Name(), noVersion: true}
 	sched.apply = presets.Apply
 	sched.Set(schedule.FromConfig(st.cfg.Schedules))
 	accounts := newAccountStore(cfgPath, wspec, tlsMgr.pinConfig)
@@ -379,6 +388,7 @@ func serveWeb(st *serveState) {
 		Interval:    controllerInterval(ctrl),
 		Events:      st.evlog,
 		Panic:       ctrl,
+		Versions:    versionsOf(cfgPath, tlsMgr.pinConfig, svc.Reload),
 	})
 	st.sched = sched
 	log.Printf("web: sessions %s, tokens %s", orMemory(sessionsPath(st.state)), orMemory(tokensPath(st.state)))

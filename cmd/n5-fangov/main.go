@@ -47,7 +47,7 @@ func register(name string, c command) { commands[name] = c }
 var order = []string{
 	"setup", "serve", "status", "set", "auto", "panic", "assist", "curve", "preview", "log",
 	"check", "detect", "identify", "system", "test", "validate", "failsafe",
-	"passwd", "cert", "alerts", "token", "events", "export", "import", "version",
+	"passwd", "cert", "alerts", "token", "events", "export", "import", "config", "version",
 }
 
 // helpText is the usage line per subcommand.
@@ -76,6 +76,7 @@ var helpText = map[string]string{
 	"token":    "create NAME [--scope read|control|admin] [--ttl DAYS] | list | revoke ID  API tokens for scripts and agents (via the daemon)",
 	"export":   "[FILE]                 settings bundle (config + presets, hash redacted) as JSON",
 	"import":   "FILE                   restore a settings bundle (validated first), reload the daemon",
+	"config":   "versions | diff ID | restore ID  the last 10 config versions: list, diff against the current file (hash redacted), restore (via the daemon)",
 	"version":  "                       print version",
 }
 

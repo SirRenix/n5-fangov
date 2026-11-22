@@ -791,6 +791,9 @@ type webDeps struct {
 	Events *events.Log
 	// Panic backs POST /api/panic (the controller); nil: 501.
 	Panic *control.Controller
+	// Versions backs /api/config/versions (wiring_versions.go); nil: 501,
+	// and no caller attribution.
+	Versions *fileVersions
 }
 
 // logStore is the log read side (web.LogStore, DESIGN "Web and API"): implemented by
@@ -901,6 +904,10 @@ func newWebServer(d webDeps) webServer {
 	}
 	if d.Panic != nil {
 		deps.Panic = d.Panic
+	}
+	if d.Versions != nil {
+		deps.Versions = d.Versions
+		deps.ConfigActor = withActor
 	}
 	applyHealthDeps(&deps, d.Health, d.Interval)
 	s := web.New(deps)
@@ -1026,7 +1033,7 @@ func (s fileConfigStore) Save(raw []byte) error {
 	for _, w := range warns {
 		log.Printf("config save: %s", w)
 	}
-	return config.Save(s.path, raw)
+	return saveConfigWhy(s.path, raw, "editor")
 }
 
 // Parsed makes GET /api/config also carry the validated config in TOML

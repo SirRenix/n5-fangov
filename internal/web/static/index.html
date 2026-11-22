@@ -336,6 +336,11 @@
           <input type="file" id="s-file" accept=".json,application/json" hidden>
         </div>
       </section>
+      <section class="card st" id="st-versions" aria-labelledby="st-versions-h"><h2 id="st-versions-h">Config versions</h2>
+        <p class="hint sm">The daemon keeps the last 10 versions of config.toml, each taken before it writes the file (editor, preset, assist switch, account, certificate, import, restore) or when it finds a change made by hand. Diff compares with the current file; the password hash is never shown. Presets and scheduled switches are not versioned.</p>
+        <div class="act"><button class="btn" id="vs-show" type="button">Show versions</button></div>
+        <div id="vs-list"></div>
+      </section>
       <section class="card st danger" id="st-danger" aria-labelledby="st-danger-h"><h2 id="st-danger-h">Danger zone</h2>
         <div class="dz"><div><b>Clear the log file</b><span class="hint sm">Truncates the current log; rotated files and the journal stay.</span></div><button class="btn danger" id="lg-clear" type="button" title="Truncate the current log file (rotated files and journal untouched)">Clear log</button></div>
         <div class="dz"><div><b>Regenerate the certificate with a new key</b><span class="hint sm">Breaks the trust you imported on every client; re-download and trust the certificate afterwards.</span></div><button class="btn danger" id="dz-regen" type="button" disabled>Regenerate with new key</button></div>

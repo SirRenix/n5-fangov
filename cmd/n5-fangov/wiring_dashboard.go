@@ -75,7 +75,7 @@ func (s *dashboardStore) SetSensors(ids []string) ([]string, error) {
 			warns = append(warns, fmt.Sprintf("%s: %v (kept; charted once the device appears)", id, err))
 		}
 	}
-	err := editConfigThen(s.cfgPath, s.pin, "dashboard", func(raw []byte) []byte {
+	err := editConfigThen(s.cfgPath, s.pin, "dashboard", "dashboard", func(raw []byte) []byte {
 		return setConfigKey(raw, "dashboard", "sensors", tomlStringArray(clean))
 	}, func(cfg config.Config) bool {
 		return slices.Equal(cfg.Dashboard.Sensors, clean)
@@ -130,7 +130,7 @@ func (s *assistStore) SetEnabled(channel string, on bool) error {
 	defer s.mu.Unlock()
 	var pre error
 	var written []config.Assist
-	err := editConfigThen(s.cfgPath, s.pin, "assist", func(raw []byte) []byte {
+	err := editConfigThen(s.cfgPath, s.pin, "assist", "assist "+channel+" "+map[bool]string{true: "on", false: "off"}[on], func(raw []byte) []byte {
 		cfg, _, perr := config.Parse(raw)
 		switch {
 		case perr != nil:

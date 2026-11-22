@@ -40,7 +40,7 @@ import (
 	"github.com/SirRenix/n5-fangov/internal/tlscert"
 )
 
-//go:embed static/index.html static/app.js static/pv.js static/app.css static/mock.js
+//go:embed static/index.html static/app.js static/pv.js static/cv.js static/app.css static/mock.js
 var staticFS embed.FS
 
 // CSRFHeader must be present (value "1") on every state-changing request over TCP.
@@ -270,6 +270,13 @@ type Deps struct {
 	Events EventLog
 	// Panic backs POST /api/panic (panic_api.go); nil → 501.
 	Panic PanicCtl
+	// Versions backs /api/config/versions (versions_api.go); nil → 501.
+	Versions ConfigVersions
+	// ConfigActor is called around every route that writes the config file
+	// (route.WritesConfig) with the caller (user:<name>, token:<name>, cli);
+	// the store records it with the version taken before the write. The
+	// returned func ends the request's turn. nil: no attribution.
+	ConfigActor func(by string) (release func())
 }
 
 // Server holds the mux and serves it on TCP and on the unix socket.
@@ -532,7 +539,15 @@ func (s *Server) routes() {
 	m := s.mux
 	table := s.routeTable()
 	for _, r := range table {
-		m.HandleFunc(r.pattern(), r.Handler)
+		h := r.Handler
+		if r.WritesConfig && s.deps.ConfigActor != nil {
+			next := h
+			h = func(w http.ResponseWriter, req *http.Request) {
+				defer s.deps.ConfigActor(ackSource(CallerFrom(req.Context())))()
+				next(w, req)
+			}
+		}
+		m.HandleFunc(r.pattern(), h)
 		s.byPattern[r.pattern()] = r
 	}
 	m.HandleFunc("/api/", s.apiFallback)
@@ -1623,10 +1638,11 @@ func (s *Server) getSensors(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, list)
 }
 
-// static serves the embedded UI. Only the five known files exist; everything
+// static serves the embedded UI. Only the six known files exist; everything
 // else is 404 (API paths get a JSON 404). mock.js is the dashboard mock, which
 // app.js requests only with ?mock=1; index.html never references it. pv.js is
-// the preview module, inserted by app.js on the first preview (DESIGN 11a).
+// the preview module, cv.js the config versions module, inserted by app.js on
+// first use (DESIGN 11a).
 func (s *Server) static(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(r.URL.Path, "/api/") {
 		writeError(w, http.StatusNotFound, "unknown endpoint")
@@ -1644,7 +1660,7 @@ func (s *Server) static(w http.ResponseWriter, r *http.Request) {
 	switch name {
 	case "index.html":
 		ctype = "text/html; charset=utf-8"
-	case "app.js", "pv.js", "mock.js":
+	case "app.js", "pv.js", "cv.js", "mock.js":
 		ctype = "text/javascript; charset=utf-8"
 	case "app.css":
 		ctype = "text/css; charset=utf-8"

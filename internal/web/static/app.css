@@ -387,6 +387,7 @@ details.gloss p{margin:var(--sp-15) 0 0}
 .tbl.sm th,.tbl.sm td{padding:var(--sp-15) var(--sp-2);font-size:var(--fs-12);white-space:nowrap}
 .tbl td.empty{white-space:normal}
 .tbl tr.dim td{color:var(--fg3)}
+/* config versions (cv.js): the diff under its row, red = goes, green = comes */#st-versions{min-width:0}#vs-list{overflow-x:auto}.vs td.vs-a{text-align:right}.vs td.vs-a .btn+.btn{margin-left:var(--sp-1)}.vs-x td{white-space:normal}.vs-d pre{margin:var(--sp-1) 0 0;font-size:var(--fs-12);white-space:pre-wrap;overflow-wrap:anywhere}.vs-d .add{color:var(--ok);background:color-mix(in srgb,var(--ok) var(--tint-row),transparent)}.vs-d .del{color:var(--crit);background:color-mix(in srgb,var(--crit) var(--tint-row),transparent)}.vs-u{display:inline-flex;align-items:center;gap:var(--sp-1)}
 .tbl .expired{color:var(--warn)}
 .tbl td .tid{display:block;color:var(--fg3);font-size:var(--fs-11)}
 /* Schedules page: editor + status card */

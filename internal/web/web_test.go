@@ -1467,6 +1467,21 @@ func TestStaticIndex(t *testing.T) {
 	if js, _ := staticFS.ReadFile("static/app.js"); !strings.Contains(string(js), "js('pv.js')") || strings.Contains(string(js), "/api/preview'") {
 		t.Errorf("app.js must load pv.js on demand and leave POST /api/preview to it")
 	}
+	// the config versions module: the same rules, its own budget
+	r = e.do(t, "GET", "/cv.js", "", nil)
+	wantCode(t, r, 200)
+	if !strings.HasPrefix(r.hdr.Get("Content-Type"), "text/javascript") || !strings.Contains(r.body, "window.n5cv") || !strings.Contains(r.body, "/api/config/versions") {
+		t.Errorf("cv.js: %q %.100s", r.hdr.Get("Content-Type"), r.body)
+	}
+	if len(r.body) > 24*1024 {
+		t.Errorf("cv.js is %d bytes, budget 24 KiB (DESIGN 11a)", len(r.body))
+	}
+	if html, _ := staticFS.ReadFile("static/index.html"); strings.Contains(string(html), "cv.js") {
+		t.Errorf("index.html references cv.js; the module is loaded on demand")
+	}
+	if js, _ := staticFS.ReadFile("static/app.js"); !strings.Contains(string(js), "js('cv.js')") || strings.Contains(string(js), "/restore") {
+		t.Errorf("app.js must load cv.js on demand and leave the restore to it")
+	}
 	r = e.do(t, "GET", "/app.css", "", nil)
 	wantCode(t, r, 200)
 	if !strings.HasPrefix(r.hdr.Get("Content-Type"), "text/css") {
@@ -1480,6 +1495,7 @@ func TestStaticIndex(t *testing.T) {
 	wantCode(t, e.do(t, "GET", "/static/app.js", "", nil), 404)
 	wantCode(t, e.do(t, "GET", "/static/mock.js", "", nil), 404)
 	wantCode(t, e.do(t, "GET", "/static/pv.js", "", nil), 404)
+	wantCode(t, e.do(t, "GET", "/static/cv.js", "", nil), 404)
 	wantCode(t, e.do(t, "GET", "/mock.js.map", "", nil), 404)
 }
 

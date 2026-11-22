@@ -372,7 +372,7 @@ func (m *tlsManager) writeMode(mode, certFile, keyFile string) error {
 		}
 		raw = nil
 	}
-	if err := saveConfig(m.cfgPath, setTLSKeys(raw, mode, certFile, keyFile)); err != nil {
+	if err := saveConfigWhy(m.cfgPath, setTLSKeys(raw, mode, certFile, keyFile), "tls"); err != nil {
 		return fmt.Errorf("write %s: %w", m.cfgPath, err)
 	}
 	return nil

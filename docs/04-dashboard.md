@@ -492,6 +492,38 @@ replaces both after validation (asks first; 202 shows a restart notice). Tokens,
 sessions and the history are never part of it
 ([Backup and restore](09-updates.md#backup-and-restore)).
 
+### Config versions
+
+The daemon keeps the last 10 versions of `config.toml`: before every write of its own
+(curve editor, preset apply, assist switch, account, certificate, alert transport,
+dashboard sensors, import, restore) it stores the text on disk, and a change made by
+hand is stored as *external edit* at start or before the next write. Scheduled preset
+switches are not versioned (they recur daily and would fill the ten places), presets
+themselves neither. *Show versions* lists them newest first: number, when it was taken
+and by whom (`user:<name>`, `token:<name>`, `cli`; *by hand* or *daemon* without a
+caller), the change that replaced it (*Replaced by*: `editor`, `preset quiet`,
+`assist hdd on`, `account`, `restore 7` …) and the sections that change touched
+(*Changed after*: `[[channel]] hdd`, `[alert]` …).
+
+- **Diff** shows the lines a restore would change against the current file: red goes,
+  green comes. The password hash is never shown: `password_hash = "<redacted>"`, and
+  `"<redacted, changed>"` when the version's hash differs from the current one.
+- **Restore** asks first with the summary (lines and sections) and, when the password
+  would change, says so. It is validated like an import (a version that does not
+  parse is refused, nothing written), written and reloaded; the state before becomes
+  a version itself, so a restore can be undone the same way. Keys that only take
+  effect at the next start (`web.listen`, `web.auth`, the web user and password, the
+  log file, the profile) are written and named in the toast (*applies after
+  restart*). During [full cooling](#full-cooling) a restore is accepted and applies
+  once it ends, like any change.
+- **Undo:** after *Apply* of a preset, *Apply to daemon* in the curve editor and the
+  assist switch, the toast reads *… applied — Undo* for 10 s when the write stored a
+  new version; *Undo* restores it (no question unless the password would change).
+
+The list and the restore need the `admin` scope (a session has it). The module behind
+the card (`cv.js`) is loaded on the first use. A restore appears as a *restore* marker
+(group Operation) in the charts. The same from the shell: `n5-fangov config versions |
+diff ID | restore ID` ([CLI](05-cli.md#config)).
 ### Danger zone
 
 *Clear log* (truncates the current log file; disabled with the journal as source),

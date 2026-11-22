@@ -150,7 +150,9 @@ Basic auth only, never a token.
 | `PUT` | `/api/config[?strict=1]` | write the config file and reload (200 / 202 / 400) |
 | `GET` | `/api/config/export` | settings bundle (config + presets, never tokens) |
 | `POST` | `/api/config/import` | restore a bundle |
-| `PUT` | `/api/presets/{name}` | save a preset: the running channel tables (empty body) or the channels of the JSON body ([below](#saving-a-preset-with-a-body)) |
+| `GET` | `/api/config/versions` | the last 10 config versions, newest first — [below](#config-versions) |
+| `GET` | `/api/config/versions/{id}` | one version: redacted text, diff against the current file |
+| `POST` | `/api/config/versions/{id}/restore` | restore a version (validated, reloaded; the text before becomes a version) || `PUT` | `/api/presets/{name}` | save a preset: the running channel tables (empty body) or the channels of the JSON body ([below](#saving-a-preset-with-a-body)) |
 | `POST` | `/api/presets/{name}/rename` | rename a user preset |
 | `DELETE` | `/api/presets/{name}` | delete a user preset |
 | `PUT` | `/api/alerts` | transport, `mail_to`, `webhook_url`, `webhook_format` |
@@ -205,6 +207,36 @@ failure 500, no preset store 501. 200 `{"ok": true, "saved": "<name>"}`.
 curl -u admin -H "X-N5-Fangov-Csrf: 1" -H "Content-Type: application/json" \
   -X PUT --data @summer.json https://n5host:8010/api/presets/summer
 ```
+
+## Config versions
+
+```
+curl -H "Authorization: Bearer n5t_..." https://n5host:8010/api/config/versions
+curl -H "Authorization: Bearer n5t_..." https://n5host:8010/api/config/versions/7
+curl -H "Authorization: Bearer n5t_..." -X POST https://n5host:8010/api/config/versions/7/restore
+```
+
+Scope `admin`, like `GET`/`PUT /api/config`. The daemon keeps the text of `config.toml`
+before each of its writes, and a hand edit it finds, as a version (10 kept;
+[Config versions](04-dashboard.md#config-versions)). The list answers
+`[{id, ts, by, reason, sections[]}]`, newest first: `by` is who made the write that
+replaced the version (`user:<name>`, `token:<name>`, `cli`, empty for the daemon or a
+hand edit), `reason` that write (`editor`, `preset quiet`, `assist hdd on`, `account`,
+`alerts`, `dashboard`, `tls`, `import`, `restore 7`, `external edit`), `sections` what it
+changed. One version adds `raw` (the text), `diff[{op, line}]` current → version
+(`-` only in the current file, `+` only in the version), `changes` (its sections),
+`removed`, `added` and `password_changed`. `password_hash` is never included: it reads
+`"<redacted>"`, or `"<redacted, changed>"` in a version whose hash differs from the
+current one; error messages are redacted as well.
+
+`POST …/restore` validates the version like an import (a text that does not parse: 400,
+nothing written), writes it (the text before becomes a new version, `version` in the
+answer, so the restore can be undone the same way) and reloads: 200
+`{ok, restored, version, restart_required, restart_keys[], warnings[]}`, 202 when the
+channel set or profile changed. `restart_keys` names keys that are written but take
+effect at the next start (`web.listen`, `web.auth`, `web.user`, `web.password_hash`,
+`log.file`, `daemon.profile` …). Accepted during full cooling (applies after it). 404
+for an unknown id, 501 without a state directory. Each restore is a `restore` event.
 
 ## Assist
 
@@ -397,7 +429,7 @@ and limits of `/api/history` (`minutes` 1..10080, default 120; `since` = only `t
 ```
 
 - `kind`: `preset`, `override`, `assist`, `alert`, `critical`, `ceiling`, `failsafe`,
-  `start`, `reload`; a span (`override`, `critical`, `ceiling`, `failsafe`) ends with its
+  `start`, `reload`, `restore`; a span (`override`, `critical`, `ceiling`, `failsafe`) ends with its
   `-end` event, which carries `end: true`. When each is recorded:
   [Events and alerts](07-alerts.md#events-and-alerts).
 - `ch` is present for per-channel kinds; `by` is `user:<name>`, `token:<name>`,

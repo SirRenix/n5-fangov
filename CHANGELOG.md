@@ -14,12 +14,35 @@ drove the 0.3.1 work is `docs/AUDIT.md` (code) and `docs/DESIGN-AUDIT.md`
 
 ## [Unreleased]
 
-Preview and assist explained on the page, the preview as a module loaded on demand, hover
-on the Overview tiles, and a hand-added `[[assist]]` table without a restart (BACKLOG #63).
-The regulation is unchanged apart from #63.
+Config versions with diff and undo (0.7.0 point 4), preview and assist explained on the page,
+the preview and the versions as modules loaded on demand, hover on the Overview tiles, and a
+hand-added `[[assist]]` table without a restart (BACKLOG #63). The regulation is unchanged
+apart from #63.
 
 ### Added
 
+- **Config versions with diff and undo (0.7.0 point 4).** Before every write of
+  `config.toml` the daemon keeps the text it replaces as a version — time, who
+  (`user:<name>`, `token:<name>`, `cli`) and why (`editor`, `preset quiet`, `assist hdd
+  on`, `account`, `alerts`, `dashboard`, `tls`, `import`, `restore 7`); a change made by
+  hand is kept as `external edit` at start or before the next write. Ten are kept, an
+  unchanged text makes none, scheduled preset switches make none. Stored in
+  `/var/lib/n5-fangov/config-versions/` (0600, directory 0700), never in the settings
+  bundle, removed with the state directory. Settings → *Config versions* (the module
+  `cv.js`, loaded on first use): list with the sections each change touched, *Diff*
+  against the current file (red goes, green comes), *Restore* with a confirm naming the
+  change and warning when it resets the password. *Undo* for 10 s in the toast after a
+  preset apply, *Apply to daemon* in the curve editor and the assist switch. A restore
+  is validated like an import (a text that does not parse: 400, nothing written), the
+  text before becomes a version again, restart-only keys (`web.listen`, `web.auth`, the
+  web user and password, `log.*`, the profile) are written and reported as *applies after
+  restart*; it is accepted during full cooling. `password_hash` never appears in the API,
+  the CLI or a diff (`"<redacted>"`, `"<redacted, changed>"`). Recording a version never
+  blocks the config write. API (scope `admin`): `GET /api/config/versions`, `GET
+  /api/config/versions/{id}`, `POST /api/config/versions/{id}/restore`; CLI `n5-fangov
+  config versions | diff ID | restore ID` (list and diff also without the daemon); event
+  `restore` (group Operation). Diff: a plain line diff in Go, no new dependency
+  ([Dashboard](docs/04-dashboard.md#config-versions), [API](docs/12-api.md#config-versions)).
 - **Overview tiles: hover on the sparkline.** Moving the pointer over the 2 h line (a tap
   on a phone) shows a vertical line, a dot on the curve and a tooltip with the nearest
   point of the already loaded history: `Sun 16:16 · 40.0 °C · duty 103 (40 %) · +45
@@ -48,7 +71,8 @@ The regulation is unchanged apart from #63.
 - **Dashboard modules on demand (DESIGN 11a):** the preview moved out of `app.js` into
   `pv.js` (own budget 24 KiB), which `app.js` inserts on the first preview (same origin,
   CSP-safe, the way `mock.js` is loaded) and calls directly afterwards; a failed load
-  shows *Preview unavailable* in place of the panel. `app.js` stays at its 152 KiB budget;
+  shows *Preview unavailable* in place of the panel. The config versions card and the Undo
+  toast are the second module, `cv.js` (24 KiB). `app.js` stays at its 152 KiB budget;
   further growth is split the same way instead of raising it.
 
 ### Fixed
