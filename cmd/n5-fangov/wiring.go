@@ -26,6 +26,7 @@ import (
 	"github.com/SirRenix/n5-fangov/internal/alert"
 	"github.com/SirRenix/n5-fangov/internal/config"
 	"github.com/SirRenix/n5-fangov/internal/control"
+	"github.com/SirRenix/n5-fangov/internal/events"
 	"github.com/SirRenix/n5-fangov/internal/hwmon"
 	"github.com/SirRenix/n5-fangov/internal/hwstatus"
 	"github.com/SirRenix/n5-fangov/internal/ipc"
@@ -55,6 +56,25 @@ type chanSpec struct {
 	MinOn      time.Duration
 	// Ceiling is the configured [[channel]] ceiling (0 = built-in).
 	Ceiling int
+}
+
+// assistSpec is one [[assist]] table as check shows it.
+type assistSpec struct {
+	Channel string
+	Enabled bool
+	Sources []string // sensor ids
+}
+
+func assistSpecs(cfg config.Config) []assistSpec {
+	out := make([]assistSpec, 0, len(cfg.Assists))
+	for _, a := range cfg.Assists {
+		s := assistSpec{Channel: a.Channel, Enabled: a.Enabled}
+		for _, src := range a.Sources {
+			s.Sources = append(s.Sources, src.Sensor)
+		}
+		out = append(out, s)
+	}
+	return out
 }
 
 // daemonSpec is the subset of [daemon] the commands need.
@@ -214,7 +234,7 @@ func renderConfig(profileName string, chans []chanSpec, w webSpec) []byte {
 // TOML that parses): setup decides the profile, the profile's channel set
 // and [web] listen/auth/user/password_hash/tls; everything else comes from
 // prior — [daemon] (but profile), [log], [alert], [dashboard],
-// [[schedule]], [web] allowed_hosts/behind_tls_proxy/cert_file/key_file,
+// [[schedule]], [[assist]], [web] allowed_hosts/behind_tls_proxy/cert_file/key_file,
 // tls = "file" on a non-loopback listener, and per channel (same name and
 // pwm) hysteresis and min_on, the ceiling when the sensor is the same.
 // Channels on a pwm outside the new set stay when the profile is the same.
@@ -222,7 +242,11 @@ func renderConfig(profileName string, chans []chanSpec, w webSpec) []byte {
 type keepResult struct {
 	Kept    []string // carried over, differs from the defaults
 	Dropped []string // fields of the old file that were invalid: the parser's default is written (names only, no values)
-	TLS     string   // the [web] tls written
+	// AssistDropped names the channels whose [[assist]] table does not fit
+	// the new channel set (no such channel, or a source is its own sensor):
+	// not written.
+	AssistDropped []string
+	TLS           string // the [web] tls written
 }
 
 func renderConfigKeep(prior []byte, profileName string, chans []chanSpec, w webSpec) ([]byte, keepResult) {
@@ -298,7 +322,28 @@ func renderConfigKeep(prior []byte, profileName string, chans []chanSpec, w webS
 			}
 		}
 	}
-	return config.Marshal(cfg), keepResult{Kept: kept, Dropped: dropped, TLS: cfg.Web.TLS}
+	// [[assist]] tables survive only when they still fit the new channel set
+	// (the channel exists, no source is that channel's own sensor): what the
+	// parser would drop at the next start is not written and named as dropped
+	var assistDropped []string
+	if len(old.Assists) > 0 {
+		back, _, perr := config.Parse(config.Marshal(cfg))
+		var keptA []string
+		valid := []config.Assist{}
+		for _, a := range old.Assists {
+			if perr == nil && back.Assist(a.Channel) != nil {
+				keptA = append(keptA, a.Channel)
+				valid = append(valid, *back.Assist(a.Channel))
+				continue
+			}
+			assistDropped = append(assistDropped, a.Channel)
+		}
+		cfg.Assists = config.CloneAssists(valid)
+		if len(keptA) > 0 {
+			kept = append(kept, "[[assist]] "+strings.Join(keptA, ", "))
+		}
+	}
+	return config.Marshal(cfg), keepResult{Kept: kept, Dropped: dropped, AssistDropped: assistDropped, TLS: cfg.Web.TLS}
 }
 
 // diffKeys lists the TOML keys (struct tag names) of two values of the
@@ -527,7 +572,8 @@ func knownSensors(fs *hwmon.FS, dev profile.Device) []sensorInfo {
 // config file (offline paths: the onfailure `alert` command, the apt
 // hook's `check --after-update`), so "off" or "log" are honoured there
 // too. An unreadable config means transport "auto". The delivery is
-// also recorded in the state directory's history when that file exists.
+// also recorded in the state directory's history when that file exists,
+// and marked in the event log (cliEventLog).
 func newAlerter() alert.Sink {
 	cfg, _, _ := config.Load(defaultConfigPath)
 	sink, _ := alert.NewForConfig(alertConfig(cfg.Alert), log.Default())
@@ -535,7 +581,9 @@ func newAlerter() alert.Sink {
 	if _, err := os.Stat(path); err != nil {
 		path = ""
 	}
-	return alert.NewRing(sink, path, log.Default())
+	r := alert.NewRing(sink, path, log.Default())
+	r.SetOnRecord(alertMarker(cliEventLog(), events.ByCLI))
+	return r
 }
 
 // sendAlert delivers one alert immediately (no cooldown). Used by the
@@ -630,6 +678,10 @@ type controlOpts struct {
 	HistoryFile string                  // <state dir>/history.json; "" = memory only
 	DiskKind    func(dev string) string // disk:<dev> kinds for the built-in ceilings
 	HWStatus    string                  // hardware status of this box (hwstatus), snapshot hw_status
+	Events      events.Recorder         // the event queue; nil = no events
+
+	// PanicRefusal: why a full cooling cannot work (read-only driver); nil = none
+	PanicRefusal func() string
 }
 
 func newController(cfg config.Config, dev profile.Device, f sensorFactory, a alert.Sink, o controlOpts) (*control.Controller, error) {
@@ -639,9 +691,12 @@ func newController(cfg config.Config, dev profile.Device, f sensorFactory, a ale
 		HistoryFile: o.HistoryFile,
 		DiskKind:    o.DiskKind,
 		HWStatus:    o.HWStatus,
+		Events:      o.Events,
 		Logger:      log.Default(),
 		Notify:      func() { noteNotify("WATCHDOG=1", sdnotify.Watchdog()) },
 		Status:      func(s string) { noteNotify("STATUS", sdnotify.Status(s)) },
+
+		PanicRefusal: o.PanicRefusal,
 	})
 }
 
@@ -718,6 +773,8 @@ type webDeps struct {
 	Account     *accountStore   // /api/account (nil: 501)
 	Alerts      *alertManager   // /api/alerts (nil: 501)
 	Dashboard   *dashboardStore // /api/dashboard (nil: 501)
+	Assist      *assistStore    // /api/assist (nil: 501)
+	Preview     *previewer      // /api/preview (nil: 501)
 	// System backs GET /api/system (hardware inventory; see wiring_sysinfo.go). nil: 501.
 	System *systemCollector
 	// Schedules backs GET /api/schedules (scheduler.go). nil: 501.
@@ -729,6 +786,11 @@ type webDeps struct {
 	// nil: 501. Interval sets the /healthz grace (healthGraceCycles cycles).
 	Health   *healthView
 	Interval time.Duration
+	// Events backs GET /api/events and records the operator's actions;
+	// nil: 501.
+	Events *events.Log
+	// Panic backs POST /api/panic (the controller); nil: 501.
+	Panic *control.Controller
 }
 
 // logStore is the log read side (web.LogStore, DESIGN "Web and API"): implemented by
@@ -834,6 +896,12 @@ func newWebServer(d webDeps) webServer {
 		deps.Schedules = d.Schedules.Status
 	}
 	deps.Channels = d.Channels
+	if d.Events != nil {
+		deps.Events = d.Events
+	}
+	if d.Panic != nil {
+		deps.Panic = d.Panic
+	}
 	applyHealthDeps(&deps, d.Health, d.Interval)
 	s := web.New(deps)
 	return webServer{TCP: s.Handler(), Socket: s.SocketHandler(), serve: s.Serve, serveTLS: serveTLSFunc(s)}
@@ -853,6 +921,12 @@ func applyStoreDeps(deps *web.Deps, d webDeps) {
 	}
 	if d.Dashboard != nil {
 		deps.Dashboard = d.Dashboard
+	}
+	if d.Assist != nil {
+		deps.Assist = d.Assist
+	}
+	if d.Preview != nil {
+		deps.Preview = d.Preview
 	}
 	deps.About = aboutInfo()
 }
@@ -980,6 +1054,16 @@ func configJSON(cfg config.Config, warns []config.Warning) map[string]any {
 			"hysteresis": c.Hysteresis, "min_on": c.MinOn.String(), "ceiling": c.Ceiling,
 		})
 	}
+	assists := make([]map[string]any, 0, len(cfg.Assists))
+	for _, a := range cfg.Assists {
+		srcs := make([]map[string]any, 0, len(a.Sources))
+		for _, s := range a.Sources {
+			srcs = append(srcs, map[string]any{"sensor": s.Sensor, "start": s.Start, "full": s.Full, "boost": s.Boost})
+		}
+		assists = append(assists, map[string]any{
+			"channel": a.Channel, "enabled": a.Enabled, "hysteresis": a.Hysteresis, "min_on": a.MinOn.String(), "source": srcs,
+		})
+	}
 	scheds := make([]map[string]any, 0, len(cfg.Schedules))
 	for _, s := range cfg.Schedules {
 		scheds = append(scheds, map[string]any{
@@ -1012,6 +1096,7 @@ func configJSON(cfg config.Config, warns []config.Warning) map[string]any {
 		},
 		"channel":  chans,
 		"schedule": scheds,
+		"assist":   assists,
 		"warnings": warningStrings(warns),
 	}
 }

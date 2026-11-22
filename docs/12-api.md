@@ -109,8 +109,9 @@ Basic auth only, never a token.
 | `GET` | `/api/session` | public | who the caller is: `authenticated`, `mode`, `user`, `via` (`cookie`/`basic`/`bearer`/`none`), `scope` and `token_id` for a token |
 | `GET` | `/api/openapi.json` | public | the OpenAPI document |
 | `GET` | `/healthz` | public | liveness for monitors, [below](#healthz) |
-| `GET` | `/api/state` | filtered | snapshot: status, `hw_status` (`validated`/`tested`/`experimental`/`unknown`; `verified` = validated or tested, kept for compatibility), channels (temperature, duty, target, RPM, mode; signed in also `held_temp`, `hold_until`, `ceiling`, `ceiling_hit`, EC and watched temperatures, alert stamps) |
+| `GET` | `/api/state` | filtered | snapshot: status, `hw_status` (`validated`/`tested`/`experimental`/`unknown`; `verified` = validated or tested, kept for compatibility), channels (temperature, duty, target, RPM, mode, `assist {enabled, boost}` for a channel with an `[[assist]]` table; signed in also `held_temp`, `hold_until`, `ceiling`, `ceiling_hit`, the assist `source` and `sources[]`, EC and watched temperatures, alert stamps) |
 | `GET` | `/api/history` | filtered | history points (`minutes`, `since`; anonymous: without `extra`) |
+| `GET` | `/api/events` | filtered | events for the chart markers (`minutes`, `since`; anonymous: `ts`, `kind`, `ch`, `end` only), [below](#events) |
 
 **Scope `read`**
 
@@ -127,6 +128,7 @@ Basic auth only, never a token.
 | `GET` | `/api/health` | the checks of `n5-fangov check`, the kernel gate as `check --after-update` stored it, the driver, daemon start, last restart/failed/emergency/kernel/driver alert (computed at most every 15 s) |
 | `GET` | `/api/dashboard` | the watched sensor ids |
 | `GET` | `/api/tls` | certificate mode, info, warnings, fallback flag |
+| `POST` | `/api/preview` | curve preview over the recorded history: draft channels, a preset or assist switches; writes nothing, one at a time (429) — [below](#preview) |
 
 **Scope `control`**
 
@@ -134,8 +136,10 @@ Basic auth only, never a token.
 |---|---|---|
 | `PUT` | `/api/override/{name}` | manual duty (`{duty}` or `{percent}`; HDD-like channels ≥ 60) |
 | `DELETE` | `/api/override/{name}` | back to the curve |
+| `POST` | `/api/panic` | full cooling: `{"action":"start"}` (also to extend: 10 min from now) or `{"action":"stop"}`; answers `{active, until}`; 409 with the reason when the daemon cannot drive the fans — [below](#full-cooling) |
 | `POST` | `/api/presets/{name}/apply` | apply a preset (merge by pwm; 202 when a restart is needed) |
 | `PUT` | `/api/dashboard` | set the watched sensor ids |
+| `PUT` | `/api/assist/{name}` | switch the channel's `[[assist]]` table: `{"enabled": true}` / `false`; writes only that `enabled` line, applied on the next cycle; 404 without a table ([Assist](#assist)) |
 | `POST` | `/api/alerts/ack` | acknowledge alerts: `{"ids":[41,42]}` or `{"all":true,"up_to":42}` (the newest id the client has seen); display only, [Alerts](07-alerts.md#acknowledging) |
 
 **Scope `admin`**
@@ -202,6 +206,81 @@ curl -u admin -H "X-N5-Fangov-Csrf: 1" -H "Content-Type: application/json" \
   -X PUT --data @summer.json https://n5host:8010/api/presets/summer
 ```
 
+## Assist
+
+```
+curl -H "Authorization: Bearer n5t_..." -H "Content-Type: application/json" \
+  -X PUT --data '{"enabled": true}' https://n5host:8010/api/assist/hdd
+```
+
+Scope `control`. 200 `{"ok": true, "channel": "hdd", "enabled": true}`; 404 when the
+channel has no valid `[[assist]]` table in `config.toml`; 400 for a body other than
+`{"enabled": true|false}`; 500 when the file could not be written, or was written but
+the running daemon has no such table (edited by hand without a reload). The daemon
+writes only the `enabled` line, comments and the other tables keep their bytes
+([Assist](06-configuration.md#assist)).
+
+`GET /api/state` carries per channel with a table:
+
+```json
+"assist": {"enabled": true, "boost": 45, "source": "hwmon:amdgpu:temp1",
+           "sources": [{"sensor": "hwmon:amdgpu:temp1", "temp": 58.7, "boost": 45},
+                       {"sensor": "nvme:max", "temp": 49.2, "boost": 40}]}
+```
+
+`boost` is what the target carries this cycle: 0 when off, outside mode `auto` or with
+every source below `start`. `sources[].boost` is what each source alone gives, also
+while assist is off; `temp` is `-999` for an unreadable source. Anonymous callers get
+`enabled` and `boost` only. A channel without a table has no `assist` member.
+
+## Preview
+
+```
+curl -H "Authorization: Bearer n5t_..." -H "Content-Type: application/json" \
+  -X POST --data '{"assist": {"hdd": true}, "span": "24h"}' https://n5host:8010/api/preview
+```
+
+Scope `read`; nothing is written. Every member is optional — no body computes the
+running config, so the preview line can be checked against the recorded one:
+
+| Member | Meaning |
+|---|---|
+| `channels` | draft channel tables as the curve editor holds them (`name`, `sensor`, `curve`, `critical`, `hysteresis`, `min_on`; `pwm` and `stop` default to the running channel's). A part of the channels is fine, the rest runs as configured. Validated like a [preset body](#saving-a-preset-with-a-body): 400 with `errors[]`; a name the daemon does not run is 400 |
+| `preset` | the channels of this preset, merged by pwm like an apply (running names; post-processing and ceiling stay where the preset says nothing). Not together with `channels` (400); unknown 404 |
+| `assist` | `{"hdd": true}`: the assist switch per channel for the computation; the values come from the running `[[assist]]` table, a channel without one is 400 |
+| `span` | `24h` (1-min means, default) or `7d` (5-min means); anything else 400 |
+
+The computation runs the daemon's own rules — curve at the hysteresis-held
+temperature, `min_on`, assist with its hysteresis and hold, critical, ceiling — point
+by point over the history tier. A draft sensor other than the running one is read from
+the recorded extra sensors (assist sources are recorded automatically); missing there,
+the channel gets `"error": "sensor not in history"`. A gap in the history (restart,
+outage) stays a gap, and hysteresis and holds start afresh after it. One computation at
+a time; a second request gets 429 instead of waiting.
+
+Answer: `{span, step, note, order[], channels: {<name>: {series[{ts, actual, preview,
+boost}], summary: {actual, preview}, error?, measured?, notes[]?}}}`. `actual` is the recorded duty
+(null when unknown), `preview` the target (null where the history has no temperature),
+`boost` the assist share. Each summary line carries `mean`, `p95`, `max`,
+`min_ge_200` and `assist_min` (minutes). `measured` is set for an HDD channel with
+assist on: the effect measured on 16.11.2026, labelled as measured, not predicted.
+
+What the preview cannot show (`note`): feedback — more air would have lowered the
+temperatures, so it shows rather too much duty, never too little; the ramp
+(`step_up`/`step_down`); past overrides, failsafe and sensor errors, which only the
+recorded line carries. On `7d` hysteresis and `min_on` barely act on 5-min means and
+short peaks vanish. Also on `24h` a point is the mean of the 10-s cycles of its minute,
+so hysteresis and `min_on` act on means, not on single readings. A ceiling of a
+composite sensor is judged on the recorded maximum against the lowest part ceiling
+(the history keeps no per-part readings), so a mixed composite (an NVMe and an HDD) can
+show 255 where the daemon would not.
+
+`notes[]` per channel lists such limits of that channel's computation: an assist
+source of an enabled table missing from the history (it adds 0 there — never recorded,
+or missing at N points with the time it was first recorded; sources are recorded only
+since the table exists), and the mixed-composite ceiling above. The dashboard and the
+CLI show them under the summary.
+
 ## /healthz
 
 `GET` or `HEAD /healthz` answers without credentials, also with `auth = "basic"`, and
@@ -226,9 +305,11 @@ curl -sk https://n5host:8010/healthz
 
 ## History and CSV
 
-`GET /api/history?minutes=N&since=TS` returns `[{ts, temp{}, duty{}, rpm{}, extra{}}]`:
-maps by channel name, `extra` by watched sensor id (omitted when empty; anonymous
-callers never get it). `minutes` is 1..10080 (7 days; default 120) and selects the
+`GET /api/history?minutes=N&since=TS` returns `[{ts, temp{}, duty{}, rpm{}, extra{}, assist{}}]`:
+maps by channel name, `extra` by sensor id — the watched sensors and the assist sources
+(omitted when empty; anonymous callers never get it) — and `assist` the boost per
+channel (a channel without a boost is absent, the map too when no channel has one; the
+averaged tiers carry the mean boost of the bucket). `minutes` is 1..10080 (7 days; default 120) and selects the
 tier: up to 2 h one point per cycle, up to 24 h one-minute means, above that
 five-minute means. `since` (unix seconds) returns only newer points; the dashboard's
 2 h view polls this way every 30 s. Points are kept across restarts in
@@ -244,6 +325,86 @@ time, an absent value is an empty cell.
 ```
 curl -H "Authorization: Bearer n5t_..." -o week.csv "https://n5host:8010/api/history.csv?minutes=10080"
 ```
+
+## Full cooling
+
+```
+curl -sk -X POST -H "Authorization: Bearer n5t_..." -H "Content-Type: application/json" \
+  -d '{"action":"start"}' https://n5host:8010/api/panic
+{"active":true,"until":1789500600}
+```
+
+`POST /api/panic` (scope `control`) sets every channel to 255 for 10 minutes, at once
+(the daemon runs a cycle immediately, no `step_up` ramp). `{"action":"start"}` during a
+running one sets the end to 10 minutes from now; starts within 5 s count as one.
+`{"action":"stop"}` ends it early. The answer is the state after the call: `{active,
+until}` (`until` unix seconds, 0 when none). `409` names why it cannot run: profile
+`monitor` or a read-only fan driver.
+
+While it runs, `GET /api/state` (signed in) carries `panic: {until, by}` and every
+channel that would run its curve or an override has mode `panic` (critical, stall and
+sensor-error keep their mode, at 255 as well); a set override stays in the channel's
+`override` (null when none); `panic_refused` names a refusal before you try. `/healthz` stays `ok`. Precedence and what applies afterwards:
+[Configuration: which rule wins](06-configuration.md#which-rule-wins).
+
+### From Home Assistant
+
+A button or an automation in Home Assistant: a token with scope `control`
+(`n5-fangov token create home-assistant --scope control`, kept in `secrets.yaml`) and
+two `rest_command`s in `configuration.yaml`:
+
+```yaml
+rest_command:
+  n5_full_cooling:
+    url: https://n5host:8010/api/panic
+    method: POST
+    headers:
+      Authorization: !secret n5_fangov_token   # "Bearer n5t_..."
+    content_type: application/json
+    payload: '{"action":"start"}'
+    verify_ssl: false   # or import the dashboard certificate
+  n5_full_cooling_stop:
+    url: https://n5host:8010/api/panic
+    method: POST
+    headers:
+      Authorization: !secret n5_fangov_token
+    content_type: application/json
+    payload: '{"action":"stop"}'
+    verify_ssl: false
+```
+
+Call `rest_command.n5_full_cooling` from a dashboard button or an automation (a hot
+room, a long backup job). The mode shows in the existing state sensors as `panic`.
+
+## Events
+
+```
+curl -sk -H "Authorization: Bearer n5t_..." "https://n5host:8010/api/events?minutes=1440"
+```
+
+`GET /api/events?minutes=N&since=TS` (scope `read`, filtered) returns the events behind
+the [chart markers](04-dashboard.md#event-markers), oldest first, with the parameters
+and limits of `/api/history` (`minutes` 1..10080, default 120; `since` = only `ts > since`):
+
+```
+[{"id":41,"ts":1789500120,"kind":"override","ch":"hdd","text":"hdd manual 150 (admin)","by":"user:admin"},
+ {"id":42,"ts":1789501020,"kind":"override-end","ch":"hdd","text":"hdd back to the curve (admin)","by":"user:admin","end":true}]
+```
+
+- `kind`: `preset`, `override`, `assist`, `alert`, `critical`, `ceiling`, `failsafe`,
+  `start`, `reload`; a span (`override`, `critical`, `ceiling`, `failsafe`) ends with its
+  `-end` event, which carries `end: true`. When each is recorded:
+  [Events and alerts](07-alerts.md#events-and-alerts).
+- `ch` is present for per-channel kinds; `by` is `user:<name>`, `token:<name>`,
+  `schedule`, `cli` or `daemon`; `text` names kind, channel, values and the user, never
+  a path or an alert message.
+- Anonymous callers get `ts`, `kind`, `ch` and `end` only. Without an event log: 501.
+- `since` compares timestamps. After the clock steps back, events written meanwhile can
+  carry a `ts` at or before the `since` you already hold: reload the whole span now and
+  then (the dashboard does every tenth load).
+
+The log is `/var/lib/n5-fangov/events.json` (0600): 7 days, at most 2000 events. A
+`serve --dry-run` keeps its events in memory and never writes the file.
 
 ## Home Assistant
 

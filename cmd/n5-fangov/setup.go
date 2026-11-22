@@ -188,6 +188,9 @@ func cmdSetup(args []string) int {
 			for _, d := range r.Dropped {
 				fmt.Println("not carried over (invalid in the old file, default written): " + d)
 			}
+			for _, d := range r.AssistDropped {
+				fmt.Println("dropped: [[assist]] " + d + " (does not fit the new channel set: no such channel, or a source is its own sensor)")
+			}
 			q = *cfgPath + " exists; rewrite it as listed above (a backup is kept)"
 		}
 		if !*yes {

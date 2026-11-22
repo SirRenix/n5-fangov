@@ -48,6 +48,29 @@ import. Toasts show at most three; a fourth drops the oldest.
 *More*; *More* opens a sheet with Health, System, Schedules, Log, About. Anonymous: Overview ·
 More (About).
 
+## Full cooling
+
+*Full cooling* in the page header (signed in, every page) sets every fan to maximum for
+10 minutes — loud, never dangerous. One click, no confirmation.
+
+- While it runs the header turns red with the time left (`9:41`), **+10 min** (10
+  minutes from now, not added up) and **Stop**. The channel tiles show mode `PANIC`.
+- An override, a preset, a schedule switch or the assist switch set meanwhile is taken
+  and saved but applies only when it ends; the message says *applies after full cooling
+  ends*. Afterwards every channel returns to what it would run now, down with
+  `step_down`.
+- When it ends — after 10 minutes, by *Stop* here or in another session — every open
+  dashboard shows *Full cooling ended*.
+- Greyed out with the reason as tooltip where the daemon cannot drive the fans (profile
+  `monitor`, read-only fan driver). On a phone the button is an icon, the time left next
+  to it.
+- It survives a restart of the daemon (`/run/n5-fangov/panic.until`), not a reboot. It
+  sends no alert; the log has a line at start, extension and end, the charts a band
+  ([event markers](#event-markers)), the Health page a line.
+
+Precedence: [Configuration: which rule wins](06-configuration.md#which-rule-wins). From
+the shell: `n5-fangov panic`; from Home Assistant: [API: Full cooling](12-api.md#full-cooling).
+
 ## Overview
 
 **Tiles**, one per channel: name, `pwmN · sensor`, mode badge (`AUTO`, `MANUAL`,
@@ -56,7 +79,8 @@ share of the lower of `critical` and the [ceiling](06-configuration.md#ceilings-
 `held …` while a [hysteresis](06-configuration.md#hysteresis-and-minimum-on-time) holds
 the curve at another value, a `hold` badge with the remaining minimum on-time, a
 **sparkline** of the last 2 h, the duty bar with a target marker while the slew is
-moving (`33 % (85 → 107)`), and the RPM (`no tach` without tachometer, `0 rpm` in red).
+moving (`33 % (85 → 107)`), `+N` after it while [assist](06-configuration.md#assist)
+adds N to the curve target, and the RPM (`no tach` without tachometer, `0 rpm` in red).
 
 **History**: range switch `2 h · 24 h · 7 d` (remembered in this browser) and, signed
 in, *CSV*. 2 h is one point per cycle, polled every 30 s; 24 h and 7 d are one-minute
@@ -65,7 +89,33 @@ and five-minute means, reloaded every 60 s. The history survives restarts
 downloads the selected range ([History and CSV](12-api.md#history-and-csv)).
 
 **Charts**: *Temperature*, *Fan speed* (`RPM` / `Duty` switch) and, signed in and once
-a sensor is watched, *Extra sensors* for the ids in `[dashboard] sensors`.
+a sensor is watched, *Extra sensors* for the ids in `[dashboard] sensors`. Temperature
+and fan speed carry the [event markers](#event-markers).
+
+### Event markers
+
+The charts show what happened while the lines moved: a preset switch, an override, the
+assist switch, an alert, a critical or ceiling state, a failsafe, a daemon start.
+
+- **Groups**, each with its own colour and shape: *Operation* ● (preset, override,
+  assist, reload), *Protection* ▲ (alert, critical, ceiling, failsafe), *System* ■
+  (daemon start).
+- **Point events**: a thin vertical line and the symbol at the top of the chart.
+- **Spans** (override, critical, ceiling, failsafe): a shaded band from start to end, per
+  channel; one that is still running ends at the right edge.
+- **Hover** (on a phone: drag a finger) near a symbol: the chart tooltip lists the events under the pointer, e.g.
+  `14:02 preset n5pro-cool (schedule 22:00-07:00)`. Events closer than 6 px share one
+  symbol with a count; the most severe group gives the shape. The symbol's title lists
+  them as well.
+- **Filter**: the chips *Operation · Protection · System* above the charts switch a
+  group on or off; the choice is kept in this browser. All are on by default.
+- Not signed in, the markers show the kind only (`Preset`, `Override hdd`), no text and
+  no user.
+
+The markers also appear in the [preview](#preview) chart. The daemon keeps the events
+in `/var/lib/n5-fangov/events.json` (7 days, at most 2000); what is recorded and when:
+[Alerts: events and alerts](07-alerts.md#events-and-alerts). From the shell:
+`n5-fangov events`.
 
 ![Overview with the 24 h range: averaged charts, Www HH:MM axis, CSV button](screenshots/26-overview-24h.png)
 
@@ -102,7 +152,10 @@ Signed in. The answer to "is everything in order?" in one place:
   stores it at once. The `dkms` check line shows `skipped` here for the same reason.
 - **Driver and daemon**: module, version, srcversion, write mode, the version the
   installed driver package builds (*reload pending* when they differ), daemon start, the
-  last `restart`, `failed`, `emergency`, `kernel` and `driver` alert.
+  last `restart`, `failed`, `emergency`, `kernel` and `driver` alert, and while it runs
+  *full cooling until 14:32 (admin)*. `/healthz` stays `ok` during full cooling.
+- **Recent events**: the last 20 [events](#event-markers), newest first, with group
+  symbol, kind, age and text.
 
 The page reloads every minute while it is open.
 
@@ -174,7 +227,46 @@ pairs sit under the table.
 
 The same from the shell: `n5-fangov set` / `auto` ([CLI](05-cli.md)).
 
+**Assist** (under the override, only when the channel has an
+[`[[assist]]`](06-configuration.md#assist) table): a switch and one line —
+`+45 from amdgpu (58.7 °C)` while a boost is added, `0 (sources below start)`,
+`0 (a source is unreadable)`, `0 (manual wins)` outside mode auto, or `off`. The switch
+is `PUT /api/assist/{channel}`; the daemon writes only `enabled` in `config.toml` and
+takes it on the next cycle (the switch shows the client's state until the snapshot
+agrees). Sources and values are edited in the file, there is no editor here. The same
+from the shell: `n5-fangov assist hdd on|off`.
+
 ![Fans, Manual override switched on for the HDD channel: held duty, slider at the minimum 60](screenshots/10-fans-manual-switch.png)
+
+### Preview
+
+Check a change against the recorded history before you apply it. Nothing is applied.
+
+- **Preview 24 h** sits in the channel card header while that channel has unsaved
+  edits: the chart opens under the card, recorded duty grey, the preview in the
+  channel's colour, the assist share as a filled area. Further edits recompute it 1 s
+  later while it is open. One request runs at a time; a change made meanwhile is sent
+  when it returns, an older answer is dropped.
+- The **chart icon** on a preset chip opens the preview of that preset for every
+  channel, under the Presets card.
+- **Preview** next to the Assist switch shows the channel with the switch inverted:
+  what assist on (or off) would have added. The inversion follows the switch as it is
+  when the preview is computed.
+- *24 h / 7 d* switches the span (1-min or 5-min means). Below the chart: `Ø 99 → 118,
+  P95 106 → 150, max 120 → 160, ≥ 200 …, assist … min` per channel (recorded → preview),
+  and the note what the preview cannot show — no feedback (more air would have lowered
+  the temperatures, so the preview shows rather too much duty), no ramp, past
+  overrides only in the recorded line; for 7 d, that hysteresis and min_on barely act
+  on 5-min means. Per channel the limits of its computation follow (an assist source
+  missing from the history, a mixed composite sensor judged on its maximum). A channel
+  without a preview, or a failed request, greys its chart out.
+- The [event markers](#event-markers) of the span sit in the chart, with the same
+  filter as on the Overview.
+- With assist on for an HDD channel a line carries the measured effect of 16.11.2026
+  (HDD fan 106 → 150: NVMe −2.3…2.7 K, drives −0.5…0.9 K after 8–15 min), labelled
+  *measured, not predicted*.
+
+The rules and limits: [API: Preview](12-api.md#preview). From the shell: `n5-fangov preview`.
 
 ### Apply, Revert, validation
 
@@ -476,9 +568,14 @@ production page never requests, with documentation values (`n5host`, `192.0.2.x`
 | `&down=1` | state, history and sensors unreachable from 2 s after the boot: the connection banner |
 | `&drv=pending` | the loaded driver is not the build the package expects: yellow driver chip, *reload pending* on Health |
 | `&drv=ro` | the driver cannot write (`write-disabled`): yellow driver chip |
+| `&panic=1` | full cooling running, 9 minutes left |
+| `&pnoff=1` | full cooling refused (profile monitor): the button greyed out with the reason |
+| `&assist=1` | the hdd channel's `[[assist]]` table starts switched on with a warm GPU source: `+N` on the tile, the line under the switch |
 
 The mock implements every endpoint of the API, including tokens (`n5t_mock…`), alert
-acknowledgement (two of the recent alerts start acknowledged), driver and health,
+acknowledgement (two of the recent alerts start acknowledged), events (a sample week
+with a merged symbol and an open cpu override; its override, assist, preset and config
+answers add events), driver and health,
 schedules, the history tiers, CSV, the webhook status, `disk:*` sensors and the preset
 body; it validates curves, stop and min on with the daemon's rules. Its presets are the
 three built-ins, `summer` and `alternative` (cpu and ssd from `n5pro-balanced`, its own

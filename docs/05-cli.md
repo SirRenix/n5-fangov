@@ -11,12 +11,15 @@ the running daemon and fall back to the files or `state.json` when it is down
 |---|---|---|
 | `setup` | `--listen local\|lan\|HOST:PORT`, `--user U`, `--password-file F` \| `--password -`, `--profile auto\|n5pro\|nct67xx\|it87xx\|monitor`, `--yes`, `--fresh` | write the config for this machine; interactive when flags are missing, `--yes` asks nothing and needs every flag; an existing file is backed up and everything setup does not ask for is kept (`--fresh`: nothing) — [Setup](03-setup.md#running-setup-again) |
 | `serve` | `--dry-run`, `--run-dir DIR`, `--state-dir DIR`, `--listen ADDR` (`none` = no TCP listener) | run the daemon (the unit's `ExecStart`); `--dry-run` reads sensors and logs decisions without writing pwm |
-| `status` | — | channels, temperatures, duty, RPM, mode (*socket*, else `state.json`) |
+| `status` | — | channels, temperatures, duty, RPM, mode, assist (`-` no table, `off`, `0`, `+45 amdgpu`) (*socket*, else `state.json`) |
 | `set <ch> <duty\|NN%>` | — | manual override for one channel (*socket*; limits and stall guard still apply) |
 | `auto <ch\|all>` | — | back to the curve (*socket*) |
+| `panic` | `stop`, `status` | full cooling: every channel at 255 for 10 min (again = 10 min from now) — [below](#panic) (*socket* only) |
+| `assist <ch> on\|off` | — | switch the channel's [`[[assist]]`](06-configuration.md#assist) table (*socket* only: the daemon writes the `enabled` line and takes it on the next cycle; without an answering socket nothing is written) |
 | `curve` | — | print the configured curves |
+| `preview` | `--preset NAME`, `--assist CH=on\|off` (repeatable), `--span 24h\|7d`, `--json` | what the running curves (or a preset, or other assist switches) would have set over the recorded history — [below](#preview) (*socket* only) |
 | `log` | `-n N` (default 50), `--export FILE` (`-` = stdout), `--clear` | log file; journal when no file is configured (`--clear` then impossible) — [Logs](10-troubleshooting.md#logs) |
-| `check` | `--quiet` (failures only), `--after-update`, `--unit-start` | self-check (`ExecStartPre`; with `N5FANGOV_UNIT_START=1`, which the unit sets, or `--unit-start` it sends the `driver`/`profile` alert itself): config, profile (fails on a read-only or missing N5 driver on a board the driver writes on; N5 Air and N5 PRO/F8NAB run as `monitor` under `auto`), hardware status, driver version and parameters, pwm writable, sensors, emergency hook, tls, log, dkms; `--after-update` is the apt hook's [kernel gate](02-kernel-driver.md#the-kernel-update-gate) |
+| `check` | `--quiet` (failures only), `--after-update`, `--unit-start` | self-check (`ExecStartPre`; with `N5FANGOV_UNIT_START=1`, which the unit sets, or `--unit-start` it sends the `driver`/`profile` alert itself): config, profile (fails on a read-only or missing N5 driver on a board the driver writes on; N5 Air and N5 PRO/F8NAB run as `monitor` under `auto`), hardware status, driver version and parameters, pwm writable, sensors, one line per `[[assist]]` table (`assist hdd   2 sources, off`; a warning per unreadable source), emergency hook, tls, log, dkms; `--after-update` is the apt hook's [kernel gate](02-kernel-driver.md#the-kernel-update-gate) |
 | `detect` | — | list profiles with their detection result (read-only) |
 | `identify` | `--json` | machine, BIOS, EC firmware, kernel, driver version/parameters/mode, register dump, hardware status (read-only) — [below](#identify) |
 | `system` | `--json` | hardware inventory (*socket*, else local collection) — [System](04-dashboard.md#system) |
@@ -27,10 +30,82 @@ the running daemon and fall back to the files or `state.json` when it is down
 | `cert` | `info` \| `export [--der] [FILE]` \| `regen [--new-key]` \| `upload CERT KEY` \| `reset` | dashboard certificate (*socket* = hot swap, else on the files plus a restart hint) — [CLI equivalents](08-https-security.md#cli-equivalents) |
 | `alerts` | `status` \| `test` \| `template` \| `ack ID...` \| `ack --all` | alert transport (`status` shows the webhook URL with its query redacted, the recent alerts with id and acknowledgement), test alert, PVE notification template, acknowledge alerts (*socket*, else on the files) — [From the shell](07-alerts.md#from-the-shell) |
 | `token` | `create NAME [--scope read\|control\|admin] [--ttl DAYS]` \| `list` \| `revoke ID` | API tokens (*socket* only: the daemon owns `tokens.json`) — [below](#api-tokens) |
+| `events` | `--since 24h\|7d\|DURATION` (default 24h), `--kind K` (repeatable), `--json` | the event log behind the chart markers, oldest first (*socket*, else `events.json`, read-only) — [below](#events) |
 | `export [FILE]` | `--presets DIR` | settings bundle (config + presets, hash redacted) as JSON; `-`/no file = stdout — [Backup and restore](09-updates.md#backup-and-restore) |
 | `import FILE` | `--presets DIR` | restore a bundle (everything validated first), reload the daemon |
 | `version` | (also `-v`, `--version`) | print the version |
 | `help` | (also `-h`, `--help`) | usage |
+
+## preview
+
+```
+n5-fangov preview --preset n5pro-cool
+n5-fangov preview --assist hdd=on --span 7d
+```
+
+Asks the running daemon for the curve preview (`POST /api/preview`): the target duty
+the channels would have set over the recorded 24 h (or 7 d) — the running config
+without options, a preset with `--preset`, other assist switches with `--assist`.
+Nothing is applied. One line per channel, recorded → preview:
+
+```
+channel  actual Ø/P95/max   preview Ø/P95/max   min>=200   assist min
+hdd        99 / 106 / 120    118 / 150 / 160      0 → 12      0 → 184
+```
+
+`min>=200` and `assist min` are minutes at or above duty 200 and minutes with an
+assist boost. A channel that cannot be computed says why (`no preview: sensor not in
+history`). Below the table: what the preview cannot show, and for an HDD channel with
+assist on the measured effect of 16.11.2026, labelled as measured. `--json` prints the
+API answer. Without an answering socket the command fails; it reads no files itself
+(the history is the daemon's). Rules: [API: Preview](12-api.md#preview).
+
+## panic
+
+```
+n5-fangov panic           # every channel at 255 for 10 min; again: 10 min from now
+n5-fangov panic status
+n5-fangov panic stop      # back to curves and overrides now
+```
+
+```
+full cooling: every channel at 255 until 14:32:05 (10m0s)
+full cooling: on until 14:32:05 (9m41s left), started by cli
+```
+
+Through the daemon socket only. Without the daemon the command exits 1 with a clear
+message: nothing drives the fans then (the failsafe's safe duty applies), and no
+command writes full duty without the daemon. A refusal (profile `monitor`, read-only
+driver) is exit 1 with the reason. What it overrides and what comes back afterwards:
+[Configuration: which rule wins](06-configuration.md#which-rule-wins).
+
+## events
+
+```
+n5-fangov events
+n5-fangov events --since 7d --kind override --kind critical
+n5-fangov events --since 90m --json
+```
+
+Prints the [event log](07-alerts.md#events-and-alerts), one line per event, oldest
+first: local time, kind, channel (`-` for none), text and cause in brackets.
+
+```
+2026-11-21 14:02:00  preset        -      preset n5pro-cool (schedule 13:00-18:00)  [schedule]
+2026-11-21 14:20:31  override      hdd    hdd manual 150 (admin)  [user:admin]
+2026-11-21 14:35:02  override-end  hdd    hdd back to the curve (admin)  [user:admin]
+3 event(s), source: daemon
+```
+
+- `--since`: `24h` (default), `7d` (`Nd` = days) or any duration from `1m` to `7d`.
+- `--kind`: one of `preset override assist alert critical ceiling failsafe start reload`
+  or an `-end` kind; a span kind includes its end event. Repeat it for several.
+- `--json`: the events as an array, the fields of [`GET /api/events`](12-api.md#events).
+
+With the daemon the command asks the socket; without it, it reads
+`/var/lib/n5-fangov/events.json` and writes nothing (the last line names the file). A
+file it may not read (not root) is an error with exit 1, not an empty list; a missing
+file is `no events`.
 
 ## identify
 
@@ -199,7 +274,7 @@ unknown id). `2` usage error.
 | Variable | Default | Holds |
 |---|---|---|
 | `N5FANGOV_RUN_DIR` | `/run/n5-fangov` | socket, `state.json`, override and alert stamps |
-| `N5FANGOV_STATE_DIR` | `$STATE_DIRECTORY` from systemd, else `/var/lib/n5-fangov` | `sessions.json`, `tokens.json`, `alerts.json`, `history.json` |
+| `N5FANGOV_STATE_DIR` | `$STATE_DIRECTORY` from systemd, else `/var/lib/n5-fangov` | `sessions.json`, `tokens.json`, `alerts.json`, `history.json`, `events.json` |
 | `N5FANGOV_SYSFS` | `/sys` | sysfs root; tests point it at `testdata/sysfs/n5pro` |
 
 Relative paths are taken from the working directory; under the unit that is `/`.

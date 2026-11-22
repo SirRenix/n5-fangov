@@ -6,6 +6,7 @@ package web
 // about, preset detail/delete/rename/save.
 
 import (
+	"errors"
 	"time"
 
 	"github.com/SirRenix/n5-fangov/internal/config"
@@ -142,6 +143,40 @@ type DashboardStore interface {
 	// and reported as warnings.
 	SetSensors(ids []string) (warnings []string, err error)
 }
+
+// AssistStore is the assist switch (implemented in cmd): SetEnabled writes
+// the enabled line of the channel's [[assist]] table in the config file
+// and applies it to the controller (next cycle). An error wrapping
+// fs.ErrNotExist means the channel has no [[assist]] table (404); ErrStore
+// or an OS error a write failure (500).
+type AssistStore interface {
+	SetEnabled(channel string, on bool) error
+}
+
+// PreviewRequest is a validated POST /api/preview body (preview_api.go).
+type PreviewRequest struct {
+	// Channels are draft channel tables, validated like a preset body and
+	// matched to the running channels by name (pwm and stop taken from
+	// there when absent); empty = the running tables.
+	Channels []config.Channel
+	Preset   string          // the channels of this preset, merged like an apply; exclusive with Channels
+	Assist   map[string]bool // the assist switch per channel for the computation
+	Span     time.Duration   // control.PreviewSpanDay or PreviewSpanWeek
+}
+
+// Previewer backs POST /api/preview (implemented in cmd). Preview
+// computes the request against the recorded history and writes nothing:
+// an error wrapping ErrBadInput is 400, fs.ErrNotExist (unknown preset)
+// 404, control.ErrPreviewBusy 429.
+type Previewer interface {
+	RunningChannels() []config.Channel
+	Preview(req PreviewRequest) (any, error)
+}
+
+// ErrBadInput marks a preview request the running config cannot take (an
+// [[assist]] switch for a channel without a table, a preset with no usable
+// channel): 400.
+var ErrBadInput = errors.New("invalid input")
 
 // About is the public project card (GET /api/about). No host data.
 type About struct {

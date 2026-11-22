@@ -34,6 +34,7 @@ import (
 
 	"github.com/SirRenix/n5-fangov/internal/config"
 	"github.com/SirRenix/n5-fangov/internal/control"
+	"github.com/SirRenix/n5-fangov/internal/events"
 	"github.com/SirRenix/n5-fangov/internal/ipc"
 	"github.com/SirRenix/n5-fangov/internal/logfile"
 	"github.com/SirRenix/n5-fangov/internal/tlscert"
@@ -239,6 +240,10 @@ type Deps struct {
 	Alerts AlertMgr
 	// Dashboard backs /api/dashboard (nil → 501).
 	Dashboard DashboardStore
+	// Assist backs PUT /api/assist/{name} (nil → 501).
+	Assist AssistStore
+	// Preview backs POST /api/preview (nil → 501).
+	Preview Previewer
 	// About is served verbatim by GET /api/about.
 	About About
 	// System returns the hardware inventory for GET /api/system (the
@@ -260,6 +265,11 @@ type Deps struct {
 	// HealthGrace is how long GET /healthz answers "starting" with 200
 	// before a daemon without a finished cycle counts as stuck (503).
 	HealthGrace time.Duration
+	// Events backs GET /api/events and records the operator's actions
+	// (events_api.go); nil → 501, nothing recorded.
+	Events EventLog
+	// Panic backs POST /api/panic (panic_api.go); nil → 501.
+	Panic PanicCtl
 }
 
 // Server holds the mux and serves it on TCP and on the unix socket.
@@ -868,14 +878,23 @@ type publicChannel struct {
 	Target int          `json:"target"`
 	RPM    int          `json:"rpm"`
 	Mode   control.Mode `json:"mode"`
+	// Assist is the switch and the boost only: the source ids name the
+	// operator's hardware like the extra sensors.
+	Assist *publicAssist `json:"assist,omitempty"`
+}
+
+type publicAssist struct {
+	Enabled bool `json:"enabled"`
+	Boost   int  `json:"boost"`
 }
 
 // publicPoint is a history point without the extra sensors.
 type publicPoint struct {
-	TS   int64              `json:"ts"`
-	Temp map[string]float64 `json:"temp"`
-	Duty map[string]int     `json:"duty"`
-	RPM  map[string]int     `json:"rpm"`
+	TS     int64              `json:"ts"`
+	Temp   map[string]float64 `json:"temp"`
+	Duty   map[string]int     `json:"duty"`
+	RPM    map[string]int     `json:"rpm"`
+	Assist map[string]int     `json:"assist,omitempty"`
 }
 
 func (s *Server) getState(w http.ResponseWriter, r *http.Request) {
@@ -887,7 +906,11 @@ func (s *Server) getState(w http.ResponseWriter, r *http.Request) {
 	if !CallerFrom(r.Context()).Authenticated {
 		out := publicState{TS: snap.TS, Status: snap.Status, Profile: snap.Profile, Verified: snap.Verified, HWStatus: snap.HWStatus, DryRun: snap.DryRun, Uptime: snap.Uptime, Channels: make([]publicChannel, 0, len(snap.Channels))}
 		for _, c := range snap.Channels {
-			out.Channels = append(out.Channels, publicChannel{Name: c.Name, PWM: c.PWM, Sensor: c.Sensor, Temp: c.Temp, Duty: c.Duty, Target: c.Target, RPM: c.RPM, Mode: c.Mode})
+			pc := publicChannel{Name: c.Name, PWM: c.PWM, Sensor: c.Sensor, Temp: c.Temp, Duty: c.Duty, Target: c.Target, RPM: c.RPM, Mode: c.Mode}
+			if c.Assist != nil {
+				pc.Assist = &publicAssist{Enabled: c.Assist.Enabled, Boost: c.Assist.Boost}
+			}
+			out.Channels = append(out.Channels, pc)
 		}
 		writeJSON(w, http.StatusOK, out)
 		return
@@ -929,7 +952,7 @@ func (s *Server) getHistory(w http.ResponseWriter, r *http.Request) {
 		out := make([]publicPoint, 0, len(pts))
 		for _, p := range pts {
 			if p.TS > since {
-				out = append(out, publicPoint{TS: p.TS, Temp: p.Temp, Duty: p.Duty, RPM: p.RPM})
+				out = append(out, publicPoint{TS: p.TS, Temp: p.Temp, Duty: p.Duty, RPM: p.RPM, Assist: p.Assist})
 			}
 		}
 		writeJSON(w, http.StatusOK, out)
@@ -1119,6 +1142,7 @@ func (s *Server) putConfig(w http.ResponseWriter, r *http.Request) {
 	err = s.deps.Service.Reload(body)
 	switch {
 	case err == nil:
+		s.event(r, events.Reload, "", "config reloaded")
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "restart_required": false, "warnings": nonNil(warnings)})
 	case errors.Is(err, control.ErrRestartRequired):
 		writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "restart_required": true, "message": err.Error(), "warnings": nonNil(warnings)})
@@ -1233,6 +1257,7 @@ func (s *Server) putOverride(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	s.event(r, events.Override, name, fmt.Sprintf("%s manual %d", name, duty))
 	// The override is applied by the loop on its next cycle; mode reports
 	// what the channel is doing now (critical/stall are not "manual").
 	mode := control.ModeManual
@@ -1256,9 +1281,18 @@ func (s *Server) deleteOverride(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "unknown channel "+name)
 		return
 	}
+	// a clear of a channel that was on its curve records nothing
+	had := s.overrideOpen(name)
+	if o, ok := s.deps.Service.(interface{ Overrides() map[string]int }); ok {
+		_, set := o.Overrides()[name]
+		had = had || set
+	}
 	if err := s.deps.Service.ClearOverride(name); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+	if had {
+		s.event(r, events.OverrideEnd, name, name+" back to the curve")
 	}
 	mode := control.ModeAuto
 	if c := s.channel(name); c != nil {
@@ -1318,6 +1352,7 @@ func (s *Server) applyPreset(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	s.event(r, events.Preset, "", "preset "+name)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "applied": name})
 }
 
@@ -1474,6 +1509,7 @@ func (s *Server) importConfig(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "restart_required": true, "message": "restart required: systemctl restart n5-fangov", "warnings": nonNil(warnings)})
 		return
 	}
+	s.event(r, events.Reload, "", "config reloaded (import)")
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "restart_required": false, "warnings": nonNil(warnings)})
 }
 

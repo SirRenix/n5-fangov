@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/SirRenix/n5-fangov/internal/events"
 	"github.com/SirRenix/n5-fangov/internal/schedule"
 	"github.com/SirRenix/n5-fangov/internal/web"
 )
@@ -28,6 +29,8 @@ type scheduler struct {
 	alert func(msg string) // the cooled "schedule" alert
 	logf  func(string, ...any)
 	now   func() time.Time
+	// events marks a successful switch (preset, by schedule); nil = none.
+	events events.Recorder
 
 	mu      sync.Mutex
 	entries []schedule.Entry
@@ -149,6 +152,9 @@ func (s *scheduler) evaluate() {
 		s.alert(fmt.Sprintf("scheduled preset %q (%s) could not be applied: %s\nThe previous curves stay in effect; the scheduler retries at the next switch. Details are in the daemon log.", entry.Preset, window, sw.Error))
 	} else {
 		s.logf("schedule: preset %q applied (%s)", entry.Preset, window)
+		if s.events != nil {
+			s.events.Add(events.Event{TS: now.Unix(), Kind: events.Preset, Text: fmt.Sprintf("preset %s (schedule %s)", entry.Preset, window), By: events.BySchedule})
+		}
 	}
 	s.mu.Lock()
 	s.last = &sw

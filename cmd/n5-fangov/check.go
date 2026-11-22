@@ -252,6 +252,7 @@ func runChecks(cfgPath, dir string) []checkResult {
 		}
 		add(true, "sensor "+c.Sensor, fmt.Sprintf("%.1f C", t))
 	}
+	res = append(res, assistChecks(assistSpecs(cfg), chans, factory)...)
 
 	// 4b. web listener: reachable from the network without auth is not a
 	// start problem, but worth a line every time check runs.
@@ -324,6 +325,56 @@ func runChecks(cfgPath, dir string) []checkResult {
 		adv(ok, "dkms", detail)
 	}
 	return res
+}
+
+// assistChecks is one line per [[assist]] table the parser kept ("2
+// sources, off"); the parser's warnings about dropped tables are in the
+// config lines already. Advisory (serve regulates without the boost): a
+// table whose channel serve does not manage, and per source an id that
+// does not resolve or read now (it contributes 0 until it does).
+func assistChecks(assists []assistSpec, chans []chanSpec, factory sensorFactory) []checkResult {
+	var res []checkResult
+	managed := map[string]bool{}
+	for _, c := range chans {
+		managed[c.Name] = true
+	}
+	for _, a := range assists {
+		name := "assist " + a.Channel
+		if !managed[a.Channel] {
+			res = append(res, checkResult{advisory: true, name: name, detail: "channel not managed on this device; serve ignores the table"})
+			continue
+		}
+		var bad []checkResult
+		for _, id := range a.Sources {
+			src, err := factory(id)
+			if err == nil {
+				_, err = readTempC(src)
+			}
+			if err != nil {
+				bad = append(bad, checkResult{advisory: true, name: "  ", detail: fmt.Sprintf("source %s: %v; contributes 0 until it reads", id, err)})
+			}
+		}
+		n := len(a.Sources)
+		plural := "s"
+		if n == 1 {
+			plural = ""
+		}
+		detail := fmt.Sprintf("%d source%s, %s", n, plural, assistOnOff(a.Enabled))
+		if len(bad) > 0 {
+			res = append(res, checkResult{advisory: true, name: name, detail: fmt.Sprintf("%s; %d of %d source(s) unreadable:", detail, len(bad), n)})
+			res = append(res, bad...)
+			continue
+		}
+		res = append(res, checkResult{ok: true, name: name, detail: detail})
+	}
+	return res
+}
+
+func assistOnOff(on bool) string {
+	if on {
+		return "on"
+	}
+	return "off"
 }
 
 // writable opens path for writing without writing anything.

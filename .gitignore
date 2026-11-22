@@ -23,6 +23,7 @@ sessions.json
 tokens.json
 alerts.json
 history.json
+events.json
 *.token
 *.secret
 

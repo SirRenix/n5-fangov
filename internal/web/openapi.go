@@ -13,6 +13,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/SirRenix/n5-fangov/internal/events"
 )
 
 // class is the visibility of a route with auth = basic (DESIGN.md
@@ -116,6 +118,10 @@ func (s *Server) routeTable() []route {
 			Summary: "History points of the last minutes (extra sensors only when signed in)", Response: "HistoryPoint",
 			Params:    []paramSpec{{Name: "minutes", Type: "integer", Description: "span in minutes, 1..10080; the tier follows the span: raw up to 2 h, 1-min means up to 24 h, 5-min means beyond (default 120)"}, {Name: "since", Type: "integer", Description: "only points with ts > since (unix seconds)"}},
 			Responses: map[int]string{200: "array of history points", 400: "bad query"}},
+		{Method: "GET", Path: "/api/events", Handler: s.getEvents, Class: classFiltered, Scope: scopeRead,
+			Summary: "Events of the last minutes for the chart markers, oldest first (ts, kind, ch and end only for anonymous callers)", Response: "Event",
+			Params:    []paramSpec{{Name: "minutes", Type: "integer", Description: "span in minutes, 1..10080 (default 120), as for /api/history"}, {Name: "since", Type: "integer", Description: "only events with ts > since (unix seconds)"}},
+			Responses: map[int]string{200: "array of events", 400: "bad query", 501: "no event log"}},
 		// ---- protected, read ---------------------------------------------
 		{Method: "GET", Path: "/api/history.csv", Handler: s.historyCSV, Class: classProtected, Scope: scopeRead,
 			Summary:   "History as CSV (ts, time, per channel temp/duty/rpm, extra sensors)",
@@ -141,6 +147,10 @@ func (s *Server) routeTable() []route {
 			Summary: "The loaded fan driver: module, version, srcversion, write mode, the version the installed package expects", Response: "Driver", Responses: map[int]string{200: "driver view", 501: "no driver information"}},
 		{Method: "GET", Path: "/api/health", Handler: s.getHealth, Class: classProtected, Scope: scopeRead,
 			Summary: "Health page: the checks of `n5-fangov check`, the kernel gate stored by `check --after-update`, driver, daemon start, last restart/failed/emergency/kernel/driver alert", Responses: map[int]string{200: "health document", 501: "no health information"}},
+		{Method: "POST", Path: "/api/preview", Handler: s.postPreview, Class: classProtected, Scope: scopeRead,
+			Summary: "Curve preview: the target duty a draft (channels, a preset, assist switches) would have set over the recorded 24 h or 7 d; writes nothing, one computation at a time",
+			Body:    &bodySpec{ContentType: "application/json", Schema: "PreviewRequest", Description: "optional: channels or preset, assist, span; empty = the running config over 24 h", Optional: true}, Response: "Preview",
+			Responses: map[int]string{200: "series and summary per channel", 400: "invalid body, a channel that breaks the curve rules or is not running, channels and preset together, assist for a channel without a table, a span other than 24h/7d", 404: "unknown preset", 413: "body too large", 429: "another preview is being computed", 501: "no preview"}},
 		{Method: "GET", Path: "/api/tls", Handler: s.getTLS, Class: classProtected, Scope: scopeRead,
 			Summary: "Certificate mode, info, covered hosts and warnings", Responses: map[int]string{200: "certificate view", 501: "no certificate manager"}},
 		// ---- protected, control ------------------------------------------
@@ -149,6 +159,9 @@ func (s *Server) routeTable() []route {
 			Responses: map[int]string{200: "override applied on the next cycle", 400: "invalid body or duty below the channel's minimum", 404: "unknown channel", 413: "body too large"}},
 		{Method: "DELETE", Path: "/api/override/{name}", Handler: s.deleteOverride, Class: classProtected, Scope: scopeControl,
 			Summary: "Return one channel to its curve", Responses: map[int]string{200: "override cleared", 400: "invalid name", 404: "unknown channel"}},
+		{Method: "POST", Path: "/api/panic", Handler: s.postPanic, Class: classProtected, Scope: scopeControl,
+			Summary: "Full cooling: every channel at 255 for 10 min (start again = 10 min from now), or stop it", Body: jsonBody("PanicAction", "start or stop"), Response: "Panic",
+			Responses: map[int]string{200: "the state after the call", 400: "bad action", 409: "refused: the daemon cannot drive the fans (profile monitor, read-only driver)", 501: "no full cooling"}},
 		{Method: "POST", Path: "/api/presets/{name}/apply", Handler: s.applyPreset, Class: classProtected, Scope: scopeControl,
 			Summary:   "Apply a preset: its channels replace the config channels with the same pwm, then reload",
 			Responses: map[int]string{200: "applied", 202: "written, restart required", 400: "invalid name", 404: "unknown preset", 500: "written but not reloaded", 501: "no preset store"}},
@@ -158,6 +171,9 @@ func (s *Server) routeTable() []route {
 		{Method: "PUT", Path: "/api/dashboard", Handler: s.putDashboard, Class: classProtected, Scope: scopeControl,
 			Summary: "Set the extra sensors recorded for the dashboard chart", Body: jsonBody("Dashboard", "sensor ids, at most 8"), Response: "Dashboard",
 			Responses: map[int]string{200: "saved; unresolvable ids reported as warnings", 400: "too many or malformed ids", 500: "config not written", 501: "no dashboard store"}},
+		{Method: "PUT", Path: "/api/assist/{name}", Handler: s.putAssist, Class: classProtected, Scope: scopeControl,
+			Summary: "Switch the channel's [[assist]] table on or off (only its enabled line is written); applied on the next cycle", Body: jsonBody("AssistSwitch", "enabled true or false"), Response: "AssistSwitch",
+			Responses: map[int]string{200: "written and applied on the next cycle", 400: "invalid name or body", 404: "the channel has no [[assist]] table", 413: "body too large", 500: "config not written, or written but not applied", 501: "no assist store"}},
 		// ---- protected, admin --------------------------------------------
 		{Method: "GET", Path: "/api/config", Handler: s.getConfig, Class: classProtected, Scope: scopeAdmin,
 			Summary: "Config file text and parsed values (password_hash redacted)", Responses: map[int]string{200: "raw and parsed config", 500: "config unreadable", 501: "no config store"}},
@@ -309,7 +325,7 @@ func buildOpenAPI(version string, table []route) ([]byte, error) {
 				resp["content"] = map[string]any{"application/json": map[string]any{"schema": map[string]any{"$ref": "#/components/schemas/Error"}}}
 			case code/100 == 2 && r.Response != "":
 				schema := map[string]any{"$ref": "#/components/schemas/" + r.Response}
-				if r.Response == "HistoryPoint" {
+				if r.Response == "HistoryPoint" || r.Response == "Event" {
 					schema = map[string]any{"type": "array", "items": schema}
 				}
 				resp["content"] = map[string]any{"application/json": map[string]any{"schema": schema}}
@@ -387,10 +403,54 @@ func openAPISchemas() map[string]any {
 			"duty":        integer("hardware duty 0..255; -1 while unknown"),
 			"target":      integer("computed duty before slew"),
 			"rpm":         integer("fan speed; -1 without tachometer"),
-			"mode":        strEnum("channel mode", "auto", "manual", "critical", "stall", "sensor-error", "failsafe"),
+			"mode":        strEnum("channel mode", "auto", "manual", "critical", "stall", "sensor-error", "failsafe", "panic"),
 			"hold_until":  integer("end of a running min_on hold (unix seconds, absent otherwise)"),
 			"ceiling":     integer("effective ceiling in °C: the sensor kind's built-in one (HDD 65, SSD 85, CPU 100), lowered by [[channel]] ceiling; signed in only"),
 			"ceiling_hit": boolean("the channel is in the ceiling state (255, mode critical) until the reading is 3 °C below the ceiling; signed in only"),
+			"assist":      ref("Assist"),
+			"override":    integer("manual duty set for the channel, null when none; stays set under critical, stall and full cooling, whose mode wins; signed in only"),
+		}),
+		"Assist": object("The channel's [[assist]] state; absent for a channel without a table. Anonymous callers get enabled and boost only", []string{"enabled", "boost"}, map[string]any{
+			"enabled": boolean("the table is switched on"),
+			"boost":   integer("PWM points added to the curve target this cycle; 0 when off, outside mode auto or with every source below start"),
+			"source":  str("sensor id the boost comes from; absent at 0; signed in only"),
+			"sources": arrayOf(object("one source; signed in only", []string{"sensor", "temp", "boost"}, map[string]any{
+				"sensor": str("sensor id"),
+				"temp":   number("reading in °C; -999 when unreadable"),
+				"boost":  integer("the boost this source alone gives (also while assist is off)"),
+			})),
+		}),
+		"PreviewRequest": object("POST /api/preview body; every member optional", nil, map[string]any{
+			"channels": arrayOf(object("a draft channel, matched to the running channel by name; validated like PresetSave (pwm and stop default to the running channel's)", []string{"name", "sensor", "curve", "critical"}, map[string]any{
+				"name": str("running channel name"), "pwm": integer("optional, must be the running one"), "sensor": str("sensor id; another than the running one is read from the history's extra"),
+				"curve": arrayOf(arrayOf(integer("[temp_c, duty]"))), "critical": integer(""), "stop": str("optional"), "hysteresis": integer("0..10"), "min_on": str("duration"),
+			})),
+			"preset": str("the channels of this preset, merged by pwm like an apply; exclusive with channels"),
+			"assist": tsMap("assist switch per channel for the computation; the channel needs an [[assist]] table", boolean("")),
+			"span":   strEnum("24h (1-min means, default) or 7d (5-min means)", "24h", "7d"),
+		}),
+		"Preview": object("POST /api/preview answer", []string{"span", "step", "note", "order", "channels"}, map[string]any{
+			"span":  strEnum("", "24h", "7d"),
+			"step":  integer("seconds between points (60 or 300)"),
+			"note":  str("what the preview cannot show (no feedback, no ramp, past modes)"),
+			"order": arrayOf(str("channel names in config order")),
+			"channels": tsMap("per channel", object("", nil, map[string]any{
+				"series": arrayOf(object("", []string{"ts", "actual", "preview", "boost"}, map[string]any{
+					"ts": integer("unix seconds"), "actual": integer("recorded duty, null when unknown"), "preview": integer("target duty, null where the history has no temperature"), "boost": integer("assist share of the preview"),
+				})),
+				"summary": object("", nil, map[string]any{
+					"actual":  object("", nil, map[string]any{"mean": number(""), "p95": integer(""), "max": integer(""), "min_ge_200": integer("minutes at or above 200"), "assist_min": integer("minutes with an assist boost")}),
+					"preview": object("", nil, map[string]any{"mean": number(""), "p95": integer(""), "max": integer(""), "min_ge_200": integer(""), "assist_min": integer("")}),
+				}),
+				"error":    str("why this channel has no preview, e.g. sensor not in history"),
+				"notes":    arrayOf(str("limits of this channel's computation: an assist source missing from the history (adds 0 there), a mixed composite sensor judged on its recorded maximum against the lowest part ceiling")),
+				"measured": str("for an HDD channel with assist on: the measured effect of 16.11.2026, labelled as measured, not predicted"),
+			})),
+		}),
+		"AssistSwitch": object("PUT /api/assist/{name} body and answer", []string{"enabled"}, map[string]any{
+			"enabled": boolean("switch assist on (true) or off (false)"),
+			"ok":      boolean("answer"),
+			"channel": str("answer: the channel"),
 		}),
 		"State": object("Snapshot (GET /api/state); anonymous callers get ts, status, profile, verified, hw_status, uptime_s, dry_run and the channels without extra_temps, watched, alerts and hwmon_path", []string{"ts", "status", "profile", "verified", "hw_status", "dry_run", "uptime_s", "channels"}, map[string]any{
 			"ts":          integer("unix seconds"),
@@ -405,13 +465,34 @@ func openAPISchemas() map[string]any {
 			"extra_temps": tsMap("profile temperatures by id (°C)", number("")),
 			"watched":     tsMap("dashboard sensors by id (°C)", number("")),
 			"alerts":      tsMap("last alert per kind (unix seconds)", integer("")),
+			"panic": object("the running full cooling (POST /api/panic); absent when none; signed in only", []string{"until", "by"}, map[string]any{
+				"until": integer("end (unix seconds)"), "by": str("who started it: user:<name>, token:<name>, cli"),
+			}),
+			"panic_refused": str("why a full cooling would be refused (profile monitor, read-only driver); absent when it would run; signed in only"),
 		}),
 		"HistoryPoint": object("One history point; maps are keyed by channel name (extra by sensor id)", []string{"ts", "temp", "duty", "rpm"}, map[string]any{
-			"ts":    integer("unix seconds"),
-			"temp":  tsMap("temperature per channel (°C)", number("")),
-			"duty":  tsMap("duty per channel", integer("")),
-			"rpm":   tsMap("rpm per channel", integer("")),
-			"extra": tsMap("extra sensors (°C); signed in only", number("")),
+			"ts":     integer("unix seconds"),
+			"temp":   tsMap("temperature per channel (°C)", number("")),
+			"duty":   tsMap("duty per channel", integer("")),
+			"rpm":    tsMap("rpm per channel", integer("")),
+			"extra":  tsMap("extra sensors (°C): the dashboard sensors and the assist sources; signed in only", number("")),
+			"assist": tsMap("assist boost per channel (absent at 0)", integer("")),
+		}),
+		"Event": object("One event of the log behind the chart markers; anonymous callers get ts, kind, ch and end only", []string{"ts", "kind"}, map[string]any{
+			"id":   integer("number in arrival order; signed in only"),
+			"ts":   integer("unix seconds"),
+			"kind": strEnum("what happened; a span (override, critical, ceiling, failsafe) ends with its -end event", events.Kinds...),
+			"ch":   str("channel, for per-channel kinds"),
+			"text": str("short description: kind, channel, values, user or token name; never a path or an alert message; signed in only"),
+			"by":   str("cause: user:<name>, token:<name>, schedule, cli or daemon; signed in only"),
+			"end":  boolean("true on the event that ends a span"),
+		}),
+		"PanicAction": object("POST /api/panic body", []string{"action"}, map[string]any{
+			"action": strEnum("start (also to extend: 10 min from now) or stop", "start", "stop"),
+		}),
+		"Panic": object("POST /api/panic answer", []string{"active", "until"}, map[string]any{
+			"active": boolean("a full cooling runs after the call"),
+			"until":  integer("its end (unix seconds), 0 when none"),
 		}),
 		"Override": object("PUT /api/override/{name} body: exactly one of duty and percent", nil, map[string]any{
 			"duty":    integer("0..255"),

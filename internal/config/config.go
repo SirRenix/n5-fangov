@@ -301,6 +301,40 @@ var DayNames = []string{"mon", "tue", "wed", "thu", "fri", "sat", "sun"}
 // a warning.
 const MaxSchedules = 16
 
+// Assist is one [[assist]] table (DESIGN "Assist"): the channel's curve
+// target is raised by the heat of other sources. Per source a boost rises
+// linearly from 0 at Start to Boost at Full (degrees C, evaluated at a
+// hysteresis-held reading of that source); the channel gets the maximum
+// over its sources, held for MinOn after a rise. Assist only adds, and only
+// in mode auto. It lives beside [[channel]], not inside it: presets, the
+// curve editor and *Apply to daemon* rewrite the [[channel]] tables, the
+// switch rewrites the enabled line of this table only.
+type Assist struct {
+	Channel    string         `toml:"channel"`
+	Enabled    bool           `toml:"enabled"`
+	Hysteresis int            `toml:"hysteresis"`
+	MinOn      time.Duration  `toml:"min_on"`
+	Sources    []AssistSource `toml:"source"`
+}
+
+// AssistSource is one [[assist.source]] table.
+type AssistSource struct {
+	Sensor string `toml:"sensor"` // one sensor id (the [dashboard] sensors syntax)
+	Start  int    `toml:"start"`  // degrees C, the boost begins here
+	Full   int    `toml:"full"`   // degrees C, full boost from here on (> Start)
+	Boost  int    `toml:"boost"`  // PWM points at Full, AssistBoostMin..AssistBoostMax
+}
+
+// Limits and defaults of [[assist]].
+const (
+	AssistHysteresisDefault = 2
+	AssistMinOnDefault      = 2 * time.Minute
+	AssistMinOnMax          = 30 * time.Minute
+	AssistMaxSources        = 4
+	AssistBoostMin          = 1
+	AssistBoostMax          = 100
+)
+
 // Config is the whole configuration file.
 type Config struct {
 	Daemon    Daemon     `toml:"daemon"`
@@ -310,6 +344,17 @@ type Config struct {
 	Dashboard Dashboard  `toml:"dashboard"`
 	Channels  []Channel  `toml:"channel"`
 	Schedules []Schedule `toml:"schedule,omitempty"`
+	Assists   []Assist   `toml:"assist,omitempty"`
+}
+
+// Assist returns the [[assist]] table of the named channel, or nil.
+func (c *Config) Assist(channel string) *Assist {
+	for i := range c.Assists {
+		if c.Assists[i].Channel == channel {
+			return &c.Assists[i]
+		}
+	}
+	return nil
 }
 
 // Warning describes one value that was replaced by its default (or dropped).
@@ -405,6 +450,20 @@ func (c Config) Clone() Config {
 	out.Web.AllowedHosts = append([]string(nil), c.Web.AllowedHosts...)
 	out.Dashboard.Sensors = append([]string{}, c.Dashboard.Sensors...)
 	out.Schedules = CloneSchedules(c.Schedules)
+	out.Assists = CloneAssists(c.Assists)
+	return out
+}
+
+// CloneAssists deep-copies an assist slice.
+func CloneAssists(in []Assist) []Assist {
+	if in == nil {
+		return nil
+	}
+	out := make([]Assist, len(in))
+	for i, a := range in {
+		out[i] = a
+		out[i].Sources = append([]AssistSource(nil), a.Sources...)
+	}
 	return out
 }
 
@@ -469,7 +528,7 @@ func Parse(raw []byte) (Config, []Warning, error) {
 
 	for _, k := range sortedKeys(top) {
 		switch k {
-		case "daemon", "web", "log", "alert", "dashboard", "channel", "schedule":
+		case "daemon", "web", "log", "alert", "dashboard", "channel", "schedule", "assist":
 		default:
 			p.warn(k, "unknown section, ignored")
 		}
@@ -504,6 +563,15 @@ func Parse(raw []byte) (Config, []Warning, error) {
 			p.warn("schedule", "not an array of tables ([[schedule]]), no schedules configured")
 		} else {
 			cfg.Schedules = p.schedules(secs)
+		}
+	}
+	// after the channels: an assist table names one of them
+	if prim, ok := top["assist"]; ok {
+		var secs []map[string]toml.Primitive
+		if md.Type("assist") != "ArrayHash" || md.PrimitiveDecode(prim, &secs) != nil {
+			p.warn("assist", "not an array of tables ([[assist]]), no assist configured")
+		} else {
+			cfg.Assists = p.assists(secs, cfg.Channels)
 		}
 	}
 	return cfg, p.warns, nil

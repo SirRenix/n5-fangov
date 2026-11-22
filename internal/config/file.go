@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -181,7 +182,7 @@ func SetKey(raw []byte, section, key, value string) []byte {
 
 // ReplaceChannels returns raw with every [[channel]] table replaced by
 // MarshalChannels(chans), everything else byte-identical (comments,
-// [[schedule]], [alert], password_hash, key order). A channel block runs
+// [[schedule]], [[assist]], [alert], password_hash, key order). A channel block runs
 // from its header line to its last key line before the next top-level
 // header that is not a channel table (or EOF): the blank and comment
 // lines between that key and the next header stay, so a comment above a
@@ -254,6 +255,102 @@ func ReplaceChannels(raw []byte, chans []Channel) []byte {
 		out = append(out, body)
 	}
 	return []byte(strings.Join(out, "\n") + "\n")
+}
+
+// SetAssistEnabled returns raw with the enabled key of the [[assist]] table
+// for channel set to on, everything else byte-identical (comments, the
+// other tables, the [[assist.source]] tables, key order). An existing
+// `enabled = …` line of that table is rewritten in place, its indentation
+// and trailing comment kept; without one the key is inserted after the
+// table's channel line. The table's own keys are the lines between its
+// [[assist]] header and the next header ([[assist.source]] included).
+// found is false (raw returned unchanged) when no [[assist]] header is
+// followed by `channel = "<channel>"`. An inline or dotted layout is not
+// edited; callers verify the result with Parse.
+func SetAssistEnabled(raw []byte, channel string, on bool) (out []byte, found bool) {
+	text := string(raw)
+	if text == "" {
+		return raw, false
+	}
+	lines := strings.Split(strings.TrimSuffix(text, "\n"), "\n")
+	val := "false"
+	if on {
+		val = "true"
+	}
+	for i := 0; i < len(lines); i++ {
+		if name, ok := tableHeader(lines[i]); !ok || name != "assist" || !strings.HasPrefix(strings.TrimSpace(lines[i]), "[[") {
+			continue
+		}
+		end := len(lines)
+		for j := i + 1; j < len(lines); j++ {
+			if _, ok := tableHeader(lines[j]); ok {
+				end = j
+				break
+			}
+		}
+		chLine, enLine := -1, -1
+		for j := i + 1; j < end; j++ {
+			switch assignedKey(lines[j]) {
+			case "channel":
+				if v, ok := tomlStringValue(lines[j]); ok && v == channel {
+					chLine = j
+				}
+			case "enabled":
+				enLine = j
+			}
+		}
+		if chLine < 0 {
+			i = end - 1
+			continue
+		}
+		if enLine >= 0 {
+			body, cr := strings.CutSuffix(lines[enLine], "\r") // a CRLF file keeps its line ending
+			lines[enLine] = replaceValue(body, val) + map[bool]string{true: "\r"}[cr]
+		} else {
+			indent := lines[chLine][:len(lines[chLine])-len(strings.TrimLeft(lines[chLine], " \t"))]
+			eol := ""
+			if strings.HasSuffix(lines[chLine], "\r") {
+				eol = "\r"
+			}
+			lines = slices.Insert(lines, chLine+1, indent+"enabled = "+val+eol)
+		}
+		return []byte(strings.Join(lines, "\n") + "\n"), true
+	}
+	return raw, false
+}
+
+// tomlStringValue returns the quoted string value of a `key = "v"` or
+// `key = 'v'` line.
+func tomlStringValue(line string) (string, bool) {
+	_, v, ok := strings.Cut(line, "=")
+	if !ok {
+		return "", false
+	}
+	v = strings.TrimSpace(v)
+	if len(v) < 2 || (v[0] != '"' && v[0] != '\'') {
+		return "", false
+	}
+	end := strings.IndexByte(v[1:], v[0])
+	if end < 0 {
+		return "", false
+	}
+	return v[1 : end+1], true
+}
+
+// replaceValue swaps the bare value token of a `key = value  # comment`
+// line for val, keeping the indentation, the spacing and the comment.
+func replaceValue(line, val string) string {
+	k, rest, _ := strings.Cut(line, "=")
+	lead := rest[:len(rest)-len(strings.TrimLeft(rest, " \t"))]
+	if lead == "" {
+		lead = " "
+	}
+	tok := strings.TrimLeft(rest, " \t")
+	n := strings.IndexAny(tok, " \t#")
+	if n < 0 {
+		n = len(tok)
+	}
+	return k + "=" + lead + val + tok[n:]
 }
 
 // tableHeader parses a `[name]` or `[[name]]` line into its table name

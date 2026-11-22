@@ -206,3 +206,20 @@ func TestRingAckEvictedID(t *testing.T) {
 		t.Errorf("evicted id must be unknown: %v", unknown)
 	}
 }
+
+// SetOnRecord sees every new record with its ID, after it is stored.
+func TestRingOnRecord(t *testing.T) {
+	r := NewRing(&Log{Logger: &recLogger{}}, "", nil)
+	var seen []Record
+	r.SetOnRecord(func(rec Record) {
+		seen = append(seen, rec)
+		if len(r.Recent(0)) != len(seen) { // stored before the hook, lock released
+			t.Errorf("hook ran before the store")
+		}
+	})
+	r.Alert("stall", "a")
+	_ = r.Send("test", "b")
+	if len(seen) != 2 || seen[0].ID != 1 || seen[1].Kind != "test" || seen[1].ID != 2 {
+		t.Fatalf("hook saw %+v", seen)
+	}
+}

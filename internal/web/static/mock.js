@@ -1,6 +1,6 @@
 // n5-fangov dashboard mock — loaded by app.js only with ?mock=1, never referenced by index.html.
 // Publishes window.n5mock(path, opt) → Promise<{status, body, filename?}>; api() calls it instead of fetch.
-// Flags: &user=1 &auth=none &tls=off|file|soon|fallback &tab= &syserr=1 &reject=1 &restart=1 &expire=1 &schedfail=1 &pwm4=1 &lag=1 &down=1 &ceiling=1
+// Flags: &user=1 &auth=none &tls=off|file|soon|fallback &tab= &syserr=1 &reject=1 &restart=1 &expire=1 &schedfail=1 &pwm4=1 &lag=1 &down=1 &ceiling=1 &assist=1
 // Names and addresses are documentation values (n5host, 192.0.2.x, n5.lan, example.test).
 'use strict';
 window.n5mock = (() => {
@@ -16,7 +16,9 @@ window.n5mock = (() => {
 			{ name: 'cpu', pwm: 1, sensor: 'k10temp', curve: [[45, 85], [80, 255]], critical: 88, stop: 'auto', hysteresis: 0, min_on: '0s' },
 			{ name: 'ssd', pwm: 2, sensor: 'nvme:max', curve: [[40, 74], [70, 255]], critical: 75, stop: 'auto', hysteresis: 2, min_on: '1m0s' },
 			{ name: 'hdd', pwm: 3, sensor: 'drivetemp:max,disk:sda', curve: [[36, 105], [46, 255]], critical: 56, stop: 87, hysteresis: 3, min_on: '5m0s' }],
-		schedule: [{ preset: 'n5pro-quiet', from: '22:00', to: '07:00', days: [] }, { preset: 'n5pro-cool', from: '13:00', to: '18:00', days: ['sat', 'sun'] }, { preset: 'n5pro-balanced', from: '', to: '', days: [] }] };
+		schedule: [{ preset: 'n5pro-quiet', from: '22:00', to: '07:00', days: [] }, { preset: 'n5pro-cool', from: '13:00', to: '18:00', days: ['sat', 'sun'] }, { preset: 'n5pro-balanced', from: '', to: '', days: [] }],
+		// [[assist]] on the hdd channel (the values of the 16.11. measurement); &assist=1: switched on with a warm GPU (+14 °C), so the boost shows
+		assist: [{ channel: 'hdd', enabled: Q.get('assist') === '1', hysteresis: 2, min_on: '2m0s', source: [{ sensor: 'hwmon:amdgpu:temp1', start: 50, full: 58, boost: 45 }, { sensor: 'nvme:max', start: 46, full: 50, boost: 45 }] }] };
 	if (Q.get('pwm4') === '1') cfg.channel.push({ name: 'pcie', pwm: 4, sensor: 'ec:board', curve: [[30, 60], [60, 200]], critical: 80, stop: 120, hysteresis: 0, min_on: '0s' });
 	if (Q.get('schedfail')) cfg.schedule[0].preset = 'night'; // the failed switch below names this entry: a preset the store lacks ("(missing)" in the editor)
 	const shift = n => cfg.channel.map(c => Object.assign({}, c, { curve: c.curve.map(p => [p[0] + n, p[1]]) }));
@@ -54,7 +56,15 @@ window.n5mock = (() => {
 	const tomlCh = c => `[[channel]]\nname = "${c.name}"\npwm = ${c.pwm}\nsensor = ${c.sensor.includes(',') ? tomlV(c.sensor.split(',')) : tomlV(c.sensor)}\ncurve = [${c.curve.map(p => `[${p[0]}, ${p[1]}]`).join(', ')}]\ncritical = ${c.critical}\nstop = ${c.stop === 'auto' ? '"auto"' : c.stop}\n`
 		+ (c.hysteresis ? `hysteresis = ${c.hysteresis}\n` : '') + (c.min_on && c.min_on !== '0s' ? `min_on = "${c.min_on}"\n` : '') + (c.ceiling ? `ceiling = ${c.ceiling}\n` : '');
 	const tomlSched = s => `[[schedule]]\npreset = "${s.preset}"\n` + (s.from ? `from = "${s.from}"\nto = "${s.to}"\n` : '') + (s.days.length ? `days = ${tomlV(s.days)}\n` : '');
-	const raw = () => sec('daemon') + sec('web') + sec('log') + cfg.channel.map(tomlCh).join('\n') + '\n' + cfg.schedule.map(tomlSched).join('\n');
+	const tomlAs = a => `[[assist]]\nchannel = "${a.channel}"\nenabled = ${a.enabled}\nhysteresis = ${a.hysteresis}\nmin_on = "${a.min_on}"\n` + a.source.map(s => `\n[[assist.source]]\nsensor = "${s.sensor}"\nstart = ${s.start}\nfull = ${s.full}\nboost = ${s.boost}\n`).join('');
+	const raw = () => sec('daemon') + sec('web') + sec('log') + cfg.channel.map(tomlCh).join('\n') + '\n' + cfg.schedule.map(tomlSched).join('\n') + '\n' + cfg.assist.map(tomlAs).join('\n');
+	// assist like the daemon: per source 0 → boost between start and full, the maximum counts, mode auto only (no hysteresis / min_on in the mock)
+	const assistOf = (ch, now) => { const a = cfg.assist.find(x => x.channel === ch.name); if (!a) return;
+		const srcs = a.source.map(s => { const tv = +(sv(s.sensor, now) + (Q.get('assist') === '1' && s.sensor === 'hwmon:amdgpu:temp1' ? 14 : 0)).toFixed(1);
+			return { sensor: s.sensor, temp: tv, boost: tv <= s.start ? 0 : tv >= s.full ? s.boost : Math.round(s.boost * (tv - s.start) / (s.full - s.start)) }; });
+		const top = srcs.reduce((x, y) => y.boost > x.boost ? y : x, { boost: 0 }), b = a.enabled && ch.mode === 'auto' ? top.boost : 0;
+		if (b) Object.assign(ch, { target: Math.min(255, ch.target + b), duty: Math.min(255, ch.duty + b) });
+		ch.assist = M.in ? { enabled: a.enabled, boost: b, source: b ? top.sensor : undefined, sources: srcs } : { enabled: a.enabled, boost: b }; };
 	// PUT /api/config: parse the [[channel]] and [[schedule]] tables back (strict: the daemon's rules, rule 8 would substitute defaults with a warning);
 	// like the daemon, the mock keeps only what the body carries — a client that drops the [[schedule]] tables loses them (visible in raw() and on the Schedules card)
 	const kv = (blk, k) => { const m = new RegExp(`^${k}\\s*=\\s*(.+)$`, 'm').exec(blk); return m ? m[1].trim() : ''; };
@@ -112,6 +122,17 @@ window.n5mock = (() => {
 	const recent = [[720, 'stall', 'hdd: rpm=0 at duty 105, raised to 255'], [5400, 'temp', 'cpu 91.5 °C ≥ critical 88, forced to 255', 'pve-notify: exit status 1'], [11220, 'sensor', 'drivetemp:max: no devices'], [93600, 'start', 'n5-fangov ' + MV + ' started'], [3 * 86400, 'tls', 'certificate unreadable']]
 		.map(([ago, kind, msg, error], i, all) => Object.assign({ id: all.length - i, ts: Math.floor(t0 - ago), kind, msg }, error ? { error } : {}, i > 2 ? { ack_ts: Math.floor(t0 - 3600), ack_by: 'user:admin' } : {}));
 	let alertId = recent.length; const newAlert = a => recent.unshift(Object.assign({ id: ++alertId }, a)); // ids: arrival order, as the ring
+	// GET /api/events (chart marks): a sample week, the three events within 60 s merge into one symbol, the cpu override is still
+	// open, the oldest is an end whose start left the log; the mock's override, assist, preset and config answers append (ev)
+	const EV = [[120000, 'override-end', 'ssd', 'ssd back to the curve (admin)', 'user:admin'], [93600, 'start', '', 'started ' + MV, 'daemon'], [21600, 'preset', '', 'preset n5pro-quiet (schedule 22:00-07:00)', 'schedule'], [10800, 'override', 'hdd', 'hdd manual 150 (admin)', 'user:admin'],
+		[9000, 'override-end', 'hdd', 'hdd back to the curve (admin)', 'user:admin'], [7200, 'alert', '', 'alert temp (suppressed by the cooldown)', 'daemon'], [6000, 'critical', 'ssd', 'ssd critical 76.0C (limit 75C)', 'daemon'],
+		[5700, 'critical-end', 'ssd', 'ssd below critical (71.5C)', 'daemon'], [3000, 'ceiling', 'hdd', 'hdd ceiling 65C (disk:sda 65.5C)', 'daemon'], [2700, 'ceiling-end', 'hdd', 'hdd below the ceiling (61.0C)', 'daemon'],
+		[1800, 'assist', 'hdd', 'assist hdd on (admin)', 'user:admin'], [1260, 'preset', '', 'preset n5pro-cool (admin)', 'user:admin'], [1230, 'reload', '', 'config reloaded (admin)', 'user:admin'],
+		[1200, 'alert', '', 'alert stall', 'daemon'], [600, 'override', 'cpu', 'cpu manual 200 (token home-assistant)', 'token:home-assistant']]
+		.map(([ago, kind, ch, text, by], i) => ({ id: i + 1, ts: Math.floor(t0 - ago), kind, ch: ch || undefined, text, by, end: kind.endsWith('-end') || undefined }));
+	const ev = (kind, ch, text, d) => EV.push({ id: EV.length + 1, ts: Math.floor(Date.now() / 1000), kind, ch, text: d ? text : text + ' (admin)', by: d ? 'daemon' : 'user:admin', end: kind.endsWith('-end') || undefined });
+	// full cooling (POST /api/panic): its end; &panic=1 starts with 9 min left, &pnoff=1 refuses it (profile monitor)
+	let PN = Q.get('panic') ? Math.floor(t0 + 540) : 0; const PNO = Q.get('pnoff') ? 'profile monitor: n5-fangov only reads the sensors here, it does not drive the fans' : undefined;
 	// &drv=pending: the module still has to be reloaded (sr1 loaded, the package builds sr2); &drv=ro: the driver cannot write
 	const DRV = { module: 'minisforum_n5_it5571', loaded: true, version: '0.2.1+sr2', srcversion: 'CDDEDE26904251994A0DE35', mode: Q.get('drv') === 'ro' ? 'write-disabled' : 'write-enabled', expected: '0.2.1+sr2', pending: false };
 	if (Q.get('drv') === 'pending') Object.assign(DRV, { version: '0.2.1+sr1', srcversion: '22C5CA61EBD0012B034369B', pending: true });
@@ -172,7 +193,7 @@ window.n5mock = (() => {
 		collected: Math.floor(now), static_at: Math.floor(t0), errors: Q.get('syserr') ? ['lspci: exec: "lspci": executable file not found in $PATH (device names from ids only)'] : [] });
 	const openapi = () => ({ openapi: '3.1.0', info: { title: 'n5-fangov API', version: MV }, servers: [{ url: '/' }],
 		components: { securitySchemes: { bearer: { type: 'http', scheme: 'bearer' }, basic: { type: 'http', scheme: 'basic' }, cookie: { type: 'apiKey', in: 'cookie', name: 'n5fangov_session' } } },
-		paths: Object.fromEntries([['/api/state', 'get', 'Regulation snapshot', 'read'], ['/api/history', 'get', 'History points (minutes, since)', 'read'], ['/api/history.csv', 'get', 'History as CSV', 'read'], ['/api/override/{name}', 'put', 'Manual duty', 'control'],
+		paths: Object.fromEntries([['/api/state', 'get', 'Regulation snapshot', 'read'], ['/api/history', 'get', 'History points (minutes, since)', 'read'], ['/api/history.csv', 'get', 'History as CSV', 'read'], ['/api/override/{name}', 'put', 'Manual duty', 'control'], ['/api/assist/{name}', 'put', 'Assist on/off', 'control'], ['/api/preview', 'post', 'Curve preview', 'read'],
 			['/api/presets/{name}/apply', 'post', 'Apply a preset', 'control'], ['/api/schedules', 'get', 'Schedule status', 'read'], ['/api/tokens', 'get', 'List API tokens (session only)', '']]
 			.map(([path, m, summary, scope]) => [path, { [m]: { summary, 'x-scope': scope, responses: { 200: { description: 'OK' } } } }])) });
 	const GH = 'https://github.com/', PUB = /^\/api\/(version|about|session|login|logout|state|history|openapi\.json)$/;
@@ -191,30 +212,33 @@ window.n5mock = (() => {
 		if (p === '/api/openapi.json') return ok(openapi());
 		if (M.in && M.exp && now - t0 > 15 && p === '/api/state') { M.in = M.exp = false; return fail('unauthorized', 401); } // &expire=1: session dies once after 15 s
 		if (Q.get('down') === '1' && now - t0 > 2 && /^\/api\/(state|history|sensors)$/.test(p)) return fail('network: mock down', 0); // &down=1: after the boot the poll path fails like a lost daemon (status 0 = no answer) → connection banner
-		if (p === '/api/state') { const pt = point(now), stall = (now | 0) % 40 < 3, hold = (now | 0) % 300 < 90;
+		if (p === '/api/state') { const pt = point(now), stall = (now | 0) % 40 < 3, hold = (now | 0) % 300 < 90; if (PN && now >= PN) { PN = 0; ev('panic-end', undefined, 'full cooling ended (10 min passed)', 1); }
 			const body = { ts: pt.ts, status: 'ok', profile: 'n5pro', verified: false, hw_status: 'experimental', dry_run: false, uptime_s: 435723,
 				// like the daemon: an override replaces the target and the mode, stall and critical win on top; &lag=1 reports the previous
 				// override state for two more polls (the daemon's snapshot follows a PUT/DELETE only with the next cycle)
 				channels: cfg.channel.map(c => { const n = c.name, st = n === 'hdd' && stall, lg = ovLag[n], ov = lg && lg.left-- > 0 ? lg.ov : overrides[n]; if (lg && lg.left <= 0) delete ovLag[n];
 					const cd = Math.round(interp(c.curve, pt.temp[n])), duty = ov === undefined ? cd : ov; // curve duty while the lagged state says auto; rpm follows the (lagged) duty, as on the daemon
 					const ch = { name: n, pwm: c.pwm, sensor: c.sensor, temp: pt.temp[n], duty, target: ov === undefined ? n === 'cpu' ? cd + 22 : cd : ov, rpm: st ? 0 : rpmOf(n, duty),
-					mode: st ? 'stall' : ov !== undefined ? 'manual' : 'auto', ceiling: CEIL[n] || 100, ceiling_hit: false };
+					mode: st ? 'stall' : ov !== undefined ? 'manual' : 'auto', override: ov === undefined ? null : ov, ceiling: CEIL[n] || 100, ceiling_hit: false };
 					// the ceiling (0.4.1) wins over everything: 255, mode critical, ceiling_hit (&ceiling=1 puts the hdd reading above its 65)
 					if (ceilHit && n === 'hdd') Object.assign(ch, { temp: 66.5, duty: 255, target: 255, rpm: rpmOf(n, 255), mode: 'critical', ceiling_hit: true });
 					// hysteresis: the held reading lags the raw one; min_on: a running hold now and then
 					if (c.hysteresis) { const held = Math.round(pt.temp[n]) - 1; if (Math.abs(held - pt.temp[n]) >= .1) ch.held_temp = held; }
 					if (c.min_on !== '0s' && hold && n === 'hdd') ch.hold_until = Math.floor(now - (now | 0) % 300 + 90);
+					assistOf(ch, now); if (PN && !st && ch.mode !== 'critical') Object.assign(ch, { duty: 255, target: 255, rpm: rpmOf(n, 255), mode: 'panic' });
 					return ch; }) };
-			if (M.in) Object.assign(body, { hwmon_path: '/sys/class/hwmon/hwmon14', extra_temps: { 'ec:cpu': +(pt.temp.cpu + 1.5).toFixed(1) }, alerts: { stall: Math.floor(now - 720) }, watched: pt.extra || {} });
+			if (M.in) Object.assign(body, { hwmon_path: '/sys/class/hwmon/hwmon14', extra_temps: { 'ec:cpu': +(pt.temp.cpu + 1.5).toFixed(1) }, alerts: { stall: Math.floor(now - 720) }, watched: pt.extra || {}, panic: PN ? { until: PN, by: 'user:admin' } : undefined, panic_refused: PNO });
 			return ok(body); }
 		if (p === '/api/history') { const min = Math.min(10080, Math.max(1, +u.searchParams.get('minutes') || 120)); return ok(history(min, +u.searchParams.get('since') || 0, M.in)); }
+		if (p === '/api/events') { const cut = now - Math.min(10080, Math.max(1, +u.searchParams.get('minutes') || 120)) * 60, since = +u.searchParams.get('since') || 0;
+			return ok(EV.filter(e => e.ts > since && e.ts >= cut).map(e => M.in ? e : { ts: e.ts, kind: e.kind, ch: e.ch, end: e.end })); }
 		if (!M.in && !PUB.test(p)) return fail('unauthorized', 401);
 		if (p === '/api/history.csv') { const min = Math.min(10080, Math.max(1, +u.searchParams.get('minutes') || 120)); return ok(csv(min), `n5-fangov-history-n5host-${new Date(t0 * 1000).toISOString().slice(0, 19).replace(/[-:]/g, '').replace('T', '-')}.csv`); }
 		if (p === '/api/config' && m === 'GET') return ok({ config: cfg, raw: raw() });
 		if (p === '/api/config' && m === 'PUT') { const chs = parseChannels(opt.body || ''), errs = check(chs);
 			if (u.searchParams.get('strict') === '1' && errs.length) return fail('config rejected', 400, { errors: errs });
 			// &restart=1: 202 although the channel set is unchanged (the daemon answers so for a profile change too); a changed channel set is written but not applied
-			const restart = Q.get('restart') === '1' || chs.length !== cfg.channel.length; if (chs.length === cfg.channel.length) cfg.channel = chs; cfg.schedule = parseSchedules(opt.body || '');
+			const restart = Q.get('restart') === '1' || chs.length !== cfg.channel.length; if (chs.length === cfg.channel.length) cfg.channel = chs; cfg.schedule = parseSchedules(opt.body || ''); if (!restart) ev('reload', undefined, 'config reloaded');
 			return wait({ status: restart ? 202 : 200, body: { ok: true, restart_required: restart, warnings: errs } }); }
 		if (p === '/api/sensors') return ok(Object.entries(SENS).map(([id, [d, , , kind]]) => Object.assign({ id, description: `${d} (now ${sv(id, now)} °C)`, temp: sv(id, now) }, kind ? { kind } : {})).concat(PAT));
 		if (p === '/api/dashboard') { if (m === 'PUT') { const ids = (opt.json || {}).sensors || []; if (ids.length > 8) return fail('at most 8 sensors', 400);
@@ -222,9 +246,27 @@ window.n5mock = (() => {
 			return ok({ sensors: dash }); }
 		if (p.startsWith('/api/override/')) { const n = p.split('/')[3];
 			const lag = () => { if (Q.get('lag') === '1') ovLag[n] = { ov: overrides[n], left: 2 }; }; // &lag=1: the state answers keep the old mode for two polls
-			if (m === 'DELETE') { lag(); delete overrides[n]; return ok({ ok: true, channel: n, mode: 'auto' }); }
+			if (m === 'DELETE') { lag(); if (n in overrides) ev('override-end', n, n + ' back to the curve'); delete overrides[n]; return ok({ ok: true, channel: n, mode: 'auto' }); }
 			if ((n === 'hdd' || cfg.channel.some(c => c.name === n && c.stop !== 'auto')) && opt.json.duty < 60) return fail(`channel ${n} (fixed stop duty / not chip-regulated): manual duty must be at least 60`, 400);
-			lag(); overrides[n] = opt.json.duty; return ok({ ok: true, channel: n, duty: opt.json.duty, mode: 'manual' }); }
+			lag(); overrides[n] = opt.json.duty; ev('override', n, `${n} manual ${opt.json.duty}`); return ok({ ok: true, channel: n, duty: opt.json.duty, mode: 'manual' }); }
+		if (p.startsWith('/api/assist/')) { const n = p.split('/')[3], a = cfg.assist.find(x => x.channel === n); // PUT {enabled}: only that line of the table changes
+			if (!a) return fail(`channel "${n}" has no valid [[assist]] table`, 404);
+			if (typeof (opt.json || {}).enabled !== 'boolean') return fail('"enabled" (true or false) required', 400);
+			a.enabled = opt.json.enabled; ev('assist', n, `assist ${n} ${a.enabled ? 'on' : 'off'}`); return ok({ ok: true, channel: n, enabled: a.enabled }); }
+		// POST /api/preview: the mock's history through the draft curves (no hysteresis/min_on here), assist from the GPU source
+		if (p === '/api/preview') { const j = opt.json || {}, sp = j.span === '7d' ? '7d' : '24h', min = sp === '7d' ? 10080 : 1440, pre = j.preset && presets[j.preset];
+			if (j.preset && !pre) return fail('unknown preset ' + j.preset, 404);
+			const res = { span: sp, step: sp === '7d' ? 300 : 60, order: cfg.channel.map(c => c.name), channels: {},
+				note: 'Target duty from the recorded temperatures with the rules of the daemon; no feedback: more air would have lowered the temperatures, so the preview shows rather too much duty, never too little. The ramp is not modelled.' + (sp === '7d' ? ' 7 d works on 5-min means: hysteresis and min_on barely act, short peaks vanish.' : '') };
+			const pts = history(min, 0, true);
+			cfg.channel.forEach(hc => { const n = hc.name, c = (j.channels || []).find(x => x.name === n) || pre && pre.ch.find(x => +x.pwm === +hc.pwm) || hc, a = cfg.assist.find(x => x.channel === n), on = !!a && (j.assist && n in j.assist ? j.assist[n] : a.enabled);
+				const series = pts.map(pt => { const g = sv('hwmon:amdgpu:temp1', pt.ts) + (Q.get('assist') === '1' ? 14 : 0), b = on ? Math.round(Math.max(0, Math.min(45, (g - 50) / 8 * 45))) : 0;
+					return { ts: pt.ts, actual: pt.duty[n], preview: Math.min(255, Math.round(interp(c.curve, pt.temp[n])) + b), boost: b }; });
+				const sm = k => { const v = series.map(s => s[k]).sort((x, y) => x - y), st = res.step / 60;
+					return { mean: Math.round(v.reduce((x, y) => x + y, 0) / v.length * 10) / 10, p95: v[Math.ceil(.95 * v.length) - 1], max: v[v.length - 1], min_ge_200: v.filter(x => x >= 200).length * st, assist_min: k === 'preview' ? series.filter(s => s.boost).length * st : 0 }; };
+				res.channels[n] = { series, summary: { actual: sm('actual'), preview: sm('preview') },
+					measured: on && n === 'hdd' ? 'Measured, not predicted: HDD fan 106 → 150 lowered the NVMe by 2.3–2.7 K and the drives by 0.5–0.9 K after 8–15 min (reference N5 Pro, 2026-11-16).' : undefined }; });
+			return wait({ status: 200, body: res }); }
 		if (p === '/api/presets') return ok(Object.entries(presets).map(([name, v]) => ({ name, channels: v.ch.map(c => c.name), builtin: !!v.builtin, description: v.description })));
 		if (p.startsWith('/api/presets/')) { const n = p.split('/')[3], b = presets[n] && presets[n].builtin, sub = p.split('/')[4];
 			if (m === 'PUT') { if (b) return fail('built-in preset', 409); const chs = opt.json && opt.json.channels; // a JSON body = the composed channels (preset editor), validated like the config; empty = the running tables
@@ -234,7 +276,9 @@ window.n5mock = (() => {
 			if (m === 'DELETE') { if (b) return fail('built-in preset', 409); if (!presets[n]) return fail('no such preset', 404); delete presets[n]; return ok({ ok: true }); }
 			if (m === 'GET') { if (!presets[n]) return fail('unknown preset ' + n, 404); return ok({ name: n, builtin: !!b, description: presets[n].description, channels: presets[n].ch }); }
 			if (sub === 'rename') { const nn = opt.json.name; if (b || (presets[nn] && presets[nn].builtin)) return fail('built-in preset', 409); if (!presets[n]) return fail('unknown preset ' + n, 404); if (presets[nn]) return fail('preset exists', 409); presets[nn] = presets[n]; delete presets[n]; return ok({ ok: true, name: nn }); }
-			if (presets[n]) cfg.channel = presets[n].ch.map(c => Object.assign({}, c)); return wait({ status: n === 'summer' ? 202 : 200, body: { ok: true } }); }
+			if (presets[n]) { cfg.channel = presets[n].ch.map(c => Object.assign({}, c)); if (n !== 'summer') ev('preset', undefined, 'preset ' + n); } return wait({ status: n === 'summer' ? 202 : 200, body: { ok: true } }); }
+		if (p === '/api/panic') { const a = (opt.json || {}).action; if (a !== 'start' && a !== 'stop') return fail('"action" must be "start" or "stop"', 400); if (PNO) return fail('full cooling refused: ' + PNO, 409);
+			if (a === 'stop' && PN) ev('panic-end', undefined, 'full cooling stopped'); if (a === 'start' && !PN) ev('panic', undefined, 'full cooling'); PN = a === 'start' ? Math.floor(now + 600) : 0; return ok({ active: !!PN, until: PN }); }
 		if (p === '/api/schedules') return ok(schedStatus());
 		if (p.startsWith('/api/tokens')) return mockTokens(p, m, opt);
 		if (p === '/api/log' && m === 'DELETE') { logs.length = 0; return ok({ cleared: true, note: 'journal untouched' }); }
@@ -257,7 +301,7 @@ window.n5mock = (() => {
 			if (j.all && !j.up_to) return fail('all needs up_to: the newest alert id the client has seen', 400);
 			const n = recent.filter(hit).map(r => Object.assign(r, { ack_ts: at, ack_by: by })).length; return ok({ ok: true, acked: n, open: recent.filter(r => !r.ack_ts).length }); }
 		if (p === '/api/driver') return ok(DRV);
-		if (p === '/api/health') return ok({ checked: Math.floor(now), summary: 'passed with warnings', started: Math.floor(t0 - 93600), status: 'ok', driver: DRV,
+		if (p === '/api/health') return ok({ checked: Math.floor(now), summary: 'passed with warnings', started: Math.floor(t0 - 93600), status: 'ok', driver: DRV, panic: PN ? `full cooling until ${new Date(PN * 1000).toTimeString().slice(0, 5)} (admin)` : undefined,
 			checks: [['ok', 'config', '/etc/n5-fangov/config.toml parses without warnings'], ['ok', 'profile', 'n5pro (Minisforum N5 Pro (IT5571 EC)) at /sys/class/hwmon/hwmon14'],
 				['warn', 'hardware status', 'experimental (N5 PRO / F8NAA / BIOS 1.05 / EC 0.14: experimental on the reference device)'],
 				DRV.pending ? ['warn', 'driver', `minisforum_n5_it5571 ${DRV.version}, srcversion ${DRV.srcversion}, ${DRV.mode}; the installed package expects ${DRV.expected}: reload the module with the daemon stopped`] : ['ok', 'driver', `minisforum_n5_it5571 ${DRV.version}, srcversion ${DRV.srcversion}, ${DRV.mode}`],

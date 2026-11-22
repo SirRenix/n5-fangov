@@ -17,6 +17,7 @@ import (
 	"github.com/SirRenix/n5-fangov/internal/alert"
 	"github.com/SirRenix/n5-fangov/internal/config"
 	"github.com/SirRenix/n5-fangov/internal/control"
+	"github.com/SirRenix/n5-fangov/internal/events"
 	"github.com/SirRenix/n5-fangov/internal/hwmon"
 	"github.com/SirRenix/n5-fangov/internal/hwstatus"
 	"github.com/SirRenix/n5-fangov/internal/logfile"
@@ -63,7 +64,11 @@ func cmdServe(args []string) int {
 		}
 	}
 	st := &serveState{cfgPath: *cfgPath, dryRun: *dryRun, rdir: *rdir, listen: *listen, sdir: *sdir}
-	if !serveConfig(st) {
+	ok := serveConfig(st)
+	if st.evq != nil {
+		defer st.evq.Close(2 * time.Second) // also on a failed start: the alert markers reach the file
+	}
+	if !ok {
 		return exitFail
 	}
 	if st.logFile != nil {
@@ -128,6 +133,11 @@ type serveState struct {
 	store    logStore        // the log read side behind /api/log
 	logFile  *logfile.Writer // nil without [log].file; closed by cmdServe
 
+	// evlog is the event log (<state dir>/events.json); evq writes to it
+	// for the controller and the alert ring without blocking them.
+	evlog *events.Log
+	evq   *events.Queue
+
 	// serveDevice: hardware and controller.
 	hw       *hwmon.FS
 	dev      profile.Device
@@ -170,7 +180,10 @@ func serveConfig(st *serveState) bool {
 	// configured transport behind a swappable sink (the panel and every
 	// config reload re-apply [alert]), wrapped in the ring the panel reads.
 	st.state = ensureStateDir(st.sdir)
+	st.evlog = serveEventLog(st.state, st.dryRun)
+	st.evq = events.NewQueue(st.evlog, log.Default())
 	st.alertMgr = newAlertManager(st.cfgPath, alertsPath(st.state), cfg.Alert, nil)
+	st.alertMgr.ring.SetOnRecord(alertMarker(st.evq, events.ByDaemon))
 	st.alerter = st.alertMgr.sink()
 	log.Printf("alerts: transport %s (%s)%s, history %s", cfg.Alert.Transport, st.alertMgr.effective, transportNote(cfg.Alert), orMemory(alertsPath(st.state)))
 	if len(warns) > 0 {
@@ -244,7 +257,7 @@ func serveDevice(st *serveState) bool {
 	}
 
 	st.factory = newSensorFactory(st.hw, dev)
-	ctrl, err := newController(st.cfg, dev, st.factory, st.alerter, controlOpts{DryRun: st.dryRun, RunDir: st.rdir, HistoryFile: historyPath(st.state), DiskKind: diskKindResolver(st.hw), HWStatus: string(st.hwStatus.Status)})
+	ctrl, err := newController(st.cfg, dev, st.factory, st.alerter, controlOpts{DryRun: st.dryRun, RunDir: st.rdir, HistoryFile: historyPath(st.state), DiskKind: diskKindResolver(st.hw), HWStatus: string(st.hwStatus.Status), Events: st.evq, PanicRefusal: panicRefusal(st.hw, dev)})
 	if err != nil {
 		log.Printf("controller: %v", err)
 		sendAlertCooled(st.rdir, st.alerter, "start", "n5-fangov could not start the controller: "+err.Error())
@@ -331,7 +344,8 @@ func serveWeb(st *serveState) {
 	// (hookedService), so Set below sees the start-up config and later
 	// ones. Run starts in serveRun after READY.
 	sched := newScheduler(nil, func(msg string) { sendAlertCooled(rdir, alerter, "schedule", msg) }, log.Printf, time.Now)
-	svc := hookedService{Service: ctrl, alerts: st.alertMgr, sched: sched}
+	sched.events = st.evlog
+	svc := hookedService{Service: ctrl, alerts: st.alertMgr, sched: sched, cfgPath: cfgPath}
 	presets := dirPresetStore{dir: defaultPresetDir, cfgPath: cfgPath, svc: svc, pin: tlsMgr.pinConfig, profile: st.dev.Profile().Name()}
 	sched.apply = presets.Apply
 	sched.Set(schedule.FromConfig(st.cfg.Schedules))
@@ -356,11 +370,15 @@ func serveWeb(st *serveState) {
 		Account:     accounts,
 		Alerts:      st.alertMgr,
 		Dashboard:   dashboard,
+		Assist:      newAssistStore(cfgPath, ctrl, tlsMgr.pinConfig),
+		Preview:     &previewer{ctrl: ctrl, presets: presets},
 		System:      newSystemCollector(st.hw, st.dev),
 		Schedules:   sched,
 		Channels:    ctrl.Channels,
 		Health:      newHealthView(cfgPath, runDir(), st.hw, st.dev, svc, st.alertMgr),
 		Interval:    controllerInterval(ctrl),
+		Events:      st.evlog,
+		Panic:       ctrl,
 	})
 	st.sched = sched
 	log.Printf("web: sessions %s, tokens %s", orMemory(sessionsPath(st.state)), orMemory(tokensPath(st.state)))
@@ -397,6 +415,11 @@ func serveRun(st *serveState) int {
 			go func() { errc <- wrapErr("web", ws.ServeTCP(ctx, ln)) }()
 		}
 	}
+
+	// Event log: the previous process's open spans end before this one's
+	// start event (an override restored from its run file stays open).
+	_, _, panicOn := ctrl.PanicState()
+	endStaleSpans(st.evlog, st.evq, ctrl.Overrides(), panicOn)
 
 	// Regulation loop. Run performs the SafeStop itself when it returns.
 	ctrlDone := make(chan error, 1)

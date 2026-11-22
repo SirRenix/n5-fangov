@@ -71,10 +71,12 @@ static server and open `index.html?mock=1`; the flags (`&user=1`, `&auth=none`,
 new endpoints get a mock branch in the same change. Its version string is one constant
 in `mock.js`, bumped with the release.
 
-**Budgets:** `app.js` ≤ 136 KiB, `mock.js` ≤ 48 KiB, `app.css` ≤ 48 KiB raw
+**Budgets:** `app.js` ≤ 152 KiB, `mock.js` ≤ 48 KiB, `app.css` ≤ 48 KiB raw
 (`web_test.go`); `index.html` carries the SVG sprite and has no budget. Do not raise a
 limit to make a change fit; a raise is a CHANGELOG entry. Move something to
-`index.html` markup or drop it.
+`index.html` markup or drop it. `app.js` went to 152 KiB for 0.7.0; when that is not
+enough, split it into modules loaded on demand (preview, config versions, rarely used
+dialogs) rather than raising it again.
 
 ## Screenshots
 

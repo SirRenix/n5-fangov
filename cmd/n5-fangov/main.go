@@ -45,9 +45,9 @@ func register(name string, c command) { commands[name] = c }
 
 // order lists every public subcommand in usage order.
 var order = []string{
-	"setup", "serve", "status", "set", "auto", "curve", "log",
+	"setup", "serve", "status", "set", "auto", "panic", "assist", "curve", "preview", "log",
 	"check", "detect", "identify", "system", "test", "validate", "failsafe",
-	"passwd", "cert", "alerts", "token", "export", "import", "version",
+	"passwd", "cert", "alerts", "token", "events", "export", "import", "version",
 }
 
 // helpText is the usage line per subcommand.
@@ -57,7 +57,10 @@ var helpText = map[string]string{
 	"status":   "                       show channels, temperatures, duty, rpm, mode",
 	"set":      "<ch> <duty|NN%>        manual override for one channel",
 	"auto":     "<ch|all>               return channel(s) to the curve",
+	"panic":    "[stop|status]          full cooling: every channel at 255 for 10 min (again = 10 min from now; via the daemon)",
+	"assist":   "<ch> on|off           switch the channel's [[assist]] table (via the daemon)",
 	"curve":    "                       print the configured curves",
+	"preview":  "[--preset NAME] [--assist CH=on|off]... [--span 24h|7d] [--json]  what the curves would have done over the recorded history (via the daemon)",
 	"log":      "[-n N] [--export FILE] [--clear]  log file (journal when no file is configured)",
 	"check":    "[--quiet] [--after-update] [--unit-start]  self-check; --after-update: DKMS module for every kernel (apt hook); --unit-start: send the start alert like the unit's ExecStartPre (the unit sets N5FANGOV_UNIT_START=1)",
 	"detect":   "                       list profiles with detection result (read-only)",
@@ -69,6 +72,7 @@ var helpText = map[string]string{
 	"passwd":   "[--user U] [--password-file F | --password -]  set the web user/password (auth = basic), restart to apply; the dashboard (signed in) changes both live",
 	"cert":     "info | export [--der] [FILE] | regen [--new-key] | upload CERT KEY | reset  dashboard certificate (live via the daemon)",
 	"alerts":   "status | test | template  alert transport, test alert, PVE notification template (live via the daemon)",
+	"events":   "[--since 24h|7d|DURATION] [--kind K]... [--json]  event log behind the chart markers (via the daemon, else the state file)",
 	"token":    "create NAME [--scope read|control|admin] [--ttl DAYS] | list | revoke ID  API tokens for scripts and agents (via the daemon)",
 	"export":   "[FILE]                 settings bundle (config + presets, hash redacted) as JSON",
 	"import":   "FILE                   restore a settings bundle (validated first), reload the daemon",

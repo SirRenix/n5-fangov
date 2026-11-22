@@ -94,10 +94,10 @@ func printSnapshot(s control.Snapshot, source string, active bool) {
 	}
 	fmt.Println()
 	tw := tabwriter.NewWriter(os.Stdout, 0, 8, 2, ' ', tabwriter.AlignRight)
-	fmt.Fprintln(tw, "channel\tsensor\ttemp\tduty\t%\trpm\tmode\t")
+	fmt.Fprintln(tw, "channel\tsensor\ttemp\tduty\t%\trpm\tmode\tassist\t")
 	for _, c := range s.Channels {
-		fmt.Fprintf(tw, "%s\t%s\t%s C\t%d\t%d%%\t%s\t%s\t\n",
-			c.Name, c.Sensor, strings.TrimSpace(fmtTemp(c.Temp)), c.Duty, pct(c.Duty), fmtRPM(c.RPM), c.Mode)
+		fmt.Fprintf(tw, "%s\t%s\t%s C\t%d\t%d%%\t%s\t%s\t%s\t\n",
+			c.Name, c.Sensor, strings.TrimSpace(fmtTemp(c.Temp)), c.Duty, pct(c.Duty), fmtRPM(c.RPM), c.Mode, assistCell(c.Assist))
 	}
 	tw.Flush()
 	if len(s.ExtraTemps) > 0 {

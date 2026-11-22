@@ -143,7 +143,7 @@ read-only, the installer warns, and `n5-fangov alerts template` installs the pai
 | `/etc/n5-fangov/emergency.sh` | the optional emergency hook, installed by hand ([Ceilings](06-configuration.md#ceilings-and-the-emergency-action)) |
 | `/var/log/n5-fangov/` (0750) | rotating log file `n5-fangov.log`, `.1`..`.N`; the journal is unchanged |
 | `/etc/apt/apt.conf.d/90n5-fangov` | `DPkg::Post-Invoke` → `n5-fangov check --after-update`, the [kernel-update gate](02-kernel-driver.md#the-kernel-update-gate) |
-| `/var/lib/n5-fangov/` (0700) | `sessions.json` (hashed dashboard sessions), `tokens.json` (hashed [API tokens](08-https-security.md#api-tokens)), `alerts.json` (recent alerts), `history.json` (chart history, saved every 10 min); all 0600, removed on uninstall, never part of the settings bundle |
+| `/var/lib/n5-fangov/` (0700) | `sessions.json` (hashed dashboard sessions), `tokens.json` (hashed [API tokens](08-https-security.md#api-tokens)), `alerts.json` (recent alerts), `history.json` (chart history, saved every 10 min), `events.json` (the [event markers](04-dashboard.md#event-markers), 7 days, at most 2000); all 0600, removed on uninstall, never part of the settings bundle |
 | `/run/n5-fangov/` (0750) | `n5-fangov.sock` (CLI), `state.json` (fallback for `status`), override and alert stamps |
 | `/usr/share/doc/n5-fangov/config.example.toml` | reference with every key explained ([Configuration](06-configuration.md)) |
 | `/usr/share/doc/n5-fangov/examples/emergency.example.sh` | template for the emergency hook |

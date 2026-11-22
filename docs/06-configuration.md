@@ -63,10 +63,18 @@ warns about unknown keys and ignores them.
 | `[[schedule]] preset` | preset name `[a-z0-9_-]{1,64}`; existence is checked at the switch, not when the file is read | — | reload |
 | `from`, `to` | `HH:MM` (24 h, host local time), both or neither; `from == to` → entry dropped; `to < from` = the window crosses midnight | — | reload |
 | `days` | subset of `mon tue wed thu fri sat sun` (lower-cased, distinct); the day of a window is the day `from` falls in; missing = every day | all | reload |
+| `[[assist]] channel` | an existing `[[channel]]`; at most one table per channel ([Assist](#assist)) | — | reload |
+| `enabled` | `true` \| `false`; the switch on the Fans page, `n5-fangov assist`, `PUT /api/assist/{channel}` rewrite this line only | `false` | reload / live via the switch |
+| `hysteresis` | 0..10 °C per source | 2 | reload |
+| `min_on` | `0s`..`30m`; a rise of the boost is held this long | `2m` | reload |
+| `[[assist.source]] sensor` | one [sensor id](#sensor-ids), not the channel's own sensor (nor a part of it); 1..4 sources, each once | — | reload |
+| `start`, `full` | °C, −20..120, `start < full` | — | reload |
+| `boost` | 1..100 PWM points at `full` | — | reload |
 
 `[web]` and `[log]` changes take a restart, except user/password through the account
 forms and the tls keys through the Certificate section. `PUT /api/config` reloads
-curves, sensors, `[daemon]`, `[alert]`, `[dashboard]` and the `[[schedule]]` list. A
+curves, sensors, `[daemon]`, `[alert]`, `[dashboard]`, the `[[schedule]]` list and the
+`[[assist]]` tables. A
 changed channel set or profile answers *restart required*; the daemon keeps running the
 old set until then.
 
@@ -103,6 +111,24 @@ min_on = "60s"        # a rise in the curve target is held for at least a minute
 - Readings outside −20..120 °C are implausible; the channel then sits at its safe duty
   (fixed stop duty, else 255) in mode `sensor-error`.
 
+### Which rule wins
+
+Per channel and cycle, the later step wins:
+
+1. curve at the hysteresis-held reading, `min_on` hold, assist boost;
+2. manual override (replaces 1);
+3. `critical` and the [ceiling](#ceilings-and-the-emergency-action): 255;
+4. **full cooling** ([Dashboard](04-dashboard.md#full-cooling), `n5-fangov panic`):
+   255 on every channel for 10 minutes, also over a sensor error's safe duty, without the
+   `step_up` ramp;
+5. stall: 255 while the fan reports 0 rpm;
+6. write-error failsafe: every channel 255 — it always comes first in effect.
+
+Full cooling only covers the steps below it: the daemon keeps computing them, so when it
+ends each channel goes back to what it would run now — an override set before or during
+it, a preset or schedule switch or an assist change made meanwhile. The way down is the
+normal one: `step_down` per cycle on the curve, an override at once.
+
 ## Hysteresis and minimum on-time
 
 Both keys post-process the **curve output only**. Override, critical, stall, failsafe,
@@ -127,6 +153,67 @@ temperature → curve → `min_on` → override → critical → stall.
 Typical use: a drive fan toggling between two curve points at 44/45 °C every few
 cycles. `hysteresis = 2` makes the curve step only at ±2 °C, `min_on = "60s"` keeps a
 step-up for a minute so the disks cool before the fan drops again.
+
+## Assist
+
+```toml
+[[assist]]
+channel = "hdd"                # the channel that is raised
+enabled = false                # the switch
+hysteresis = 2                 # °C, per source
+min_on = "2m"                  # a rise of the boost is held this long
+
+[[assist.source]]
+sensor = "hwmon:amdgpu:temp1"  # early source: rises with AI load within seconds
+start = 50                     # °C, the boost starts here
+full = 58                      # °C, full boost from here
+boost = 45                     # PWM points
+
+[[assist.source]]
+sensor = "nvme:max"            # follows with minutes of delay
+start = 46
+full = 50
+boost = 45
+```
+
+Assist raises a channel by the heat of other sources. There is no second regulator:
+the channel's curve stays the base, assist adds to it. Order per cycle: held
+temperature → curve → `min_on` → **assist** → override → critical → ceiling → stall →
+slew.
+
+- Per source the boost rises linearly from 0 at `start` to `boost` at `full`,
+  evaluated at a hysteresis-held reading of that source (it follows the reading only
+  on a move of at least `hysteresis` °C).
+- The channel's boost is the **maximum** over its sources, not the sum. A rise of it
+  is held for `min_on`; a further rise restarts the timer.
+- Target = min(255, curve target + boost). Assist never lowers.
+- Only in mode `auto`: a manual override replaces the target (assist rests); critical,
+  the ceiling, stall, failsafe and a sensor error of the channel's own sensor win as
+  without assist. The slew (`step_up`/`step_down`) applies as for any target.
+- A source that cannot be read adds 0: no alert, one log line per episode, retried
+  every cycle.
+- Switching off ends a running boost at once; the slew takes the duty down by
+  `step_down` per cycle. A changed table applies on the next cycle, no restart.
+- Assist sources are recorded in the history like the channel sensors, also when
+  they are not in `[dashboard] sensors` (an id already recorded there or as a channel
+  sensor is not recorded twice).
+
+The table sits beside `[[channel]]`, not inside it: presets, the curve editor and
+*Apply to daemon* rewrite the `[[channel]]` tables and leave `[[assist]]` alone.
+
+Rules, checked when the file is read: the channel exists; 1..4 sources; each source is
+one sensor id, listed once, not the channel's own sensor or a part of it; `start <
+full` within −20..120; `boost` 1..100; at most one table per channel. A table that
+breaks one of these is dropped with a warning and the channel regulates without assist
+(rule 8: a config error never stops the start). An invalid `hysteresis`, `min_on` or
+`enabled` falls back to its default with a warning. Whether a source resolves on this
+machine shows `n5-fangov check` (`[ok  ] assist hdd   2 sources, off`, or one warning
+line per unreadable source).
+
+The values above come from a measurement on the N5 Pro (16.11.2026): under AI load
+(GPU ≈ 59 °C, NVMe ≈ 50 °C) the HDD channel runs ≈ 150 instead of ≈ 106, which takes
+2–3 K off the NVMe; at idle (GPU ≈ 35 °C, NVMe ≈ 43 °C) it stays on the curve. `k10temp`
+works as a source but jumps 10–20 K within seconds and the HDD fans do not cool the CPU.
 
 ## Ceilings and the emergency action
 

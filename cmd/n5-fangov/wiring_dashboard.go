@@ -6,6 +6,8 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -14,6 +16,7 @@ import (
 	"github.com/SirRenix/n5-fangov/internal/control"
 	"github.com/SirRenix/n5-fangov/internal/schedule"
 	"github.com/SirRenix/n5-fangov/internal/sensor"
+	"github.com/SirRenix/n5-fangov/internal/web"
 )
 
 // ---------------------------------------------------------------------------
@@ -72,19 +75,84 @@ func (s *dashboardStore) SetSensors(ids []string) ([]string, error) {
 			warns = append(warns, fmt.Sprintf("%s: %v (kept; charted once the device appears)", id, err))
 		}
 	}
-	err := editConfig(s.cfgPath, s.pin, "dashboard", func(raw []byte) []byte {
+	err := editConfigThen(s.cfgPath, s.pin, "dashboard", func(raw []byte) []byte {
 		return setConfigKey(raw, "dashboard", "sensors", tomlStringArray(clean))
 	}, func(cfg config.Config) bool {
 		return slices.Equal(cfg.Dashboard.Sensors, clean)
+	}, func() error {
+		s.ctrl.SetWatched(clean) // under the file lock (editConfigThen)
+		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	s.ctrl.SetWatched(clean)
 	if warns == nil {
 		warns = []string{}
 	}
 	return warns, nil
+}
+
+// ---------------------------------------------------------------------------
+// Assist store (web.AssistStore): the enabled line of one [[assist]] table.
+
+// assistSetter is the controller side of the assist store
+// (*control.Controller; a fake in tests).
+type assistSetter interface {
+	SetAssistEnabled(channel string, on bool) error
+}
+
+type assistStore struct {
+	mu      sync.Mutex
+	cfgPath string
+	pin     func([]byte) []byte
+	ctrl    assistSetter
+}
+
+func newAssistStore(cfgPath string, ctrl assistSetter, pin func([]byte) []byte) *assistStore {
+	return &assistStore{cfgPath: cfgPath, pin: pin, ctrl: ctrl}
+}
+
+// SetEnabled writes enabled = on into the channel's [[assist]] table
+// (config.SetAssistEnabled: that line only, comments kept) and hands the
+// switch to the controller, which takes it on the next cycle — both under
+// the config file lock (editConfigThen), so a concurrent reload cannot
+// apply an older file text afterwards. A file that does not parse is a
+// plain error (400, like the other single-key stores); a channel whose
+// file has no valid [[assist]] table is fs.ErrNotExist (404). When the file
+// is written but the running daemon has no such table (the file was edited
+// by hand without a reload), the error is a web.ReloadError (500).
+func (s *assistStore) SetEnabled(channel string, on bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var pre error
+	err := editConfigThen(s.cfgPath, s.pin, "assist", func(raw []byte) []byte {
+		cfg, _, perr := config.Parse(raw)
+		switch {
+		case perr != nil:
+			pre = fmt.Errorf("config does not parse, nothing written: %w", perr)
+			return nil
+		case cfg.Assist(channel) == nil:
+			pre = fmt.Errorf("channel %q has no valid [[assist]] table in %s: %w", channel, s.cfgPath, fs.ErrNotExist)
+			return nil
+		}
+		out, found := config.SetAssistEnabled(raw, channel, on)
+		if !found {
+			return []byte{} // a layout the line editor cannot find: verify refuses it
+		}
+		return out
+	}, func(cfg config.Config) bool {
+		a := cfg.Assist(channel)
+		return a != nil && a.Enabled == on
+	}, func() error {
+		if err := s.ctrl.SetAssistEnabled(channel, on); err != nil {
+			return &web.ReloadError{Err: fmt.Errorf("config written, not applied: %w (restart or reload the daemon)", err)}
+		}
+		return nil
+	})
+	if pre != nil {
+		return pre
+	}
+	return err
 }
 
 // tomlStringArray renders ids as a TOML array of basic strings.
@@ -106,14 +174,33 @@ func tomlStringArray(ids []string) string {
 // PUT /api/alerts on a stale section and the scheduler would run the old
 // windows until the restart). [dashboard] is applied by the controller's
 // own Reload.
+//
+// With cfgPath set the hook takes configFileMu and reloads the file as it
+// is now, not the text the caller wrote earlier: the writers release the
+// lock between their write and the reload (preset apply, PUT /api/config,
+// import), and a single-key store (the assist switch, the dashboard
+// sensors, the alert transport) may write and apply in between — a reload
+// of the older text would set the daemon back while the file keeps the
+// newer value. Holding the lock across the reload orders every reload and
+// every store apply by their file writes. Lock order: configFileMu, then
+// the controller's, the alert manager's and the scheduler's locks; none of
+// them takes configFileMu. An unreadable file falls back to raw.
 
 type hookedService struct {
 	control.Service
-	alerts *alertManager
-	sched  *scheduler
+	alerts  *alertManager
+	sched   *scheduler
+	cfgPath string
 }
 
 func (h hookedService) Reload(raw []byte) error {
+	if h.cfgPath != "" {
+		configFileMu.Lock()
+		defer configFileMu.Unlock()
+		if cur, err := os.ReadFile(h.cfgPath); err == nil {
+			raw = cur
+		}
+	}
 	err := h.Service.Reload(raw)
 	if err != nil && !isRestartRequired(err) {
 		return err

@@ -1414,8 +1414,11 @@ func TestStaticIndex(t *testing.T) {
 	if !strings.HasPrefix(r.hdr.Get("Content-Type"), "text/javascript") || !strings.Contains(r.body, "X-N5-Fangov-Csrf") {
 		t.Errorf("app.js: %q %.100s", r.hdr.Get("Content-Type"), r.body)
 	}
-	if len(r.body) > 136*1024 { // raised from 128 KiB in 0.4.0 (badge lists, active set, Save as preset…, sidebar toggle)
-		t.Errorf("app.js is %d bytes, budget 136 KiB (DESIGN 11a)", len(r.body))
+	// raised from 128 KiB in 0.4.0 (badge lists, active set, Save as preset…, sidebar
+	// toggle) and to 152 KiB for 0.7.0 (assist, preview, event marks, panic, config
+	// versions); the next raise splits app.js into modules instead (DESIGN 11a)
+	if len(r.body) > 152*1024 {
+		t.Errorf("app.js is %d bytes, budget 152 KiB (DESIGN 11a)", len(r.body))
 	}
 	// UI assumptions the server honours: since-polling, {"lines"} log wrapper,
 	// "channel" key, "<unchanged>" hash placeholder passes through untouched,

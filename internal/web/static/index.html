@@ -48,6 +48,10 @@
         <span class="prof mx" id="h-profile">—</span>
       </div>
       <div class="ph-r">
+        <span class="pn" id="h-pn" data-auth hidden>
+          <button class="btn sm" id="pn-go" type="button" aria-label="Full cooling" title="all fans at maximum for 10 min (loud)"><svg class="ic" aria-hidden="true"><use href="#i-fan"/></svg><span class="mx">Full cooling</span></button>
+          <span class="pn-on" id="pn-on" hidden><svg class="ic" aria-hidden="true"><use href="#i-fan"/></svg><span class="sr">full cooling, time left </span><span id="pn-t" role="timer">10:00</span><button class="btn sm" id="pn-more" type="button" title="full cooling 10 min from now" aria-label="full cooling 10 min from now">+10<span class="mx"> min</span></button><button class="btn sm" id="pn-stop" type="button" aria-label="Stop full cooling">Stop</button></span>
+        </span>
         <span class="chip" id="h-status" role="status">…</span>
         <span class="meta uptime mx" title="daemon uptime">up —</span>
         <span class="meta ver mx"><span class="version">v —</span><span class="badge beta" hidden>beta</span></span>
@@ -71,6 +75,7 @@
       <button data-range="2h" aria-pressed="false">2 h</button><button data-range="24h" aria-pressed="false">24 h</button><button data-range="7d" aria-pressed="false">7 d</button>
     </div>
     <span class="hint sm mx">2 h at every cycle, 24 h as 1-min and 7 d as 5-min means</span>
+    <div class="evf" id="ev-chips" role="group" aria-label="Event markers in the charts"></div>
     <button class="btn sm" id="ov-csv" type="button" data-auth hidden><svg class="ic" aria-hidden="true"><use href="#i-download"/></svg>CSV</button>
   </div>
   <div class="charts charts3">
@@ -131,6 +136,7 @@
     <div class="card"><h2>Kernel gate</h2><ul class="hl" id="hl-gate"></ul></div>
     <div class="card"><h2>Driver and daemon</h2><dl class="kv" id="hl-kv"></dl></div>
   </div>
+  <div class="card"><div class="card-h"><h2>Recent events</h2><span class="hint sm">the last 20, newest first · the chart markers</span></div><ul class="hl ev" id="hl-ev"></ul></div>
 </section>
 
 <section id="p-fans" class="pg" data-auth hidden>
@@ -148,6 +154,11 @@
     <div class="notice" id="ps-notice" hidden></div>
     <div class="preset-row" id="preset-row"></div>
   </div>
+  <template id="t-pv"><section class="card pv" aria-label="Curve preview">
+    <div class="card-h"><h2>Preview</h2><div class="seg" role="group" aria-label="Preview span"><button type="button" data-sp="24h" aria-pressed="true" class="on">24 h</button><button type="button" data-sp="7d" aria-pressed="false">7 d</button></div><button class="btn icon link" type="button" data-pvx aria-label="Close the preview"><svg class="ic" aria-hidden="true"><use href="#i-close"/></svg></button></div>
+    <p class="hint sm">Recorded duty grey, preview in colour, assist share as the filled area. Computed from the history, nothing is applied.</p>
+    <div class="pv-c"></div><p class="pv-s"></p><p class="hint sm pv-n"></p>
+  </section></template>
   <div class="actbar" id="actbar"><span class="dirty-t" id="cv-dirty" hidden><i class="dirty"></i>unsaved changes</span><span class="hint sm" id="cv-clean">no unsaved changes</span><div class="actions"><button class="btn" id="cv-saveas" type="button" hidden><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg>Save as preset…</button><button class="btn" id="cv-revert" type="button">Revert</button><button class="btn primary" id="cv-apply" type="button">Apply to daemon</button></div></div>
 </section>
 

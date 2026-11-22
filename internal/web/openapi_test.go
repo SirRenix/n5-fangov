@@ -222,8 +222,9 @@ func TestOpenAPIShape(t *testing.T) {
 	// spot checks of the scope column against DESIGN
 	want := map[string]string{
 		"GET /api/tls": "read", "GET /api/tls/cert.crt": "admin", "GET /api/tls/cert.cer": "admin",
-		"GET /api/state": "read", "PUT /api/override/{name}": "control", "PUT /api/dashboard": "control",
-		"POST /api/presets/{name}/apply": "control", "PUT /api/config": "admin", "GET /api/config": "admin",
+		"GET /api/state": "read", "GET /api/events": "read", "PUT /api/override/{name}": "control", "PUT /api/dashboard": "control",
+		"PUT /api/assist/{name}": "control", "POST /api/preview": "read",
+		"POST /api/presets/{name}/apply": "control", "POST /api/panic": "control", "PUT /api/config": "admin", "GET /api/config": "admin",
 		"POST /api/tokens": "session", "GET /api/account": "session", "POST /api/login": "session",
 	}
 	for pat, scope := range want {

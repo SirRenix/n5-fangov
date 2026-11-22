@@ -12,6 +12,118 @@ drove the 0.3.1 work is `docs/AUDIT.md` (code) and `docs/DESIGN-AUDIT.md`
 (dashboard); the reviews of the 0.4.0 redesign are referenced as `C01`… (code) and
 `D01`… (design), the findings of its release gate as `G1`…`G12`, in the 0.4.0 section.
 
+## [0.7.0-rc1] — 2026-11-22
+
+Five of the six 0.7.0 points: the #54 fix, assist, the curve preview, event markers and
+full cooling. Config versions with undo follow in a later release candidate. Without an
+`[[assist]]` table and without a full-cooling start the regulation behaves as in 0.6.0: the
+rules moved into pure functions that the loop and the preview share, the outputs are
+unchanged (replay of the reference measurement of 2026-11-16). Release candidate: 0.7.0
+follows when all points ran on the reference host.
+
+### Added
+
+- **Assist: raise a channel by the heat of other sources.** A new top-level
+  `[[assist]]` table per channel (beside `[[channel]]`, so presets, the curve editor and
+  *Apply to daemon* leave it alone) with 1..4 `[[assist.source]]` entries: per source a
+  boost from 0 at `start` to `boost` at `full` (°C, at a hysteresis-held reading), the
+  channel gets the maximum, held for `min_on` after a rise; target = min(255, curve +
+  boost), mode `auto` only — override, critical, ceiling, stall, failsafe and a sensor
+  error of the channel win. Default off. An unreadable source adds 0 (log line, no
+  alert); an invalid table is dropped with a warning. Switch: the Fans page (a switch
+  and one line under *Live & override*, only for a channel with a table), `n5-fangov
+  assist <ch> on|off`, `PUT /api/assist/{name}` (scope `control`); it rewrites only the
+  `enabled` line and takes effect on the next cycle. Visible in the status line
+  (`hdd=40.0C->pwm3=150(auto +45 amdgpu)`), the `assist` column of `status`, `assist{}`
+  per channel in `GET /api/state`, `+N` on the Overview tile, one `check` line per table,
+  and the history (`assist{}` per point, absent at 0; the source readings in `extra`
+  without listing them in `[dashboard] sensors`). The history file format is unchanged:
+  a 0.6 file loads, 0.6 ignores the new member. Example with the values of the
+  measurement of 16.11.2026 (HDD fans ≈ 150 instead of ≈ 106 under AI load, NVMe 2–3 K
+  cooler, idle unchanged) in `config.example.toml`, commented out
+  ([Configuration](docs/06-configuration.md#assist)).
+- **Curve preview: what a curve, a preset or assist would have done over the recorded
+  24 h or 7 d.** `POST /api/preview` (scope `read`, writes nothing, one at a time — 429
+  for a second) takes draft channel tables (validated like a preset body), a preset or
+  assist switches and returns per channel the recorded duty, the preview target and
+  the assist share per point, with mean, P95, max, minutes ≥ 200 and assist minutes
+  for both lines. The preview runs the daemon's own rules (curve, hysteresis, min_on,
+  assist with its hold, critical, ceiling), extracted into pure functions the loop
+  calls too; gaps stay gaps, a draft sensor is read from the recorded extra sensors.
+  It shows no feedback (rather too much duty), no ramp and no past overrides — the
+  answer says so. With assist on for an HDD channel it carries the effect measured on
+  16.11.2026, labelled as measured. CLI: `n5-fangov preview [--preset NAME] [--assist
+  CH=on|off]... [--span 24h|7d] [--json]` through the daemon socket
+  ([API](docs/12-api.md#preview), [CLI](docs/05-cli.md#preview)). Dashboard:
+  *Preview 24 h* in a changed curve editor, *Preview* in each preset's menu and next to
+  the Assist switch; a chart under the card (recorded grey, preview in colour, assist
+  share as an area), a 24 h / 7 d toggle, the summary and the notes; recomputed 1 s
+  after an edit while open ([Dashboard](docs/04-dashboard.md)).
+- **Event markers in the charts.** A new event log, `<state dir>/events.json` (0600,
+  7 days, at most 2000), records preset switches (dashboard, API, CLI, schedule),
+  override set and cleared, the assist switch, every alert — also one the cooldown
+  suppressed, once per window —, critical and ceiling entered and left, the write-error
+  failsafe and the stop failsafe of `ExecStopPost`, daemon starts and config reloads,
+  each once on its edge with the cause (`user:<name>`, `token:<name>`, `schedule`,
+  `cli`, `daemon`) and a short text without paths, alert messages or secrets. At start
+  the daemon ends the spans of the previous run (an override restored from its run file
+  stays open); its own stop ends the critical and ceiling spans. The controller records
+  through a non-blocking queue: a slow disk or a failed write never reaches the loop.
+  A clock step corrected before the next event drops nothing from the log;
+  `serve --dry-run` keeps its events in memory. Daemon and CLI share the file the way
+  `alerts.json` does since #54; that mechanism moved into one package both rings use.
+  API: `GET /api/events?minutes=&since=` (scope `read`; anonymous callers get time, kind,
+  channel and end only). CLI: `n5-fangov events [--since 24h|7d|DURATION] [--kind K]...
+  [--json]` (socket, else the file, read-only). Dashboard: markers in the temperature,
+  fan and preview charts — a line and a symbol per event, a band per span, colour and
+  shape per group (*Operation* ●, *Protection* ▲, *System* ■), events closer than 6 px
+  merged with a count, listed in the tooltip; filter chips per group, kept per browser;
+  the last 20 on the Health page ([Dashboard](docs/04-dashboard.md#event-markers),
+  [Events and alerts](docs/07-alerts.md#events-and-alerts), [API](docs/12-api.md#events),
+  [CLI](docs/05-cli.md#events)).
+- **Full cooling ("panic button"): every fan at maximum for 10 minutes.** *Full cooling*
+  in the dashboard header (signed in, every page, one click), `POST /api/panic`
+  `{"action":"start"|"stop"}` (scope `control`, answer `{active, until}`), `n5-fangov
+  panic [stop|status]` (socket only). 255 at once without the `step_up` ramp — the
+  daemon runs a cycle immediately —, over curve, assist, override, hysteresis and
+  `min_on`; critical, the ceiling and a sensor error stay at 255, the write-error
+  failsafe stays first. An overlay only: the daemon keeps computing everything
+  underneath, so afterwards each channel runs what it would run now (an override set
+  before or during it, a preset, schedule or assist change made meanwhile), down with
+  `step_down`. Starting again sets 10 minutes from now; starts within 5 s count as one.
+  Survives a daemon restart (`/run/n5-fangov/panic.until`), not a reboot. Refused with
+  409 and the reason under profile `monitor` or with a read-only driver (the button is
+  greyed out). Visible as mode `panic`, `panic {until, by}` in `/api/state`, `(panic)`
+  in the status line, a Health line, events `panic`/`panic-end`/`panic-extend`; no
+  alert, `/healthz` stays `ok`. The dashboard shows the time left, *+10 min* and *Stop*,
+  marks deferred changes (*applies after full cooling ends*) and tells every open
+  session when it ends. A Home Assistant `rest_command` example is in the API docs
+  ([Dashboard](docs/04-dashboard.md#full-cooling), [API](docs/12-api.md#full-cooling),
+  [CLI](docs/05-cli.md#panic), [precedence](docs/06-configuration.md#which-rule-wins)).
+
+### Changed
+
+- **`app.js` budget 136 → 152 KiB** for the 0.7.0 dashboard parts (assist, preview,
+  event marks, panic button; config versions still to come), a decided raise
+  (operator 2026-11-21). The next growth beyond it splits `app.js` into modules loaded
+  on demand instead of raising the limit again.
+
+### Fixed
+
+- **Alerts from command line runs no longer vanish from the list** (#54, since 0.3).
+  The apt hook's `check --after-update` and the onfailure unit's `alert` record into
+  `alerts.json` through their own ring; the daemon did not read the file again, so its
+  next alert or acknowledgement overwrote the record and handed out the same id again
+  (measured on the reference host with 0.6.0: CLI alert #10, then the daemon's test
+  alert #10, the CLI one gone; both mails were delivered). Every writer now takes an
+  flock on `alerts.json.lock` (at most 2 s, then it writes without the lock and logs
+  once), reads the file, merges it by id and writes it back; a read of the list
+  (`/api/alerts`, the open count, `alerts status`) merges a file changed since. Same
+  id with the same time, kind and message is one record and keeps an acknowledgement
+  from either side; same id with other content keeps the record of the writing ring
+  and renumbers the one from the file after the highest (or drops it when a full list
+  holds only newer ones). File format unchanged.
+
 ## [0.6.0] — 2026-11-21
 
 Code equals 0.6.0-rc1, which ran on the reference host from 2026-11-02 (driver
@@ -1503,7 +1615,8 @@ of `v0.2.0`.
   security review `H1`–`H3`, `M1`–`M4`, `L1`–`L6` (Host header, CSRF, socket mode 0750,
   body limits, …).
 
-[Unreleased]: https://github.com/SirRenix/n5-fangov/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/SirRenix/n5-fangov/compare/v0.7.0-rc1...HEAD
+[0.7.0-rc1]: https://github.com/SirRenix/n5-fangov/releases/tag/v0.7.0-rc1
 [0.6.0]: https://github.com/SirRenix/n5-fangov/releases/tag/v0.6.0
 [0.6.0-rc1]: https://github.com/SirRenix/n5-fangov/releases/tag/v0.6.0-rc1
 [0.4.1]: https://github.com/SirRenix/n5-fangov/releases/tag/v0.4.1

@@ -230,6 +230,18 @@ input[type=checkbox]{accent-color:var(--info)}
 .tip .t{color:var(--fg2);margin-bottom:var(--sp-05)}
 .tip b{font-weight:var(--fw-semibold)}
 .tip i{display:inline-block;width:10px;height:var(--swatch-h);margin-right:5px;vertical-align:middle}
+/* event marks: group colour plus shape (circle / triangle / square) and glyph, never colour alone */
+.g-op{--c:var(--man)}.g-prot{--c:var(--crit)}.g-sys{--c:var(--ok)}.gl{color:var(--c)}
+.evf{display:flex;flex-wrap:wrap;gap:var(--sp-1)}.evf .gl{margin-right:var(--sp-1)}
+.evl{position:absolute;left:0;top:var(--sp-05);height:0}
+.evm{position:absolute;width:9px;height:9px;margin-left:-4.5px;background:var(--c)}.evm.c{border-radius:var(--r-full)}
+.evm.t{width:0;height:0;margin-left:-5px;background:none;border:solid transparent;border-width:0 5px 9px;border-bottom-color:var(--c)}
+.evm[data-n]::after{content:attr(data-n);position:absolute;left:8px;top:-3px;font-size:var(--fs-11);font-weight:var(--fw-semibold);color:var(--c)}
+.tip .tev{justify-content:flex-start}
+/* full cooling: the header in the protection colour while it runs; the button greyed out when it cannot work */
+.pn,.pn-on{display:inline-flex;align-items:center;gap:var(--sp-15)}.pn-on{color:var(--crit);font-weight:var(--fw-semibold);font-variant-numeric:tabular-nums}
+.ph.pn-act{background:color-mix(in srgb,var(--crit) 14%,var(--bg2));box-shadow:inset 0 calc(-1*var(--bw-accent)) 0 var(--crit)}
+#pn-go[aria-disabled=true]{opacity:.55;cursor:not-allowed}.m-panic{--tc:var(--crit)}.hl.ev b{min-width:110px;color:var(--c)}
 .chips{display:flex;flex-wrap:wrap;gap:var(--sp-15)}
 .chips span{background:var(--bg3);border:var(--bw) solid var(--line);border-radius:var(--r-md);padding:3px var(--sp-2);font-size:var(--fs-12)}
 .kv{display:grid;grid-template-columns:auto 1fr;gap:var(--sp-1) var(--sp-3);margin:0;font-size:var(--fs-13)}
@@ -295,6 +307,11 @@ input[type=checkbox]{accent-color:var(--info)}
 .fan .live .warn{color:var(--fg3);font-size:var(--fs-12);margin:0}
 .fan .live .warn.on{color:var(--warn)}
 .fan .live[data-off=true] .man{opacity:var(--opacity-disabled);pointer-events:none}
+.fan .live .as{display:grid;gap:var(--sp-1);border-top:var(--bw) solid var(--line);padding-top:var(--sp-2)} /* assist: switch + one line, only with an [[assist]] table */
+.pv{display:grid;gap:var(--sp-2);margin-bottom:var(--gap)} /* curve preview panel under a card: full width, the summary below the chart */
+.pv .card-h{display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap}.pv .card-h h2{margin:0;flex:1}
+.pv-c{display:grid;gap:var(--sp-2)}.pv-off{opacity:var(--opacity-disabled)} /* a chart whose last answer failed */.pv-s{white-space:pre-line;margin:0;font-size:var(--fs-13)}.pv-n{margin:0}
+.tile .row .v .asb{color:var(--man);font-size:var(--fs-12);font-weight:var(--fw-semibold)}
 /* curve editor */
 .ed{display:grid;gap:var(--sp-25)}
 .ed .fields{display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-2) var(--sp-35);margin-top:var(--sp-1)}

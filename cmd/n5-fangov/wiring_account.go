@@ -26,6 +26,7 @@ const (
 	tokensFileName   = "tokens.json"
 	alertsFileName   = "alerts.json"
 	historyFileName  = "history.json"
+	eventsFileName   = "events.json"
 )
 
 // stateDir returns the state directory: N5FANGOV_STATE_DIR, else the
@@ -93,6 +94,15 @@ func historyPath(dir string) string {
 	return filepath.Join(dir, historyFileName)
 }
 
+// eventsPath is <state dir>/events.json, the event log behind the chart
+// markers (internal/events).
+func eventsPath(dir string) string {
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, eventsFileName)
+}
+
 // readConfigRaw reads the config file; a missing file reads as empty
 // text (SetKey then appends the section).
 func readConfigRaw(path string) ([]byte, error) {
@@ -116,6 +126,16 @@ func readConfigRaw(path string) ([]byte, error) {
 // it from there; an edit that returns nil declines (its own validation
 // failed on the file's values) and nothing is written.
 func editConfig(path string, pin func([]byte) []byte, section string, edit func([]byte) []byte, verify func(config.Config) bool) error {
+	return editConfigThen(path, pin, section, edit, verify, nil)
+}
+
+// editConfigThen is editConfig with then run after a successful write,
+// still under configFileMu: a store that hands its value to the daemon
+// (dashboard sensors, the assist switch, the alert transport) does it
+// inside the same critical section, so a concurrent writer's reload —
+// which re-reads the file under the lock (hookedService) — can never apply
+// an older file text after it. then's error is returned as is.
+func editConfigThen(path string, pin func([]byte) []byte, section string, edit func([]byte) []byte, verify func(config.Config) bool, then func() error) error {
 	configFileMu.Lock()
 	defer configFileMu.Unlock()
 	raw, err := readConfigRaw(path)
@@ -140,6 +160,9 @@ func editConfig(path string, pin func([]byte) []byte, section string, edit func(
 	}
 	if err := saveConfig(path, raw); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
+	}
+	if then != nil {
+		return then()
 	}
 	return nil
 }
