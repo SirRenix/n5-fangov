@@ -126,7 +126,18 @@ func readConfigRaw(path string) ([]byte, error) {
 // it from there; an edit that returns nil declines (its own validation
 // failed on the file's values) and nothing is written.
 func editConfig(path string, pin func([]byte) []byte, section string, edit func([]byte) []byte, verify func(config.Config) bool) error {
-	return editConfigThen(path, pin, section, edit, verify, nil)
+	return editConfigThen(path, pin, section, configReason(section), edit, verify, nil)
+}
+
+// configReason names a single-key store's write in the config versions.
+func configReason(section string) string {
+	switch section {
+	case "web":
+		return "account"
+	case "alert":
+		return "alerts"
+	}
+	return section
 }
 
 // editConfigThen is editConfig with then run after a successful write,
@@ -135,7 +146,7 @@ func editConfig(path string, pin func([]byte) []byte, section string, edit func(
 // inside the same critical section, so a concurrent writer's reload —
 // which re-reads the file under the lock (hookedService) — can never apply
 // an older file text after it. then's error is returned as is.
-func editConfigThen(path string, pin func([]byte) []byte, section string, edit func([]byte) []byte, verify func(config.Config) bool, then func() error) error {
+func editConfigThen(path string, pin func([]byte) []byte, section, why string, edit func([]byte) []byte, verify func(config.Config) bool, then func() error) error {
 	configFileMu.Lock()
 	defer configFileMu.Unlock()
 	raw, err := readConfigRaw(path)
@@ -158,7 +169,7 @@ func editConfigThen(path string, pin func([]byte) []byte, section string, edit f
 	if pin != nil {
 		raw = pin(raw)
 	}
-	if err := saveConfig(path, raw); err != nil {
+	if err := saveConfigWhy(path, raw, why); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 	if then != nil {

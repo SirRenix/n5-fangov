@@ -1,7 +1,5 @@
-// n5-fangov dashboard mock — loaded by app.js only with ?mock=1, never referenced by index.html.
-// Publishes window.n5mock(path, opt) → Promise<{status, body, filename?}>; api() calls it instead of fetch.
+// n5-fangov dashboard mock, loaded by app.js with ?mock=1 only: window.n5mock(path, opt) stands in for fetch. Documentation names only.
 // Flags: &user=1 &auth=none &tls=off|file|soon|fallback &tab= &syserr=1 &reject=1 &restart=1 &expire=1 &schedfail=1 &pwm4=1 &lag=1 &down=1 &ceiling=1 &assist=1
-// Names and addresses are documentation values (n5host, 192.0.2.x, n5.lan, example.test).
 'use strict';
 window.n5mock = (() => {
 	const Q = new URLSearchParams(location.search), t0 = Date.now() / 1000, MV = '0.4.2', PRE = MV.split('-')[1] || '';
@@ -9,7 +7,7 @@ window.n5mock = (() => {
 		for (let i = 1; i < curve.length; i++) if (t <= curve[i][0]) { const [t0, d0] = curve[i - 1], [t1, d1] = curve[i]; return t1 === t0 ? d1 : d0 + (d1 - d0) * (t - t0) / (t1 - t0); }
 		return curve[curve.length - 1][1]; };
 	const REF = { cpu: [[85, 2000], [140, 3120], [179, 3830], [217, 4445], [255, 5073]], ssd: [[74, 2130], [140, 3280], [179, 3790], [217, 4230], [255, 4687]], hdd: [[87, 1237], [105, 1650], [140, 2250], [179, 2725], [217, 3160], [255, 3540]] };
-	const M = { auth: Q.get('auth') === 'none' ? 'none' : 'basic', in: Q.get('user') === '1' || Q.get('auth') === 'none', user: 'admin', remember: false, exp: !!Q.get('expire') };
+	const M = { auth: Q.get('auth') === 'none' ? 'none' : 'basic', in: Q.get('user') === '1' || Q.get('auth') === 'none', user: 'admin', remember: false, pw: 0, exp: !!Q.get('expire') };
 	const cfg = { daemon: { interval: '10s', step_up: 40, step_down: 15, stall_min_duty: 60, stall_cycles: 2, emergency: false, emergency_cycles: 6, profile: 'auto' },
 		web: { listen: '0.0.0.0:8010', auth: M.auth }, log: { file: '/var/log/n5-fangov/n5-fangov.log', max_size_mb: 10, max_files: 5 },
 		channel: [
@@ -17,21 +15,18 @@ window.n5mock = (() => {
 			{ name: 'ssd', pwm: 2, sensor: 'nvme:max', curve: [[40, 74], [70, 255]], critical: 75, stop: 'auto', hysteresis: 2, min_on: '1m0s' },
 			{ name: 'hdd', pwm: 3, sensor: 'drivetemp:max,disk:sda', curve: [[36, 105], [46, 255]], critical: 56, stop: 87, hysteresis: 3, min_on: '5m0s' }],
 		schedule: [{ preset: 'n5pro-quiet', from: '22:00', to: '07:00', days: [] }, { preset: 'n5pro-cool', from: '13:00', to: '18:00', days: ['sat', 'sun'] }, { preset: 'n5pro-balanced', from: '', to: '', days: [] }],
-		// [[assist]] on the hdd channel (the values of the 16.11. measurement); &assist=1: switched on with a warm GPU (+14 °C), so the boost shows
+		// [[assist]] on hdd (16.11. measurement); &assist=1: on with a warm GPU (+14 °C)
 		assist: [{ channel: 'hdd', enabled: Q.get('assist') === '1', hysteresis: 2, min_on: '2m0s', source: [{ sensor: 'hwmon:amdgpu:temp1', start: 50, full: 58, boost: 45 }, { sensor: 'nvme:max', start: 46, full: 50, boost: 45 }] }] };
 	if (Q.get('pwm4') === '1') cfg.channel.push({ name: 'pcie', pwm: 4, sensor: 'ec:board', curve: [[30, 60], [60, 200]], critical: 80, stop: 120, hysteresis: 0, min_on: '0s' });
-	if (Q.get('schedfail')) cfg.schedule[0].preset = 'night'; // the failed switch below names this entry: a preset the store lacks ("(missing)" in the editor)
+	if (Q.get('schedfail')) cfg.schedule[0].preset = 'night'; // a preset the store lacks
 	const shift = n => cfg.channel.map(c => Object.assign({}, c, { curve: c.curve.map(p => [p[0] + n, p[1]]) }));
 	const presets = {
 		'n5pro-balanced': { builtin: true, description: 'Recommended: HDDs held near 40 °C, audible under load only', ch: cfg.channel },
 		'n5pro-quiet': { builtin: true, description: 'Quiet: lowest noise, HDDs around 45 °C', ch: shift(4) }, 'n5pro-cool': { builtin: true, description: 'Cool: drives first', ch: shift(-6) }, summer: { ch: shift(-4) },
-		// a user preset that shares cpu and ssd with n5pro-balanced (only the hdd curve differs): the channel badges list both, the active set names one
 		alternative: { ch: [cfg.channel[0], cfg.channel[1]].concat(shift(2).slice(2, 3)) } };
 	const overrides = {}, ovLag = {};
-	// day/night shape (peak in the afternoon) on top of the short-period wobble, so 24 h / 7 d look plausible
 	const day = t => Math.sin(((t / 86400) % 1 - .3) * 2 * Math.PI);
 	const temp = (name, t) => ({ cpu: 38 + 9 * Math.sin(t / 900) + 3 * Math.sin(t / 130) + 3 * day(t), ssd: 41 + 4 * Math.sin(t / 1400 + 1) + 2 * day(t), hdd: 39 + 2.5 * Math.sin(t / 2600 + 2) + 2.5 * day(t), pcie: 34 + 2 * Math.sin(t / 700) + 2 * day(t) })[name];
-	// sensor catalogue: id → [description, base curve, offset, kind]
 	const SENS = { k10temp: ['CPU Tctl', 'cpu', 0], 'nvme:max': ['hottest NVMe', 'ssd', 0], 'drivetemp:max': ['hottest drive', 'hdd', 0], 'disk:nvme0n1': ['Example NVMe 1000GB (nvme0n1, nvme)', 'ssd', -1, 'ssd'], 'disk:nvme2n1': ['Example NVMe 2000GB (nvme2n1, nvme)', 'ssd', .5, 'ssd'],
 		'disk:sda': ['EX HDD 20TB (sda, drivetemp)', 'hdd', 0, 'hdd'], 'disk:sdc': ['EX HDD 8TB (sdc, drivetemp)', 'hdd', -1.5, 'hdd'], 'ec:ambient': ['EC ambient', 'sys', -6], 'ec:board': ['EC mainboard', 'sys', 2], 'ec:cpu': ['EC CPU probe', 'cpu', 1.5],
 		'ec:system': ['EC system', 'sys', 0], 'hwmon:acpitz:temp1': ['ACPI thermal zone', 'sys', 5], 'hwmon:nic1:temp1': ['NIC PHY', 'sys', 18],
@@ -44,7 +39,6 @@ window.n5mock = (() => {
 		for (const c of cfg.channel) { const tv = temp(c.name, t); const d = c.name in overrides ? overrides[c.name] : Math.round(interp(c.curve, tv));
 			p.temp[c.name] = +tv.toFixed(1); p.duty[c.name] = d; p.rpm[c.name] = rpmOf(c.name, d); }
 		if (dash.length) { p.extra = {}; for (const id of dash) if (SENS[id]) p.extra[id] = sv(id, t); } return p; };
-	// averaged tiers (DESIGN 6a): ≤ 2 h raw at 10 s, ≤ 24 h 1-min means, else 5-min means
 	const history = (minutes, since, extra) => { const now = Date.now() / 1000, step = minutes <= 120 ? 10 : minutes <= 1440 ? 60 : 300, out = [];
 		for (let t = Math.floor((now - minutes * 60) / step) * step; t <= now; t += step) if (t > since) { const pt = point(t); if (!extra) delete pt.extra; out.push(pt); } return out; };
 	const csv = minutes => { const chs = cfg.channel.map(c => c.name), ex = dash.filter(id => SENS[id]).sort(), pts = history(minutes, 0, true);
@@ -58,15 +52,14 @@ window.n5mock = (() => {
 	const tomlSched = s => `[[schedule]]\npreset = "${s.preset}"\n` + (s.from ? `from = "${s.from}"\nto = "${s.to}"\n` : '') + (s.days.length ? `days = ${tomlV(s.days)}\n` : '');
 	const tomlAs = a => `[[assist]]\nchannel = "${a.channel}"\nenabled = ${a.enabled}\nhysteresis = ${a.hysteresis}\nmin_on = "${a.min_on}"\n` + a.source.map(s => `\n[[assist.source]]\nsensor = "${s.sensor}"\nstart = ${s.start}\nfull = ${s.full}\nboost = ${s.boost}\n`).join('');
 	const raw = () => sec('daemon') + sec('web') + sec('log') + cfg.channel.map(tomlCh).join('\n') + '\n' + cfg.schedule.map(tomlSched).join('\n') + '\n' + cfg.assist.map(tomlAs).join('\n');
-	// assist like the daemon: per source 0 → boost between start and full, the maximum counts, mode auto only (no hysteresis / min_on in the mock)
+	// assist like the daemon (no hysteresis / min_on)
 	const assistOf = (ch, now) => { const a = cfg.assist.find(x => x.channel === ch.name); if (!a) return;
 		const srcs = a.source.map(s => { const tv = +(sv(s.sensor, now) + (Q.get('assist') === '1' && s.sensor === 'hwmon:amdgpu:temp1' ? 14 : 0)).toFixed(1);
-			return { sensor: s.sensor, temp: tv, boost: tv <= s.start ? 0 : tv >= s.full ? s.boost : Math.round(s.boost * (tv - s.start) / (s.full - s.start)) }; });
+			return { sensor: s.sensor, temp: tv, start: s.start, full: s.full, boost: tv <= s.start ? 0 : tv >= s.full ? s.boost : Math.round(s.boost * (tv - s.start) / (s.full - s.start)) }; });
 		const top = srcs.reduce((x, y) => y.boost > x.boost ? y : x, { boost: 0 }), b = a.enabled && ch.mode === 'auto' ? top.boost : 0;
 		if (b) Object.assign(ch, { target: Math.min(255, ch.target + b), duty: Math.min(255, ch.duty + b) });
 		ch.assist = M.in ? { enabled: a.enabled, boost: b, source: b ? top.sensor : undefined, sources: srcs } : { enabled: a.enabled, boost: b }; };
-	// PUT /api/config: parse the [[channel]] and [[schedule]] tables back (strict: the daemon's rules, rule 8 would substitute defaults with a warning);
-	// like the daemon, the mock keeps only what the body carries — a client that drops the [[schedule]] tables loses them (visible in raw() and on the Schedules card)
+	// PUT /api/config: channels and schedules parsed back, strict
 	const kv = (blk, k) => { const m = new RegExp(`^${k}\\s*=\\s*(.+)$`, 'm').exec(blk); return m ? m[1].trim() : ''; };
 	const tables = (body, name) => body.split(new RegExp(`^\\[\\[${name}\\]\\]\\s*$`, 'm')).slice(1).map(b => b.split(/^\[/m)[0]);
 	const parseSchedules = body => tables(body, 'schedule').map(b => ({ preset: kv(b, 'preset').replace(/"/g, ''), from: kv(b, 'from').replace(/"/g, ''), to: kv(b, 'to').replace(/"/g, ''), days: [...kv(b, 'days').matchAll(/"([^"]*)"/g)].map(x => x[1]) }));
@@ -74,7 +67,6 @@ window.n5mock = (() => {
 		return { name: kv(b, 'name').replace(/"/g, ''), pwm: +kv(b, 'pwm'), sensor: s.startsWith('[') ? [...s.matchAll(/"([^"]*)"/g)].map(x => x[1]).join(',') : s.replace(/"/g, ''),
 			curve: [...kv(b, 'curve').matchAll(/\[\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*\]/g)].map(x => [+x[1], +x[2]]), critical: +kv(b, 'critical'), stop: /^"auto"$/i.test(st) ? 'auto' : /^\d+$/.test(st) ? +st : st.replace(/"/g, ''),
 			hysteresis: +kv(b, 'hysteresis') || 0, min_on: mo ? mo.replace(/"/g, '') : '0s', ceiling: +kv(b, 'ceiling') || 0 }; });
-	// the daemon's channel rules (config.ValidateCurve, parser.stop, intField / durField): every warning is an error here
 	const durS = s => { const m = /^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/.exec(s); return m && m[0] ? (+m[1] || 0) * 3600 + (+m[2] || 0) * 60 + (+m[3] || 0) : -1; };
 	const check = chs => { const errs = [];
 		for (const c of chs) { const n = c.name, pts = c.curve;
@@ -93,7 +85,7 @@ window.n5mock = (() => {
 	const logs = [];
 	for (let i = 0; i < 200; i++) { const t = t0 - (200 - i) * 300; const p = point(t);
 		logs.push(`${new Date(t * 1000).toISOString().slice(0, 19)} ${i % 37 === 5 ? 'WARN stall: hdd rpm=0 at duty=105' : i % 53 === 7 ? 'ERROR sensor drivetemp:max: no devices' : i % 71 === 9 ? 'INFO schedule: preset "n5pro-quiet" applied (22:00–07:00)' : 'INFO'} cpu ${p.temp.cpu}/${p.duty.cpu} hdd ${p.temp.hdd}/${p.duty.hdd}`); }
-	const wait = v => new Promise(r => setTimeout(r, 120, v)), ok = (body, filename) => wait({ status: 200, body: typeof body === 'string' ? body : JSON.parse(JSON.stringify(body)), filename }); // a copy, as a fetch would deliver: the page never holds the mock's live objects
+	const wait = v => new Promise(r => setTimeout(r, 120, v)), ok = (body, filename) => wait({ status: 200, body: typeof body === 'string' ? body : JSON.parse(JSON.stringify(body)), filename }); // a copy, as fetch delivers
 	const q = Q.get('tls'), T = { mode: q === 'off' || q === 'file' || q === 'fallback' ? (q === 'fallback' ? 'file' : q) : 'auto', fb: q === 'fallback', n: 0 };
 	const tlsInfo = () => { const up = T.mode === 'file' && !T.fb, cn = up ? 'CN=fans.example,O=Homelab' : 'CN=n5.lan,O=n5-fangov', d = new Date(t0 * 1000); d.setFullYear(d.getFullYear() + (up ? 1 : 10));
 		return { subject: cn, issuer: up ? 'CN=Homelab CA' : cn, dns_names: up ? ['fans.example'] : ['n5.lan', 'n5host', 'localhost'], ips: up ? [] : ['192.0.2.20', '127.0.0.1', '::1'],
@@ -115,15 +107,13 @@ window.n5mock = (() => {
 		if (p === '/api/tls/reset') { T.mode = 'auto'; T.fb = false; return ok({ ok: true, mode: 'auto', info: tlsInfo() }); }
 		return fail('mock: not found ' + p, 404);
 	};
-	// alerts panel (webhook: effective only with a URL; the URL is returned as stored — the log redacts, the API does not)
 	const A = { transport: 'auto', mail_to: 'root', webhook_url: '', webhook_format: 'json', tpl: { installed: true, current: true, writable: true, path: '/etc/pve/notification-templates/default' } };
 	const KINDS = { sensor: 'sensor unreadable', stall: 'fan at 0 rpm', temp: 'critical temp', ceiling: 'built-in ceiling reached (HDD 65, SSD 85, CPU 100 C)', emergency: 'emergency hook ran', write: 'pwm write failed', device: 'hwmon device vanished', config: 'config replaced', 'config-channels': 'channel set changed', profile: 'profile changed',
 		start: 'daemon started', restart: 'restarted', failed: 'unit failed', kernel: 'kernel/DKMS changed', tls: 'cert unreadable', web: 'web listener failed', schedule: 'scheduled preset switch failed', test: 'test alert' };
 	const recent = [[720, 'stall', 'hdd: rpm=0 at duty 105, raised to 255'], [5400, 'temp', 'cpu 91.5 °C ≥ critical 88, forced to 255', 'pve-notify: exit status 1'], [11220, 'sensor', 'drivetemp:max: no devices'], [93600, 'start', 'n5-fangov ' + MV + ' started'], [3 * 86400, 'tls', 'certificate unreadable']]
 		.map(([ago, kind, msg, error], i, all) => Object.assign({ id: all.length - i, ts: Math.floor(t0 - ago), kind, msg }, error ? { error } : {}, i > 2 ? { ack_ts: Math.floor(t0 - 3600), ack_by: 'user:admin' } : {}));
 	let alertId = recent.length; const newAlert = a => recent.unshift(Object.assign({ id: ++alertId }, a)); // ids: arrival order, as the ring
-	// GET /api/events (chart marks): a sample week, the three events within 60 s merge into one symbol, the cpu override is still
-	// open, the oldest is an end whose start left the log; the mock's override, assist, preset and config answers append (ev)
+	// GET /api/events: a sample week; actions append (ev)
 	const EV = [[120000, 'override-end', 'ssd', 'ssd back to the curve (admin)', 'user:admin'], [93600, 'start', '', 'started ' + MV, 'daemon'], [21600, 'preset', '', 'preset n5pro-quiet (schedule 22:00-07:00)', 'schedule'], [10800, 'override', 'hdd', 'hdd manual 150 (admin)', 'user:admin'],
 		[9000, 'override-end', 'hdd', 'hdd back to the curve (admin)', 'user:admin'], [7200, 'alert', '', 'alert temp (suppressed by the cooldown)', 'daemon'], [6000, 'critical', 'ssd', 'ssd critical 76.0C (limit 75C)', 'daemon'],
 		[5700, 'critical-end', 'ssd', 'ssd below critical (71.5C)', 'daemon'], [3000, 'ceiling', 'hdd', 'hdd ceiling 65C (disk:sda 65.5C)', 'daemon'], [2700, 'ceiling-end', 'hdd', 'hdd below the ceiling (61.0C)', 'daemon'],
@@ -131,12 +121,20 @@ window.n5mock = (() => {
 		[1200, 'alert', '', 'alert stall', 'daemon'], [600, 'override', 'cpu', 'cpu manual 200 (token home-assistant)', 'token:home-assistant']]
 		.map(([ago, kind, ch, text, by], i) => ({ id: i + 1, ts: Math.floor(t0 - ago), kind, ch: ch || undefined, text, by, end: kind.endsWith('-end') || undefined }));
 	const ev = (kind, ch, text, d) => EV.push({ id: EV.length + 1, ts: Math.floor(Date.now() / 1000), kind, ch, text: d ? text : text + ' (admin)', by: d ? 'daemon' : 'user:admin', end: kind.endsWith('-end') || undefined });
-	// full cooling (POST /api/panic): its end; &panic=1 starts with 9 min left, &pnoff=1 refuses it (profile monitor)
+	// config versions: the state before every write (10); M.pw counts password changes
+	const V = [], vtx = () => raw().replace('[web]\n', '[web]\npassword_hash = "<redacted>"\n'), vh = t => [...t].reduce((a, c) => a * 31 + c.charCodeAt(0) | 0, 7).toString(16), vadd = (r, c, h, why) => { const z = V[V.length - 1]; if (z && z.raw === r && z.h === h) return 0;
+		V.push({ id: V.length ? V[V.length - 1].id + 1 : 1, ts: Math.floor(Date.now() / 1000), by: 'user:admin', reason: why, raw: r, c, h }); if (V.length > 10) V.shift(); return V[V.length - 1].id; };
+	const vdiff = (a, b) => { a = a.split('\n'); b = b.split('\n'); const n = a.length, k = b.length, L = Array.from({ length: n + 1 }, () => Array(k + 1).fill(0)), o = []; let i, j;
+		for (i = n - 1; i >= 0; i--) for (j = k - 1; j >= 0; j--) L[i][j] = a[i] === b[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+		for (i = j = 0; i < n || j < k;) o.push(i < n && j < k && a[i] === b[j] ? (j++, { op: ' ', line: a[i++] }) : i < n && (j === k || L[i + 1][j] >= L[i][j + 1]) ? { op: '-', line: a[i++] } : { op: '+', line: b[j++] }); return o; };
+	const vsec = (a, b) => { const s = new Set(); let h = '(top)'; for (const x of vdiff(a, b)) { const m = /^\[\[?([\w.]+)/.exec(x.line), id = /^(name|channel|preset) = "(.+)"/.exec(x.line);
+		if (m && m[1] !== 'assist.source') h = m[0].startsWith('[[') ? `[[${m[1]}]]` : `[${m[1]}]`; else if (id && h.endsWith(']]')) h += ' ' + id[2]; if (x.op !== ' ' && x.line.trim() && !m) s.add(h); } return [...s]; };
+	// full cooling: &panic=1 starts with 9 min left, &pnoff=1 refuses it
 	let PN = Q.get('panic') ? Math.floor(t0 + 540) : 0; const PNO = Q.get('pnoff') ? 'profile monitor: n5-fangov only reads the sensors here, it does not drive the fans' : undefined;
-	// &drv=pending: the module still has to be reloaded (sr1 loaded, the package builds sr2); &drv=ro: the driver cannot write
+	// &drv=pending: module reload due; &drv=ro: read-only driver
 	const DRV = { module: 'minisforum_n5_it5571', loaded: true, version: '0.2.1+sr2', srcversion: 'CDDEDE26904251994A0DE35', mode: Q.get('drv') === 'ro' ? 'write-disabled' : 'write-enabled', expected: '0.2.1+sr2', pending: false };
 	if (Q.get('drv') === 'pending') Object.assign(DRV, { version: '0.2.1+sr1', srcversion: '22C5CA61EBD0012B034369B', pending: true });
-	// &ceiling=1: the hdd reading sits above its ceiling (65): 255, mode critical, ceiling_hit, an alert at the head of the list
+	// &ceiling=1: hdd above its ceiling (65): 255, critical, ceiling_hit, an alert
 	const CEIL = { cpu: 100, ssd: 85, hdd: 65, pcie: 100 }, ceilHit = Q.get('ceiling') === '1';
 	if (ceilHit) newAlert({ ts: Math.floor(t0 - 40), kind: 'ceiling', msg: 'hdd: drivetemp:max,disk:sda at 66.5C reached the ceiling 65C (critical 56C) -> 255' });
 	if (Q.get('schedfail')) newAlert({ ts: Math.floor(t0 - 3600), kind: 'schedule', msg: 'preset "night" not found (22:00–07:00 kept the previous curves)' });
@@ -145,7 +143,7 @@ window.n5mock = (() => {
 	const iso = ago => new Date((t0 - ago) * 1000).toISOString();
 	const sessions = () => [{ id: 'a1b2c3d4', created: iso(5400), expires: iso(5400 - (M.remember ? 30 : .5) * 86400), last_seen: iso(30), remember: M.remember, ip: '192.0.2.30', current: true },
 		{ id: '9f8e7d6c', created: iso(6 * 86400), expires: iso(-24 * 86400), last_seen: iso(4 * 3600), remember: true, ip: '192.0.2.31', current: false }];
-	// API tokens (DESIGN 9): secret n5t_ + 43 chars, shown once; name unique (409); expired ones stay listed until revoked
+	// API tokens (DESIGN 9): n5t_ + 43 chars, shown once, names unique
 	const TOK = [{ id: '3fa9c1d2', name: 'home-assistant', scope: 'control', created: iso(20 * 86400), expires: iso(-70 * 86400), last_used: iso(120), last_ip: '192.0.2.40', expired: false },
 		{ id: '8b1e77aa', name: 'grafana', scope: 'read', created: iso(200 * 86400), expires: iso(110 * 86400), last_used: iso(111 * 86400), last_ip: '192.0.2.41', expired: true },
 		{ id: 'c0ffee12', name: 'backup script', scope: 'admin', created: iso(3 * 86400), expires: null, last_used: null, last_ip: '', expired: false }];
@@ -162,8 +160,6 @@ window.n5mock = (() => {
 		if (m === 'DELETE') { const id = p.split('/')[3], i = TOK.findIndex(t => t.id === id); if (i < 0) return fail('no such token', 404); TOK.splice(i, 1); return ok({ ok: true, revoked: id }); }
 		return fail('method not allowed', 405);
 	};
-	// schedules (DESIGN 6b): active = first window containing the local time, else the fallback; next = next window edge
-	// timezone like the daemon's zoneLabel: abbreviation + offset ("CEST +02:00"), so the Schedules clock can show the host's local time
 	const zoneLabel = () => { const d = new Date(), o = -d.getTimezoneOffset(), a = Math.abs(o), n = (Intl.DateTimeFormat('en-GB', { timeZoneName: 'short' }).formatToParts(d).find(p => p.type === 'timeZoneName') || {}).value || 'UTC';
 		return `${n} ${o < 0 ? '-' : '+'}${String(a / 60 | 0).padStart(2, '0')}:${String(a % 60).padStart(2, '0')}`; };
 	const DAYS =['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'], hm = s => { const [hh, mm] = s.split(':'); return +hh * 60 + +mm; };
@@ -175,7 +171,6 @@ window.n5mock = (() => {
 		const bad = !!Q.get('schedfail');
 		return { entries: cfg.schedule.map((e, i) => Object.assign({}, e, { fallback: !e.from, active: i === cur })), active: cur, next,
 			last: { ts: Math.floor(t0 - 3600), preset: bad ? 'night' : 'n5pro-balanced', ok: !bad, error: bad ? 'preset "night" not found' : '' }, timezone: zoneLabel() }; };
-	// system inventory (generic names, documentation MACs); disk temp_c live from the same hwmon disk:<dev> reads, null without one
 	const G = 1 << 30, sysMock = now => ({ host: { hostname: 'n5host', os: 'Debian GNU/Linux 13 (trixie)', kernel: '7.0.12-1-pve', uptime_s: 435723, load1: +(.6 + .3 * Math.sin(now / 300)).toFixed(2), load5: .7, load15: .66 },
 		machine: { vendor: 'Example Vendor', product: 'N5-class mini server', board: 'EXB-01', board_vendor: 'Example Boards Ltd', bios_version: '1.05', bios_date: '03/31/2026' },
 		cpu: { model: 'Example Ryzen-class 12-core APU w/ Radeon-class iGPU', sockets: 1, cores: 12, threads: 24, max_mhz: 5157 },
@@ -197,7 +192,7 @@ window.n5mock = (() => {
 			['/api/presets/{name}/apply', 'post', 'Apply a preset', 'control'], ['/api/schedules', 'get', 'Schedule status', 'read'], ['/api/tokens', 'get', 'List API tokens (session only)', '']]
 			.map(([path, m, summary, scope]) => [path, { [m]: { summary, 'x-scope': scope, responses: { 200: { description: 'OK' } } } }])) });
 	const GH = 'https://github.com/', PUB = /^\/api\/(version|about|session|login|logout|state|history|openapi\.json)$/;
-	return (path, opt) => {
+	const disp = (path, opt) => {
 		opt = opt || {};
 		const m = opt.method || 'GET', u = new URL(path, location.origin), p = u.pathname, now = Date.now() / 1000;
 		if (p === '/api/session') return ok({ authenticated: M.in, mode: M.auth, user: M.in ? M.user : undefined, remember: M.remember, via: M.in && M.auth === 'basic' ? 'cookie' : 'none' });
@@ -211,18 +206,15 @@ window.n5mock = (() => {
 			credits: [['SirRenix/minisforum-n5pro-fan-proxmox', 'DKMS package of the kernel driver with downstream patches and the test kit'], ['ltdstudio/minisforum-n5-it5571', 'upstream kernel driver the package is based on'], ['Sl0thC0der/proxfansx', 'dashboard idea; nct67xx/it87xx profiles']].map(([name, note]) => ({ name, url: GH + name, note })) });
 		if (p === '/api/openapi.json') return ok(openapi());
 		if (M.in && M.exp && now - t0 > 15 && p === '/api/state') { M.in = M.exp = false; return fail('unauthorized', 401); } // &expire=1: session dies once after 15 s
-		if (Q.get('down') === '1' && now - t0 > 2 && /^\/api\/(state|history|sensors)$/.test(p)) return fail('network: mock down', 0); // &down=1: after the boot the poll path fails like a lost daemon (status 0 = no answer) → connection banner
+		if (Q.get('down') === '1' && now - t0 > 2 && /^\/api\/(state|history|sensors)$/.test(p)) return fail('network: mock down', 0); // &down=1: the poll fails like a lost daemon
 		if (p === '/api/state') { const pt = point(now), stall = (now | 0) % 40 < 3, hold = (now | 0) % 300 < 90; if (PN && now >= PN) { PN = 0; ev('panic-end', undefined, 'full cooling ended (10 min passed)', 1); }
 			const body = { ts: pt.ts, status: 'ok', profile: 'n5pro', verified: false, hw_status: 'experimental', dry_run: false, uptime_s: 435723,
-				// like the daemon: an override replaces the target and the mode, stall and critical win on top; &lag=1 reports the previous
-				// override state for two more polls (the daemon's snapshot follows a PUT/DELETE only with the next cycle)
+				// override and lag (&lag=1: the old override for two polls)
 				channels: cfg.channel.map(c => { const n = c.name, st = n === 'hdd' && stall, lg = ovLag[n], ov = lg && lg.left-- > 0 ? lg.ov : overrides[n]; if (lg && lg.left <= 0) delete ovLag[n];
-					const cd = Math.round(interp(c.curve, pt.temp[n])), duty = ov === undefined ? cd : ov; // curve duty while the lagged state says auto; rpm follows the (lagged) duty, as on the daemon
+					const cd = Math.round(interp(c.curve, pt.temp[n])), duty = ov === undefined ? cd : ov;
 					const ch = { name: n, pwm: c.pwm, sensor: c.sensor, temp: pt.temp[n], duty, target: ov === undefined ? n === 'cpu' ? cd + 22 : cd : ov, rpm: st ? 0 : rpmOf(n, duty),
 					mode: st ? 'stall' : ov !== undefined ? 'manual' : 'auto', override: ov === undefined ? null : ov, ceiling: CEIL[n] || 100, ceiling_hit: false };
-					// the ceiling (0.4.1) wins over everything: 255, mode critical, ceiling_hit (&ceiling=1 puts the hdd reading above its 65)
 					if (ceilHit && n === 'hdd') Object.assign(ch, { temp: 66.5, duty: 255, target: 255, rpm: rpmOf(n, 255), mode: 'critical', ceiling_hit: true });
-					// hysteresis: the held reading lags the raw one; min_on: a running hold now and then
 					if (c.hysteresis) { const held = Math.round(pt.temp[n]) - 1; if (Math.abs(held - pt.temp[n]) >= .1) ch.held_temp = held; }
 					if (c.min_on !== '0s' && hold && n === 'hdd') ch.hold_until = Math.floor(now - (now | 0) % 300 + 90);
 					assistOf(ch, now); if (PN && !st && ch.mode !== 'critical') Object.assign(ch, { duty: 255, target: 255, rpm: rpmOf(n, 255), mode: 'panic' });
@@ -237,7 +229,7 @@ window.n5mock = (() => {
 		if (p === '/api/config' && m === 'GET') return ok({ config: cfg, raw: raw() });
 		if (p === '/api/config' && m === 'PUT') { const chs = parseChannels(opt.body || ''), errs = check(chs);
 			if (u.searchParams.get('strict') === '1' && errs.length) return fail('config rejected', 400, { errors: errs });
-			// &restart=1: 202 although the channel set is unchanged (the daemon answers so for a profile change too); a changed channel set is written but not applied
+			// &restart=1: 202 although the channel set is unchanged
 			const restart = Q.get('restart') === '1' || chs.length !== cfg.channel.length; if (chs.length === cfg.channel.length) cfg.channel = chs; cfg.schedule = parseSchedules(opt.body || ''); if (!restart) ev('reload', undefined, 'config reloaded');
 			return wait({ status: restart ? 202 : 200, body: { ok: true, restart_required: restart, warnings: errs } }); }
 		if (p === '/api/sensors') return ok(Object.entries(SENS).map(([id, [d, , , kind]]) => Object.assign({ id, description: `${d} (now ${sv(id, now)} °C)`, temp: sv(id, now) }, kind ? { kind } : {})).concat(PAT));
@@ -245,15 +237,22 @@ window.n5mock = (() => {
 				dash = ids; return ok({ ok: true, sensors: dash, warnings: ids.filter(i => !SENS[i]).map(i => i + ': unresolved') }); }
 			return ok({ sensors: dash }); }
 		if (p.startsWith('/api/override/')) { const n = p.split('/')[3];
-			const lag = () => { if (Q.get('lag') === '1') ovLag[n] = { ov: overrides[n], left: 2 }; }; // &lag=1: the state answers keep the old mode for two polls
+			const lag = () => { if (Q.get('lag') === '1') ovLag[n] = { ov: overrides[n], left: 2 }; };
 			if (m === 'DELETE') { lag(); if (n in overrides) ev('override-end', n, n + ' back to the curve'); delete overrides[n]; return ok({ ok: true, channel: n, mode: 'auto' }); }
 			if ((n === 'hdd' || cfg.channel.some(c => c.name === n && c.stop !== 'auto')) && opt.json.duty < 60) return fail(`channel ${n} (fixed stop duty / not chip-regulated): manual duty must be at least 60`, 400);
 			lag(); overrides[n] = opt.json.duty; ev('override', n, `${n} manual ${opt.json.duty}`); return ok({ ok: true, channel: n, duty: opt.json.duty, mode: 'manual' }); }
-		if (p.startsWith('/api/assist/')) { const n = p.split('/')[3], a = cfg.assist.find(x => x.channel === n); // PUT {enabled}: only that line of the table changes
+		if (p.startsWith('/api/config/versions')) { const id = +p.split('/')[4], v = V.find(x => x.id === id), cur = vtx(), meta = x => ({ id: x.id, ts: x.ts, by: x.by, reason: x.reason, sections: vsec(x.raw, (V[V.indexOf(x) + 1] || { raw: cur }).raw) });
+			if (!id) return ok(V.map(meta).reverse());
+			if (!v) return fail(`no version ${id}`, 404);
+			if (m === 'POST') { const r0 = vtx(), c0 = JSON.stringify(cfg), h0 = M.pw, j = opt.json || {}; if (j.if_current && j.if_current !== vh(r0 + h0)) return fail('the config changed meanwhile', 409);
+				Object.assign(cfg, JSON.parse(v.c)); M.pw = v.h; const n = vadd(r0, c0, h0, 'restore ' + id); ev('restore', '', `config restored to version ${id}`);
+				return ok({ ok: true, restored: id, version: n, config_sha256: vh(vtx() + M.pw), restart_required: false, restart_keys: [], warnings: [] }); }
+			const vr = v.h === M.pw ? v.raw : v.raw.replace('<redacted>', '<redacted, changed>'), d = vdiff(cur, vr), n = o => d.filter(x => x.op === o).length;
+			return ok(Object.assign(meta(v), { raw: vr, diff: d, changes: vsec(cur, vr), removed: n('-'), added: n('+'), password_changed: v.h !== M.pw, config_sha256: vh(cur + M.pw) })); }
+		if (p.startsWith('/api/assist/')) { const n = p.split('/')[3], a = cfg.assist.find(x => x.channel === n);
 			if (!a) return fail(`channel "${n}" has no valid [[assist]] table`, 404);
 			if (typeof (opt.json || {}).enabled !== 'boolean') return fail('"enabled" (true or false) required', 400);
 			a.enabled = opt.json.enabled; ev('assist', n, `assist ${n} ${a.enabled ? 'on' : 'off'}`); return ok({ ok: true, channel: n, enabled: a.enabled }); }
-		// POST /api/preview: the mock's history through the draft curves (no hysteresis/min_on here), assist from the GPU source
 		if (p === '/api/preview') { const j = opt.json || {}, sp = j.span === '7d' ? '7d' : '24h', min = sp === '7d' ? 10080 : 1440, pre = j.preset && presets[j.preset];
 			if (j.preset && !pre) return fail('unknown preset ' + j.preset, 404);
 			const res = { span: sp, step: sp === '7d' ? 300 : 60, order: cfg.channel.map(c => c.name), channels: {},
@@ -269,7 +268,7 @@ window.n5mock = (() => {
 			return wait({ status: 200, body: res }); }
 		if (p === '/api/presets') return ok(Object.entries(presets).map(([name, v]) => ({ name, channels: v.ch.map(c => c.name), builtin: !!v.builtin, description: v.description })));
 		if (p.startsWith('/api/presets/')) { const n = p.split('/')[3], b = presets[n] && presets[n].builtin, sub = p.split('/')[4];
-			if (m === 'PUT') { if (b) return fail('built-in preset', 409); const chs = opt.json && opt.json.channels; // a JSON body = the composed channels (preset editor), validated like the config; empty = the running tables
+			if (m === 'PUT') { if (b) return fail('built-in preset', 409); const chs = opt.json && opt.json.channels; // JSON body = composed channels, else the running tables
 				if (chs) { const errs = check(chs.map(c => Object.assign({ stop: 'auto', hysteresis: 0, min_on: '0s' }, c))); if (errs.length) return fail('preset rejected', 400, { errors: errs });
 					if (chs.map(c => c.name).sort().join() !== cfg.channel.map(c => c.name).sort().join()) return fail('preset rejected', 400, { errors: ['channel: names do not match the running config'] }); }
 				presets[n] = { ch: (chs || cfg.channel).map(c => Object.assign({}, c)) }; return ok({ ok: true, saved: n }); }
@@ -315,10 +314,14 @@ window.n5mock = (() => {
 		if (p.startsWith('/api/account/')) { const j = opt.json || {}; if (M.auth === 'none') return fail('auth is none', 409);
 			if (p.endsWith('/sessions/revoke')) return ok({ ok: true, revoked: j.others ? 1 : 0 });
 			if (j.current_password !== 'admin') return fail('current password wrong', 403);
-			if (p.endsWith('/password')) return ok({ ok: true });
+			if (p.endsWith('/password')) { M.pw++; return ok({ ok: true }); }
 			if (p.endsWith('/user')) { if (!/^[A-Za-z0-9_.-]{1,32}$/.test(j.user || '')) return fail('user: invalid', 400); M.user = j.user; return ok({ ok: true, user: M.user }); } }
 		if (p.startsWith('/api/tls')) return mockTLS(p, opt);
 		if (p === '/api/system') return ok(sysMock(now));
 		return fail('mock: not found ' + p, 404);
 	};
+	return (path, opt) => { opt = opt || {}; const p = new URL(path, location.origin).pathname, why = (opt.method || 'GET') === 'GET' ? '' : p === '/api/config' ? 'editor' : /\/apply$/.test(p) ? 'preset ' + p.split('/')[3]
+		: p.startsWith('/api/assist/') ? `assist ${p.split('/')[3]} ${opt.json && opt.json.enabled ? 'on' : 'off'}` : p === '/api/config/import' ? 'import' : /^\/api\/account\/(password|user)$/.test(p) ? 'account' : '';
+		const r0 = why && vtx(), c0 = why && JSON.stringify(cfg), h0 = M.pw;
+		return disp(path, opt).then(r => { if (why) Object.assign(r.body || {}, { version: vtx() !== r0 || M.pw !== h0 ? vadd(r0, c0, h0, why) : 0, config_sha256: vh(vtx() + M.pw) }); return r; }); };
 })();

@@ -39,7 +39,8 @@ RuntimeDirectoryPreserve=yes
 LogsDirectory=n5-fangov
 LogsDirectoryMode=0750
 # /var/lib/n5-fangov: sessions.json (dashboard "remember me" cookies) and
-# alerts.json (recent alert history); root only, the session tokens are secrets
+# alerts.json (recent alert history), config-versions/ (the last 10 config.toml texts,
+# password_hash included); root only, the session tokens are secrets
 StateDirectory=n5-fangov
 StateDirectoryMode=0700
 UMask=0077

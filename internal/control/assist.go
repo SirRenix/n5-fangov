@@ -26,8 +26,8 @@ import (
 // per episode, no alert). Switching assist off ends a running boost at
 // once; the slew (step_down) ramps the duty down.
 
-// ErrNoAssist is returned by SetAssistEnabled for a channel without an
-// [[assist]] table in the running config.
+// ErrNoAssist is returned by ApplyAssists when the switched channel's
+// [[assist]] table does not fit the running channels.
 var ErrNoAssist = errors.New("no [[assist]] table for this channel")
 
 // assistSrc is the runtime state of one [[assist.source]]: its reader (nil
@@ -365,7 +365,7 @@ func (ch *channel) assistState() *AssistState {
 	st := &AssistState{Enabled: a.cfg.Enabled, Sources: make([]AssistSourceState, 0, len(a.srcs))}
 	st.Boost, st.Source = ch.assistBoost()
 	for _, s := range a.srcs {
-		ss := AssistSourceState{Sensor: s.cfg.Sensor, Temp: -999, Boost: s.boost}
+		ss := AssistSourceState{Sensor: s.cfg.Sensor, Temp: -999, Boost: s.boost, Start: s.cfg.Start, Full: s.cfg.Full}
 		if s.ok {
 			ss.Temp = float64(s.temp) / 1000
 		}
@@ -385,24 +385,40 @@ func AssistLabel(id string) string {
 	return id
 }
 
-// SetAssistEnabled switches the [[assist]] table of a channel on or off
-// in the running config (PUT /api/assist/{channel}; the caller writes the
-// file). The change goes through the pending config and takes effect on
-// the next cycle; ErrNoAssist when the running config has no table for
-// the channel.
-func (c *Controller) SetAssistEnabled(name string, on bool) error {
+// ApplyAssists replaces the [[assist]] tables of the running config with
+// tables (PUT /api/assist/{channel}: the store writes the switch into the
+// file and hands over the file's tables, so a table added, changed or
+// removed by hand takes effect with it, BACKLOG #63). Only the tables
+// change; the rest of the running or pending config stays. The tables are
+// checked against the running channel set the way the parser checks them
+// (a round trip); a table that does not fit is left out with a log line.
+// The swap happens on the next cycle (bindAssists: an unchanged table keeps
+// its readers and hold, a removed one is dropped). When want is set and
+// its table does not fit, nothing is applied: ErrNoAssist, the running
+// tables and holds stay as they are.
+func (c *Controller) ApplyAssists(tables []config.Assist, want string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	base := &c.cfg
 	if c.pending != nil {
 		base = c.pending
 	}
-	if base.Assist(name) == nil {
-		return fmt.Errorf("channel %q: %w", name, ErrNoAssist)
-	}
 	clone := base.Clone()
-	clone.Assist(name).Enabled = on
+	clone.Assists = config.CloneAssists(tables)
+	back, warns, err := config.Parse(config.Marshal(clone))
+	if err != nil {
+		return fmt.Errorf("assist tables: %w", err)
+	}
+	if want != "" && back.Assist(want) == nil {
+		return fmt.Errorf("channel %q: %w (the table does not fit the running channels; nothing applied, restart the daemon)", want, ErrNoAssist)
+	}
+	for _, w := range warns {
+		if strings.HasPrefix(w.Field, "assist") {
+			c.log.Printf("assist: %s (against the running channels; table left out)", w)
+		}
+	}
+	clone.Assists = config.CloneAssists(back.Assists)
 	c.pending = &clone
-	c.log.Printf("assist %s: switched %s (applied on next cycle)", name, onOff(on))
+	c.log.Printf("assist: %d table(s) taken from the config file (applied on next cycle)", len(clone.Assists))
 	return nil
 }

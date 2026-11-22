@@ -183,7 +183,7 @@ func (b fileBundle) Import(data []byte) (restartRequired bool, warnings []string
 	if b.pin != nil {
 		raw = string(b.pin([]byte(raw)))
 	}
-	if err := saveConfig(b.cfgPath, []byte(raw)); err != nil {
+	if err := saveConfigWhy(b.cfgPath, []byte(raw), "import"); err != nil {
 		unstage()
 		return false, warnings, fmt.Errorf("config: %w", err)
 	}

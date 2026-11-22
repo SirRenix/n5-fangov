@@ -516,7 +516,7 @@ and `min_on` stays the base:
   unreadable or implausible adds 0: one log line when the episode starts and one when it
   ends, **no alert**; an unresolved one is retried every cycle, a read error re-resolves.
 - `bindAssists` attaches the tables to the managed channels at `New` and in
-  `applyPendingLocked` (reload, `SetAssistEnabled`): a source with an unchanged id keeps
+  `applyPendingLocked` (reload, `ApplyAssists`): a source with an unchanged id keeps
   its reader and held reading; switching off idles at once (the slew takes the duty down
   by `step_down`); a changed `min_on` re-times a running hold like `retimeHolds`; a hold
   whose source was removed or whose source's `boost` is now below the held value is
@@ -524,9 +524,15 @@ and `min_on` stays the base:
   re-resolved with the channel sensors every 60 cycles (`reresolve`), also while they
   read fine (a composite resolved before all its devices appeared). A table
   for a channel the device does not manage is logged once and ignored.
-  `SetAssistEnabled(name, on)` clones the running (or pending) config with that flag
-  and hands it to the pending swap — the next cycle takes it; `ErrNoAssist` without a
-  table.
+  `ApplyAssists(tables, want)` (the assist switch; 0.7.0-rc2, BACKLOG #63 — rc1's
+  `SetAssistEnabled` flipped the running flag only and failed for a table added by hand)
+  replaces only the `[[assist]]` tables of the running (or pending) config with the
+  file's: a table added, changed or removed by hand takes effect with the switch, no
+  restart (the daemon has no file watcher). The tables pass a `Marshal`/`Parse` round
+  trip against the running channel set; another channel's table that does not fit is left
+  out with a log line; when the switched channel's does not fit, nothing is applied
+  (`ErrNoAssist`, the running tables and holds stay). The snapshot carries each source's
+  `start`/`full` (config, read-only) beside `temp` and `boost`.
 - Status line: `hdd=40.0C->pwm3=150(auto +45 amdgpu)` while a boost is added (the
   source's short label: the chip name of `hwmon:<name>:tempN`, else the id).
   `ChannelState.Assist` = `{enabled, boost, source, sources[{sensor, temp, boost}]}`
@@ -774,6 +780,7 @@ dashboard reloads the whole span every tenth load. Kinds and sources:
 | `start` | — | `Run`, before the first cycle | `started 0.7.0` |
 | `panic` / `panic-end`, `panic-extend` | global span, point | `Panic` (by the caller; a start within 5 s of the last is none), `PanicStop`, `panicCycle` on expiry (`daemon`); a start during a running one is `panic-extend` | `full cooling until 14:32 (admin)` |
 | `reload` | — | web `putConfig` and `importConfig` on success without restart (a preset apply is `preset` only) | `config reloaded (admin)` |
+| `restore` | — | web `restoreConfigVersion` on success (also with restart required) | `config restored to version 7 (admin)` |
 
 `by` is `user:<name>`, `token:<name>` or `cli` (the web `ackSource` of the caller),
 `schedule` or `daemon`. Texts name kind, channel, values and the user or token name —
@@ -800,6 +807,98 @@ a missing file is `found = false`; for the read-only CLI), `Changed()`,
 `Write()` (0600 temp + rename, failure logged once). The owner keeps its records, mutex
 and merge rule.
 
+### 6d. Config versions (internal/cfgver, cmd wiring_versions.go)
+
+Operator decision 0.7.0 point 4 (Ideenliste 4.1 + 6.10): the last **10** texts of
+`config.toml`, a diff against the current file and a restore — a local undo, not a
+backup.
+
+- **What:** the whole text of `config.toml` (comments included). Presets are not
+  versioned (they are created and deleted, never overwritten). A version's `by` and
+  `reason` name the write that **replaced** it.
+- **When:** every write of the daemon goes through `saveVersioned` under
+  `configFileMu` (editor `PUT /api/config`, preset apply, assist switch, account, alert
+  transport, dashboard sensors, certificate manager — its `writeMode` too since rc2 —,
+  import, restore). Before it writes it hands the text on disk to
+  `Store.Before(path, by, reason, quiet)`, which returns the id it stored (0: none); a
+  write that leaves the text as it is stores nothing, a text equal to the newest
+  version neither (then `Before` returns that newest id: restoring it undoes the write
+  all the same). `Store.Wrote` keeps a copy of what was written
+  (`config-versions/current.toml`). The scheduler's preset switch is quiet
+  (`saveConfigQuiet`, `by` = `schedule`): no version (it recurs daily and would fill the
+  ring), unless it is about to overwrite a hand edit.
+- **Hand edits:** a file that differs from `current.toml` was edited by hand. At start
+  (`Store.Start`) and before the next write the daemon's last text is stored with the
+  reason `external edit` (`by` empty: it was replaced by a hand edit); before a write
+  the hand-edited text follows, named after that write (`by`, `reason`; also after a
+  quiet one). Both can thus be restored. Known false positives (documented, not
+  fixed): when `current.toml` could not be written (state dir full or read-only) the
+  next write finds the file "changed" and stores an `external edit` of a text the daemon
+  wrote itself; a CLI that writes the file outside the daemon while it runs (`import`,
+  `passwd`, `setup`) appears as `external edit` too — correct as to who wrote it, but no
+  caller and no reason.
+- **Who:** a request's handler wraps only its store call (not the body read) in
+  `Deps.ConfigActor(by)` (`asCaller`; the legacy-hash upgrade at login as the daemon):
+  cmd's `withActor` takes `actorMu` for that call (released deferred, also when the
+  store call panics; PBKDF2 of the login upgrade runs before it; the certificate manager's
+  `Regenerate` writes no config and runs outside) and publishes the caller
+  (`user:<name>`, `token:<name>`, `cli`); the call reports back the version it stored
+  and the hash of the text it wrote. Lock order `actorMu` → the certificate manager's
+  `mu` → `configFileMu` → store mutexes and the manager's `pinMu` (`pinConfig` takes
+  only `pinMu`, so `writeMode` may take `configFileMu`; `writeMode` sets the pin fields
+  before it releases `configFileMu`, so a waiting writer pins the new mode). Writes outside a request name
+  their author themselves (the scheduler `schedule`, the certificate manager at start
+  none) and never read the actor.
+- **Undo:** `PUT /api/config`, preset apply and the assist switch answer `version`
+  (the id the write stored, 0: none) and `config_sha256` (the text written). The
+  dashboard's Undo restores exactly that version with `if_current` = that hash; a file
+  that changed meanwhile (another user, the scheduler) is 409 and nothing is undone.
+- **Storage:** `<state dir>/config-versions/NNNN.toml`, `index.json` (ids rising,
+  newest last) and `current.toml`; files 0600, directory 0700, written atomically. The
+  11th version drops the oldest from the index; its file is removed only after the
+  index is saved. An `index.json` that does not parse is moved aside
+  (`index.json.corrupt-<unix>`, logged) and a fresh index continues after the highest
+  file. Never in the settings bundle; removed with the state directory (uninstall,
+  purge). Without a state dir there are no versions (501).
+- **Failures** never block the config write: one log line per cause (operation and
+  OS error, without the temp file names), the write goes on.
+- **Restore** (`fileVersions.Restore(id, ifCurrent)`): refused with `ErrChanged` (409)
+  when `if_current` no longer matches; validated like an import (a text that does not
+  parse, or that carries the password placeholder `<unchanged>`, is refused, 400,
+  nothing written), the tls keys pinned, written with reason `restore <id>` (the text
+  before becomes a version, its id is the answer's `version` — 0 when none was stored),
+  then the reload hook; `ErrRestartRequired` → 202. Keys that take effect at the next
+  start only are written and reported (`restart_keys`: `web.listen`, `web.auth`,
+  `web.user`, `web.password_hash`, `web.allowed_hosts`, `web.behind_tls_proxy`,
+  `log.*`, `daemon.profile`; the tls keys are pinned). The running web credentials are
+  not swapped by a restore: a restored password applies after a restart. The detail
+  (`Impact`) lists the restart keys and warnings ahead of a restore: sign-in switched
+  off, the listener leaving loopback, another user; the dashboard and `n5-fangov config
+  restore` (y/N unless `--yes`; refused without `--yes` when standard input is not a
+  terminal) show them with the password note. Both send the detail's `config_sha256` as
+  `if_current`: a file changed after the summary was shown is 409, nothing restored. During full cooling a
+  restore is accepted and applies after it like any change. Event `restore` (Operation
+  group) with the version number.
+- **Secret:** `password_hash` never leaves through the API or the CLI: version and
+  current text are redacted (`"<redacted>"`; `"<redacted, changed>"` in a version whose
+  hash differs from the current one, plus `password_changed`); every hash of the
+  current file and of all stored versions is removed as a substring, anything shaped
+  like a hash (`pbkdf2$…`, 64 hex) too, and a line naming `password_hash` that is not a
+  plain assignment is blanked — so a version that does not parse (inline table,
+  multi-line string) leaks nothing. Error texts likewise (`redactErr`). The diff runs on
+  the redacted texts.
+- **Diff:** `cfgver.Diff` cuts the common head and tail, then a plain LCS line diff
+  (no library) on one flat int32 table; an empty side needs none, a middle whose
+  (n+1)×(m+1) table is larger than `MaxCells` (4 Mi cells — a 256 KiB file can have
+  130 000 lines) counts as replaced (all `-`, then all `+`), so a large config cannot
+  exhaust the daemon's memory. `cfgver.Sections` names the sections whose non-comment
+  lines differ (`[alert]`, `[[channel]] hdd`, `[[assist]] hdd` with its sources,
+  `[[schedule]] quiet`). The list shows for each version the sections the next state
+  (the next version or the current file) changed; the detail the diff current → version
+  (what a restore changes), its `changes`, `restart_keys` and `warnings`.
+- **CLI:** `config versions | diff ID | restore ID [--yes]` over the socket; without the
+  daemon `versions` and `diff` read the directory and the config file, `restore` is
+  refused.
 ## 7. Alerts (internal/alert)
 
 ```go
@@ -990,7 +1089,7 @@ summaries, responses, scope values.
 `AllowedHosts`, `TLS`, `TLSMgr`, `TLSHosts`, `Logf`, `SessionFile`, `TokenFile`,
 `Account`, `Alerts`, `Dashboard`, `Assist` (`AssistStore`: `SetEnabled(channel, on)`; cmd
 `assistStore` writes the line with `config.SetAssistEnabled` under the config file lock,
-then `Controller.SetAssistEnabled`), `Schedules` (`ScheduleStatus func() any`; nil → 501),
+then hands the file's tables to `Controller.ApplyAssists`), `Schedules` (`ScheduleStatus func() any`; nil → 501),
 `About`, `System func() any`, `Channels func() []string` (history CSV column order; nil →
 the snapshot's channel order), `Driver func() any` and `Health func() any` (cmd
 `healthView`, `wiring_health.go`; nil → 501), `HealthGrace` (the `/healthz` grace, cmd: 3 ×
@@ -1041,7 +1140,10 @@ counts as signed in, `via: "none"`):
 | `GET /api/sensors` | protected | — | `[{id, description, temp?, kind?}]` (catalogue with live readings; `kind` `ssd`/`hdd` for `disk:*`, section 5) |
 | `GET /api/dashboard` / `PUT /api/dashboard` | protected | `{sensors[]}` | `{sensors}` / `{ok, sensors, warnings[]}`; 400 above 8 or unparsable id |
 | `POST /api/preview` | protected, `read` | optional JSON `{channels[], preset, assist{}, span: 24h\|7d}` ≤ 256 KiB; channels validated like the preset body (pwm/stop default to the running channel), not with `preset` | 200 `{span, step, note, order[], channels{<name>: {series[{ts, actual, preview, boost}], summary{actual, preview}, error?, measured?}}}` (section 6 "Preview"); 400 invalid body, curve rules, unknown channel, assist without a table, bad span; 404 unknown preset; 429 another preview runs; 501 no previewer. Writes nothing |
-| `PUT /api/assist/{name}` | protected, `control` | `{enabled: bool}` ≤ 4 KiB (unknown members 400) | writes only the `enabled` line of the channel's `[[assist]]` table (section 3), then `Controller.SetAssistEnabled` (next cycle): 200 `{ok, channel, enabled}`; 404 no valid table in the file; 500 not written, or written but the running daemon has no such table (`ReloadError`); 501 no store |
+| `PUT /api/assist/{name}` | protected, `control` | `{enabled: bool}` ≤ 4 KiB (unknown members 400) | writes only the `enabled` line of the channel's `[[assist]]` table (section 3), then the file's `[[assist]]` tables to `Controller.ApplyAssists` (next cycle; a table added by hand included): 200 `{ok, channel, enabled}`; 404 no valid table in the file; 500 not written, or written but the table does not fit the running channels (`ReloadError`; nothing applied, restart); 501 no store |
+| `GET /api/config/versions` | protected, `admin` | — | `[{id, ts, by, reason, sections[]}]` newest first (section 6d); 501 without versions |
+| `GET /api/config/versions/{id}` | protected, `admin` | — | `{id, ts, by, reason, sections[], raw, diff[{op, line}], changes[], removed, added, password_changed, restart_keys[], warnings[]}` (redacted; diff current → version); 404 unknown |
+| `POST /api/config/versions/{id}/restore` | protected, `admin`, CSRF | optional `{if_current}` | 200/202 `{ok, restored, version, config_sha256, restart_required, restart_keys[], warnings[]}`; 400 does not parse or placeholder (nothing written); 404; 409 `if_current` stale; 500 not written / not reloaded (`ReloadError`) |
 | `GET /api/profiles` | protected | — | `[{name, title, verified, hw_status, notes, active}]` (`hw_status` of this machine per profile, `verified` = validated or tested) |
 | `GET /api/log?lines=N` | protected | 1..5000 | `{lines[], source: file\|journal}` |
 | `GET /api/log/export` | protected | — | text attachment `n5-fangov-<host>-<ts>.log` (current file; journal: newest 100000 lines) |
@@ -1118,8 +1220,8 @@ first and collects locally otherwise.
 
 ## 11. Dashboard (internal/web/static)
 
-No framework, no build step; `app.js` ≤ **152 KiB**, `mock.js` ≤ **48 KiB**, `app.css` ≤
-**48 KiB** (test `web_test.go`; `index.html` carries the SVG sprite and has no budget),
+No framework, no build step; `app.js` ≤ **152 KiB**, `pv.js` and `cv.js` ≤ **24 KiB** each, `mock.js` ≤ **48 KiB**,
+`app.css` ≤ **48 KiB** (test `web_test.go`; `index.html` carries the SVG sprite and has no budget),
 CSP `script-src 'self'`, no `innerHTML`, no inline handlers. Colours, spacing, radii and
 type scale are tokens in one `:root` block (dark; light overrides under
 `[data-theme="light"]` and `system`) and a JS constant block (`UI`) after `cssVar`; the
@@ -1272,15 +1374,26 @@ Every channel of the mock state carries `ceiling` (cpu 100, ssd 85, hdd 65) and
   during the call, never disabled. Below it, only for a channel whose snapshot carries
   `assist` (0.7.0, operator decision: switch and values only, no editor): a second
   `role="switch"` *Assist* (`PUT /api/assist/{name}`, the same two-interval pending
-  window, `lv.asOn`/`lv.asUntil`) and one line — `+45 from amdgpu (58.7 °C)`, `0 (sources
-  below start)`, `0 (a source is unreadable)`, `0 (<mode> wins)`, `off`. The tile shows
+  window, `lv.asOn`/`lv.asUntil`), the sentence *Raises this fan when other parts get hot
+  (amdgpu, nvme:max).* and the value line (0.7.0-rc2) — `now +45 — amdgpu 59.0 °C (full at 58 °C)`
+  under a boost (its source), else every source with its threshold: `now +0 — amdgpu
+  45.0 °C (starts at 50 °C), nvme:max 43.0 °C (starts at 46 °C)` (thresholds in the display unit), `now +0 (<mode> wins) — …`,
+  `off — …`, `unreadable` for a source without a reading; below it *Compare without
+  assist* / *Compare with assist* (follows the switch) and *What is this?* (the docs of
+  the `repo` from `/api/about`, `06-configuration.md#assist`). The tile shows
   `+N` (`.asb`) after the duty while `assist.boost > 0`. **Preview** (0.7.0, section 6
-  "Preview"): one panel at a time (`<template id="t-pv">`, `PV`), opened under a card by
-  *Preview 24 h* (card header, while the channel is dirty; recomputed 1 s after an edit),
-  the chart icon of a preset chip (all channels) or *Preview* beside the Assist switch
-  (the switch inverted, read live at request time); *24 h / 7 d*; per channel a chart
-  (recorded `--fg3`, preview in the series colour, assist share `--man`), the summary,
-  the channel's `notes[]` and `measured`, and the answer's `note`. One request in
+  "Preview"; the module `pv.js`, loaded on the first open, see 11a): one panel at a time
+  (`<template id="t-pv">`, `PV`), opened under a card by *Preview 24 h* (card header, while
+  the channel is dirty; recomputed 1 s after an edit), the chart icon of a preset chip (all
+  channels) or *Compare without/with assist* (the switch inverted, read live at request
+  time); *24 h / 7 d*. The header names the comparison: *Preview hdd: recorded vs. assist
+  off*, *… vs. preset "quiet"*, *… vs. unsaved curve*. Per channel a legend that names
+  what is drawn (*recorded* `--fg3`, *with the change* in the series colour, *assist boost
+  (duty points)* `--man` only when the change carries a boost), a chart of lines only
+  (`chart()` option `lines`: no area fill, which read as a share), a table *recorded /
+  with the change* with the rows mean duty, P95 / max, ≥ 200, assist active, then the
+  channel's `notes[]` and `measured`, and the answer's `note`; *What is this?* links
+  `04-dashboard.md#preview`. One request in
   flight (`PV.busy`): a change meanwhile is queued and sent when it returns, an answer
   whose body (draft + span) is no longer the latest is dropped, the chart axis is the
   span the answer was asked for; a channel error or a failed request greys the chart
@@ -1412,7 +1525,9 @@ Every channel of the mock state carries `ceiling` (cpu 100, ssd 85, hdd 65) and
   template card hidden without `pve_available`, *Install / Update template* disabled
   with reason; Test card with *Send test alert* and a link to the Alerts page), *Backup*
   (Export/Import bundle — fetch + blob so the credential and the CSP stay; import
-  confirm, 1 MiB cap, 202 → `#g-notice`), *Danger zone* (*Clear log*, *Regenerate with
+  confirm, 1 MiB cap, 202 → `#g-notice`), *Config versions* (0.7.0, `cv.js` on *Show versions*:
+  the list, *Diff* under its row — red goes, green comes, redacted —, *Restore* with a
+  confirm naming lines, sections and a password change; section 6d), *Danger zone* (*Clear log*, *Regenerate with
   new key* (confirm), *Back to auto* (confirm); the certificate buttons enabled only
   where they apply). Entering the page re-reads account, sessions, tokens, certificate
   and the alert status. Display values persist in `localStorage` key `n5-fangov` as one
@@ -1501,9 +1616,21 @@ optional body of `PUT /api/presets/{name}`, section 9).
 - **Budgets:** `app.js` ≤ 152 KiB (raised from 128 KiB during 0.4.0 for the badge
   lists, the active set, *Save as preset…* and the toggle pattern, and from 136 KiB for
   0.7.0 for assist, preview, event marks, panic button and config versions — decided
-  raises, noted in the CHANGELOG, not silent ones; the next growth splits `app.js` into
-  modules loaded on demand instead of a further raise), `mock.js` ≤ 48 KiB, `app.css` ≤ 48 KiB
-  (`web_test.go`); `index.html` has none. Do not raise a limit to make a change fit.
+  raises, noted in the CHANGELOG, not silent ones), `pv.js` and `cv.js` ≤ 24 KiB each, `mock.js` ≤ 48 KiB,
+  `app.css` ≤ 48 KiB (`web_test.go`); `index.html` has none. Do not raise a limit to make a
+  change fit.
+- **Modules on demand (0.7.0-rc2, operator decision):** growth beyond the `app.js` budget
+  is split off, not budgeted in. A part that only a rare action needs is its own file,
+  inserted by `app.js` on first use as `<script src>` (same origin, CSP `script-src
+  'self'`, no inline script; `js(src)`, the same path as `mock.js`), then called directly.
+  The module is one global factory (`window.n5pv(X)`) that receives what it needs from
+  `app.js` (`h`, `api`, `chart`, …) and returns its entry points; `app.js` keeps a stub
+  whose calls do nothing before the load. A failed load shows an error in place of the
+  panel, the next use retries. Each module is embedded and allow-listed in `web.go` like
+  `app.js` (same headers) and has its own budget in `web_test.go`; `index.html` never
+  references it. Present: `pv.js` (the curve preview, ≤ 24 KiB) and `cv.js` (the config
+  versions card and the Undo toast, ≤ 24 KiB; `app.js` keeps `vsTop` — the newest version id
+  read before a write — and `undo`). Next candidates: the rare dialogs.
 - **Icons:** one inline SVG sprite at the top of `index.html` (`<svg hidden><symbol
   id="i-…">`), used as `<svg class="ic" aria-hidden="true"><use href="#i-gear"/></svg>`
   or `ico('gear')` in `app.js`; 16 px, `currentColor`, `stroke-width 1.75`. Present:
@@ -1674,7 +1801,7 @@ the PCI directories and symlinks the sysinfo tests need are created in a temp co
 Windows checkout cannot hold them). Controller tests use a fake `Device`
 (`fakes_test.go`); the safety rules are pinned in `safety_test.go`. `TestServeSmoke`
 starts the real `cmdServe` (dry-run, fake sysfs, TCP + socket, override, SIGTERM).
-Frontend: `web_test.go` checks the JS budgets (`app.js`, `mock.js`), that `index.html`
+Frontend: `web_test.go` checks the JS budgets (`app.js`, `pv.js`, `cv.js`, `mock.js`), that `index.html`
 does not reference `mock.js`, the page/handler list (`TestNavHasPages`), the CSP and the contrast of the
 primary buttons; the mock (`?mock=1`) is the manual test bed. `TestOpenAPICoversRoutes`
 pins the route table to the document. `internal/history` is tested with a fake clock

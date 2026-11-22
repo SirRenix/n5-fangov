@@ -104,7 +104,7 @@ func TestStateAssist(t *testing.T) {
 	e.svc.mu.Lock()
 	e.svc.snap.Channels[1].Mode = control.ModeAuto
 	e.svc.snap.Channels[1].Assist = &control.AssistState{Enabled: true, Boost: 45, Source: "hwmon:amdgpu:temp1", Sources: []control.AssistSourceState{
-		{Sensor: "hwmon:amdgpu:temp1", Temp: 58.7, Boost: 45}, {Sensor: "nvme:max", Temp: 44, Boost: 0},
+		{Sensor: "hwmon:amdgpu:temp1", Temp: 58.7, Boost: 45, Start: 50, Full: 58}, {Sensor: "nvme:max", Temp: 44, Boost: 0, Start: 46, Full: 50},
 	}}
 	e.svc.hist = append(e.svc.hist, control.HistoryPoint{TS: 1789500010, Temp: map[string]float64{"hdd": 40}, Duty: map[string]int{"hdd": 150}, RPM: map[string]int{}, Assist: map[string]int{"hdd": 45}})
 	e.svc.mu.Unlock()
@@ -120,6 +120,11 @@ func TestStateAssist(t *testing.T) {
 	srcs, _ := as["sources"].([]any)
 	if as["enabled"] != true || as["boost"] != 45.0 || as["source"] != "hwmon:amdgpu:temp1" || len(srcs) != 2 {
 		t.Errorf("signed in: %v", as)
+	}
+	if len(srcs) > 0 {
+		if s0, _ := srcs[0].(map[string]any); s0["start"] != 50.0 || s0["full"] != 58.0 {
+			t.Errorf("source thresholds: %v", s0)
+		}
 	}
 	var anon struct {
 		Channels []map[string]any `json:"channels"`

@@ -194,6 +194,7 @@ input[type=checkbox]{accent-color:var(--info)}
 .tile .badges{display:inline-flex;gap:var(--sp-15);align-items:center;flex:none}
 .tile .spark{height:var(--spark-h);position:relative}
 .tile .spark canvas{display:block;width:100%;height:100%}
+.tile .spark .tip{top:calc(100% + var(--sp-05))}
 .tile .spark .rng{position:absolute;right:0;top:calc(-1*var(--sp-05));font-size:var(--fs-11);color:var(--fg3)}
 .t-ok{color:var(--ok)}.t-warm{color:var(--warn)}.t-hot{color:var(--hot)}.t-crit{color:var(--crit)}
 .tile .row{display:grid;grid-template-columns:var(--w-rowlabel) 1fr auto;align-items:center;gap:var(--sp-2);font-size:var(--fs-13);height:20px}
@@ -310,7 +311,7 @@ input[type=checkbox]{accent-color:var(--info)}
 .fan .live .as{display:grid;gap:var(--sp-1);border-top:var(--bw) solid var(--line);padding-top:var(--sp-2)} /* assist: switch + one line, only with an [[assist]] table */
 .pv{display:grid;gap:var(--sp-2);margin-bottom:var(--gap)} /* curve preview panel under a card: full width, the summary below the chart */
 .pv .card-h{display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap}.pv .card-h h2{margin:0;flex:1}
-.pv-c{display:grid;gap:var(--sp-2)}.pv-off{opacity:var(--opacity-disabled)} /* a chart whose last answer failed */.pv-s{white-space:pre-line;margin:0;font-size:var(--fs-13)}.pv-n{margin:0}
+.pv-c{display:grid;gap:var(--sp-2)}.pv-off{opacity:var(--opacity-disabled)} /* a chart whose last answer failed */.pv-s{display:grid;gap:var(--sp-15);justify-items:start}.pv-s p{margin:0}.tbl.pv-t{width:auto}.tbl.pv-t th{text-transform:none;letter-spacing:0}.pv-t td+td,.pv-t th+th{text-align:right}.pv-n{margin:0}
 .tile .row .v .asb{color:var(--man);font-size:var(--fs-12);font-weight:var(--fw-semibold)}
 /* curve editor */
 .ed{display:grid;gap:var(--sp-25)}
@@ -386,6 +387,7 @@ details.gloss p{margin:var(--sp-15) 0 0}
 .tbl.sm th,.tbl.sm td{padding:var(--sp-15) var(--sp-2);font-size:var(--fs-12);white-space:nowrap}
 .tbl td.empty{white-space:normal}
 .tbl tr.dim td{color:var(--fg3)}
+/* config versions (cv.js): the diff under its row, red = goes, green = comes */#st-versions{min-width:0}#vs-list{overflow-x:auto}.vs td.vs-a{text-align:right}.vs td.vs-a .btn+.btn{margin-left:var(--sp-1)}.vs-x td{white-space:normal}.vs-d pre{margin:var(--sp-1) 0 0;font-size:var(--fs-12);white-space:pre-wrap;overflow-wrap:anywhere}.vs-d .add{color:var(--ok);background:color-mix(in srgb,var(--ok) var(--tint-row),transparent)}.vs-d .del{color:var(--crit);background:color-mix(in srgb,var(--crit) var(--tint-row),transparent)}.vs-u{display:inline-flex;align-items:center;gap:var(--sp-1)}
 .tbl .expired{color:var(--warn)}
 .tbl td .tid{display:block;color:var(--fg3);font-size:var(--fs-11)}
 /* Schedules page: editor + status card */

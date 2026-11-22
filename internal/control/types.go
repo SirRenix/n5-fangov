@@ -78,6 +78,8 @@ type AssistSourceState struct {
 	Sensor string  `json:"sensor"`
 	Temp   float64 `json:"temp"`
 	Boost  int     `json:"boost"`
+	Start  int     `json:"start"` // °C, the boost starts here (config, read-only)
+	Full   int     `json:"full"`  // °C, full boost from here
 }
 
 // Snapshot is the daemon state exposed to CLI and web.

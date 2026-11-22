@@ -33,6 +33,7 @@ the running daemon and fall back to the files or `state.json` when it is down
 | `events` | `--since 24h\|7d\|DURATION` (default 24h), `--kind K` (repeatable), `--json` | the event log behind the chart markers, oldest first (*socket*, else `events.json`, read-only) — [below](#events) |
 | `export [FILE]` | `--presets DIR` | settings bundle (config + presets, hash redacted) as JSON; `-`/no file = stdout — [Backup and restore](09-updates.md#backup-and-restore) |
 | `import FILE` | `--presets DIR` | restore a bundle (everything validated first), reload the daemon |
+| `config` | `versions` \| `diff ID` \| `restore ID [--yes]` | the last 10 config versions: list, diff against the current file (hash redacted), restore (*socket* for restore; list and diff also from the files) — [below](#config) |
 | `version` | (also `-v`, `--version`) | print the version |
 | `help` | (also `-h`, `--help`) | usage |
 
@@ -98,7 +99,7 @@ first: local time, kind, channel (`-` for none), text and cause in brackets.
 ```
 
 - `--since`: `24h` (default), `7d` (`Nd` = days) or any duration from `1m` to `7d`.
-- `--kind`: one of `preset override assist alert critical ceiling failsafe start reload`
+- `--kind`: one of `preset override assist alert critical ceiling failsafe start reload restore`
   or an `-end` kind; a span kind includes its end event. Repeat it for several.
 - `--json`: the events as an array, the fields of [`GET /api/events`](12-api.md#events).
 
@@ -106,6 +107,42 @@ With the daemon the command asks the socket; without it, it reads
 `/var/lib/n5-fangov/events.json` and writes nothing (the last line names the file). A
 file it may not read (not root) is an error with exit 1, not an empty list; a missing
 file is `no events`.
+
+## config
+
+```
+n5-fangov config versions
+n5-fangov config diff 7
+n5-fangov config restore 7          # asks y/N; --yes does not
+```
+
+The last 10 [config versions](04-dashboard.md#config-versions): the text of `config.toml`
+the daemon had on disk before each of its writes, or a hand edit it found.
+
+```
+   8  2026-11-22 16:40:12  user:admin     preset n5pro-quiet     [[channel]] cpu, [[channel]] ssd, [[channel]] hdd
+   7  2026-11-22 16:31:55  cli            assist hdd on          [[assist]] hdd
+   6  2026-11-22 09:02:10  -              external edit          [alert]
+3 version(s), source: daemon; `n5-fangov config diff ID` shows one against the current file
+```
+
+Columns: number, time taken, who made the write that replaced it (`-`: the daemon or a
+hand edit), that write, the sections it changed. `diff ID` prints the lines a restore
+would change, `-` from the current file, `+` from the version; `password_hash` is
+printed as `"<redacted>"` (`"<redacted, changed>"` plus a note when it differs).
+`restore ID` first prints what it changes (lines, sections), the keys that apply only
+after a restart and the warnings (sign-in off, the listener leaving loopback, another
+user, a password change) and asks `[y/N]`; `--yes` (in any position) skips the question. Without `--yes` and with a standard
+input that is not a terminal (a script, a pipe) it refuses with exit 1 and restores
+nothing. The restore applies only to the file the summary described: when it changed
+meanwhile the daemon answers 409 and the command fails (exit 1), nothing restored. It writes the
+version through the daemon (validated first; the text before becomes a version, and the
+answer names it: `config restore` of that one undoes it — no hint when the text was
+identical and nothing was stored).
+
+With the daemon the commands ask the socket. Without it, `versions` and `diff` read
+`/var/lib/n5-fangov/config-versions/` and the config file (root only); `restore` is
+refused — it needs the daemon to validate, write and reload.
 
 ## identify
 

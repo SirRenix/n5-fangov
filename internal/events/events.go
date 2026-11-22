@@ -48,10 +48,11 @@ const (
 	Panic       = "panic"  // full cooling (span; by the operator only)
 	PanicEnd    = "panic-end"
 	PanicExtend = "panic-extend" // a start during full cooling: 10 min from then (point)
+	Restore     = "restore"      // a config version was restored (text names the version)
 )
 
 // Kinds lists every kind in display order.
-var Kinds = []string{Preset, Override, OverrideEnd, Assist, Alert, Critical, CriticalEnd, Ceiling, CeilingEnd, Failsafe, FailsafeEnd, Start, Reload, Panic, PanicEnd, PanicExtend}
+var Kinds = []string{Preset, Override, OverrideEnd, Assist, Alert, Critical, CriticalEnd, Ceiling, CeilingEnd, Failsafe, FailsafeEnd, Start, Reload, Panic, PanicEnd, PanicExtend, Restore}
 
 // spans are the kinds with a duration.
 var spans = []string{Override, Critical, Ceiling, Failsafe, Panic}

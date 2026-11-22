@@ -201,9 +201,9 @@ func saveConfig(path string, raw []byte) error { return config.Save(path, raw) }
 // inside the daemon: the account, alert and dashboard stores, the
 // editor's Save, a preset apply and a bundle import each rewrite the whole
 // file from what they read, so two of them interleaving would drop one
-// change. Lock order: configFileMu before any store/controller/tls mutex;
-// the certificate manager's writeMode runs under its own lock and stays
-// outside (it would invert the order via pinConfig).
+// change. Lock order: actorMu, then the certificate manager's mu (its
+// writeMode), then configFileMu, then any store/controller mutex and the
+// manager's pinMu (pinConfig).
 var configFileMu sync.Mutex
 
 // n5proChannels is the verified N5 Pro channel set.
@@ -791,6 +791,9 @@ type webDeps struct {
 	Events *events.Log
 	// Panic backs POST /api/panic (the controller); nil: 501.
 	Panic *control.Controller
+	// Versions backs /api/config/versions (wiring_versions.go); nil: 501,
+	// and no caller attribution.
+	Versions *fileVersions
 }
 
 // logStore is the log read side (web.LogStore, DESIGN "Web and API"): implemented by
@@ -901,6 +904,10 @@ func newWebServer(d webDeps) webServer {
 	}
 	if d.Panic != nil {
 		deps.Panic = d.Panic
+	}
+	if d.Versions != nil {
+		deps.Versions = d.Versions
+		deps.ConfigActor = withActor
 	}
 	applyHealthDeps(&deps, d.Health, d.Interval)
 	s := web.New(deps)
@@ -1026,7 +1033,7 @@ func (s fileConfigStore) Save(raw []byte) error {
 	for _, w := range warns {
 		log.Printf("config save: %s", w)
 	}
-	return config.Save(s.path, raw)
+	return saveConfigWhy(s.path, raw, "editor")
 }
 
 // Parsed makes GET /api/config also carry the validated config in TOML

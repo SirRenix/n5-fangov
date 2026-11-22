@@ -204,7 +204,8 @@ func (s *Server) putAlerts(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &b) {
 		return
 	}
-	st, err := m.Configure(AlertSettings(b))
+	var st AlertStatus
+	_, err := s.asCaller(r, func() (err error) { st, err = m.Configure(AlertSettings(b)); return err })
 	if err != nil {
 		writeError(w, storeStatus(err), err.Error())
 		return

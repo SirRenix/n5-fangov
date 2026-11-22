@@ -75,7 +75,7 @@ func (s *dashboardStore) SetSensors(ids []string) ([]string, error) {
 			warns = append(warns, fmt.Sprintf("%s: %v (kept; charted once the device appears)", id, err))
 		}
 	}
-	err := editConfigThen(s.cfgPath, s.pin, "dashboard", func(raw []byte) []byte {
+	err := editConfigThen(s.cfgPath, s.pin, "dashboard", "dashboard", func(raw []byte) []byte {
 		return setConfigKey(raw, "dashboard", "sensors", tomlStringArray(clean))
 	}, func(cfg config.Config) bool {
 		return slices.Equal(cfg.Dashboard.Sensors, clean)
@@ -98,7 +98,7 @@ func (s *dashboardStore) SetSensors(ids []string) ([]string, error) {
 // assistSetter is the controller side of the assist store
 // (*control.Controller; a fake in tests).
 type assistSetter interface {
-	SetAssistEnabled(channel string, on bool) error
+	ApplyAssists(tables []config.Assist, want string) error
 }
 
 type assistStore struct {
@@ -114,18 +114,23 @@ func newAssistStore(cfgPath string, ctrl assistSetter, pin func([]byte) []byte) 
 
 // SetEnabled writes enabled = on into the channel's [[assist]] table
 // (config.SetAssistEnabled: that line only, comments kept) and hands the
-// switch to the controller, which takes it on the next cycle — both under
-// the config file lock (editConfigThen), so a concurrent reload cannot
-// apply an older file text afterwards. A file that does not parse is a
-// plain error (400, like the other single-key stores); a channel whose
-// file has no valid [[assist]] table is fs.ErrNotExist (404). When the file
-// is written but the running daemon has no such table (the file was edited
-// by hand without a reload), the error is a web.ReloadError (500).
+// file's [[assist]] tables to the controller, which takes them on the next
+// cycle — both under the config file lock (editConfigThen), so a
+// concurrent reload cannot apply an older file text afterwards. Handing
+// over all tables, not only the switch, lets a table added, changed or
+// removed by hand take effect with the switch (BACKLOG #63: a new table
+// used to need a restart and the switch answered 500). A file that does
+// not parse is a plain error (400, like the other single-key stores); a
+// channel whose file has no valid [[assist]] table is fs.ErrNotExist
+// (404). A table that does not fit the running channel set (the channels
+// were edited by hand too) is a web.ReloadError (500); the daemon then
+// applies nothing, the file keeps the switch until a restart.
 func (s *assistStore) SetEnabled(channel string, on bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var pre error
-	err := editConfigThen(s.cfgPath, s.pin, "assist", func(raw []byte) []byte {
+	var written []config.Assist
+	err := editConfigThen(s.cfgPath, s.pin, "assist", "assist "+channel+" "+map[bool]string{true: "on", false: "off"}[on], func(raw []byte) []byte {
 		cfg, _, perr := config.Parse(raw)
 		switch {
 		case perr != nil:
@@ -142,10 +147,11 @@ func (s *assistStore) SetEnabled(channel string, on bool) error {
 		return out
 	}, func(cfg config.Config) bool {
 		a := cfg.Assist(channel)
+		written = cfg.Assists
 		return a != nil && a.Enabled == on
 	}, func() error {
-		if err := s.ctrl.SetAssistEnabled(channel, on); err != nil {
-			return &web.ReloadError{Err: fmt.Errorf("config written, not applied: %w (restart or reload the daemon)", err)}
+		if err := s.ctrl.ApplyAssists(written, channel); err != nil {
+			return &web.ReloadError{Err: fmt.Errorf("config written, not applied: %w", err)}
 		}
 		return nil
 	})

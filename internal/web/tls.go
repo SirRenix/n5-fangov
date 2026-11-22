@@ -181,7 +181,7 @@ func (s *Server) tlsRegenerate(w http.ResponseWriter, r *http.Request) {
 			keep = *b.KeepKey
 		}
 	}
-	info, kept, err := m.Regenerate(keep)
+	info, kept, err := m.Regenerate(keep) // no config write: outside the write turn
 	if err != nil {
 		tlsFail(w, err, false)
 		return
@@ -276,7 +276,9 @@ func (s *Server) tlsUpload(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	info, warns, err := m.Upload(certPEM, keyPEM)
+	var info tlscert.InfoData
+	var warns []string
+	_, err := s.asCaller(r, func() (err error) { info, warns, err = m.Upload(certPEM, keyPEM); return err })
 	if err != nil {
 		// A pair that does not validate is the client's problem; anything
 		// after validation (file, config) is ours.
@@ -361,7 +363,8 @@ func (s *Server) tlsReset(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	info, err := m.ResetAuto()
+	var info tlscert.InfoData
+	_, err := s.asCaller(r, func() (err error) { info, err = m.ResetAuto(); return err })
 	if err != nil {
 		tlsFail(w, err, false)
 		return
