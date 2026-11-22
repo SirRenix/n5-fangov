@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -211,7 +212,7 @@ func TestAssistOffAndSwitch(t *testing.T) {
 	if a.Enabled || a.Sources[0].Boost != 45 {
 		t.Errorf("off: %+v (the sources still show what they would give)", a)
 	}
-	if err := h.c.SetAssistEnabled("hdd", true); err != nil {
+	if err := h.c.setAssistEnabled("hdd", true); err != nil {
 		t.Fatal(err)
 	}
 	h.cycles(1)
@@ -220,7 +221,7 @@ func TestAssistOffAndSwitch(t *testing.T) {
 	h.cycles(2)
 	h.expectDuty("hdd", 150)
 	// off ends the boost at once although a min_on hold runs; the slew ramps down
-	if err := h.c.SetAssistEnabled("hdd", false); err != nil {
+	if err := h.c.setAssistEnabled("hdd", false); err != nil {
 		t.Fatal(err)
 	}
 	h.cycles(1)
@@ -230,7 +231,7 @@ func TestAssistOffAndSwitch(t *testing.T) {
 	if h.c.Config().Assists[0].Enabled {
 		t.Error("running config not switched off")
 	}
-	if err := h.c.SetAssistEnabled("cpu", true); !errors.Is(err, ErrNoAssist) {
+	if err := h.c.setAssistEnabled("cpu", true); !errors.Is(err, ErrNoAssist) {
 		t.Errorf("cpu without table: %v", err)
 	}
 }
@@ -257,18 +258,33 @@ func TestAssistApplyWithoutRestart(t *testing.T) {
 	h.expectTarget("hdd", 105)
 }
 
+// setAssistEnabled flips the switch of a loaded table through ApplyAssists
+// (the running tables with one flag changed). Without a loaded table it is
+// ErrNoAssist — what the 0.7.0-rc1 switch answered (it changed the running
+// config only), the HTTP 500 of BACKLOG #63.
+func (c *Controller) setAssistEnabled(name string, on bool) error {
+	tables := config.CloneAssists(c.Config().Assists)
+	for i := range tables {
+		if tables[i].Channel == name {
+			tables[i].Enabled = on
+			return c.ApplyAssists(tables, name)
+		}
+	}
+	return fmt.Errorf("channel %q: %w", name, ErrNoAssist)
+}
+
 // TestApplyAssistsHandEdited (BACKLOG #63): a daemon started without
-// [[assist]], the table added to the file by hand. 0.7.0-rc1 switched the
-// running config only (SetAssistEnabled → ErrNoAssist, HTTP 500 "config
-// written, not applied"); ApplyAssists takes the file's tables: added on
-// the next cycle, an unchanged table keeps its hold, a removed one is
-// dropped, a table that does not fit the running channels is refused.
+// [[assist]], the table added to the file by hand. The rc1 switch knew
+// only the running config (setAssistEnabled → ErrNoAssist, HTTP 500
+// "config written, not applied"); ApplyAssists takes the file's tables:
+// added on the next cycle, an unchanged table keeps its hold, a removed one
+// is dropped.
 func TestApplyAssistsHandEdited(t *testing.T) {
 	h := newAssistHarness(t, n5cfg())
 	gpu := h.sensors.get(gpuID)
 	gpu.set(58000)
 	h.cycles(1)
-	if err := h.c.SetAssistEnabled("hdd", true); !errors.Is(err, ErrNoAssist) {
+	if err := h.c.setAssistEnabled("hdd", true); !errors.Is(err, ErrNoAssist) {
 		t.Fatalf("the rc1 path: %v, want ErrNoAssist", err)
 	}
 	tables := assistCfg(true, 0, 30*time.Minute).Assists
@@ -302,11 +318,89 @@ func TestApplyAssistsHandEdited(t *testing.T) {
 		t.Error("table removed, state still present")
 	}
 	h.expectTarget("hdd", 105)
-	bad := assistCfg(true, 0, 0).Assists
-	bad[0].Sources[0].Sensor = "drivetemp:max" // the channel's own sensor
+}
+
+// TestApplyAssistsUnfitChangesNothing: the switched channel's table does
+// not fit the running channels (its source is the running channel's own
+// sensor — the file changed the channel's sensor by hand too). The call
+// answers ErrNoAssist and applies nothing: neither that channel's running
+// table and hold nor another channel's table change, also after cycles.
+func TestApplyAssistsUnfitChangesNothing(t *testing.T) {
+	cfg := assistCfg(true, 0, 30*time.Minute)
+	cfg.Assists = append(cfg.Assists, config.Assist{Channel: "ssd", Enabled: true, Hysteresis: 2, MinOn: 2 * time.Minute,
+		Sources: []config.AssistSource{{Sensor: gpuID, Start: 50, Full: 58, Boost: 20}}})
+	h := newAssistHarness(t, cfg)
+	gpu := h.sensors.get(gpuID)
+	gpu.set(58000)
+	h.cycles(1)
+	gpu.set(40000)
+	h.cycles(1)
+	h.expectBoost("hdd", 45, gpuID) // held
+	bad := config.CloneAssists(cfg.Assists[:1])
+	bad[0].Sources[0].Sensor = "drivetemp:max" // the running hdd channel's own sensor
 	if err := h.c.ApplyAssists(bad, "hdd"); !errors.Is(err, ErrNoAssist) {
-		t.Errorf("unfit table: %v, want ErrNoAssist", err)
+		t.Fatalf("unfit table: %v, want ErrNoAssist", err)
 	}
+	h.cycles(2)
+	h.expectBoost("hdd", 45, gpuID) // table and hold untouched
+	if a := h.assist("hdd"); a == nil || a.Sources[0].Sensor != gpuID || len(a.Sources) != 2 {
+		t.Errorf("hdd table changed: %+v", a)
+	}
+	if cfg := h.c.Config(); h.state("ssd").Assist == nil || cfg.Assist("ssd") == nil {
+		t.Error("the ssd table was dropped by a refused call")
+	}
+}
+
+// TestApplyAssistsChangedTable: a table changed by hand (boost lowered
+// below the held value) ends the hold at once, like a reload
+// (dropStaleHold); a source dropped against the running channels while
+// the switched channel's table fits is logged.
+func TestApplyAssistsChangedTable(t *testing.T) {
+	cfg := assistCfg(true, 0, 30*time.Minute)
+	h := newAssistHarness(t, cfg)
+	gpu := h.sensors.get(gpuID)
+	gpu.set(58000)
+	h.cycles(1)
+	gpu.set(40000)
+	h.cycles(1)
+	h.expectBoost("hdd", 45, gpuID) // held
+	next := config.CloneAssists(cfg.Assists)
+	next[0].Sources[0].Boost = 10
+	other := config.Assist{Channel: "ssd", Enabled: true, Sources: []config.AssistSource{{Sensor: "nvme:max", Start: 40, Full: 50, Boost: 10}}} // the ssd's own sensor
+	if err := h.c.ApplyAssists(append(next, other), "hdd"); err != nil {
+		t.Fatal(err)
+	}
+	h.cycles(1)
+	h.expectBoost("hdd", 0, "")
+	h.expectTarget("hdd", 105)
+	if cfg := h.c.Config(); cfg.Assist("ssd") != nil {
+		t.Error("an unfit ssd table was applied")
+	}
+	if !h.log.contains("assist: assist.ssd") {
+		t.Errorf("the dropped ssd table was not logged: %v", h.log.lines)
+	}
+}
+
+// TestApplyAssistsOnPendingReload: a reload accepted but not yet applied
+// (pending) is the base: the assist switch in the same cycle keeps the
+// reload's changes and adds its tables.
+func TestApplyAssistsOnPendingReload(t *testing.T) {
+	h := newAssistHarness(t, n5cfg())
+	h.sensors.get(gpuID).set(58000)
+	h.cycles(1)
+	next := n5cfg()
+	next.Channels[2].Critical = 58
+	if err := h.c.Apply(next); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.c.ApplyAssists(assistCfg(true, 0, 0).Assists, "hdd"); err != nil {
+		t.Fatal(err)
+	}
+	h.cycles(1)
+	if c := h.c.Config(); c.Channel("hdd").Critical != 58 || c.Assist("hdd") == nil {
+		t.Errorf("pending reload lost or tables missing: critical %d, %+v", c.Channel("hdd").Critical, c.Assists)
+	}
+	h.expectBoost("hdd", 45, gpuID)
 }
 
 // TestAssistPrecedence: override, critical, ceiling and the channel's own
@@ -488,7 +582,7 @@ func TestAssistStatusLineAndHistory(t *testing.T) {
 		t.Error("nvme:max recorded twice")
 	}
 	// off: no assist member in the point
-	if err := h.c.SetAssistEnabled("hdd", false); err != nil {
+	if err := h.c.setAssistEnabled("hdd", false); err != nil {
 		t.Fatal(err)
 	}
 	h.cycles(1)

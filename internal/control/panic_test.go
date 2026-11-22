@@ -196,7 +196,7 @@ func TestPanicDefersAssist(t *testing.T) {
 	h.sensors.get(gpuID).set(60000) // full boost once switched on
 	h.cycles(1)
 	_, _ = h.c.Panic("user:admin")
-	if err := h.c.SetAssistEnabled("hdd", true); err != nil {
+	if err := h.c.setAssistEnabled("hdd", true); err != nil {
 		t.Fatal(err)
 	}
 	h.cycles(2)

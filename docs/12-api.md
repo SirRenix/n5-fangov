@@ -216,7 +216,9 @@ curl -H "Authorization: Bearer n5t_..." -H "Content-Type: application/json" \
 Scope `control`. 200 `{"ok": true, "channel": "hdd", "enabled": true}`; 404 when the
 channel has no valid `[[assist]]` table in `config.toml`; 400 for a body other than
 `{"enabled": true|false}`; 500 when the file could not be written, or was written but
-the table does not fit the running channel set (channels edited by hand: restart). The
+the table does not fit the running channel set (channels edited by hand): then nothing is
+applied — the running tables stay as they are, the file keeps the switch, a restart takes
+it. The
 daemon writes only the `enabled` line, comments and the other tables keep their bytes
 ([Assist](06-configuration.md#assist)). With the switch the daemon takes all
 `[[assist]]` tables of the file on the next cycle: a table added, changed or removed by

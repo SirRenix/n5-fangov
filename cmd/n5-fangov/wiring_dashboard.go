@@ -123,7 +123,8 @@ func newAssistStore(cfgPath string, ctrl assistSetter, pin func([]byte) []byte) 
 // not parse is a plain error (400, like the other single-key stores); a
 // channel whose file has no valid [[assist]] table is fs.ErrNotExist
 // (404). A table that does not fit the running channel set (the channels
-// were edited by hand too) is a web.ReloadError (500).
+// were edited by hand too) is a web.ReloadError (500); the daemon then
+// applies nothing, the file keeps the switch until a restart.
 func (s *assistStore) SetEnabled(channel string, on bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

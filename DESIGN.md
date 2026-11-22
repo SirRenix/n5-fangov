@@ -516,7 +516,7 @@ and `min_on` stays the base:
   unreadable or implausible adds 0: one log line when the episode starts and one when it
   ends, **no alert**; an unresolved one is retried every cycle, a read error re-resolves.
 - `bindAssists` attaches the tables to the managed channels at `New` and in
-  `applyPendingLocked` (reload, `SetAssistEnabled`, `ApplyAssists`): a source with an unchanged id keeps
+  `applyPendingLocked` (reload, `ApplyAssists`): a source with an unchanged id keeps
   its reader and held reading; switching off idles at once (the slew takes the duty down
   by `step_down`); a changed `min_on` re-times a running hold like `retimeHolds`; a hold
   whose source was removed or whose source's `boost` is now below the held value is
@@ -524,14 +524,14 @@ and `min_on` stays the base:
   re-resolved with the channel sensors every 60 cycles (`reresolve`), also while they
   read fine (a composite resolved before all its devices appeared). A table
   for a channel the device does not manage is logged once and ignored.
-  `SetAssistEnabled(name, on)` clones the running (or pending) config with that flag
-  and hands it to the pending swap — the next cycle takes it; `ErrNoAssist` without a
-  table. `ApplyAssists(tables, want)` (the assist switch, 0.7.0-rc2, BACKLOG #63)
+  `ApplyAssists(tables, want)` (the assist switch; 0.7.0-rc2, BACKLOG #63 — rc1's
+  `SetAssistEnabled` flipped the running flag only and failed for a table added by hand)
   replaces only the `[[assist]]` tables of the running (or pending) config with the
   file's: a table added, changed or removed by hand takes effect with the switch, no
   restart (the daemon has no file watcher). The tables pass a `Marshal`/`Parse` round
-  trip against the running channel set; one that does not fit is left out, and
-  `ErrNoAssist` when it is the switched channel's. The snapshot carries each source's
+  trip against the running channel set; another channel's table that does not fit is left
+  out with a log line; when the switched channel's does not fit, nothing is applied
+  (`ErrNoAssist`, the running tables and holds stay). The snapshot carries each source's
   `start`/`full` (config, read-only) beside `temp` and `boost`.
 - Status line: `hdd=40.0C->pwm3=150(auto +45 amdgpu)` while a boost is added (the
   source's short label: the chip name of `hwmon:<name>:tempN`, else the id).
@@ -1047,7 +1047,7 @@ counts as signed in, `via: "none"`):
 | `GET /api/sensors` | protected | — | `[{id, description, temp?, kind?}]` (catalogue with live readings; `kind` `ssd`/`hdd` for `disk:*`, section 5) |
 | `GET /api/dashboard` / `PUT /api/dashboard` | protected | `{sensors[]}` | `{sensors}` / `{ok, sensors, warnings[]}`; 400 above 8 or unparsable id |
 | `POST /api/preview` | protected, `read` | optional JSON `{channels[], preset, assist{}, span: 24h\|7d}` ≤ 256 KiB; channels validated like the preset body (pwm/stop default to the running channel), not with `preset` | 200 `{span, step, note, order[], channels{<name>: {series[{ts, actual, preview, boost}], summary{actual, preview}, error?, measured?}}}` (section 6 "Preview"); 400 invalid body, curve rules, unknown channel, assist without a table, bad span; 404 unknown preset; 429 another preview runs; 501 no previewer. Writes nothing |
-| `PUT /api/assist/{name}` | protected, `control` | `{enabled: bool}` ≤ 4 KiB (unknown members 400) | writes only the `enabled` line of the channel's `[[assist]]` table (section 3), then the file's `[[assist]]` tables to `Controller.ApplyAssists` (next cycle; a table added by hand included): 200 `{ok, channel, enabled}`; 404 no valid table in the file; 500 not written, or written but the table does not fit the running channels (`ReloadError`, restart); 501 no store |
+| `PUT /api/assist/{name}` | protected, `control` | `{enabled: bool}` ≤ 4 KiB (unknown members 400) | writes only the `enabled` line of the channel's `[[assist]]` table (section 3), then the file's `[[assist]]` tables to `Controller.ApplyAssists` (next cycle; a table added by hand included): 200 `{ok, channel, enabled}`; 404 no valid table in the file; 500 not written, or written but the table does not fit the running channels (`ReloadError`; nothing applied, restart); 501 no store |
 | `GET /api/profiles` | protected | — | `[{name, title, verified, hw_status, notes, active}]` (`hw_status` of this machine per profile, `verified` = validated or tested) |
 | `GET /api/log?lines=N` | protected | 1..5000 | `{lines[], source: file\|journal}` |
 | `GET /api/log/export` | protected | — | text attachment `n5-fangov-<host>-<ts>.log` (current file; journal: newest 100000 lines) |
@@ -1279,9 +1279,9 @@ Every channel of the mock state carries `ceiling` (cpu 100, ssd 85, hdd 65) and
   `assist` (0.7.0, operator decision: switch and values only, no editor): a second
   `role="switch"` *Assist* (`PUT /api/assist/{name}`, the same two-interval pending
   window, `lv.asOn`/`lv.asUntil`), the sentence *Raises this fan when other parts get hot
-  (amdgpu, nvme:max).* and the value line (0.7.0-rc2) — `now +45 — amdgpu 59.0 °C (full at
-  58)` under a boost (its source), else every source with its threshold: `now +0 — amdgpu
-  45.0 °C (starts at 50), nvme:max 43.0 °C (starts at 46)`, `now +0 (<mode> wins) — …`,
+  (amdgpu, nvme:max).* and the value line (0.7.0-rc2) — `now +45 — amdgpu 59.0 °C (full at 58 °C)`
+  under a boost (its source), else every source with its threshold: `now +0 — amdgpu
+  45.0 °C (starts at 50 °C), nvme:max 43.0 °C (starts at 46 °C)` (thresholds in the display unit), `now +0 (<mode> wins) — …`,
   `off — …`, `unreadable` for a source without a reading; below it *Compare without
   assist* / *Compare with assist* (follows the switch) and *What is this?* (the docs of
   the `repo` from `/api/about`, `06-configuration.md#assist`). The tile shows

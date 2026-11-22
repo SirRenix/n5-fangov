@@ -232,8 +232,9 @@ The same from the shell: `n5-fangov set` / `auto` ([CLI](05-cli.md)).
 **Assist** (under the override, only when the channel has an
 [`[[assist]]`](06-configuration.md#assist) table): a switch, the sentence *Raises this
 fan when other parts get hot (amdgpu, nvme:max).* and a value line with the sources and
-their thresholds — `now +0 — amdgpu 45.0 °C (starts at 50), nvme:max 43.0 °C (starts at
-46)`; while a boost is added only its source, `now +45 — amdgpu 59.0 °C (full at 58)`;
+their thresholds in the display unit — `now +0 — amdgpu 45.0 °C (starts at 50 °C), nvme:max
+43.0 °C (starts at 46 °C)`; while a boost is added only its source, `now +45 — amdgpu 59.0 °C
+(full at 58 °C)`;
 `now +0 (manual wins) — …` outside mode auto, `off — …` when switched off,
 `unreadable` for a source without a reading. Below it *Compare without assist* (or
 *Compare with assist* while it is off) opens the [preview](#preview) with the switch

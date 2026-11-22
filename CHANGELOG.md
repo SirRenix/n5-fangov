@@ -35,8 +35,8 @@ The regulation is unchanged apart from #63.
 
 - **Assist block on the Fans page:** the sentence *Raises this fan when other parts get
   hot (amdgpu, nvme:max).* and a value line with the sources and their thresholds —
-  `now +0 — amdgpu 45.0 °C (starts at 50), nvme:max 43.0 °C (starts at 46)`, under a boost
-  `now +45 — amdgpu 59.0 °C (full at 58)`. The button below names the comparison and
+  `now +0 — amdgpu 45.0 °C (starts at 50 °C), nvme:max 43.0 °C (starts at 46 °C)`, under a boost
+  `now +45 — amdgpu 59.0 °C (full at 58 °C)` — thresholds in the display unit like the temperatures. The button below names the comparison and
   follows the switch: *Compare without assist* / *Compare with assist* (was *Preview*).
 - **Preview:** the header names the comparison (*Preview hdd: recorded vs. assist off*,
   *… vs. preset "quiet"*, *… vs. unsaved curve*); a legend per chart names what is drawn
@@ -60,7 +60,10 @@ The regulation is unchanged apart from #63.
   against the running channels: a table added, changed or removed by hand takes effect
   on the next cycle together with the switch; an unchanged table keeps its readers and
   its `min_on` hold, a removed one is dropped. A table that does not fit the running
-  channel set (channels edited by hand too) still answers 500 and needs the restart.
+  channel set (channels edited by hand too) answers 500 and **nothing is applied**: the
+  running tables and holds stay, the file keeps the switch, a restart takes it. Tables of
+  other channels that do not fit are left out with a log line.
+
 ## [0.7.0-rc1] — 2026-11-22
 
 Five of the six 0.7.0 points: the #54 fix, assist, the curve preview, event markers and

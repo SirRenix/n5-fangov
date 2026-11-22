@@ -662,11 +662,13 @@ on('#ov-csv', 'click', () => act(() => download('/api/history.csv?minutes=' + R(
 // edDirty = unsaved) on the left, "Live & override" on the right; below 700 px the channel selector shows one card at a time
 // a same-origin script on demand: mock.js, the modules (DESIGN 11a)
 const js = src => new Promise((res, rej) => { const s = h('script', { src, onload: res, onerror: () => { s.remove(); rej(); } }); document.head.append(s); });
-// curve preview (POST /api/preview): pv.js, loaded on the first open and handed what it needs; until then close/sched/redraw do
-// nothing. A load failure shows in place of the panel, the next open retries
-let PVM = null, pvErr = null;
-const pvClose = () => { if (pvErr) pvErr.remove(); pvErr = null; if (PVM) PVM.close(); };
-const pvOpen = (card, ...a) => (pvClose(), PVM) ? PVM.open(card, ...a) : js('pv.js').then(() => (PVM = PVM || window.n5pv({ h, $, api, chart, charts, RANGES, seriesColor, ED, stopN, cssVar, docs })).open(card, ...a)).catch(() => { card.after(pvErr = h('section', { class: 'card pv' }, h('p', { class: 'notice err' }, 'Preview unavailable: pv.js could not be loaded'))); });
+// curve preview: pv.js, loaded on the first open (one load, pvL; dropped on failure: the next open retries); only the latest
+// open runs (pvN), a close cancels a pending one; a failed load shows in place of the panel. Before it close/sched/redraw do nothing
+let PVM = null, pvL = null, pvErr = null, pvN = 0;
+const pvClose = () => { pvN++; if (pvErr) pvErr.remove(); pvErr = null; if (PVM) PVM.close(); };
+const pvOpen = (card, ...a) => { pvClose(); if (PVM) return PVM.open(card, ...a); const n = pvN;
+	(pvL = pvL || js('pv.js').then(() => PVM = window.n5pv({ h, $, api, chart, charts, RANGES, seriesColor, ED, stopN, cssVar, docs })))
+		.then(() => n === pvN && PVM.open(card, ...a), () => { pvL = null; if (n === pvN) card.after(pvErr = h('section', { class: 'card pv' }, h('p', { class: 'notice err' }, 'Preview unavailable: pv.js could not be loaded'))); }); };
 const pvSched = () => PVM && PVM.sched(), pvDraw = () => PVM && PVM.redraw();
 const ED = {}, drawEds = () => { for (const k in ED) ED[k].draw(); }; let edState = null, edStash = null, edDirty = false;
 const cvNotice = notice('#cv-notice'), K = UI.curve;
@@ -805,7 +807,7 @@ const asSet = async (n, lv) => { const on = lv.asw.getAttribute('aria-checked') 
 	lv.asw.removeAttribute('aria-busy'); poll(); };
 const asLbl = id => (/^hwmon:([^:]+):/.exec(id) || [, id])[1];
 // value line: under a boost its source with "full at", else every source with "starts at" (start/full since 0.7.0-rc2)
-const asSrc = (s, up) => `${asLbl(s.sensor)} ${s.temp > -900 ? fmtT(s.temp) + ' ' + unit() : 'unreadable'}` + (s.start === undefined ? '' : up ? ` (full at ${fmtT(s.full, 0)})` : ` (starts at ${fmtT(s.start, 0)})`);
+const asSrc = (s, up) => `${asLbl(s.sensor)} ${s.temp > -900 ? fmtT(s.temp) + ' ' + unit() : 'unreadable'}` + (s.start === undefined ? '' : up ? ` (full at ${fmtT(s.full, 0)} ${unit()})` : ` (starts at ${fmtT(s.start, 0)} ${unit()})`);
 const asLine = (c, on) => { const a = c.assist, ss = a.sources || [], s = ss.find(x => x.sensor === a.source);
 	if (on && a.boost > 0) return `now +${a.boost} — ` + (s ? asSrc(s, 1) : asLbl(a.source));
 	return (on ? 'now +0' + (c.mode !== 'auto' ? ` (${c.mode} wins)` : '') : 'off') + (ss.length ? ' — ' + ss.map(x => asSrc(x)).join(', ') : ''); };
