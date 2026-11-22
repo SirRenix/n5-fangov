@@ -201,9 +201,9 @@ func saveConfig(path string, raw []byte) error { return config.Save(path, raw) }
 // inside the daemon: the account, alert and dashboard stores, the
 // editor's Save, a preset apply and a bundle import each rewrite the whole
 // file from what they read, so two of them interleaving would drop one
-// change. Lock order: configFileMu before any store/controller/tls mutex;
-// the certificate manager's writeMode runs under its own lock and stays
-// outside (it would invert the order via pinConfig).
+// change. Lock order: actorMu, then the certificate manager's mu (its
+// writeMode), then configFileMu, then any store/controller mutex and the
+// manager's pinMu (pinConfig).
 var configFileMu sync.Mutex
 
 // n5proChannels is the verified N5 Pro channel set.

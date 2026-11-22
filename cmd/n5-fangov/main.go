@@ -76,7 +76,7 @@ var helpText = map[string]string{
 	"token":    "create NAME [--scope read|control|admin] [--ttl DAYS] | list | revoke ID  API tokens for scripts and agents (via the daemon)",
 	"export":   "[FILE]                 settings bundle (config + presets, hash redacted) as JSON",
 	"import":   "FILE                   restore a settings bundle (validated first), reload the daemon",
-	"config":   "versions | diff ID | restore ID  the last 10 config versions: list, diff against the current file (hash redacted), restore (via the daemon)",
+	"config":   "versions | diff ID | restore ID [--yes]  the last 10 config versions: list, diff against the current file (hash redacted), restore (via the daemon; asks first)",
 	"version":  "                       print version",
 }
 

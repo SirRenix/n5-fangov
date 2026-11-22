@@ -1,16 +1,25 @@
 // Package cfgver keeps the last versions of the config file (DESIGN
 // "Config versions"): before every write by the daemon the text on disk is
 // stored as a version with time, author and reason, ten are kept, the
-// oldest goes. A file that differs from what the daemon last wrote (a hand
-// edit) is stored as "external edit" at start and before the next write.
+// oldest goes. A version's author and reason name the write that replaced
+// it.
 //
-// Layout: <dir>/NNNN.toml (the whole text, comments included) and
-// <dir>/index.json; files 0600, the directory 0700. Recording never blocks
-// the config write: a failure is logged once per cause and the write goes
-// on (regulation and operation go before the history).
+// Hand edits: the store keeps a copy of the text the daemon last wrote
+// (current.toml). A file that differs from it at start or before the next
+// write was edited by hand: the daemon's text is stored with the reason
+// External (it was replaced by the hand edit), and before a write the hand
+// edit itself is stored with the author and reason of that write — so a
+// hand edit can be undone too.
+//
+// Layout: <dir>/NNNN.toml (the whole text, comments included),
+// <dir>/index.json and <dir>/current.toml; files 0600, the directory 0700.
+// Recording never blocks the config write: a failure is logged once per
+// cause and the write goes on (regulation and operation go before the
+// history).
 package cfgver
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -19,7 +28,9 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -29,15 +40,14 @@ import (
 // Keep is how many versions are kept.
 const Keep = 10
 
-// External is the reason of a version found on disk that the daemon did
-// not write.
+// External is the reason of a version that a hand edit replaced.
 const External = "external edit"
 
 // Version is one stored version: the text that was on disk before a write.
-// By is user:<name>, token:<name>, cli or "" (the daemon itself, a hand
-// edit); Reason names the write that replaced it (editor, preset quiet,
-// assist hdd on, account, alerts, dashboard, tls, import, restore 7) or
-// External.
+// By is user:<name>, token:<name>, cli, schedule or "" (the daemon itself,
+// a hand edit); Reason names the write that replaced it (editor, preset
+// quiet, assist hdd on, account, alerts, dashboard, tls, import, restore
+// 7) or External.
 type Version struct {
 	ID     int    `json:"id"`
 	TS     int64  `json:"ts"`
@@ -46,11 +56,9 @@ type Version struct {
 	SHA    string `json:"sha256"`
 }
 
-// index is index.json: the versions oldest first, the next id and the
-// hash of the text the daemon last wrote or saw at start.
+// index is index.json: the versions oldest first and the next id.
 type index struct {
 	Next     int       `json:"next"`
-	Current  string    `json:"current"`
 	Versions []Version `json:"versions"`
 }
 
@@ -61,6 +69,8 @@ type Store struct {
 	now    func() time.Time
 	mu     sync.Mutex
 	logged map[string]bool
+	// writeIndex writes index.json (tests replace it).
+	writeIndex func(path string, data []byte, perm os.FileMode) error
 }
 
 // Open returns the store for dir (created on the first write). logf may
@@ -69,7 +79,7 @@ func Open(dir string, logf func(string, ...any)) *Store {
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
-	return &Store{dir: dir, logf: logf, now: time.Now, logged: map[string]bool{}}
+	return &Store{dir: dir, logf: logf, now: time.Now, logged: map[string]bool{}, writeIndex: fsutil.WriteAtomic}
 }
 
 // Dir is the version directory.
@@ -78,13 +88,32 @@ func (s *Store) Dir() string { return s.dir }
 // SetClock replaces the clock (tests).
 func (s *Store) SetClock(now func() time.Time) { s.now = now }
 
-func sum(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(h[:]) }
+// Sum is the hex SHA-256 of a text (the "current" token of a restore).
+func Sum(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(h[:]) }
 
 func (s *Store) file(id int) string { return filepath.Join(s.dir, fmt.Sprintf("%04d.toml", id)) }
+func (s *Store) known() string      { return filepath.Join(s.dir, "current.toml") }
 
-// fail logs err once per cause (the text without the version number).
+// tmpName matches the temp files of fsutil and digits: not part of a cause.
+var tmpName = regexp.MustCompile(`\S*\.tmp\S*|\d+`)
+
+// cause is the class of err for the once-per-cause log: the operation and
+// the OS error without the (random) file names.
+func cause(err error) string {
+	var pe *fs.PathError
+	var le *os.LinkError
+	switch {
+	case errors.As(err, &pe):
+		return pe.Op + ": " + pe.Err.Error()
+	case errors.As(err, &le):
+		return le.Op + ": " + le.Err.Error()
+	}
+	return tmpName.ReplaceAllString(err.Error(), "#")
+}
+
+// fail logs err once per cause.
 func (s *Store) fail(what string, err error) {
-	key := what + ": " + err.Error()
+	key := what + ": " + cause(err)
 	if s.logged[key] {
 		return
 	}
@@ -92,20 +121,41 @@ func (s *Store) fail(what string, err error) {
 	s.logf("config versions: %s: %v (the config write goes on)", what, err)
 }
 
+// maxID is the highest NNNN.toml in the directory (a fresh index after a
+// corrupt one continues after it).
+func (s *Store) maxID() int {
+	n := 0
+	ms, _ := filepath.Glob(filepath.Join(s.dir, "[0-9][0-9][0-9][0-9]*.toml"))
+	for _, m := range ms {
+		if v, err := strconv.Atoi(filepath.Base(m)[:len(filepath.Base(m))-len(".toml")]); err == nil && v > n {
+			n = v
+		}
+	}
+	return n
+}
+
+// load reads index.json. A file that does not parse is moved aside
+// (index.json.corrupt-<unix>) and a fresh index starts; logged once.
 func (s *Store) load() (index, error) {
 	var ix index
-	b, err := os.ReadFile(filepath.Join(s.dir, "index.json"))
+	p := filepath.Join(s.dir, "index.json")
+	b, err := os.ReadFile(p)
 	if errors.Is(err, fs.ErrNotExist) {
-		return index{Next: 1}, nil
+		return index{Next: s.maxID() + 1}, nil
 	}
 	if err != nil {
 		return ix, err
 	}
 	if err := json.Unmarshal(b, &ix); err != nil {
-		return ix, fmt.Errorf("index.json: %w", err)
+		aside := fmt.Sprintf("%s.corrupt-%d", p, s.now().Unix())
+		if rerr := os.Rename(p, aside); rerr != nil {
+			return ix, fmt.Errorf("index.json: %v; not moved aside: %w", err, rerr)
+		}
+		s.logf("config versions: index.json unreadable (%v), moved to %s; a new index starts", err, aside)
+		return index{Next: s.maxID() + 1}, nil
 	}
 	if ix.Next < 1 {
-		ix.Next = 1
+		ix.Next = s.maxID() + 1
 	}
 	return ix, nil
 }
@@ -118,35 +168,64 @@ func (s *Store) save(ix index) error {
 	if err != nil {
 		return err
 	}
-	return fsutil.WriteAtomic(filepath.Join(s.dir, "index.json"), append(b, '\n'), 0o600)
+	return s.writeIndex(filepath.Join(s.dir, "index.json"), append(b, '\n'), 0o600)
 }
 
 // add stores raw as a new version unless it equals the newest one; the
-// ring keeps Keep. Called with s.mu held.
-func (s *Store) add(ix *index, raw []byte, by, reason string) error {
-	h := sum(raw)
+// ids that leave the ring are returned (their files are removed only after
+// the index is saved). Called with s.mu held.
+func (s *Store) add(ix *index, raw []byte, by, reason string) (int, []int, error) {
+	h := Sum(raw)
 	if n := len(ix.Versions); n > 0 && ix.Versions[n-1].SHA == h {
-		return nil
+		return 0, nil, nil
 	}
 	if err := os.MkdirAll(s.dir, 0o700); err != nil {
-		return err
+		return 0, nil, err
 	}
 	v := Version{ID: ix.Next, TS: s.now().Unix(), By: by, Reason: reason, SHA: h}
 	if err := fsutil.WriteAtomic(s.file(v.ID), raw, 0o600); err != nil {
-		return err
+		return 0, nil, err
 	}
 	ix.Next++
 	ix.Versions = append(ix.Versions, v)
+	var drop []int
 	for len(ix.Versions) > Keep {
-		_ = os.Remove(s.file(ix.Versions[0].ID))
+		drop = append(drop, ix.Versions[0].ID)
 		ix.Versions = ix.Versions[1:]
+	}
+	return v.ID, drop, nil
+}
+
+// commit saves the index, then removes the dropped version files.
+func (s *Store) commit(ix index, drop []int) error {
+	if err := s.save(ix); err != nil {
+		return err
+	}
+	for _, id := range drop {
+		_ = os.Remove(s.file(id))
 	}
 	return nil
 }
 
-// Start compares the file at path with the text the daemon last wrote:
-// different (and known) = a hand edit, stored as External. Then the file
-// is the known text. A missing file or index records nothing.
+// handEdit stores the text the daemon last wrote as External when the file
+// (pre) differs from it. Called with s.mu held; reports whether it did.
+func (s *Store) handEdit(ix *index, pre []byte, drop *[]int) bool {
+	known, err := os.ReadFile(s.known())
+	if err != nil || bytes.Equal(known, pre) {
+		return false
+	}
+	_, d, err := s.add(ix, known, "", External)
+	if err != nil {
+		s.fail("store", err)
+		return true
+	}
+	*drop = append(*drop, d...)
+	return true
+}
+
+// Start compares the file at path with the text the daemon last wrote; a
+// hand edit stores the replaced text as External. Then the file is the
+// known text. A missing file records nothing.
 func (s *Store) Start(path string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -159,52 +238,54 @@ func (s *Store) Start(path string) {
 		s.fail("read", err)
 		return
 	}
-	if h := sum(raw); ix.Current != h {
-		if ix.Current != "" {
-			if err := s.add(&ix, raw, "", External); err != nil {
-				s.fail("store", err)
-				return
-			}
-		}
-		ix.Current = h
-		if err := s.save(ix); err != nil {
+	var drop []int
+	if s.handEdit(&ix, raw, &drop) {
+		if err := s.commit(ix, drop); err != nil {
 			s.fail("index", err)
 		}
 	}
+	s.remember(raw)
 }
 
-// Before stores the text at path before the daemon writes it. A file that
-// differs from the known text is a hand edit: stored as External (the
-// write's own version would be the same text and is skipped). reason ""
-// stores nothing (the scheduler's preset switch).
-func (s *Store) Before(path, by, reason string) {
-	if reason == "" {
-		return
-	}
+// Before stores the text at path before the daemon writes it and returns
+// the new version's id (0: none stored — the text equals the newest
+// version, quiet, or it could not be stored). A hand edit since the last
+// daemon write is stored first (see the package comment). quiet stores the
+// text only after a hand edit (the scheduler's preset switch: it recurs
+// daily and would fill the ring, but a hand edit must stay undoable).
+func (s *Store) Before(path, by, reason string, quiet bool) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	raw, err := os.ReadFile(path)
+	pre, err := os.ReadFile(path)
 	if err != nil {
 		if !errors.Is(err, fs.ErrNotExist) {
 			s.fail("read config", err)
 		}
-		return
+		return 0
 	}
 	ix, err := s.load()
 	if err != nil {
 		s.fail("read", err)
-		return
+		return 0
 	}
-	if ix.Current != "" && ix.Current != sum(raw) {
-		by, reason = "", External
+	var drop []int
+	if s.handEdit(&ix, pre, &drop) {
+		quiet = false
 	}
-	if err := s.add(&ix, raw, by, reason); err != nil {
-		s.fail("store", err)
-		return
+	id := 0
+	if !quiet {
+		var d []int
+		if id, d, err = s.add(&ix, pre, by, reason); err != nil {
+			s.fail("store", err)
+			id = 0
+		}
+		drop = append(drop, d...)
 	}
-	if err := s.save(ix); err != nil {
+	if err := s.commit(ix, drop); err != nil {
 		s.fail("index", err)
+		return 0
 	}
+	return id
 }
 
 // Wrote records raw as the text the daemon wrote (every write, the
@@ -212,16 +293,16 @@ func (s *Store) Before(path, by, reason string) {
 func (s *Store) Wrote(raw []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	ix, err := s.load()
-	if err != nil {
-		s.fail("read", err)
+	s.remember(raw)
+}
+
+func (s *Store) remember(raw []byte) {
+	if err := os.MkdirAll(s.dir, 0o700); err != nil {
+		s.fail("current", err)
 		return
 	}
-	if h := sum(raw); ix.Current != h {
-		ix.Current = h
-		if err := s.save(ix); err != nil {
-			s.fail("index", err)
-		}
+	if err := fsutil.WriteAtomic(s.known(), raw, 0o600); err != nil {
+		s.fail("current", err)
 	}
 }
 

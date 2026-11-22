@@ -53,7 +53,8 @@ func (s *Server) putDashboard(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("at most %d sensors", maxDashboardSensors))
 		return
 	}
-	warnings, err := d.SetSensors(b.Sensors)
+	var warnings []string
+	_, err := s.asCaller(r, func() (err error) { warnings, err = d.SetSensors(b.Sensors); return err })
 	if err != nil {
 		writeError(w, storeStatus(err), err.Error())
 		return
@@ -84,7 +85,8 @@ func (s *Server) putAssist(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, `"enabled" (true or false) required`)
 		return
 	}
-	if err := s.deps.Assist.SetEnabled(name, *b.Enabled); err != nil {
+	wv, err := s.asCaller(r, func() error { return s.deps.Assist.SetEnabled(name, *b.Enabled) })
+	if err != nil {
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
 			writeError(w, http.StatusNotFound, err.Error())
@@ -100,7 +102,7 @@ func (s *Server) putAssist(w http.ResponseWriter, r *http.Request) {
 		state = "on"
 	}
 	s.event(r, events.Assist, name, "assist "+name+" "+state)
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "channel": name, "enabled": *b.Enabled})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "channel": name, "enabled": *b.Enabled, "version": wv.Version, "config_sha256": wv.SHA})
 }
 
 // ---- about ------------------------------------------------------------------

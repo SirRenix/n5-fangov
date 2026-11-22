@@ -11,15 +11,52 @@ type Op struct {
 	Line string `json:"line"`
 }
 
-// Diff is a line diff of a → b by the longest common subsequence (the
-// files are a few KiB; no library). A trailing newline does not count as a
-// line.
+// MaxCells bounds the LCS table of a diff (lines × lines after the common
+// prefix and suffix are cut): a config of 256 KiB can have 130 000 lines,
+// and a full table of two such files would take gigabytes. Above it the
+// middle part counts as replaced.
+const MaxCells = 4 << 20
+
+// Diff is a line diff of a → b by the longest common subsequence (no
+// library). The common head and tail are cut first; a middle larger than
+// MaxCells is reported as replaced (all "-", then all "+"). A trailing
+// newline does not count as a line.
 func Diff(a, b string) []Op {
 	x, y := lines(a), lines(b)
+	p := 0
+	for p < len(x) && p < len(y) && x[p] == y[p] {
+		p++
+	}
+	q := 0
+	for q < len(x)-p && q < len(y)-p && x[len(x)-1-q] == y[len(y)-1-q] {
+		q++
+	}
+	out := make([]Op, 0, len(x)+len(y)-p-q)
+	for _, l := range x[:p] {
+		out = append(out, Op{" ", l})
+	}
+	out = append(out, middle(x[p:len(x)-q], y[p:len(y)-q])...)
+	for _, l := range x[len(x)-q:] {
+		out = append(out, Op{" ", l})
+	}
+	return out
+}
+
+func middle(x, y []string) []Op {
 	n, m := len(x), len(y)
-	l := make([][]int, n+1)
+	out := make([]Op, 0, n+m)
+	if n*m > MaxCells {
+		for _, l := range x {
+			out = append(out, Op{"-", l})
+		}
+		for _, l := range y {
+			out = append(out, Op{"+", l})
+		}
+		return out
+	}
+	l := make([][]int32, n+1)
 	for i := range l {
-		l[i] = make([]int, m+1)
+		l[i] = make([]int32, m+1)
 	}
 	for i := n - 1; i >= 0; i-- {
 		for j := m - 1; j >= 0; j-- {
@@ -30,7 +67,6 @@ func Diff(a, b string) []Op {
 			}
 		}
 	}
-	out := make([]Op, 0, n+m)
 	i, j := 0, 0
 	for i < n || j < m {
 		switch {
@@ -48,7 +84,6 @@ func Diff(a, b string) []Op {
 	}
 	return out
 }
-
 func lines(s string) []string {
 	s = strings.TrimSuffix(strings.ReplaceAll(s, "\r\n", "\n"), "\n")
 	if s == "" {

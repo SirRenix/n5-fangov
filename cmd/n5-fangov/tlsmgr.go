@@ -45,7 +45,12 @@ const modeFallback = "auto (fallback from file)"
 // the file; an Upload or ResetAuto, which write the file themselves, set
 // it again.
 type tlsManager struct {
-	mu         sync.Mutex
+	mu sync.Mutex
+	// pinMu guards mode, certFile, keyFile and ownsConfig for pinConfig,
+	// which the config writers call with configFileMu held: writers of the
+	// four fields hold mu and pinMu, pinConfig only pinMu. So writeMode may
+	// take configFileMu under mu (order mu → configFileMu → pinMu).
+	pinMu      sync.Mutex
 	cfgPath    string
 	dir        string
 	hosts      []string
@@ -299,8 +304,10 @@ func (m *tlsManager) Upload(certPEM, keyPEM []byte) (tlscert.InfoData, []string,
 		rollback()
 		return tlscert.InfoData{}, nil, err
 	}
+	m.pinMu.Lock()
 	m.mode, m.certFile, m.keyFile = "file", certPath, keyPath
 	m.fallback, m.ownsConfig = false, true
+	m.pinMu.Unlock()
 	m.store.Set(cert) // ValidatePair already ran the handshake
 	return tlscert.Info(cert), warns, nil
 }
@@ -350,8 +357,10 @@ func (m *tlsManager) ResetAuto() (tlscert.InfoData, error) {
 	if err := m.writeMode("auto", "", ""); err != nil {
 		return tlscert.InfoData{}, err
 	}
+	m.pinMu.Lock()
 	m.mode, m.certFile, m.keyFile = "auto", "", ""
 	m.fallback, m.ownsConfig = false, true
+	m.pinMu.Unlock()
 	m.store.Set(cert)
 	for _, f := range []string{customCertFile, customKeyFile} {
 		if err := os.Remove(filepath.Join(m.dir, f)); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -363,8 +372,12 @@ func (m *tlsManager) ResetAuto() (tlscert.InfoData, error) {
 
 // writeMode sets [web] tls / cert_file / key_file in the config file with
 // config.SetKey (everything else, comments included, stays) and saves it
-// atomically. A missing file starts from the built-in defaults.
+// atomically, read and write under configFileMu like every other writer
+// (a scheduler write in between would otherwise be lost and taken for a
+// hand edit). A missing file starts from the built-in defaults.
 func (m *tlsManager) writeMode(mode, certFile, keyFile string) error {
+	configFileMu.Lock()
+	defer configFileMu.Unlock()
 	raw, err := os.ReadFile(m.cfgPath)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
@@ -393,8 +406,8 @@ func setTLSKeys(raw []byte, mode, certFile, keyFile string) []byte {
 // applied while the effective mode came from a --listen override
 // (ownsConfig=false) — then the file's own values are the operator's.
 func (m *tlsManager) pinConfig(raw []byte) []byte {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.pinMu.Lock()
+	defer m.pinMu.Unlock()
 	if !m.ownsConfig {
 		return raw
 	}

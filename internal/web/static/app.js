@@ -673,9 +673,8 @@ const pvSched = () => PVM && PVM.sched(), pvDraw = () => PVM && PVM.redraw();
 // config versions: cv.js on first use (Settings card, Undo toast), one load in flight like pv.js
 let VSM = null, vsL = null;
 const vsMod = () => VSM ? Promise.resolve(VSM) : (vsL = vsL || js('cv.js').then(() => VSM = window.n5cv({ h, api, ask, toast, UI, cfgRefresh })).catch(e => { vsL = null; throw e; }));
-// the newest version id before a write (-1: none readable); the toast after it offers Undo only for a version newer than that
-const vsTop = () => api('/api/config/versions').then(r => r.body.length ? r.body[0].id : 0, () => -1);
-const undo = (msg, before) => before < 0 ? toast(msg, 'ok') : vsMod().then(m => m.undo(msg, before), () => toast(msg, 'ok'));
+// a write's answer names the version it stored (0: none) and the hash it wrote: Undo restores exactly that version while the file still holds that text
+const undo = (msg, b) => b && b.version > 0 ? vsMod().then(m => m.undo(msg, b.version, b.config_sha256), () => toast(msg, 'ok')) : toast(msg, 'ok');
 const ED = {}, drawEds = () => { for (const k in ED) ED[k].draw(); }; let edState = null, edStash = null, edDirty = false;
 const cvNotice = notice('#cv-notice'), K = UI.curve;
 const chDirty = name => { const e = ED[name], o = chList().find(x => x.name === name); return !!(e && o) && chKey([e.c]) !== chKey([o]); };
@@ -809,7 +808,7 @@ const gapPoint = curve => { const s = curve.slice().sort((a, b) => a[0] - b[0]);
 	const t = s.length > 1 ? Math.round((s[bi - 1][0] + s[bi][0]) / 2) : (s[0] ? s[0][0] : K.addDefault) + K.addStep; return [t, Math.round(interp(s, t))]; };
 // assist: the switch writes `enabled`, the snapshot follows a cycle later (held like lv.pend)
 const asSet = async (n, lv) => { const on = lv.asw.getAttribute('aria-checked') !== 'true'; lv.asw.setAttribute('aria-busy', 'true');
-	const v0 = await vsTop(); if (await act(() => api('/api/assist/' + n, { method: 'PUT', json: { enabled: on } }))) { undo(`${n}: assist ${on ? 'on' : 'off'}${pAft()}`, v0); lv.asOn = on; lv.asUntil = Date.now() + 2 * Math.max(2, cfg && cfg.daemon ? durS(cfg.daemon.interval) : 10) * 1000; lv.asw.setAttribute('aria-checked', on); }
+	const r = await act(() => api('/api/assist/' + n, { method: 'PUT', json: { enabled: on } })); if (r) { undo(`${n}: assist ${on ? 'on' : 'off'}${pAft()}`, r.body); lv.asOn = on; lv.asUntil = Date.now() + 2 * Math.max(2, cfg && cfg.daemon ? durS(cfg.daemon.interval) : 10) * 1000; lv.asw.setAttribute('aria-checked', on); }
 	lv.asw.removeAttribute('aria-busy'); poll(); };
 const asLbl = id => (/^hwmon:([^:]+):/.exec(id) || [, id])[1];
 // value line: under a boost its source with "full at", else every source with "starts at" (start/full since 0.7.0-rc2)
@@ -922,10 +921,10 @@ on('#cv-apply', 'click', async () => {
 	if (errs.length) return cvNotice('Not applied — fix these first:\n' + errs.join('\n'), 'err');
 	await loadConfig(); // fresh raw: [dashboard], [alert], [[schedule]] may have changed since the last read
 	const body = stripChannels(cfgRaw) + edState.map(tomlChannel).join('\n');
-	const v0 = await vsTop(); try { const r = await api('/api/config?strict=1', { method: 'PUT', body, headers: { 'Content-Type': 'application/toml' } });
+	try { const r = await api('/api/config?strict=1', { method: 'PUT', body, headers: { 'Content-Type': 'application/toml' } });
 		const cw = ceilingWarnings(), warn = (r.body && Array.isArray(r.body.warnings) && r.body.warnings.length ? 'Config warnings outside the channel tables:\n' + r.body.warnings.join('\n') + '\n' : '') + cw.join('\n');
 		cvNotice((r.status === 202 ? 'Written — restart required (channel set or profile changed): systemctl restart n5-fangov\n' : '') + warn, '');
-		r.status === 202 || warn ? toast(r.status === 202 ? 'Curves written — restart required' : 'Applied with warnings', 'warn') : undo('Curves applied', v0); await loadConfig(); loadEditor(true); loadPresets();
+		r.status === 202 || warn ? toast(r.status === 202 ? 'Curves written — restart required' : 'Applied with warnings', 'warn') : undo('Curves applied', r.body); await loadConfig(); loadEditor(true); loadPresets();
 	} catch (e) { cvNotice(e.message, 'err'); } // notice is role=alert: no toast on top
 });
 on('#cv-revert', 'click', () => { loadEditor(); toast('Reverted', ''); });
@@ -951,9 +950,9 @@ const presetBadges = () => { for (const c of chList()) { const ed = ED[c.name]; 
 	el.append(h('i', { class: 'dot', 'aria-hidden': 'true' }), 'Active set: ', as.length ? h('b', null, as.join(' · ')) : h('b', null, 'custom'), as.length ? (as.length > 1 ? ' — the daemon runs these values (several presets match)' : ' — the daemon runs exactly these values') : ' (matches no preset)'); };
 const nameOk = n => LIM.name.test(n) ? builtinNames.includes(n) ? `${n} is a built-in preset — pick another name` : '' : 'Name: a-z, 0-9, _ and -, at most 64 characters';
 const applyPreset = async p => { if (!await ask('Apply preset', `Apply preset ${p.name}? The curves change immediately.` + (edDirty ? '\nUnsaved curve edits are discarded.' : ''), { ok: 'Apply' })) return;
-	const v0 = await vsTop(); let r; try { r = await api(`/api/presets/${encodeURIComponent(p.name)}/apply`, { method: 'POST' }); } catch (e) { return toast(e.message, 'err'); }
+	let r; try { r = await api(`/api/presets/${encodeURIComponent(p.name)}/apply`, { method: 'POST' }); } catch (e) { return toast(e.message, 'err'); }
 	const rs = r.status === 202; psNotice(rs ? 'Preset written — restart required: systemctl restart n5-fangov' : '');
-	rs ? toast(`Preset ${p.name} written — restart required`, 'warn') : undo(`Preset ${p.name} applied${pAft()}`, v0); await loadConfig(); loadEditor(); loadPresets(); };
+	rs ? toast(`Preset ${p.name} written — restart required`, 'warn') : undo(`Preset ${p.name} applied${pAft()}`, r.body); await loadConfig(); loadEditor(); loadPresets(); };
 async function loadPresets() {
 	const host = $('#preset-row'); try {
 		psList = (await api('/api/presets')).body || []; builtinNames = psList.filter(p => p.builtin).map(p => p.name);
@@ -1100,7 +1099,7 @@ on('#sc-save', 'click', async () => { if (!scState) return; const errs = scValid
 	if (errs.length) return scErr('Not saved — fix these first:\n' + errs.join('\n'), 'err');
 	await loadConfig(); // splice into the file as it is now
 	const body = stripSchedules(cfgRaw) + scState.map(tomlSchedule).join('\n');
-	const v0 = await vsTop(); try { const r = await api('/api/config?strict=1', { method: 'PUT', body, headers: { 'Content-Type': 'application/toml' } });
+	try { const r = await api('/api/config?strict=1', { method: 'PUT', body, headers: { 'Content-Type': 'application/toml' } });
 		const warn = r.body && Array.isArray(r.body.warnings) && r.body.warnings.length ? 'Config warnings:\n' + r.body.warnings.join('\n') : '';
 		scErr((r.status === 202 ? 'Written — restart required: systemctl restart n5-fangov\n' : '') + warn, '');
 		toast(r.status === 202 ? 'Schedule written — restart required' : warn ? 'Schedule saved with warnings' : 'Schedule saved', r.status === 202 || warn ? 'warn' : 'ok');

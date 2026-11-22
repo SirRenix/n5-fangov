@@ -223,11 +223,11 @@ func (s dirPresetStore) write(name string, chans []config.Channel) ([]byte, int,
 	if s.pin != nil {
 		raw = s.pin(raw)
 	}
-	why := "preset " + name
+	save := saveConfigWhy
 	if s.noVersion {
-		why = "" // the scheduler: no version (it restores its preset itself)
+		save = saveConfigQuiet // the scheduler: no version (it restores its preset itself)
 	}
-	if err := saveConfigWhy(s.cfgPath, raw, why); err != nil {
+	if err := save(s.cfgPath, raw, "preset "+name); err != nil {
 		return nil, 0, err
 	}
 	return raw, len(cfg.Channels), nil

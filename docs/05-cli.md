@@ -33,7 +33,7 @@ the running daemon and fall back to the files or `state.json` when it is down
 | `events` | `--since 24h\|7d\|DURATION` (default 24h), `--kind K` (repeatable), `--json` | the event log behind the chart markers, oldest first (*socket*, else `events.json`, read-only) — [below](#events) |
 | `export [FILE]` | `--presets DIR` | settings bundle (config + presets, hash redacted) as JSON; `-`/no file = stdout — [Backup and restore](09-updates.md#backup-and-restore) |
 | `import FILE` | `--presets DIR` | restore a bundle (everything validated first), reload the daemon |
-| `config` | `versions` \| `diff ID` \| `restore ID` | the last 10 config versions: list, diff against the current file (hash redacted), restore (*socket* for restore; list and diff also from the files) — [below](#config) |
+| `config` | `versions` \| `diff ID` \| `restore ID [--yes]` | the last 10 config versions: list, diff against the current file (hash redacted), restore (*socket* for restore; list and diff also from the files) — [below](#config) |
 | `version` | (also `-v`, `--version`) | print the version |
 | `help` | (also `-h`, `--help`) | usage |
 
@@ -113,7 +113,7 @@ file is `no events`.
 ```
 n5-fangov config versions
 n5-fangov config diff 7
-n5-fangov config restore 7
+n5-fangov config restore 7          # asks y/N; --yes does not
 ```
 
 The last 10 [config versions](04-dashboard.md#config-versions): the text of `config.toml`
@@ -130,9 +130,12 @@ Columns: number, time taken, who made the write that replaced it (`-`: the daemo
 hand edit), that write, the sections it changed. `diff ID` prints the lines a restore
 would change, `-` from the current file, `+` from the version; `password_hash` is
 printed as `"<redacted>"` (`"<redacted, changed>"` plus a note when it differs).
-`restore ID` writes the version through the daemon (validated first; the text before
-becomes a version, so `config restore` of that one undoes it) and names the keys that
-apply after a restart.
+`restore ID` first prints what it changes (lines, sections), the keys that apply only
+after a restart and the warnings (sign-in off, the listener leaving loopback, another
+user, a password change) and asks `[y/N]`; `--yes` skips the question. It writes the
+version through the daemon (validated first; the text before becomes a version, and the
+answer names it: `config restore` of that one undoes it — no hint when the text was
+identical and nothing was stored).
 
 With the daemon the commands ask the socket. Without it, `versions` and `diff` read
 `/var/lib/n5-fangov/config-versions/` and the config file (root only); `restore` is

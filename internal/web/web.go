@@ -272,11 +272,13 @@ type Deps struct {
 	Panic PanicCtl
 	// Versions backs /api/config/versions (versions_api.go); nil → 501.
 	Versions ConfigVersions
-	// ConfigActor is called around every route that writes the config file
-	// (route.WritesConfig) with the caller (user:<name>, token:<name>, cli);
-	// the store records it with the version taken before the write. The
-	// returned func ends the request's turn. nil: no attribution.
-	ConfigActor func(by string) (release func())
+	// ConfigActor wraps every store call of a request that may write the
+	// config file (asCaller: not the body read) with the caller (user:<name>,
+	// token:<name>, cli; "" = the daemon): the store names the version it
+	// takes before the write after it. done ends the call and reports the
+	// version stored (0: none) and the hash of the text written. nil: no
+	// attribution, no version in the answers.
+	ConfigActor func(by string) (done func() (version int, sha string))
 }
 
 // Server holds the mux and serves it on TCP and on the unix socket.
@@ -539,15 +541,7 @@ func (s *Server) routes() {
 	m := s.mux
 	table := s.routeTable()
 	for _, r := range table {
-		h := r.Handler
-		if r.WritesConfig && s.deps.ConfigActor != nil {
-			next := h
-			h = func(w http.ResponseWriter, req *http.Request) {
-				defer s.deps.ConfigActor(ackSource(CallerFrom(req.Context())))()
-				next(w, req)
-			}
-		}
-		m.HandleFunc(r.pattern(), h)
+		m.HandleFunc(r.pattern(), r.Handler)
 		s.byPattern[r.pattern()] = r
 	}
 	m.HandleFunc("/api/", s.apiFallback)
@@ -801,7 +795,8 @@ func (s *Server) upgradeLegacyHash(user, password string) {
 	if !isLegacy() {
 		return
 	}
-	next, err := s.deps.Account.Update("", PasswordHash(user, password))
+	var next AuthConfig
+	_, err := s.asBy("", func() (err error) { next, err = s.deps.Account.Update("", PasswordHash(user, password)); return err })
 	if err != nil {
 		s.logf("web: legacy password hash not upgraded: %v", err)
 		return
@@ -1146,7 +1141,8 @@ func (s *Server) putConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		warnings = warns
 	}
-	if err := s.deps.Config.Save(body); err != nil {
+	wv, err := s.asCaller(r, func() error { return s.deps.Config.Save(body) })
+	if err != nil {
 		if isStoreError(err) {
 			writeError(w, http.StatusInternalServerError, "config not written: "+err.Error())
 			return
@@ -1158,9 +1154,9 @@ func (s *Server) putConfig(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case err == nil:
 		s.event(r, events.Reload, "", "config reloaded")
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "restart_required": false, "warnings": nonNil(warnings)})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "restart_required": false, "warnings": nonNil(warnings), "version": wv.Version, "config_sha256": wv.SHA})
 	case errors.Is(err, control.ErrRestartRequired):
-		writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "restart_required": true, "message": err.Error(), "warnings": nonNil(warnings)})
+		writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "restart_required": true, "message": err.Error(), "warnings": nonNil(warnings), "version": wv.Version, "config_sha256": wv.SHA})
 	default:
 		writeError(w, http.StatusInternalServerError, "config saved, reload failed: "+err.Error())
 	}
@@ -1350,7 +1346,8 @@ func (s *Server) applyPreset(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid preset name")
 		return
 	}
-	if err := s.deps.Presets.Apply(name); err != nil {
+	wv, err := s.asCaller(r, func() error { return s.deps.Presets.Apply(name) })
+	if err != nil {
 		switch {
 		case errors.Is(err, control.ErrRestartRequired):
 			writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "restart_required": true, "message": err.Error()})
@@ -1368,7 +1365,7 @@ func (s *Server) applyPreset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.event(r, events.Preset, "", "preset "+name)
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "applied": name})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "applied": name, "version": wv.Version, "config_sha256": wv.SHA})
 }
 
 // logSource names where the lines come from: "file" or "journal".
@@ -1510,7 +1507,9 @@ func (s *Server) importConfig(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "body must be a JSON settings bundle")
 		return
 	}
-	restart, warnings, err := s.deps.Bundle.Import(body)
+	var restart bool
+	var warnings []string
+	_, err = s.asCaller(r, func() (err error) { restart, warnings, err = s.deps.Bundle.Import(body); return err })
 	if err != nil {
 		lines := importErrorLines(err)
 		status, what := storeStatus(err), "import rejected: "

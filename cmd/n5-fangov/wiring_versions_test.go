@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/SirRenix/n5-fangov/internal/cfgver"
@@ -119,7 +122,7 @@ func TestConfigVersionRestore(t *testing.T) {
 	fv := fileVersions{store: s, cfgPath: cfgPath, pin: func(b []byte) []byte { return append(b, []byte("# pinned\n")...) },
 		reload: func(b []byte) error { reloaded = append(reloaded, b); return nil }}
 	l, _ := s.List()
-	res, err := fv.Restore(l[0].ID)
+	res, err := fv.Restore(l[0].ID, "")
 	release()
 	if err != nil {
 		t.Fatal(err)
@@ -156,7 +159,7 @@ func TestConfigVersionRestore(t *testing.T) {
 	}
 	before, _ := os.ReadFile(cfgPath)
 	n := len(l)
-	if _, err := fv.Restore(broken); err == nil || !strings.Contains(err.Error(), "does not parse") {
+	if _, err := fv.Restore(broken, ""); err == nil || !strings.Contains(err.Error(), "does not parse") {
 		t.Errorf("broken version: %v", err)
 	}
 	if after, _ := os.ReadFile(cfgPath); string(after) != string(before) {
@@ -165,12 +168,12 @@ func TestConfigVersionRestore(t *testing.T) {
 	if l, _ := s.List(); len(l) != n {
 		t.Error("a refused restore stored a version")
 	}
-	if _, err := fv.Restore(99); !errors.Is(err, fs.ErrNotExist) {
+	if _, err := fv.Restore(99, ""); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("unknown id: %v", err)
 	}
 	// a reload that needs a restart is reported, not an error
 	fv.reload = func([]byte) error { return errRestartRequired() }
-	if res, err := fv.Restore(1); err != nil || !res.RestartRequired {
+	if res, err := fv.Restore(1, ""); err != nil || !res.RestartRequired {
 		t.Errorf("restart required: %+v %v", res, err)
 	}
 }
@@ -207,10 +210,121 @@ func TestConfigCLIOffline(t *testing.T) {
 	if err := configDiff(&out, run, state, cfgPath, 2); err != nil || strings.Contains(out.String(), "pbkdf2") || !strings.Contains(out.String(), "<redacted, changed>") || !strings.Contains(out.String(), "resets the password") {
 		t.Errorf("diff: %v\n%s", err, out.String())
 	}
-	if err := configRestore(&out, run, 1); err == nil || !strings.Contains(err.Error(), "restore refused") {
+	if err := configRestore(&out, strings.NewReader("y\n"), run, 1, false); err == nil || !strings.Contains(err.Error(), "restore refused") {
 		t.Errorf("restore without daemon: %v", err)
 	}
 	if code := cmdConfig([]string{"diff"}); code != exitUsage {
 		t.Errorf("usage: %d", code)
+	}
+}
+
+// TestRestoreVersionAndConflict: Version names the version the restore
+// stored, 0 when it stored none (the text was identical); if_current that
+// no longer matches is ErrChanged with nothing written; a version holding
+// the password placeholder is refused.
+func TestRestoreVersionAndConflict(t *testing.T) {
+	cfgPath, s := versionsSetup(t)
+	orig, _ := os.ReadFile(cfgPath)
+	release := withActor("cli")
+	defer release()
+	_ = (fileConfigStore{path: cfgPath}).Save(append(append([]byte{}, orig...), "# one\n"...))
+	fv := fileVersions{store: s, cfgPath: cfgPath}
+	cur, _ := os.ReadFile(cfgPath)
+	if _, err := fv.Restore(1, cfgver.Sum([]byte("something else"))); !errors.Is(err, web.ErrChanged) {
+		t.Errorf("stale if_current: %v", err)
+	}
+	if now, _ := os.ReadFile(cfgPath); string(now) != string(cur) {
+		t.Error("a refused restore wrote")
+	}
+	res, err := fv.Restore(1, cfgver.Sum(cur))
+	if err != nil || res.Version != 2 || res.SHA != cfgver.Sum(orig) {
+		t.Fatalf("restore: %+v %v", res, err)
+	}
+	// restoring the same text again stores nothing: Version 0, no undo offered
+	if res, err := fv.Restore(1, ""); err != nil || res.Version != 0 {
+		t.Errorf("identical restore: %+v %v", res, err)
+	}
+	// a version with the password placeholder (a text pasted from an export)
+	_ = os.WriteFile(cfgPath, append(append([]byte{}, orig...), "\n[web]\npassword_hash = \"<unchanged>\"\n"...), 0o600)
+	s.Start(cfgPath)
+	_ = (fileConfigStore{path: cfgPath}).Save(orig)
+	l, _ := s.List()
+	var ph int
+	for _, v := range l {
+		if _, raw, _ := s.Get(v.ID); strings.Contains(string(raw), "<unchanged>") {
+			ph = v.ID
+		}
+	}
+	if _, err := fv.Restore(ph, ""); err == nil || !strings.Contains(err.Error(), "placeholder") {
+		t.Errorf("placeholder version %d: %v", ph, err)
+	}
+}
+
+// TestActorConcurrency: a scheduled write (outside a request) while a
+// request's write turn is open names "schedule", never the request's
+// caller, and does not take over the request's version id.
+func TestActorConcurrency(t *testing.T) {
+	cfgPath, s := versionsSetup(t)
+	orig, _ := os.ReadFile(cfgPath)
+	_ = os.WriteFile(cfgPath, append(append([]byte{}, orig...), "# by hand\n"...), 0o600) // a hand edit: the scheduler keeps it
+	done := withActor("user:a")
+	ch := make(chan error)
+	go func() {
+		ch <- dirPresetStore{dir: filepath.Join(t.TempDir(), "p"), cfgPath: cfgPath, svc: &fakeService{}, profile: "n5pro", noVersion: true}.Apply("n5pro-cool")
+	}()
+	if err := <-ch; err != nil {
+		t.Fatal(err)
+	}
+	cur, _ := os.ReadFile(cfgPath)
+	if err := (fileConfigStore{path: cfgPath}).Save(append(cur, "# request\n"...)); err != nil {
+		t.Fatal(err)
+	}
+	id, sha := done()
+	got := reasons(t, s)
+	want := []string{"|external edit", "schedule|preset n5pro-cool", "user:a|editor"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("chain %v, want %v", got, want)
+	}
+	if l, _ := s.List(); id != l[0].ID || sha == "" {
+		t.Errorf("the request's version %d %q, newest %d", id, sha, l[0].ID)
+	}
+}
+
+// TestCLIConfigRestoreConfirm: `config restore` shows the summary, the
+// restart keys, the warnings and the password note, asks y/N (no: nothing
+// posted), --yes does not ask; the undo hint names the version the
+// restore stored and is left out when it stored none.
+func TestCLIConfigRestoreConfirm(t *testing.T) {
+	d := startFakeDaemon(t)
+	d.stop()
+	var posts, stored atomic.Int32
+	stored.Store(4)
+	d.extra = func(mux *http.ServeMux) {
+		mux.HandleFunc("GET /api/config/versions/{id}", func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(`{"id":3,"ts":1790000000,"by":"cli","reason":"editor","removed":2,"added":1,"changes":["[web]"],"password_changed":true,"restart_keys":["web.auth"],"warnings":["web.auth basic → none: the dashboard needs no sign-in after a restart"]}`))
+		})
+		mux.HandleFunc("POST /api/config/versions/{id}/restore", func(w http.ResponseWriter, r *http.Request) {
+			posts.Add(1)
+			_, _ = fmt.Fprintf(w, `{"ok":true,"restored":3,"version":%d,"restart_keys":["web.auth"],"warnings":[]}`, stored.Load())
+		})
+	}
+	d.start(t)
+	var out bytes.Buffer
+	if err := configRestore(&out, strings.NewReader("n\n"), d.dir, 3, false); err != nil || posts.Load() != 0 || !strings.Contains(out.String(), "nothing restored") {
+		t.Errorf("declined: %v %d\n%s", err, posts.Load(), out.String())
+	}
+	for _, want := range []string{"2 line(s) go, 1 come in [web]", "applies after restart: web.auth", "needs no sign-in", "resets the web password", "[y/N]"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("prompt lacks %q:\n%s", want, out.String())
+		}
+	}
+	out.Reset()
+	if err := configRestore(&out, strings.NewReader(""), d.dir, 3, true); err != nil || posts.Load() != 1 || strings.Contains(out.String(), "[y/N]") || !strings.Contains(out.String(), "config restore 4` undoes it") {
+		t.Errorf("--yes: %v %d\n%s", err, posts.Load(), out.String())
+	}
+	stored.Store(0)
+	out.Reset()
+	if err := configRestore(&out, strings.NewReader("y\n"), d.dir, 3, false); err != nil || strings.Contains(out.String(), "undoes it") {
+		t.Errorf("nothing stored: %v\n%s", err, out.String())
 	}
 }

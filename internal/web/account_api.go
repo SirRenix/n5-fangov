@@ -88,7 +88,8 @@ func (s *Server) verifyCurrent(w http.ResponseWriter, r *http.Request, current s
 // is still loaded after the next restart; the kept session's User
 // follows a rename.
 func (s *Server) applyAccount(w http.ResponseWriter, r *http.Request, what, user, hash string) bool {
-	cfg, err := s.deps.Account.Update(user, hash)
+	var cfg AuthConfig
+	_, err := s.asCaller(r, func() (err error) { cfg, err = s.deps.Account.Update(user, hash); return err })
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "update account: "+err.Error())
 		return false

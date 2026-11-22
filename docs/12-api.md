@@ -225,18 +225,27 @@ hand edit), `reason` that write (`editor`, `preset quiet`, `assist hdd on`, `acc
 `alerts`, `dashboard`, `tls`, `import`, `restore 7`, `external edit`), `sections` what it
 changed. One version adds `raw` (the text), `diff[{op, line}]` current → version
 (`-` only in the current file, `+` only in the version), `changes` (its sections),
-`removed`, `added` and `password_changed`. `password_hash` is never included: it reads
+`removed`, `added`, `password_changed`, `restart_keys` (written now, effective at the
+next start) and `warnings` (what a restore opens up: sign-in off, the listener off
+loopback, another user). `password_hash` is never included: it reads
 `"<redacted>"`, or `"<redacted, changed>"` in a version whose hash differs from the
 current one; error messages are redacted as well.
 
-`POST …/restore` validates the version like an import (a text that does not parse: 400,
-nothing written), writes it (the text before becomes a new version, `version` in the
-answer, so the restore can be undone the same way) and reloads: 200
-`{ok, restored, version, restart_required, restart_keys[], warnings[]}`, 202 when the
+`POST …/restore` validates the version like an import (a text that does not parse or
+carries the password placeholder: 400, nothing written), writes it (the text before
+becomes a new version, `version` in the answer — 0 when nothing was stored —, so the
+restore can be undone the same way) and reloads: 200
+`{ok, restored, version, config_sha256, restart_required, restart_keys[], warnings[]}`, 202 when the
 channel set or profile changed. `restart_keys` names keys that are written but take
 effect at the next start (`web.listen`, `web.auth`, `web.user`, `web.password_hash`,
 `log.file`, `daemon.profile` …). Accepted during full cooling (applies after it). 404
 for an unknown id, 501 without a state directory. Each restore is a `restore` event.
+
+Undo of a write: `PUT /api/config`, `POST /api/presets/{name}/apply` and
+`PUT /api/assist/{name}` answer `version` (the version the write stored; 0: none) and
+`config_sha256` (the text written). `POST /api/config/versions/{version}/restore` with
+`{"if_current": "<config_sha256>"}` undoes exactly that write, and answers 409 with
+nothing written when the file changed meanwhile.
 
 ## Assist
 

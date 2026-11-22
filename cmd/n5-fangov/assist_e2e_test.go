@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"log"
 	"net/http"
 	"os"
@@ -184,10 +185,10 @@ func TestAssistHandEditedEndToEnd(t *testing.T) {
 	if file, _, err := config.Load(d.cfgPath); err != nil || file.Assist("hdd") == nil || !file.Assist("hdd").Enabled {
 		t.Errorf("file: %v", err)
 	}
-	// the hand edit before the switch is a version of its own, the switch's
-	// version is the same text and skipped
+	// the daemon's text the hand edit replaced is a version (external edit),
+	// the hand edit itself one named after the switch that replaced it
 	var vs []versionLine
-	if err := d.api.get("/api/config/versions", &vs); err != nil || len(vs) != 1 || vs[0].Reason != "external edit" {
+	if err := d.api.get("/api/config/versions", &vs); err != nil || len(vs) != 2 || vs[0].Reason != "assist hdd on" || vs[0].By != "cli" || vs[1].Reason != "external edit" {
 		t.Errorf("versions %+v %v", vs, err)
 	}
 }
@@ -208,9 +209,14 @@ func TestConfigVersionsEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var put struct {
+		Version int    `json:"version"`
+		SHA     string `json:"config_sha256"`
+	}
+	_ = json.NewDecoder(res.Body).Decode(&put)
 	res.Body.Close()
-	if res.StatusCode != 200 {
-		t.Fatalf("PUT /api/config: %d", res.StatusCode)
+	if res.StatusCode != 200 || put.Version != 1 || put.SHA == "" {
+		t.Fatalf("PUT /api/config: %d %+v", res.StatusCode, put)
 	}
 	var vs []versionLine
 	if err := d.api.get("/api/config/versions", &vs); err != nil || len(vs) != 1 || vs[0].By != "cli" || vs[0].Reason != "editor" {
@@ -221,7 +227,7 @@ func TestConfigVersionsEndToEnd(t *testing.T) {
 		t.Fatalf("panic: %v %v", pn, err)
 	}
 	var rs map[string]any
-	if err := d.api.do(http.MethodPost, "/api/config/versions/1/restore", nil, &rs); err != nil || rs["ok"] != true {
+	if err := d.api.do(http.MethodPost, "/api/config/versions/1/restore", map[string]any{"if_current": put.SHA}, &rs); err != nil || rs["ok"] != true || rs["version"] != float64(2) {
 		t.Fatalf("restore during full cooling: %v %v", rs, err)
 	}
 	if now, _ := os.ReadFile(d.cfgPath); string(now) != string(orig) {
@@ -243,6 +249,14 @@ func TestConfigVersionsEndToEnd(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("no restore event: %+v", evs)
+	}
+	// an Undo of the editor save after the restore changed the file: 409, nothing written
+	before, _ := os.ReadFile(d.cfgPath)
+	if err := d.api.do(http.MethodPost, "/api/config/versions/1/restore", map[string]any{"if_current": put.SHA}, nil); err == nil || !strings.Contains(err.Error(), "409") {
+		t.Errorf("stale undo: %v", err)
+	}
+	if after, _ := os.ReadFile(d.cfgPath); string(after) != string(before) {
+		t.Error("a stale undo wrote the file")
 	}
 	_ = d.api.do(http.MethodPost, "/api/panic", map[string]any{"action": "stop"}, nil)
 }

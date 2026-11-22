@@ -814,55 +814,79 @@ Operator decision 0.7.0 point 4 (Ideenliste 4.1 + 6.10): the last **10** texts o
 backup.
 
 - **What:** the whole text of `config.toml` (comments included). Presets are not
-  versioned (they are created and deleted, never overwritten).
-- **When:** `saveConfigWhy(path, raw, reason)` is the one write path of the daemon
-  (editor `PUT /api/config`, preset apply, assist switch, account, alert transport,
-  dashboard sensors, certificate manager, import, restore; all but the certificate
-  manager under `configFileMu`). Before it writes it hands the text on disk to
-  `Store.Before(path, by, reason)`; a write that leaves the text as it is stores
-  nothing, a text equal to the newest version neither. `Store.Wrote` records what was
-  written. The scheduler's preset switch passes reason `""`: no version (it recurs
-  daily and would fill the ring; the scheduler restores its preset itself), but the
-  write is known.
-- **Hand edits:** index.json keeps the hash of the text the daemon last wrote or saw.
-  At start (`Store.Start`, serve after the state dir) and before the next write a file
-  that differs is stored as `external edit` (`by` empty); the write's own version would
-  hold the same text and is skipped.
-- **Who:** every route that writes the config (`route.WritesConfig`: PUT /api/config,
-  import, preset apply, dashboard, assist, alerts, the three tls actions, account
-  password and user, restore) runs inside `Deps.ConfigActor(by)`; cmd's `withActor`
-  holds `actorMu` for the request and publishes the caller (`user:<name>`,
-  `token:<name>`, `cli`) for `saveConfigWhy`. Lock order `actorMu` → `configFileMu`.
-  Writes outside a request (scheduler, certificate manager at start, the legacy-hash
-  upgrade at login) carry no caller.
-- **Storage:** `<state dir>/config-versions/NNNN.toml` + `index.json` (ids rising,
-  newest last), files 0600, directory 0700, written atomically; the 11th version
-  removes the oldest file. Never in the settings bundle; removed with the state
-  directory (uninstall, purge). Without a state dir there are no versions (501).
-- **Failures** never block the config write: one log line per cause (`config
-  versions: store: …`), the write goes on.
-- **Restore** (`fileVersions.Restore`): validated like an import (a text that does not
-  parse is refused, 400, nothing written), the tls keys pinned, written with reason
-  `restore <id>` (the text before becomes a version, so a restore is undone the same
-  way), then the reload hook; `ErrRestartRequired` → 202. Keys that take effect at the
-  next start only are written and reported (`restart_keys`: `web.listen`, `web.auth`,
+  versioned (they are created and deleted, never overwritten). A version's `by` and
+  `reason` name the write that **replaced** it.
+- **When:** every write of the daemon goes through `saveVersioned` under
+  `configFileMu` (editor `PUT /api/config`, preset apply, assist switch, account, alert
+  transport, dashboard sensors, certificate manager — its `writeMode` too since rc2 —,
+  import, restore). Before it writes it hands the text on disk to
+  `Store.Before(path, by, reason, quiet)`, which returns the id it stored (0: none); a
+  write that leaves the text as it is stores nothing, a text equal to the newest
+  version neither. `Store.Wrote` keeps a copy of what was written
+  (`config-versions/current.toml`). The scheduler's preset switch is quiet
+  (`saveConfigQuiet`, `by` = `schedule`): no version (it recurs daily and would fill the
+  ring), unless it is about to overwrite a hand edit.
+- **Hand edits:** a file that differs from `current.toml` was edited by hand. At start
+  (`Store.Start`) and before the next write the daemon's last text is stored with the
+  reason `external edit` (`by` empty: it was replaced by a hand edit); before a write
+  the hand-edited text follows, named after that write (`by`, `reason`; also after a
+  quiet one). Both can thus be restored.
+- **Who:** a request's handler wraps only its store call (not the body read) in
+  `Deps.ConfigActor(by)` (`asCaller`; the legacy-hash upgrade at login as the daemon):
+  cmd's `withActor` takes `actorMu` for that call and publishes the caller
+  (`user:<name>`, `token:<name>`, `cli`); the call reports back the version it stored
+  and the hash of the text it wrote. Lock order `actorMu` → the certificate manager's
+  `mu` → `configFileMu` → store mutexes and the manager's `pinMu` (`pinConfig` takes
+  only `pinMu`, so `writeMode` may take `configFileMu`). Writes outside a request name
+  their author themselves (the scheduler `schedule`, the certificate manager at start
+  none) and never read the actor.
+- **Undo:** `PUT /api/config`, preset apply and the assist switch answer `version`
+  (the id the write stored, 0: none) and `config_sha256` (the text written). The
+  dashboard's Undo restores exactly that version with `if_current` = that hash; a file
+  that changed meanwhile (another user, the scheduler) is 409 and nothing is undone.
+- **Storage:** `<state dir>/config-versions/NNNN.toml`, `index.json` (ids rising,
+  newest last) and `current.toml`; files 0600, directory 0700, written atomically. The
+  11th version drops the oldest from the index; its file is removed only after the
+  index is saved. An `index.json` that does not parse is moved aside
+  (`index.json.corrupt-<unix>`, logged) and a fresh index continues after the highest
+  file. Never in the settings bundle; removed with the state directory (uninstall,
+  purge). Without a state dir there are no versions (501).
+- **Failures** never block the config write: one log line per cause (operation and
+  OS error, without the temp file names), the write goes on.
+- **Restore** (`fileVersions.Restore(id, ifCurrent)`): refused with `ErrChanged` (409)
+  when `if_current` no longer matches; validated like an import (a text that does not
+  parse, or that carries the password placeholder `<unchanged>`, is refused, 400,
+  nothing written), the tls keys pinned, written with reason `restore <id>` (the text
+  before becomes a version, its id is the answer's `version` — 0 when none was stored),
+  then the reload hook; `ErrRestartRequired` → 202. Keys that take effect at the next
+  start only are written and reported (`restart_keys`: `web.listen`, `web.auth`,
   `web.user`, `web.password_hash`, `web.allowed_hosts`, `web.behind_tls_proxy`,
   `log.*`, `daemon.profile`; the tls keys are pinned). The running web credentials are
-  not swapped by a restore: a restored password applies after a restart. During full
-  cooling a restore is accepted and applies after it like any change. Event `restore`
-  (Operation group) with the version number.
+  not swapped by a restore: a restored password applies after a restart. The detail
+  (`Impact`) lists the restart keys and warnings ahead of a restore: sign-in switched
+  off, the listener leaving loopback, another user; the dashboard and `n5-fangov config
+  restore` (y/N unless `--yes`) show them with the password note. During full cooling a
+  restore is accepted and applies after it like any change. Event `restore` (Operation
+  group) with the version number.
 - **Secret:** `password_hash` never leaves through the API or the CLI: version and
   current text are redacted (`"<redacted>"`; `"<redacted, changed>"` in a version whose
-  hash differs from the current one, plus `password_changed`), error texts too
-  (`redactErr`). The diff runs on the redacted texts.
-- **Diff:** `cfgver.Diff` is a plain LCS line diff (files are a few KiB, no library);
-  `cfgver.Sections` names the sections whose non-comment lines differ (`[alert]`,
-  `[[channel]] hdd`, `[[assist]] hdd` with its sources, `[[schedule]] quiet`). The list
-  shows for each version the sections the next state (the next version or the current
-  file) changed; the detail the diff current → version (what a restore changes) and its
-  `changes`.
-- **CLI:** `config versions | diff ID | restore ID` over the socket; without the daemon
-  `versions` and `diff` read the directory and the config file, `restore` is refused.
+  hash differs from the current one, plus `password_changed`); every hash of the
+  current file and of all stored versions is removed as a substring, anything shaped
+  like a hash (`pbkdf2$…`, 64 hex) too, and a line naming `password_hash` that is not a
+  plain assignment is blanked — so a version that does not parse (inline table,
+  multi-line string) leaks nothing. Error texts likewise (`redactErr`). The diff runs on
+  the redacted texts.
+- **Diff:** `cfgver.Diff` cuts the common head and tail, then a plain LCS line diff
+  (no library); a middle larger than `MaxCells` (4 Mi cells — a 256 KiB file can have
+  130 000 lines) counts as replaced (all `-`, then all `+`), so a large config cannot
+  exhaust the daemon's memory. `cfgver.Sections` names the sections whose non-comment
+  lines differ (`[alert]`, `[[channel]] hdd`, `[[assist]] hdd` with its sources,
+  `[[schedule]] quiet`). The list shows for each version the sections the next state
+  (the next version or the current file) changed; the detail the diff current → version
+  (what a restore changes), its `changes`, `restart_keys` and `warnings`.
+- **CLI:** `config versions | diff ID | restore ID [--yes]` over the socket; without the
+  daemon `versions` and `diff` read the directory and the config file, `restore` is
+  refused.
 ## 7. Alerts (internal/alert)
 
 ```go
@@ -1106,8 +1130,8 @@ counts as signed in, `via: "none"`):
 | `POST /api/preview` | protected, `read` | optional JSON `{channels[], preset, assist{}, span: 24h\|7d}` ≤ 256 KiB; channels validated like the preset body (pwm/stop default to the running channel), not with `preset` | 200 `{span, step, note, order[], channels{<name>: {series[{ts, actual, preview, boost}], summary{actual, preview}, error?, measured?}}}` (section 6 "Preview"); 400 invalid body, curve rules, unknown channel, assist without a table, bad span; 404 unknown preset; 429 another preview runs; 501 no previewer. Writes nothing |
 | `PUT /api/assist/{name}` | protected, `control` | `{enabled: bool}` ≤ 4 KiB (unknown members 400) | writes only the `enabled` line of the channel's `[[assist]]` table (section 3), then the file's `[[assist]]` tables to `Controller.ApplyAssists` (next cycle; a table added by hand included): 200 `{ok, channel, enabled}`; 404 no valid table in the file; 500 not written, or written but the table does not fit the running channels (`ReloadError`; nothing applied, restart); 501 no store |
 | `GET /api/config/versions` | protected, `admin` | — | `[{id, ts, by, reason, sections[]}]` newest first (section 6d); 501 without versions |
-| `GET /api/config/versions/{id}` | protected, `admin` | — | `{id, ts, by, reason, sections[], raw, diff[{op, line}], changes[], removed, added, password_changed}` (redacted; diff current → version); 404 unknown |
-| `POST /api/config/versions/{id}/restore` | protected, `admin`, CSRF | — | 200/202 `{ok, restored, version, restart_required, restart_keys[], warnings[]}`; 400 does not parse (nothing written); 404; 500 not written / not reloaded (`ReloadError`) |
+| `GET /api/config/versions/{id}` | protected, `admin` | — | `{id, ts, by, reason, sections[], raw, diff[{op, line}], changes[], removed, added, password_changed, restart_keys[], warnings[]}` (redacted; diff current → version); 404 unknown |
+| `POST /api/config/versions/{id}/restore` | protected, `admin`, CSRF | optional `{if_current}` | 200/202 `{ok, restored, version, config_sha256, restart_required, restart_keys[], warnings[]}`; 400 does not parse or placeholder (nothing written); 404; 409 `if_current` stale; 500 not written / not reloaded (`ReloadError`) |
 | `GET /api/profiles` | protected | — | `[{name, title, verified, hw_status, notes, active}]` (`hw_status` of this machine per profile, `verified` = validated or tested) |
 | `GET /api/log?lines=N` | protected | 1..5000 | `{lines[], source: file\|journal}` |
 | `GET /api/log/export` | protected | — | text attachment `n5-fangov-<host>-<ts>.log` (current file; journal: newest 100000 lines) |

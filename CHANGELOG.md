@@ -24,16 +24,22 @@ apart from #63.
 - **Config versions with diff and undo (0.7.0 point 4).** Before every write of
   `config.toml` the daemon keeps the text it replaces as a version — time, who
   (`user:<name>`, `token:<name>`, `cli`) and why (`editor`, `preset quiet`, `assist hdd
-  on`, `account`, `alerts`, `dashboard`, `tls`, `import`, `restore 7`); a change made by
-  hand is kept as `external edit` at start or before the next write. Ten are kept, an
-  unchanged text makes none, scheduled preset switches make none. Stored in
+  on`, `account`, `alerts`, `dashboard`, `tls`, `import`, `restore 7`). A change made by
+  hand (found at start or before the next write) keeps both texts: the daemon's last one
+  (replaced by `external edit`) and the hand-edited one (replaced by the next write).
+  Ten are kept, an unchanged text makes none, scheduled preset switches make none unless
+  they overwrite a hand edit. Stored in
   `/var/lib/n5-fangov/config-versions/` (0600, directory 0700), never in the settings
   bundle, removed with the state directory. Settings → *Config versions* (the module
   `cv.js`, loaded on first use): list with the sections each change touched, *Diff*
   against the current file (red goes, green comes), *Restore* with a confirm naming the
-  change and warning when it resets the password. *Undo* for 10 s in the toast after a
-  preset apply, *Apply to daemon* in the curve editor and the assist switch. A restore
-  is validated like an import (a text that does not parse: 400, nothing written), the
+  change, the restart-only keys and warnings (sign-in off, listener leaving loopback,
+  another user, a password reset). *Undo* for 10 s in the toast after a preset apply,
+  *Apply to daemon* in the curve editor and the assist switch: those answers name the
+  version they stored and the text they wrote; Undo restores exactly that version and
+  refuses (409, nothing undone) when the file changed meanwhile. A restore
+  is validated like an import (a text that does not parse or carries the password
+  placeholder: 400, nothing written), the
   text before becomes a version again, restart-only keys (`web.listen`, `web.auth`, the
   web user and password, `log.*`, the profile) are written and reported as *applies after
   restart*; it is accepted during full cooling. `password_hash` never appears in the API,
@@ -41,7 +47,9 @@ apart from #63.
   blocks the config write. API (scope `admin`): `GET /api/config/versions`, `GET
   /api/config/versions/{id}`, `POST /api/config/versions/{id}/restore`; CLI `n5-fangov
   config versions | diff ID | restore ID` (list and diff also without the daemon); event
-  `restore` (group Operation). Diff: a plain line diff in Go, no new dependency
+  `restore` (group Operation); `config restore` asks y/N (`--yes`). Diff: a line diff in Go
+  with the common head and tail cut and a bounded table (a huge config counts as
+  replaced instead of exhausting memory), no new dependency
   ([Dashboard](docs/04-dashboard.md#config-versions), [API](docs/12-api.md#config-versions)).
 - **Overview tiles: hover on the sparkline.** Moving the pointer over the 2 h line (a tap
   on a phone) shows a vertical line, a dot on the curve and a tooltip with the nearest

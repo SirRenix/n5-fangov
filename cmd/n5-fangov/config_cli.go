@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"io"
@@ -27,19 +28,23 @@ type versionLine struct {
 	Reason          string      `json:"reason"`
 	Sections        []string    `json:"sections"`
 	Diff            []cfgver.Op `json:"diff"`
+	Changes         []string    `json:"changes"`
 	Removed         int         `json:"removed"`
 	Added           int         `json:"added"`
 	PasswordChanged bool        `json:"password_changed"`
+	RestartKeys     []string    `json:"restart_keys"`
+	Warnings        []string    `json:"warnings"`
 }
 
-const configUsage = "usage: n5-fangov config versions | diff ID | restore ID"
+const configUsage = "usage: n5-fangov config versions | diff ID | restore ID [--yes]"
 
 // cmdConfig is the config versions from the shell (DESIGN "Config
 // versions"):
 //
 //	config versions      list, newest first
 //	config diff ID       the diff current → version ID (password_hash redacted)
-//	config restore ID    restore version ID (through the daemon only)
+//	config restore ID    restore version ID (through the daemon only; asks first,
+//	                     --yes does not)
 //
 // With the daemon it asks over the socket; without it versions and diff
 // read <state dir>/config-versions and the config file, restore is refused.
@@ -48,7 +53,10 @@ func cmdConfig(args []string) int {
 		fmt.Fprintln(os.Stderr, configUsage)
 		return exitUsage
 	}
-	id := 0
+	id, yes := 0, false
+	if args[0] == "restore" && len(args) == 3 && args[2] == "--yes" {
+		args, yes = args[:2], true
+	}
 	if args[0] == "diff" || args[0] == "restore" {
 		if len(args) != 2 {
 			fmt.Fprintln(os.Stderr, configUsage)
@@ -71,7 +79,7 @@ func cmdConfig(args []string) int {
 	case "diff":
 		err = configDiff(os.Stdout, runDir(), stateDir(), defaultConfigPath, id)
 	case "restore":
-		err = configRestore(os.Stdout, runDir(), id)
+		err = configRestore(os.Stdout, os.Stdin, runDir(), id, yes)
 	default:
 		fmt.Fprintln(os.Stderr, configUsage)
 		return exitUsage
@@ -180,18 +188,48 @@ func configDiff(w io.Writer, run, state, cfgPath string, id int) error {
 	return nil
 }
 
-func configRestore(w io.Writer, run string, id int) error {
+// configRestore shows what a restore changes (lines, sections, restart-only
+// keys, the warnings, a password change), asks unless yes, then restores
+// through the daemon and names the version that undoes it.
+func configRestore(w io.Writer, in io.Reader, run string, id int, yes bool) error {
+	a := newAPI(run)
+	var v versionLine
+	err := a.get(fmt.Sprintf("/api/config/versions/%d", id), &v)
+	if errors.Is(err, errNoDaemon) {
+		return errors.New("the daemon is not running: restore refused (it validates, writes and reloads through the daemon); start it first")
+	}
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(w, "restore version %d (%s, %s): %d line(s) go, %d come", id, whoOf(v.By), v.Reason, v.Removed, v.Added)
+	if len(v.Changes) > 0 {
+		fmt.Fprintf(w, " in %s", strings.Join(v.Changes, ", "))
+	}
+	fmt.Fprintln(w)
+	if len(v.RestartKeys) > 0 {
+		fmt.Fprintf(w, "applies after restart: %s\n", strings.Join(v.RestartKeys, ", "))
+	}
+	for _, x := range v.Warnings {
+		fmt.Fprintln(w, "warning:", x)
+	}
+	if v.PasswordChanged {
+		fmt.Fprintln(w, "warning: this also resets the web password to the one of that version (after a restart)")
+	}
+	if !yes {
+		fmt.Fprint(w, "Restore? [y/N] ")
+		line, _ := bufio.NewReader(in).ReadString('\n')
+		if a := strings.ToLower(strings.TrimSpace(line)); a != "y" && a != "yes" {
+			fmt.Fprintln(w, "nothing restored")
+			return nil
+		}
+	}
 	var res struct {
 		Version         int      `json:"version"`
 		RestartRequired bool     `json:"restart_required"`
 		RestartKeys     []string `json:"restart_keys"`
 		Warnings        []string `json:"warnings"`
 	}
-	err := newAPI(run).do(http.MethodPost, fmt.Sprintf("/api/config/versions/%d/restore", id), nil, &res)
-	if errors.Is(err, errNoDaemon) {
-		return errors.New("the daemon is not running: restore refused (it validates, writes and reloads through the daemon); start it first")
-	}
-	if err != nil {
+	if err := a.do(http.MethodPost, fmt.Sprintf("/api/config/versions/%d/restore", id), nil, &res); err != nil {
 		return err
 	}
 	fmt.Fprintf(w, "restored version %d", id)

@@ -26,6 +26,7 @@ type fakeVersions struct {
 	vers     map[int][]byte
 	cur      []byte
 	restored []int
+	ifCur    []string
 	err      error
 	res      RestoreResult
 }
@@ -47,10 +48,17 @@ func (f *fakeVersions) Next(id int) ([]byte, error) {
 	return nil, nil
 }
 func (f *fakeVersions) Current() ([]byte, error) { return f.cur, nil }
-func (f *fakeVersions) Restore(id int) (RestoreResult, error) {
+func (f *fakeVersions) Impact(raw []byte) ([]string, []string) {
+	if strings.Contains(string(raw), "transport = \"auto\"") {
+		return []string{"web.listen"}, []string{"web.auth basic → none: the dashboard needs no sign-in after a restart"}
+	}
+	return nil, nil
+}
+func (f *fakeVersions) Restore(id int, ifCurrent string) (RestoreResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.restored = append(f.restored, id)
+	f.ifCur = append(f.ifCur, ifCurrent)
 	return f.res, f.err
 }
 
@@ -70,11 +78,11 @@ func versionsEnv(t *testing.T) (*env, *fakeVersions, *[]string, *events.Log) {
 	e.withDeps(t, AuthConfig{}, func(d *Deps) {
 		d.Versions = f
 		d.Events = el
-		d.ConfigActor = func(by string) func() {
+		d.ConfigActor = func(by string) func() (int, string) {
 			mu.Lock()
 			actors = append(actors, by)
 			mu.Unlock()
-			return func() {}
+			return func() (int, string) { return 7, "abc" }
 		}
 	})
 	return e, f, &actors, el
@@ -111,6 +119,13 @@ func TestConfigVersionsAPI(t *testing.T) {
 	if b := unesc.Replace(r.body); !strings.Contains(b, `"password_changed":false`) || !strings.Contains(b, `password_hash = \"<redacted>\"`) {
 		t.Errorf("same hash: %s", r.body)
 	}
+	if b := unesc.Replace(r.body); strings.Contains(b, "restart_keys") {
+		t.Errorf("version 2 has no restart keys: %s", b)
+	}
+	r = e.do(t, "GET", "/api/config/versions/1", "", nil)
+	if b := unesc.Replace(r.body); !strings.Contains(b, `"restart_keys":["web.listen"]`) || !strings.Contains(b, `"warnings":["web.auth basic → none`) {
+		t.Errorf("impact in the detail: %s", b)
+	}
 	wantCode(t, e.do(t, "GET", "/api/config/versions/9", "", nil), 404)
 	wantCode(t, e.do(t, "GET", "/api/config/versions/x", "", nil), 400)
 
@@ -127,6 +142,15 @@ func TestConfigVersionsAPI(t *testing.T) {
 	if len(evs) != 1 || evs[0].Kind != events.Restore || !strings.Contains(evs[0].Text, "version 1") {
 		t.Errorf("events %+v", evs)
 	}
+	// the Undo: if_current passed through; a changed file is 409
+	wantCode(t, e.do(t, "POST", "/api/config/versions/1/restore", `{"if_current":"abc"}`, csrf), 200)
+	if f.ifCur[len(f.ifCur)-1] != "abc" {
+		t.Errorf("if_current %v", f.ifCur)
+	}
+	wantCode(t, e.do(t, "POST", "/api/config/versions/1/restore", `{"if_now":1}`, csrf), 400)
+	f.err = fmt.Errorf("version 1 not restored: %w", ErrChanged)
+	wantError(t, e.do(t, "POST", "/api/config/versions/1/restore", `{"if_current":"abc"}`, csrf), 409, "changed meanwhile")
+	f.err = nil
 	f.res = RestoreResult{RestartRequired: true}
 	wantCode(t, e.do(t, "POST", "/api/config/versions/2/restore", "", csrf), 202)
 	// refused: 400 with the hash redacted out of the message; unknown 404; write 500
@@ -140,7 +164,9 @@ func TestConfigVersionsAPI(t *testing.T) {
 	wantError(t, e.do(t, "POST", "/api/config/versions/1/restore", "", csrf), 500, "not applied")
 	// the other config writers run inside ConfigActor too
 	n := len(*actors)
-	e.do(t, "PUT", "/api/config", "[daemon]\n", csrf)
+	if r := e.do(t, "PUT", "/api/config", "[daemon]\n", csrf); r.code == 200 && !strings.Contains(r.body, `"version":7`) {
+		t.Errorf("PUT /api/config answer lacks the version: %s", r.body)
+	}
 	if len(*actors) != n+1 {
 		t.Errorf("PUT /api/config outside ConfigActor")
 	}
@@ -158,6 +184,27 @@ func TestVersionDiffRedaction(t *testing.T) {
 	for _, o := range d {
 		if strings.Contains(o.Line, "pbkdf2") {
 			t.Errorf("diff line %q", o.Line)
+		}
+	}
+	// versions that do not parse: an inline table, a multi-line string, a
+	// legacy hex hash; and a hash only another version knows
+	legacy := strings.Repeat("ab", 32)
+	for _, v := range []string{
+		"web = { user = \"a\", password_hash = \"" + vHash + "\" \n[broken",
+		"[web]\npassword_hash = \"\"\"\n" + vHash + "\n\"\"\"\n[broken",
+		"[web]\npassword_hash = \"" + legacy + "\"\n[broken",
+		"[web\n# old: zz" + strings.Repeat("9", 40) + "zz\n",
+	} {
+		red, d, _ := VersionDiff([]byte(v), []byte("[web]\n"), "zz"+strings.Repeat("9", 40)+"zz")
+		for _, l := range append(strings.Split(red, "\n"), func() (o []string) {
+			for _, x := range d {
+				o = append(o, x.Line)
+			}
+			return
+		}()...) {
+			if strings.Contains(l, "pbkdf2") || strings.Contains(l, legacy) || strings.Contains(l, strings.Repeat("9", 40)) || strings.Contains(l, strings.Repeat("1b", 32)) {
+				t.Errorf("unparseable version leaks: %q", l)
+			}
 		}
 	}
 }

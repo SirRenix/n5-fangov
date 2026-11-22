@@ -496,10 +496,12 @@ sessions and the history are never part of it
 
 The daemon keeps the last 10 versions of `config.toml`: before every write of its own
 (curve editor, preset apply, assist switch, account, certificate, alert transport,
-dashboard sensors, import, restore) it stores the text on disk, and a change made by
-hand is stored as *external edit* at start or before the next write. Scheduled preset
-switches are not versioned (they recur daily and would fill the ten places), presets
-themselves neither. *Show versions* lists them newest first: number, when it was taken
+dashboard sensors, import, restore) it stores the text on disk. When it finds a change
+made by hand (at start or before its next write), it keeps its own last text as a
+version replaced by *external edit*, and the hand-edited text as the version the next
+write replaced — both can be restored. Scheduled preset switches are not versioned
+(they recur daily and would fill the ten places) unless they overwrite a hand edit;
+presets themselves are not versioned. *Show versions* lists them newest first: number, when it was taken
 and by whom (`user:<name>`, `token:<name>`, `cli`; *by hand* or *daemon* without a
 caller), the change that replaced it (*Replaced by*: `editor`, `preset quiet`,
 `assist hdd on`, `account`, `restore 7` …) and the sections that change touched
@@ -508,8 +510,9 @@ caller), the change that replaced it (*Replaced by*: `editor`, `preset quiet`,
 - **Diff** shows the lines a restore would change against the current file: red goes,
   green comes. The password hash is never shown: `password_hash = "<redacted>"`, and
   `"<redacted, changed>"` when the version's hash differs from the current one.
-- **Restore** asks first with the summary (lines and sections) and, when the password
-  would change, says so. It is validated like an import (a version that does not
+- **Restore** asks first with the summary (lines and sections), the keys that apply
+  only after a restart and the warnings: sign-in switched off, the dashboard leaving
+  loopback, another user, a password change. It is validated like an import (a version that does not
   parse is refused, nothing written), written and reloaded; the state before becomes
   a version itself, so a restore can be undone the same way. Keys that only take
   effect at the next start (`web.listen`, `web.auth`, the web user and password, the
@@ -518,7 +521,9 @@ caller), the change that replaced it (*Replaced by*: `editor`, `preset quiet`,
   once it ends, like any change.
 - **Undo:** after *Apply* of a preset, *Apply to daemon* in the curve editor and the
   assist switch, the toast reads *… applied — Undo* for 10 s when the write stored a
-  new version; *Undo* restores it (no question unless the password would change).
+  version; *Undo* restores exactly that version (no question unless there is something
+  to warn about). If the file changed in between (another user, a scheduled switch),
+  nothing is undone and the toast says so — use the card then.
 
 The list and the restore need the `admin` scope (a session has it). The module behind
 the card (`cv.js`) is loaded on the first use. A restore appears as a *restore* marker
