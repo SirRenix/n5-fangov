@@ -61,7 +61,7 @@ window.n5mock = (() => {
 	// assist like the daemon: per source 0 → boost between start and full, the maximum counts, mode auto only (no hysteresis / min_on in the mock)
 	const assistOf = (ch, now) => { const a = cfg.assist.find(x => x.channel === ch.name); if (!a) return;
 		const srcs = a.source.map(s => { const tv = +(sv(s.sensor, now) + (Q.get('assist') === '1' && s.sensor === 'hwmon:amdgpu:temp1' ? 14 : 0)).toFixed(1);
-			return { sensor: s.sensor, temp: tv, boost: tv <= s.start ? 0 : tv >= s.full ? s.boost : Math.round(s.boost * (tv - s.start) / (s.full - s.start)) }; });
+			return { sensor: s.sensor, temp: tv, start: s.start, full: s.full, boost: tv <= s.start ? 0 : tv >= s.full ? s.boost : Math.round(s.boost * (tv - s.start) / (s.full - s.start)) }; });
 		const top = srcs.reduce((x, y) => y.boost > x.boost ? y : x, { boost: 0 }), b = a.enabled && ch.mode === 'auto' ? top.boost : 0;
 		if (b) Object.assign(ch, { target: Math.min(255, ch.target + b), duty: Math.min(255, ch.duty + b) });
 		ch.assist = M.in ? { enabled: a.enabled, boost: b, source: b ? top.sensor : undefined, sources: srcs } : { enabled: a.enabled, boost: b }; };

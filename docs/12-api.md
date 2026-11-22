@@ -139,7 +139,7 @@ Basic auth only, never a token.
 | `POST` | `/api/panic` | full cooling: `{"action":"start"}` (also to extend: 10 min from now) or `{"action":"stop"}`; answers `{active, until}`; 409 with the reason when the daemon cannot drive the fans — [below](#full-cooling) |
 | `POST` | `/api/presets/{name}/apply` | apply a preset (merge by pwm; 202 when a restart is needed) |
 | `PUT` | `/api/dashboard` | set the watched sensor ids |
-| `PUT` | `/api/assist/{name}` | switch the channel's `[[assist]]` table: `{"enabled": true}` / `false`; writes only that `enabled` line, applied on the next cycle; 404 without a table ([Assist](#assist)) |
+| `PUT` | `/api/assist/{name}` | switch the channel's `[[assist]]` table: `{"enabled": true}` / `false`; writes only that `enabled` line, the file's `[[assist]]` tables apply on the next cycle; 404 without a table ([Assist](#assist)) |
 | `POST` | `/api/alerts/ack` | acknowledge alerts: `{"ids":[41,42]}` or `{"all":true,"up_to":42}` (the newest id the client has seen); display only, [Alerts](07-alerts.md#acknowledging) |
 
 **Scope `admin`**
@@ -216,21 +216,24 @@ curl -H "Authorization: Bearer n5t_..." -H "Content-Type: application/json" \
 Scope `control`. 200 `{"ok": true, "channel": "hdd", "enabled": true}`; 404 when the
 channel has no valid `[[assist]]` table in `config.toml`; 400 for a body other than
 `{"enabled": true|false}`; 500 when the file could not be written, or was written but
-the running daemon has no such table (edited by hand without a reload). The daemon
-writes only the `enabled` line, comments and the other tables keep their bytes
-([Assist](06-configuration.md#assist)).
+the table does not fit the running channel set (channels edited by hand: restart). The
+daemon writes only the `enabled` line, comments and the other tables keep their bytes
+([Assist](06-configuration.md#assist)). With the switch the daemon takes all
+`[[assist]]` tables of the file on the next cycle: a table added, changed or removed by
+hand takes effect with it, no restart.
 
 `GET /api/state` carries per channel with a table:
 
 ```json
 "assist": {"enabled": true, "boost": 45, "source": "hwmon:amdgpu:temp1",
-           "sources": [{"sensor": "hwmon:amdgpu:temp1", "temp": 58.7, "boost": 45},
-                       {"sensor": "nvme:max", "temp": 49.2, "boost": 40}]}
+           "sources": [{"sensor": "hwmon:amdgpu:temp1", "temp": 58.7, "boost": 45, "start": 50, "full": 58},
+                       {"sensor": "nvme:max", "temp": 49.2, "boost": 40, "start": 46, "full": 50}]}
 ```
 
 `boost` is what the target carries this cycle: 0 when off, outside mode `auto` or with
 every source below `start`. `sources[].boost` is what each source alone gives, also
-while assist is off; `temp` is `-999` for an unreadable source. Anonymous callers get
+while assist is off; `temp` is `-999` for an unreadable source; `start` and `full` are the
+source's thresholds from the config (°C, read-only). Anonymous callers get
 `enabled` and `boost` only. A channel without a table has no `assist` member.
 
 ## Preview

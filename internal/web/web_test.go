@@ -1416,7 +1416,7 @@ func TestStaticIndex(t *testing.T) {
 	}
 	// raised from 128 KiB in 0.4.0 (badge lists, active set, Save as preset…, sidebar
 	// toggle) and to 152 KiB for 0.7.0 (assist, preview, event marks, panic, config
-	// versions); the next raise splits app.js into modules instead (DESIGN 11a)
+	// versions); since 0.7.0-rc2 growth goes into modules loaded on demand (pv.js), not a raise (DESIGN 11a)
 	if len(r.body) > 152*1024 {
 		t.Errorf("app.js is %d bytes, budget 152 KiB (DESIGN 11a)", len(r.body))
 	}
@@ -1448,8 +1448,24 @@ func TestStaticIndex(t *testing.T) {
 	if html, _ := staticFS.ReadFile("static/index.html"); strings.Contains(string(html), "mock.js") {
 		t.Errorf("index.html references mock.js; the production page must never request it")
 	}
-	if js, _ := staticFS.ReadFile("static/app.js"); !strings.Contains(string(js), `src: 'mock.js'`) || !strings.Contains(string(js), "Q.get('mock') === '1'") {
+	if js, _ := staticFS.ReadFile("static/app.js"); !strings.Contains(string(js), "if (MOCK) js('mock.js')") || !strings.Contains(string(js), "Q.get('mock') === '1'") {
 		t.Errorf("app.js must insert mock.js only behind ?mock=1")
+	}
+	// the preview module (DESIGN 11a: rare parts are modules loaded on demand, not a raise of the app.js budget): same
+	// content type, its own budget, inserted by app.js on the first preview, never referenced by index.html
+	r = e.do(t, "GET", "/pv.js", "", nil)
+	wantCode(t, r, 200)
+	if !strings.HasPrefix(r.hdr.Get("Content-Type"), "text/javascript") || !strings.Contains(r.body, "window.n5pv") || !strings.Contains(r.body, "/api/preview") {
+		t.Errorf("pv.js: %q %.100s", r.hdr.Get("Content-Type"), r.body)
+	}
+	if len(r.body) > 24*1024 {
+		t.Errorf("pv.js is %d bytes, budget 24 KiB (DESIGN 11a)", len(r.body))
+	}
+	if html, _ := staticFS.ReadFile("static/index.html"); strings.Contains(string(html), "pv.js") {
+		t.Errorf("index.html references pv.js; the module is loaded on demand")
+	}
+	if js, _ := staticFS.ReadFile("static/app.js"); !strings.Contains(string(js), "js('pv.js')") || strings.Contains(string(js), "/api/preview'") {
+		t.Errorf("app.js must load pv.js on demand and leave POST /api/preview to it")
 	}
 	r = e.do(t, "GET", "/app.css", "", nil)
 	wantCode(t, r, 200)
@@ -1463,6 +1479,7 @@ func TestStaticIndex(t *testing.T) {
 	wantCode(t, e.do(t, "GET", "/other.txt", "", nil), 404)
 	wantCode(t, e.do(t, "GET", "/static/app.js", "", nil), 404)
 	wantCode(t, e.do(t, "GET", "/static/mock.js", "", nil), 404)
+	wantCode(t, e.do(t, "GET", "/static/pv.js", "", nil), 404)
 	wantCode(t, e.do(t, "GET", "/mock.js.map", "", nil), 404)
 }
 

@@ -172,8 +172,8 @@ func (s *Server) routeTable() []route {
 			Summary: "Set the extra sensors recorded for the dashboard chart", Body: jsonBody("Dashboard", "sensor ids, at most 8"), Response: "Dashboard",
 			Responses: map[int]string{200: "saved; unresolvable ids reported as warnings", 400: "too many or malformed ids", 500: "config not written", 501: "no dashboard store"}},
 		{Method: "PUT", Path: "/api/assist/{name}", Handler: s.putAssist, Class: classProtected, Scope: scopeControl,
-			Summary: "Switch the channel's [[assist]] table on or off (only its enabled line is written); applied on the next cycle", Body: jsonBody("AssistSwitch", "enabled true or false"), Response: "AssistSwitch",
-			Responses: map[int]string{200: "written and applied on the next cycle", 400: "invalid name or body", 404: "the channel has no [[assist]] table", 413: "body too large", 500: "config not written, or written but not applied", 501: "no assist store"}},
+			Summary: "Switch the channel's [[assist]] table on or off (only its enabled line is written); the file's [[assist]] tables are applied on the next cycle, a table added by hand included", Body: jsonBody("AssistSwitch", "enabled true or false"), Response: "AssistSwitch",
+			Responses: map[int]string{200: "written and applied on the next cycle", 400: "invalid name or body", 404: "the channel has no [[assist]] table", 413: "body too large", 500: "config not written, or written but the table does not fit the running channels (restart)", 501: "no assist store"}},
 		// ---- protected, admin --------------------------------------------
 		{Method: "GET", Path: "/api/config", Handler: s.getConfig, Class: classProtected, Scope: scopeAdmin,
 			Summary: "Config file text and parsed values (password_hash redacted)", Responses: map[int]string{200: "raw and parsed config", 500: "config unreadable", 501: "no config store"}},
@@ -414,10 +414,12 @@ func openAPISchemas() map[string]any {
 			"enabled": boolean("the table is switched on"),
 			"boost":   integer("PWM points added to the curve target this cycle; 0 when off, outside mode auto or with every source below start"),
 			"source":  str("sensor id the boost comes from; absent at 0; signed in only"),
-			"sources": arrayOf(object("one source; signed in only", []string{"sensor", "temp", "boost"}, map[string]any{
+			"sources": arrayOf(object("one source; signed in only", []string{"sensor", "temp", "boost", "start", "full"}, map[string]any{
 				"sensor": str("sensor id"),
 				"temp":   number("reading in °C; -999 when unreadable"),
 				"boost":  integer("the boost this source alone gives (also while assist is off)"),
+				"start":  integer("°C at which the boost starts (config, read-only)"),
+				"full":   integer("°C from which the full boost applies (config, read-only)"),
 			})),
 		}),
 		"PreviewRequest": object("POST /api/preview body; every member optional", nil, map[string]any{

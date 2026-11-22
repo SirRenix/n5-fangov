@@ -12,6 +12,55 @@ drove the 0.3.1 work is `docs/AUDIT.md` (code) and `docs/DESIGN-AUDIT.md`
 (dashboard); the reviews of the 0.4.0 redesign are referenced as `C01`… (code) and
 `D01`… (design), the findings of its release gate as `G1`…`G12`, in the 0.4.0 section.
 
+## [Unreleased]
+
+Preview and assist explained on the page, the preview as a module loaded on demand, hover
+on the Overview tiles, and a hand-added `[[assist]]` table without a restart (BACKLOG #63).
+The regulation is unchanged apart from #63.
+
+### Added
+
+- **Overview tiles: hover on the sparkline.** Moving the pointer over the 2 h line (a tap
+  on a phone) shows a vertical line, a dot on the curve and a tooltip with the nearest
+  point of the already loaded history: `Sun 16:16 · 40.0 °C · duty 103 (40 %) · +45
+  assist` (the assist part only while it adds). No extra request. The tile's `title`
+  "temperature, last 2 h" is gone; the canvas keeps its `aria-label`.
+- **`GET /api/state`: `start` and `full` per assist source** (°C, from the config,
+  read-only, signed in only like `sources[]`). Additive.
+- **"What is this?"** links in the Assist block and the preview, to the sections Assist
+  ([Configuration](docs/06-configuration.md#assist)) and Preview
+  ([Dashboard](docs/04-dashboard.md#preview)) of the repository named by `/api/about`.
+
+### Changed
+
+- **Assist block on the Fans page:** the sentence *Raises this fan when other parts get
+  hot (amdgpu, nvme:max).* and a value line with the sources and their thresholds —
+  `now +0 — amdgpu 45.0 °C (starts at 50), nvme:max 43.0 °C (starts at 46)`, under a boost
+  `now +45 — amdgpu 59.0 °C (full at 58)`. The button below names the comparison and
+  follows the switch: *Compare without assist* / *Compare with assist* (was *Preview*).
+- **Preview:** the header names the comparison (*Preview hdd: recorded vs. assist off*,
+  *… vs. preset "quiet"*, *… vs. unsaved curve*); a legend per chart names what is drawn
+  (*recorded*, *with the change*, *assist boost (duty points)* — the last only when the
+  change carries a boost); the chart draws lines only, no filled areas (new `chart()`
+  option, the other charts unchanged); the summary is a table *recorded / with the
+  change* with the rows mean duty, P95 / max, ≥ 200 and assist active instead of an arrow
+  chain. The wrong hint "assist share as the filled area" is gone.
+- **Dashboard modules on demand (DESIGN 11a):** the preview moved out of `app.js` into
+  `pv.js` (own budget 24 KiB), which `app.js` inserts on the first preview (same origin,
+  CSP-safe, the way `mock.js` is loaded) and calls directly afterwards; a failed load
+  shows *Preview unavailable* in place of the panel. `app.js` stays at its 152 KiB budget;
+  further growth is split the same way instead of raising it.
+
+### Fixed
+
+- **A new `[[assist]]` table added to `config.toml` by hand needed a daemon restart
+  (BACKLOG #63).** `n5-fangov assist <ch> on` / `PUT /api/assist/{ch}` wrote `enabled =
+  true` and answered HTTP 500 "config written, not applied". The switch now hands all
+  `[[assist]]` tables of the file to the daemon (`Controller.ApplyAssists`), checked
+  against the running channels: a table added, changed or removed by hand takes effect
+  on the next cycle together with the switch; an unchanged table keeps its readers and
+  its `min_on` hold, a removed one is dropped. A table that does not fit the running
+  channel set (channels edited by hand too) still answers 500 and needs the restart.
 ## [0.7.0-rc1] — 2026-11-22
 
 Five of the six 0.7.0 points: the #54 fix, assist, the curve preview, event markers and

@@ -257,6 +257,58 @@ func TestAssistApplyWithoutRestart(t *testing.T) {
 	h.expectTarget("hdd", 105)
 }
 
+// TestApplyAssistsHandEdited (BACKLOG #63): a daemon started without
+// [[assist]], the table added to the file by hand. 0.7.0-rc1 switched the
+// running config only (SetAssistEnabled → ErrNoAssist, HTTP 500 "config
+// written, not applied"); ApplyAssists takes the file's tables: added on
+// the next cycle, an unchanged table keeps its hold, a removed one is
+// dropped, a table that does not fit the running channels is refused.
+func TestApplyAssistsHandEdited(t *testing.T) {
+	h := newAssistHarness(t, n5cfg())
+	gpu := h.sensors.get(gpuID)
+	gpu.set(58000)
+	h.cycles(1)
+	if err := h.c.SetAssistEnabled("hdd", true); !errors.Is(err, ErrNoAssist) {
+		t.Fatalf("the rc1 path: %v, want ErrNoAssist", err)
+	}
+	tables := assistCfg(true, 0, 30*time.Minute).Assists
+	if err := h.c.ApplyAssists(tables, "hdd"); err != nil {
+		t.Fatal(err)
+	}
+	if h.state("hdd").Assist != nil {
+		t.Error("applied before the next cycle")
+	}
+	h.cycles(1)
+	h.expectBoost("hdd", 45, gpuID)
+	if s := h.assist("hdd").Sources[0]; s.Start != 50 || s.Full != 58 {
+		t.Errorf("source thresholds %d..%d, want 50..58", s.Start, s.Full)
+	}
+	gpu.set(40000)
+	h.cycles(1)
+	h.expectBoost("hdd", 45, gpuID) // held by min_on
+	if err := h.c.ApplyAssists(tables, "hdd"); err != nil {
+		t.Fatal(err)
+	}
+	h.cycles(1)
+	h.expectBoost("hdd", 45, gpuID) // unchanged table: the hold survives
+	if len(h.c.Config().Channels) != len(n5cfg().Channels) {
+		t.Error("channels changed")
+	}
+	if err := h.c.ApplyAssists(nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	h.cycles(1)
+	if h.state("hdd").Assist != nil {
+		t.Error("table removed, state still present")
+	}
+	h.expectTarget("hdd", 105)
+	bad := assistCfg(true, 0, 0).Assists
+	bad[0].Sources[0].Sensor = "drivetemp:max" // the channel's own sensor
+	if err := h.c.ApplyAssists(bad, "hdd"); !errors.Is(err, ErrNoAssist) {
+		t.Errorf("unfit table: %v, want ErrNoAssist", err)
+	}
+}
+
 // TestAssistPrecedence: override, critical, ceiling and the channel's own
 // sensor error set the target; assist adds nothing then.
 func TestAssistPrecedence(t *testing.T) {

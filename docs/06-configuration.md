@@ -194,6 +194,10 @@ slew.
   every cycle.
 - Switching off ends a running boost at once; the slew takes the duty down by
   `step_down` per cycle. A changed table applies on the next cycle, no restart.
+- The daemon does not watch the file. A table added, changed or removed by hand takes
+  effect with the next reload (`PUT /api/config`, a preset apply, an import) or the next
+  switch (Fans page, `n5-fangov assist`, `PUT /api/assist/{channel}`): the switch hands
+  all `[[assist]]` tables of the file to the daemon, not only its own line.
 - Assist sources are recorded in the history like the channel sensors, also when
   they are not in `[dashboard] sensors` (an id already recorded there or as a channel
   sensor is not recorded twice).

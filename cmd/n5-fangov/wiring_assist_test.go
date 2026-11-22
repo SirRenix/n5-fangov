@@ -52,13 +52,23 @@ boost = 45
 type fakeAssistCtrl struct {
 	mu    sync.Mutex
 	calls []string
+	n     int
 	err   error
 }
 
-func (f *fakeAssistCtrl) SetAssistEnabled(ch string, on bool) error {
+// ApplyAssists records the wanted channel's switch as it was handed over
+// ("disks=on") and the number of tables.
+func (f *fakeAssistCtrl) ApplyAssists(tables []config.Assist, want string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.calls = append(f.calls, ch+"="+map[bool]string{true: "on", false: "off"}[on])
+	on := "missing"
+	for _, a := range tables {
+		if a.Channel == want {
+			on = map[bool]string{true: "on", false: "off"}[a.Enabled]
+		}
+	}
+	f.calls = append(f.calls, want+"="+on)
+	f.n = len(tables)
 	return f.err
 }
 
@@ -95,7 +105,7 @@ func TestAssistStore(t *testing.T) {
 	if err := s.SetEnabled("cpu", true); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("cpu: %v", err)
 	}
-	// written, but the daemon has no such table: ReloadError (500)
+	// written, but the table does not fit the running channels: ReloadError (500)
 	ctrl.err = control.ErrNoAssist
 	err := s.SetEnabled("disks", true)
 	var re *web.ReloadError
@@ -104,6 +114,29 @@ func TestAssistStore(t *testing.T) {
 	}
 	if cfg, _, _ := config.Load(cfgPath); !cfg.Assist("disks").Enabled {
 		t.Error("file not written before the apply failed")
+	}
+}
+
+// TestAssistStoreHandEditedTable (BACKLOG #63): a second table added to
+// the file by hand. The switch hands the file's tables to the controller
+// (not only its own switch), so the new table takes effect with it; the
+// controller side (added, changed, removed, holds) is
+// control.TestApplyAssistsHandEdited.
+func TestAssistStoreHandEditedTable(t *testing.T) {
+	cfgPath := writeAssistConfig(t)
+	extra := "\n[[assist]]\nchannel = \"cpu\"\nenabled = true\n\n[[assist.source]]\nsensor = \"drivetemp:max\"\nstart = 40\nfull = 50\nboost = 10\n"
+	f, err := os.OpenFile(cfgPath, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = f.WriteString(extra)
+	_ = f.Close()
+	ctrl := &fakeAssistCtrl{}
+	if err := newAssistStore(cfgPath, ctrl, nil).SetEnabled("disks", true); err != nil {
+		t.Fatalf("switch after a hand edit: %v", err)
+	}
+	if len(ctrl.calls) != 1 || ctrl.calls[0] != "disks=on" || ctrl.n != 2 {
+		t.Errorf("handed over %v, %d tables; want disks=on and both tables", ctrl.calls, ctrl.n)
 	}
 }
 

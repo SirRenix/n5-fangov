@@ -365,7 +365,7 @@ func (ch *channel) assistState() *AssistState {
 	st := &AssistState{Enabled: a.cfg.Enabled, Sources: make([]AssistSourceState, 0, len(a.srcs))}
 	st.Boost, st.Source = ch.assistBoost()
 	for _, s := range a.srcs {
-		ss := AssistSourceState{Sensor: s.cfg.Sensor, Temp: -999, Boost: s.boost}
+		ss := AssistSourceState{Sensor: s.cfg.Sensor, Temp: -999, Boost: s.boost, Start: s.cfg.Start, Full: s.cfg.Full}
 		if s.ok {
 			ss.Temp = float64(s.temp) / 1000
 		}
@@ -404,5 +404,36 @@ func (c *Controller) SetAssistEnabled(name string, on bool) error {
 	clone.Assist(name).Enabled = on
 	c.pending = &clone
 	c.log.Printf("assist %s: switched %s (applied on next cycle)", name, onOff(on))
+	return nil
+}
+
+// ApplyAssists replaces the [[assist]] tables of the running config with
+// tables (the assist switch hands over the file's tables, so a table added,
+// changed or removed by hand takes effect with it, BACKLOG #63). Only the
+// tables change; the rest of the running or pending config stays. The
+// tables are checked against the running channel set the way the parser
+// checks them (a round trip), a table that does not fit is left out. The
+// swap happens on the next cycle (bindAssists: an unchanged table keeps its
+// readers and hold, a removed one is dropped). ErrNoAssist names the
+// channel when want is set and its table did not fit.
+func (c *Controller) ApplyAssists(tables []config.Assist, want string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	base := &c.cfg
+	if c.pending != nil {
+		base = c.pending
+	}
+	clone := base.Clone()
+	clone.Assists = config.CloneAssists(tables)
+	back, _, err := config.Parse(config.Marshal(clone))
+	if err != nil {
+		return fmt.Errorf("assist tables: %w", err)
+	}
+	clone.Assists = config.CloneAssists(back.Assists)
+	c.pending = &clone
+	if want != "" && clone.Assist(want) == nil {
+		return fmt.Errorf("channel %q: %w (the table does not fit the running channels; restart the daemon)", want, ErrNoAssist)
+	}
+	c.log.Printf("assist: %d table(s) taken from the config file (applied on next cycle)", len(clone.Assists))
 	return nil
 }

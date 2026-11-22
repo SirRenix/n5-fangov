@@ -516,7 +516,7 @@ and `min_on` stays the base:
   unreadable or implausible adds 0: one log line when the episode starts and one when it
   ends, **no alert**; an unresolved one is retried every cycle, a read error re-resolves.
 - `bindAssists` attaches the tables to the managed channels at `New` and in
-  `applyPendingLocked` (reload, `SetAssistEnabled`): a source with an unchanged id keeps
+  `applyPendingLocked` (reload, `SetAssistEnabled`, `ApplyAssists`): a source with an unchanged id keeps
   its reader and held reading; switching off idles at once (the slew takes the duty down
   by `step_down`); a changed `min_on` re-times a running hold like `retimeHolds`; a hold
   whose source was removed or whose source's `boost` is now below the held value is
@@ -526,7 +526,13 @@ and `min_on` stays the base:
   for a channel the device does not manage is logged once and ignored.
   `SetAssistEnabled(name, on)` clones the running (or pending) config with that flag
   and hands it to the pending swap — the next cycle takes it; `ErrNoAssist` without a
-  table.
+  table. `ApplyAssists(tables, want)` (the assist switch, 0.7.0-rc2, BACKLOG #63)
+  replaces only the `[[assist]]` tables of the running (or pending) config with the
+  file's: a table added, changed or removed by hand takes effect with the switch, no
+  restart (the daemon has no file watcher). The tables pass a `Marshal`/`Parse` round
+  trip against the running channel set; one that does not fit is left out, and
+  `ErrNoAssist` when it is the switched channel's. The snapshot carries each source's
+  `start`/`full` (config, read-only) beside `temp` and `boost`.
 - Status line: `hdd=40.0C->pwm3=150(auto +45 amdgpu)` while a boost is added (the
   source's short label: the chip name of `hwmon:<name>:tempN`, else the id).
   `ChannelState.Assist` = `{enabled, boost, source, sources[{sensor, temp, boost}]}`
@@ -990,7 +996,7 @@ summaries, responses, scope values.
 `AllowedHosts`, `TLS`, `TLSMgr`, `TLSHosts`, `Logf`, `SessionFile`, `TokenFile`,
 `Account`, `Alerts`, `Dashboard`, `Assist` (`AssistStore`: `SetEnabled(channel, on)`; cmd
 `assistStore` writes the line with `config.SetAssistEnabled` under the config file lock,
-then `Controller.SetAssistEnabled`), `Schedules` (`ScheduleStatus func() any`; nil → 501),
+then hands the file's tables to `Controller.ApplyAssists`), `Schedules` (`ScheduleStatus func() any`; nil → 501),
 `About`, `System func() any`, `Channels func() []string` (history CSV column order; nil →
 the snapshot's channel order), `Driver func() any` and `Health func() any` (cmd
 `healthView`, `wiring_health.go`; nil → 501), `HealthGrace` (the `/healthz` grace, cmd: 3 ×
@@ -1041,7 +1047,7 @@ counts as signed in, `via: "none"`):
 | `GET /api/sensors` | protected | — | `[{id, description, temp?, kind?}]` (catalogue with live readings; `kind` `ssd`/`hdd` for `disk:*`, section 5) |
 | `GET /api/dashboard` / `PUT /api/dashboard` | protected | `{sensors[]}` | `{sensors}` / `{ok, sensors, warnings[]}`; 400 above 8 or unparsable id |
 | `POST /api/preview` | protected, `read` | optional JSON `{channels[], preset, assist{}, span: 24h\|7d}` ≤ 256 KiB; channels validated like the preset body (pwm/stop default to the running channel), not with `preset` | 200 `{span, step, note, order[], channels{<name>: {series[{ts, actual, preview, boost}], summary{actual, preview}, error?, measured?}}}` (section 6 "Preview"); 400 invalid body, curve rules, unknown channel, assist without a table, bad span; 404 unknown preset; 429 another preview runs; 501 no previewer. Writes nothing |
-| `PUT /api/assist/{name}` | protected, `control` | `{enabled: bool}` ≤ 4 KiB (unknown members 400) | writes only the `enabled` line of the channel's `[[assist]]` table (section 3), then `Controller.SetAssistEnabled` (next cycle): 200 `{ok, channel, enabled}`; 404 no valid table in the file; 500 not written, or written but the running daemon has no such table (`ReloadError`); 501 no store |
+| `PUT /api/assist/{name}` | protected, `control` | `{enabled: bool}` ≤ 4 KiB (unknown members 400) | writes only the `enabled` line of the channel's `[[assist]]` table (section 3), then the file's `[[assist]]` tables to `Controller.ApplyAssists` (next cycle; a table added by hand included): 200 `{ok, channel, enabled}`; 404 no valid table in the file; 500 not written, or written but the table does not fit the running channels (`ReloadError`, restart); 501 no store |
 | `GET /api/profiles` | protected | — | `[{name, title, verified, hw_status, notes, active}]` (`hw_status` of this machine per profile, `verified` = validated or tested) |
 | `GET /api/log?lines=N` | protected | 1..5000 | `{lines[], source: file\|journal}` |
 | `GET /api/log/export` | protected | — | text attachment `n5-fangov-<host>-<ts>.log` (current file; journal: newest 100000 lines) |
@@ -1118,8 +1124,8 @@ first and collects locally otherwise.
 
 ## 11. Dashboard (internal/web/static)
 
-No framework, no build step; `app.js` ≤ **152 KiB**, `mock.js` ≤ **48 KiB**, `app.css` ≤
-**48 KiB** (test `web_test.go`; `index.html` carries the SVG sprite and has no budget),
+No framework, no build step; `app.js` ≤ **152 KiB**, `pv.js` ≤ **24 KiB**, `mock.js` ≤ **48 KiB**,
+`app.css` ≤ **48 KiB** (test `web_test.go`; `index.html` carries the SVG sprite and has no budget),
 CSP `script-src 'self'`, no `innerHTML`, no inline handlers. Colours, spacing, radii and
 type scale are tokens in one `:root` block (dark; light overrides under
 `[data-theme="light"]` and `system`) and a JS constant block (`UI`) after `cssVar`; the
@@ -1272,15 +1278,26 @@ Every channel of the mock state carries `ceiling` (cpu 100, ssd 85, hdd 65) and
   during the call, never disabled. Below it, only for a channel whose snapshot carries
   `assist` (0.7.0, operator decision: switch and values only, no editor): a second
   `role="switch"` *Assist* (`PUT /api/assist/{name}`, the same two-interval pending
-  window, `lv.asOn`/`lv.asUntil`) and one line — `+45 from amdgpu (58.7 °C)`, `0 (sources
-  below start)`, `0 (a source is unreadable)`, `0 (<mode> wins)`, `off`. The tile shows
+  window, `lv.asOn`/`lv.asUntil`), the sentence *Raises this fan when other parts get hot
+  (amdgpu, nvme:max).* and the value line (0.7.0-rc2) — `now +45 — amdgpu 59.0 °C (full at
+  58)` under a boost (its source), else every source with its threshold: `now +0 — amdgpu
+  45.0 °C (starts at 50), nvme:max 43.0 °C (starts at 46)`, `now +0 (<mode> wins) — …`,
+  `off — …`, `unreadable` for a source without a reading; below it *Compare without
+  assist* / *Compare with assist* (follows the switch) and *What is this?* (the docs of
+  the `repo` from `/api/about`, `06-configuration.md#assist`). The tile shows
   `+N` (`.asb`) after the duty while `assist.boost > 0`. **Preview** (0.7.0, section 6
-  "Preview"): one panel at a time (`<template id="t-pv">`, `PV`), opened under a card by
-  *Preview 24 h* (card header, while the channel is dirty; recomputed 1 s after an edit),
-  the chart icon of a preset chip (all channels) or *Preview* beside the Assist switch
-  (the switch inverted, read live at request time); *24 h / 7 d*; per channel a chart
-  (recorded `--fg3`, preview in the series colour, assist share `--man`), the summary,
-  the channel's `notes[]` and `measured`, and the answer's `note`. One request in
+  "Preview"; the module `pv.js`, loaded on the first open, see 11a): one panel at a time
+  (`<template id="t-pv">`, `PV`), opened under a card by *Preview 24 h* (card header, while
+  the channel is dirty; recomputed 1 s after an edit), the chart icon of a preset chip (all
+  channels) or *Compare without/with assist* (the switch inverted, read live at request
+  time); *24 h / 7 d*. The header names the comparison: *Preview hdd: recorded vs. assist
+  off*, *… vs. preset "quiet"*, *… vs. unsaved curve*. Per channel a legend that names
+  what is drawn (*recorded* `--fg3`, *with the change* in the series colour, *assist boost
+  (duty points)* `--man` only when the change carries a boost), a chart of lines only
+  (`chart()` option `lines`: no area fill, which read as a share), a table *recorded /
+  with the change* with the rows mean duty, P95 / max, ≥ 200, assist active, then the
+  channel's `notes[]` and `measured`, and the answer's `note`; *What is this?* links
+  `04-dashboard.md#preview`. One request in
   flight (`PV.busy`): a change meanwhile is queued and sent when it returns, an answer
   whose body (draft + span) is no longer the latest is dropped, the chart axis is the
   span the answer was asked for; a channel error or a failed request greys the chart
@@ -1501,9 +1518,20 @@ optional body of `PUT /api/presets/{name}`, section 9).
 - **Budgets:** `app.js` ≤ 152 KiB (raised from 128 KiB during 0.4.0 for the badge
   lists, the active set, *Save as preset…* and the toggle pattern, and from 136 KiB for
   0.7.0 for assist, preview, event marks, panic button and config versions — decided
-  raises, noted in the CHANGELOG, not silent ones; the next growth splits `app.js` into
-  modules loaded on demand instead of a further raise), `mock.js` ≤ 48 KiB, `app.css` ≤ 48 KiB
-  (`web_test.go`); `index.html` has none. Do not raise a limit to make a change fit.
+  raises, noted in the CHANGELOG, not silent ones), `pv.js` ≤ 24 KiB, `mock.js` ≤ 48 KiB,
+  `app.css` ≤ 48 KiB (`web_test.go`); `index.html` has none. Do not raise a limit to make a
+  change fit.
+- **Modules on demand (0.7.0-rc2, operator decision):** growth beyond the `app.js` budget
+  is split off, not budgeted in. A part that only a rare action needs is its own file,
+  inserted by `app.js` on first use as `<script src>` (same origin, CSP `script-src
+  'self'`, no inline script; `js(src)`, the same path as `mock.js`), then called directly.
+  The module is one global factory (`window.n5pv(X)`) that receives what it needs from
+  `app.js` (`h`, `api`, `chart`, …) and returns its entry points; `app.js` keeps a stub
+  whose calls do nothing before the load. A failed load shows an error in place of the
+  panel, the next use retries. Each module is embedded and allow-listed in `web.go` like
+  `app.js` (same headers) and has its own budget in `web_test.go`; `index.html` never
+  references it. Present: `pv.js` (the curve preview, ≤ 24 KiB). Next candidates: the
+  config versions and the rare dialogs.
 - **Icons:** one inline SVG sprite at the top of `index.html` (`<svg hidden><symbol
   id="i-…">`), used as `<svg class="ic" aria-hidden="true"><use href="#i-gear"/></svg>`
   or `ico('gear')` in `app.js`; 16 px, `currentColor`, `stroke-width 1.75`. Present:
@@ -1674,7 +1702,7 @@ the PCI directories and symlinks the sysinfo tests need are created in a temp co
 Windows checkout cannot hold them). Controller tests use a fake `Device`
 (`fakes_test.go`); the safety rules are pinned in `safety_test.go`. `TestServeSmoke`
 starts the real `cmdServe` (dry-run, fake sysfs, TCP + socket, override, SIGTERM).
-Frontend: `web_test.go` checks the JS budgets (`app.js`, `mock.js`), that `index.html`
+Frontend: `web_test.go` checks the JS budgets (`app.js`, `pv.js`, `mock.js`), that `index.html`
 does not reference `mock.js`, the page/handler list (`TestNavHasPages`), the CSP and the contrast of the
 primary buttons; the mock (`?mock=1`) is the manual test bed. `TestOpenAPICoversRoutes`
 pins the route table to the document. `internal/history` is tested with a fake clock

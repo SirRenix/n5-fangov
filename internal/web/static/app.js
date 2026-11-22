@@ -200,8 +200,8 @@ function chart(wrap, series, opt) {
 			ctx.beginPath(); s.data.forEach(([t, v], i) => { const x = X(t), y = Y(clamp(v, yMin, yMax)); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
 			ctx.strokeStyle = col; ctx.lineWidth = C.lineW; ctx.lineJoin = 'round'; ctx.stroke();
 			const last = s.data[s.data.length - 1];
-			ctx.lineTo(X(last[0]), pad.t + ph); ctx.lineTo(X(s.data[0][0]), pad.t + ph); ctx.closePath();
-			ctx.globalAlpha = C.fillAlpha; ctx.fillStyle = col; ctx.fill(); ctx.globalAlpha = 1;
+			if (!opt.lines) { ctx.lineTo(X(last[0]), pad.t + ph); ctx.lineTo(X(s.data[0][0]), pad.t + ph); ctx.closePath(); // opt.lines: no area fill (preview)
+				ctx.globalAlpha = C.fillAlpha; ctx.fillStyle = col; ctx.fill(); ctx.globalAlpha = 1; }
 			labels.push({ y: Y(clamp(last[1], yMin, yMax)), col, txt: opt.fmt(last[1]) });
 		}
 		labels.sort((a, b) => a.y - b.y); for (let i = 1; i < labels.length; i++) if (labels[i].y - labels[i - 1].y < C.labelH) labels[i].y = labels[i - 1].y + C.labelH;
@@ -475,21 +475,30 @@ on('#h-signout', 'click', async () => { const un = [edDirty && 'curve', scDirty 
 // overview
 // tiles (§11a): one .tile per channel, updated in place; sparkline = last 2 h of `hist` in the series colour; "+N" = assist boost
 const cards = {}, SPARK_S = RANGES['2h'].windowS;
-function spark(cv, data, color, padR) { // padR: room for the range label at the right edge, so the line end never runs under it
+function spark(k) { // padR: room for the range label, so the line end never runs under it
+	const cv = k.cv, data = k.data = sparkData(k.name), padR = k.rng.offsetWidth + C.sparkPad * 2;
 	const dpr = window.devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight; if (!W || !H) return;
 	cv.width = W * dpr; cv.height = H * dpr; const ctx = cv.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 	if (data.length < 2) return;
 	let lo = Infinity, hi = -Infinity; for (const [, v] of data) { if (v < lo) lo = v; if (v > hi) hi = v; } lo -= 1; hi += 1;
-	const t1 = Date.now() / 1000, t0 = t1 - SPARK_S, col = cssVar(color), P = C.sparkPad;
-	const X = t => P + (t - t0) / SPARK_S * (W - 2 * P - (padR || 0)), Y = v => P + (1 - (v - lo) / (hi - lo)) * (H - 2 * P);
+	const t1 = Date.now() / 1000, t0 = t1 - SPARK_S, col = cssVar(k.color), P = C.sparkPad, pw = W - 2 * P - padR;
+	const X = t => P + (t - t0) / SPARK_S * pw, Y = v => P + (1 - (v - lo) / (hi - lo)) * (H - 2 * P);
+	k.ix = x => t0 + (x - P) / pw * SPARK_S;
 	ctx.beginPath(); data.forEach(([t, v], i) => i ? ctx.lineTo(X(t), Y(v)) : ctx.moveTo(X(t), Y(v)));
 	ctx.strokeStyle = col; ctx.lineWidth = C.sparkW; ctx.lineJoin = 'round'; ctx.stroke();
 	const last = data[data.length - 1]; ctx.lineTo(X(last[0]), H); ctx.lineTo(X(data[0][0]), H); ctx.closePath(); ctx.globalAlpha = C.sparkFill; ctx.fillStyle = col; ctx.fill(); ctx.globalAlpha = 1;
 	ctx.beginPath(); ctx.arc(X(last[0]), Y(last[1]), C.sparkDot, 0, 7); ctx.fillStyle = col; ctx.fill();
+	if (k.hv != null) { const p = nearest(data, k.hv), x = Math.round(X(p[0])) + .5; ctx.strokeStyle = cssVar('--fg2'); ctx.lineWidth = 1; seg(ctx, x, 0, x, H, C.dash.hover); dot(ctx, X(p[0]), Y(p[1]), col); }
 }
-const sparkData = n => { const cut = Date.now() / 1000 - SPARK_S; return hist.filter(p => p.ts >= cut && p.temp && p.temp[n] > -900).map(p => [p.ts, tC(p.temp[n])]); };
-const drawSpark = k => spark(k.cv, sparkData(k.name), k.color, k.rng.offsetWidth + C.sparkPad * 2);
-const drawSparks = () => { for (const n in cards) drawSpark(cards[n]); };
+// [ts, temp, duty, assist] of the last 2 h
+const sparkData = n => { const cut = Date.now() / 1000 - SPARK_S; return hist.filter(p => p.ts >= cut && p.temp && p.temp[n] > -900).map(p => [p.ts, tC(p.temp[n]), p.duty && p.duty[n], p.assist && p.assist[n] || 0]); };
+// hover / tap: line, dot and a .tip with the nearest point (k.hv = its ts); leaves with the mouse, a tap elsewhere closes it
+const sparkTip = (k, ev) => { const r = k.cv.getBoundingClientRect(), x = ev && ev.clientX - r.left, p = ev && k.ix && k.data.length > 1 && x >= 0 && x <= r.width && nearest(k.data, k.ix(x));
+	k.hv = p ? p[0] : null; k.tip.hidden = !p; spark(k); if (!p) return;
+	k.tip.textContent = `${RANGES['24h'].fmt(p[0])} · ${p[1].toFixed(1)} ${unit()}` + (p[2] >= 0 ? ` · duty ${p[2]} (${pct(p[2])} %)` : '') + (p[3] > 0 ? ` · +${p[3]} assist` : '');
+	k.tip.style.left = clamp(x - k.tip.offsetWidth / 2, 0, r.width - k.tip.offsetWidth) + 'px'; };
+document.addEventListener('pointerdown', ev => { for (const n in cards) if (ev.target !== cards[n].cv && cards[n].hv != null) sparkTip(cards[n]); });
+const drawSparks = () => { for (const n in cards) spark(cards[n]); };
 function renderCards() {
 	const host = $('#cards');
 	const names = snap.channels.map(c => c.name);
@@ -497,15 +506,17 @@ function renderCards() {
 	snap.channels.forEach((c, i) => {
 		let k = cards[c.name];
 		if (!k) {
-			k = cards[c.name] = { el: h('div', { class: 'card tile' }), name: c.name, cv: h('canvas', { role: 'img', 'aria-label': `${c.name} temperature, last 2 h` }), rng: h('span', { class: 'rng', 'aria-hidden': 'true' }, '2 h') };
+			k = cards[c.name] = { el: h('div', { class: 'card tile' }), name: c.name, cv: h('canvas', { role: 'img', 'aria-label': `${c.name} temperature, last 2 h` }), rng: h('span', { class: 'rng', 'aria-hidden': 'true' }, '2 h'), tip: h('div', { class: 'tip', hidden: true }) };
+			for (const e of ['pointermove', 'pointerdown']) k.cv.addEventListener(e, ev => sparkTip(k, ev));
+			k.cv.addEventListener('pointerleave', ev => ev.pointerType !== 'touch' && sparkTip(k));
 			k.mode = h('span', { class: 'mode' }); k.hold = h('span', { class: 'badge hold', title: TIP.hold, hidden: true });
 			k.temp = h('div', { class: 'temp' }); k.duty = h('span', { class: 'v' }); k.bar = h('i'); k.tgt = h('b', { hidden: true }); k.rpm = h('span', { class: 'v' });
 			k.el.append(h('div', { class: 'top' }, chanHead(c), h('span', { class: 'badges' }, k.hold, k.mode)), k.temp,
-				h('div', { class: 'spark', title: 'temperature, last 2 h' }, k.cv, k.rng),
+				h('div', { class: 'spark' }, k.cv, k.rng, k.tip),
 				h('div', { class: 'row' }, h('span', { class: 'k', title: TIP.duty }, 'duty'), h('div', { class: 'bar-h' }, k.bar, k.tgt), k.duty),
 				h('div', { class: 'row' }, h('span', { class: 'k' }, 'rpm'), h('span'), k.rpm));
 			host.append(k.el);
-			new ResizeObserver(() => drawSpark(k)).observe(k.cv);
+			new ResizeObserver(() => spark(k)).observe(k.cv);
 		}
 		k.color = seriesColor(i);
 		const crit = critOf(c.name);
@@ -522,7 +533,7 @@ function renderCards() {
 		const ab = c.assist && c.assist.boost;
 		clear(k.duty).append(`${pct(c.duty)} % `, h('span', { class: 'tg', title: slewing ? TIP.slew : TIP.duty }, `(${c.duty}${slewing ? ' → ' + c.target : ''})`), ab > 0 ? h('span', { class: 'asb', title: TIP.assist }, ` +${ab}`) : '');
 		clear(k.rpm).append(c.rpm < 0 ? 'no tach' : c.rpm === 0 ? h('span', { class: 't-crit' }, '0 rpm') : c.rpm.toLocaleString('en') + ' rpm');
-		drawSpark(k);
+		spark(k);
 	});
 }
 // system inventory: Overview card (at a glance) + System page (full tables)
@@ -649,33 +660,14 @@ on('#ov-csv', 'click', () => act(() => download('/api/history.csv?minutes=' + R(
 
 // Fans page (§11a): one card per channel — the curve editor (edited in °C whatever the display unit; edState = working copy,
 // edDirty = unsaved) on the left, "Live & override" on the right; below 700 px the channel selector shows one card at a time
-// curve preview (POST /api/preview, nothing applied): kind ed = the editor's draft of one channel (recomputed 1 s after an edit),
-// pre = a preset (all channels), as = one channel with the live assist switch inverted (PV.on() at request time); one panel at a
-// time, under its card. One request in flight: a change meanwhile is sent when it returns, an answer whose body (draft + span)
-// is no longer the latest is dropped; the span of the answer is the one it was asked for
-const PV = { sp: '24h', w: {} };
-const pvBody = () => { const c = PV.kind === 'ed' && ED[PV.ch] && ED[PV.ch].c, b = { span: PV.sp };
-	if (c) b.channels = [{ name: c.name, sensor: c.sensor, curve: c.curve, critical: +c.critical, stop: stopN(c.stop), hysteresis: +c.hysteresis || 0, min_on: c.min_on }];
-	else if (PV.kind === 'pre') b.preset = PV.ch; else if (PV.kind === 'as') b.assist = { [PV.ch]: PV.on() }; return b; };
-const pvClose = () => { if (PV.el) PV.el.remove(); for (const k in PV.w) charts.splice(charts.indexOf(PV.w[k]), 1); PV.el = null; PV.w = {}; };
-const pvOpen = (card, kind, ch, on) => { pvClose(); Object.assign(PV, { kind, ch, on, el: $('#t-pv').content.firstElementChild.cloneNode(true) }); card.after(PV.el);
-	for (const b of PV.el.querySelectorAll('[data-sp]')) b.onclick = () => { PV.sp = b.dataset.sp; pvRun(); };
-	$('[data-pvx]', PV.el).onclick = pvClose; pvRun(); PV.el.scrollIntoView({ block: 'nearest' }); };
-const pvSched = () => { if (PV.el && PV.kind === 'ed') { clearTimeout(PV.t); PV.t = setTimeout(pvRun, 1000); } };
-async function pvRun() { const el = PV.el; if (!el) return; if (PV.busy) { PV.q = 1; return; }
-	for (const b of el.querySelectorAll('[data-sp]')) { const on = b.dataset.sp === PV.sp; b.classList.toggle('on', on); b.setAttribute('aria-pressed', on); }
-	const body = pvBody(), tok = JSON.stringify(body), sp = body.span; let r, err; PV.busy = 1; PV.q = 0;
-	try { r = (await api('/api/preview', { method: 'POST', json: body })).body; } catch (e) { err = e; }
-	PV.busy = 0; if (el !== PV.el || PV.q || JSON.stringify(pvBody()) !== tok) return pvRun();
-	if (err) { for (const k in PV.w) PV.w[k].classList.add('pv-off'); $('.pv-s', el).textContent = err.message; return; }
-	const sum = [];
-	r.order.forEach((n, i) => { const x = r.channels[n]; if (PV.kind !== 'pre' && n !== PV.ch) return; const notes = (x.notes || []).map(t => `\n${n}: ${t}`).join('');
-		if (x.error) { if (PV.w[n]) PV.w[n].classList.add('pv-off'); return sum.push(`${n}: no preview — ${x.error}` + notes); }
-		let w = PV.w[n]; if (!w) $('.pv-c', el).append(h('h3', null, n), w = PV.w[n] = h('div', { class: 'chart' }, h('canvas', { role: 'img', 'aria-label': `${n}: recorded and preview duty` }), h('div', { class: 'tip', hidden: true })));
-		w.classList.remove('pv-off'); const d = (k, f) => x.series.filter(p => p[k] !== null).map(p => [p.ts, f ? p.boost : p[k]]), a = x.summary.actual, p = x.summary.preview;
-		chart(w, [{ name: n + ' recorded', color: '--fg3', data: d('actual') }, { name: n + ' preview', color: seriesColor(i), data: d('preview') }, { name: 'assist', color: '--man', data: d('preview', 1) }], { fmt: v => Math.round(v), yMin: 0, yMax: 255, rg: RANGES[sp], ev: 1 });
-		sum.push(`${n}: Ø ${Math.round(a.mean)} → ${Math.round(p.mean)}, P95 ${a.p95} → ${p.p95}, max ${a.max} → ${p.max}, ≥ 200: ${a.min_ge_200} → ${p.min_ge_200} min, assist ${a.assist_min} → ${p.assist_min} min` + notes + (x.measured ? '\n' + x.measured : '')); });
-	$('.pv-s', el).textContent = sum.join('\n'); $('.pv-n', el).textContent = r.note; }
+// a same-origin script on demand: mock.js, the modules (DESIGN 11a)
+const js = src => new Promise((res, rej) => { const s = h('script', { src, onload: res, onerror: () => { s.remove(); rej(); } }); document.head.append(s); });
+// curve preview (POST /api/preview): pv.js, loaded on the first open and handed what it needs; until then close/sched/redraw do
+// nothing. A load failure shows in place of the panel, the next open retries
+let PVM = null, pvErr = null;
+const pvClose = () => { if (pvErr) pvErr.remove(); pvErr = null; if (PVM) PVM.close(); };
+const pvOpen = (card, ...a) => (pvClose(), PVM) ? PVM.open(card, ...a) : js('pv.js').then(() => (PVM = PVM || window.n5pv({ h, $, api, chart, charts, RANGES, seriesColor, ED, stopN, cssVar, docs })).open(card, ...a)).catch(() => { card.after(pvErr = h('section', { class: 'card pv' }, h('p', { class: 'notice err' }, 'Preview unavailable: pv.js could not be loaded'))); });
+const pvSched = () => PVM && PVM.sched(), pvDraw = () => PVM && PVM.redraw();
 const ED = {}, drawEds = () => { for (const k in ED) ED[k].draw(); }; let edState = null, edStash = null, edDirty = false;
 const cvNotice = notice('#cv-notice'), K = UI.curve;
 const chDirty = name => { const e = ED[name], o = chList().find(x => x.name === name); return !!(e && o) && chKey([e.c]) !== chKey([o]); };
@@ -780,8 +772,9 @@ function buildEditors(keepNotice) { // keepNotice: the 202 / warnings notice of 
 			h('div', { class: 'tgt' }, lv.tgt, lv.mode), lv.sw,
 			h('div', { class: 'man' }, h('div', { class: 'rg' }, lv.range, lv.num, lv.pctEl), h('div', { class: 'actions' }, lv.set)), lv.warn,
 			lv.as = h('div', { class: 'as', hidden: true }, lv.asw = h('button', { class: 'switch', role: 'switch', 'aria-checked': 'false', 'aria-label': `${c.name}: assist`, title: TIP.assist, onclick: () => asSet(c.name, lv) },
-				h('span', { class: 'track', 'aria-hidden': 'true' }), h('b', null, 'Assist')), lv.asl = h('p', { class: 'hint sm' }),
-				h('button', { class: 'btn sm link', title: 'the last 24 h with the switch inverted', onclick: () => pvOpen(ed.card, 'as', c.name, () => lv.asw.getAttribute('aria-checked') !== 'true') }, 'Preview')));
+				h('span', { class: 'track', 'aria-hidden': 'true' }), h('b', null, 'Assist')), lv.asd = h('p', { class: 'hint sm' }), lv.asl = h('p', { class: 'hint sm' }),
+				h('div', { class: 'actions' }, lv.asc = h('button', { class: 'btn sm link', title: 'preview with the switch inverted', onclick: () => pvOpen(ed.card, 'as', c.name, () => lv.asw.getAttribute('aria-checked') !== 'true') }),
+					lv.ash = h('a', { class: 'btn sm link', target: '_blank', rel: 'noopener' }, 'What is this?'))));
 		lv.show(0);
 		ed.card = h('div', { class: 'card fan' },
 			h('div', { class: 'fh' }, h('h2', { class: 'name' }, c.name), ed.sub = h('span', { class: 'sub' }, `pwm${c.pwm} · ${c.sensor || '?'}`), h('span', { class: 'badges' }, lv.pre, lv.hmode),
@@ -811,9 +804,11 @@ const asSet = async (n, lv) => { const on = lv.asw.getAttribute('aria-checked') 
 	if (await act(() => api('/api/assist/' + n, { method: 'PUT', json: { enabled: on } }), `${n}: assist ${on ? 'on' : 'off'}${pAft()}`)) { lv.asOn = on; lv.asUntil = Date.now() + 2 * Math.max(2, cfg && cfg.daemon ? durS(cfg.daemon.interval) : 10) * 1000; lv.asw.setAttribute('aria-checked', on); }
 	lv.asw.removeAttribute('aria-busy'); poll(); };
 const asLbl = id => (/^hwmon:([^:]+):/.exec(id) || [, id])[1];
-const asLine = (c, on) => { const a = c.assist, s = (a.sources || []).find(x => x.sensor === a.source); if (!on) return 'off';
-	if (a.boost > 0) return `+${a.boost} from ${asLbl(a.source)}` + (s && s.temp > -900 ? ` (${fmtT(s.temp)} ${unit()})` : '');
-	return c.mode !== 'auto' ? `0 (${c.mode} wins)` : (a.sources || []).some(x => !(x.temp > -900)) ? '0 (a source is unreadable)' : '0 (sources below start)'; };
+// value line: under a boost its source with "full at", else every source with "starts at" (start/full since 0.7.0-rc2)
+const asSrc = (s, up) => `${asLbl(s.sensor)} ${s.temp > -900 ? fmtT(s.temp) + ' ' + unit() : 'unreadable'}` + (s.start === undefined ? '' : up ? ` (full at ${fmtT(s.full, 0)})` : ` (starts at ${fmtT(s.start, 0)})`);
+const asLine = (c, on) => { const a = c.assist, ss = a.sources || [], s = ss.find(x => x.sensor === a.source);
+	if (on && a.boost > 0) return `now +${a.boost} — ` + (s ? asSrc(s, 1) : asLbl(a.source));
+	return (on ? 'now +0' + (c.mode !== 'auto' ? ` (${c.mode} wins)` : '') : 'off') + (ss.length ? ' — ' + ss.map(x => asSrc(x)).join(', ') : ''); };
 // live block: every poll (no editor rebuild); the slider follows the running duty until the operator touches it
 function renderLive() { if (!snap) return;
 	for (const c of snap.channels) { const ed = ED[c.name]; if (!ed) continue; const { lv } = ed, crit = critOf(c.name);
@@ -829,7 +824,9 @@ function renderLive() { if (!snap) return;
 		const mn = minDuty(chList().find(x => x.name === c.name) || ed.c); if (mn !== lv.min) { lv.min = mn; lv.range.min = lv.num.min = mn; lv.show(+lv.range.value, 1); } // profile known now
 		// the daemon's ceiling arrives with the snapshot: header tooltip, and the editor redraws its line once it is known
 		if (c.ceiling > 0 && ed.ceil !== c.ceiling) { ed.ceil = c.ceiling; ed.sub.title = `ceiling ${fmtT(c.ceiling, 0)} ${unit()} (built-in floor below critical)`; ed.draw(); }
-		lv.as.hidden = !c.assist; if (c.assist) { const on = lv.asUntil > Date.now() && c.assist.enabled !== lv.asOn ? lv.asOn : c.assist.enabled; lv.asw.setAttribute('aria-checked', on); lv.asl.textContent = asLine(c, on); }
+		lv.as.hidden = !c.assist; if (c.assist) { const on = lv.asUntil > Date.now() && c.assist.enabled !== lv.asOn ? lv.asOn : c.assist.enabled; lv.asw.setAttribute('aria-checked', on); lv.asl.textContent = asLine(c, on);
+			lv.asd.textContent = `Raises this fan when other parts get hot${(c.assist.sources || []).length ? ` (${c.assist.sources.map(x => asLbl(x.sensor)).join(', ')})` : ''}.`;
+			lv.asc.textContent = on ? 'Compare without assist' : 'Compare with assist'; lv.ash.href = docs('06-configuration.md#assist'); }
 		ed.ref(); }
 }
 // a critical above the ceiling is accepted (the ceiling acts first): one warning line per channel, never blocks
@@ -1136,7 +1133,10 @@ on('#al-tpl-btn', 'click', async () => { const r = await act(() => api('/api/ale
 
 // about (public; `go` is empty for anonymous readers, so the page is re-read on every sign-in / sign-out)
 const loadAbout = () => api('/api/about').then(r => renderAbout(r.body || {})).catch(() => {});
-function renderAbout(a) {
+// "What is this?" links: the docs of the repo /api/about names (the default until it answered)
+let REPO = 'https://github.com/SirRenix/n5-fangov';
+const docs = p => REPO + '/blob/main/docs/' + p;
+function renderAbout(a) { if (a.repo) REPO = a.repo;
 	$('#ab-name').textContent = a.name || 'n5-fangov'; $('#ab-version').textContent = 'v' + (a.version || version || '?').replace(/^v/, ''); preBadge([$('#ab-beta')], a.prerelease);
 	const link = (id, href, text) => { const e = $(id); e.href = href || '#'; e.textContent = text || href || '—'; };
 	link('#ab-license', a.license_url, a.license); link('#ab-repo', a.repo, (a.repo || '').replace(/^https?:\/\//, '')); link('#ab-author', a.author_url, a.author); link('#ab-rel', a.repo + '/releases', 'GitHub releases');
@@ -1196,7 +1196,7 @@ async function loadHistory() {
 		if (pts.length) { hist = hist.concat(pts); lastTs = hist[hist.length - 1].ts; }
 		const cut = Date.now() / 1000 - rg.windowS, cap = maxPts(rg); while (hist.length && (hist[0].ts < cut || hist.length > cap)) hist.shift();
 		const evNew = await evp; renderCharts(); drawSparks(); // one redraw per poll: the charts take the new events with it
-		if (evNew) { for (const k in PV.w) PV.w[k]._st.draw(); if (cur === 'health') hlEv(); }
+		if (evNew) { pvDraw(); if (cur === 'health') hlEv(); }
 	} catch (e) {}
 }
 const resetHistory = () => { hist = []; lastTs = 0; histGen++; loadHistory(); };
@@ -1387,6 +1387,6 @@ const boot = async () => {
 	if (document.hidden) { poll(); loadHistory(); }
 	schedule();
 };
-if (MOCK) { const s = h('script', { src: 'mock.js' }); s.addEventListener('load', boot); s.addEventListener('error', () => toast('mock.js could not be loaded', 'err', UI.timing.toastLong)); document.head.append(s); }
+if (MOCK) js('mock.js').then(boot, () => toast('mock.js could not be loaded', 'err', UI.timing.toastLong));
 else boot();
 })();

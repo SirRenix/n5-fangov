@@ -48,7 +48,7 @@ manual test before a release: [RELEASE-GATE.md](RELEASE-GATE.md).
   endpoint is one row plus its schema; the [endpoint table](12-api.md#endpoints)
   follows the row.
 - Frontend: `internal/web/web_test.go` checks the JS budgets, that `index.html` never
-  references `mock.js`, that every page has a nav entry and a handler
+  references `mock.js` or a module, that every page has a nav entry and a handler
   (`TestNavHasPages`), the CSP and the contrast of the primary buttons. Everything else is checked by hand against the mock.
 - Before a tag the release is verified on the reference N5 Pro
   ([Hardware status](../README.md#hardware-status)); before an `-rc` becomes a
@@ -71,12 +71,22 @@ static server and open `index.html?mock=1`; the flags (`&user=1`, `&auth=none`,
 new endpoints get a mock branch in the same change. Its version string is one constant
 in `mock.js`, bumped with the release.
 
-**Budgets:** `app.js` ≤ 152 KiB, `mock.js` ≤ 48 KiB, `app.css` ≤ 48 KiB raw
-(`web_test.go`); `index.html` carries the SVG sprite and has no budget. Do not raise a
+**Budgets:** `app.js` ≤ 152 KiB, `pv.js` ≤ 24 KiB, `mock.js` ≤ 48 KiB, `app.css` ≤ 48 KiB
+raw (`web_test.go`); `index.html` carries the SVG sprite and has no budget. Do not raise a
 limit to make a change fit; a raise is a CHANGELOG entry. Move something to
-`index.html` markup or drop it. `app.js` went to 152 KiB for 0.7.0; when that is not
-enough, split it into modules loaded on demand (preview, config versions, rarely used
-dialogs) rather than raising it again.
+`index.html` markup or drop it. `app.js` went to 152 KiB for 0.7.0 and stays there.
+
+**Modules on demand:** when `app.js` does not fit, a part that only a rare action needs
+becomes its own file instead of a raise. `app.js` inserts it as `<script src>` on first use
+(`js(src)`, same origin, the way `mock.js` is loaded; CSP-safe, no inline script) and
+calls it directly afterwards. The module defines one global factory that takes what it
+needs from `app.js` and returns its entry points (`window.n5pv(X)` → `{open, close,
+sched, redraw}`); the stub in `app.js` does nothing before the load and shows a visible
+error in place of the panel when the load fails. A new module needs: the file in
+`internal/web/static/`, the `//go:embed` line and the allow-list in `web.go` (same
+content type and caching as `app.js`), a budget test in `web_test.go`, and a mock check
+(`?mock=1` must keep working with it). Today: `pv.js`, the curve preview. Candidates
+for the next ones: the config versions and rarely used dialogs.
 
 ## Screenshots
 

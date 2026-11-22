@@ -78,7 +78,9 @@ the shell: `n5-fangov panic`; from Home Assistant: [API: Full cooling](12-api.md
 share of the lower of `critical` and the [ceiling](06-configuration.md#ceilings-and-the-emergency-action)),
 `held …` while a [hysteresis](06-configuration.md#hysteresis-and-minimum-on-time) holds
 the curve at another value, a `hold` badge with the remaining minimum on-time, a
-**sparkline** of the last 2 h, the duty bar with a target marker while the slew is
+**sparkline** of the last 2 h (hover, or tap on a phone, shows the point under the pointer:
+`Sun 16:16 · 40.0 °C · duty 103 (40 %) · +45 assist`, the assist part only while it adds;
+a tap elsewhere closes it), the duty bar with a target marker while the slew is
 moving (`33 % (85 → 107)`), `+N` after it while [assist](06-configuration.md#assist)
 adds N to the curve target, and the RPM (`no tach` without tachometer, `0 rpm` in red).
 
@@ -228,9 +230,14 @@ pairs sit under the table.
 The same from the shell: `n5-fangov set` / `auto` ([CLI](05-cli.md)).
 
 **Assist** (under the override, only when the channel has an
-[`[[assist]]`](06-configuration.md#assist) table): a switch and one line —
-`+45 from amdgpu (58.7 °C)` while a boost is added, `0 (sources below start)`,
-`0 (a source is unreadable)`, `0 (manual wins)` outside mode auto, or `off`. The switch
+[`[[assist]]`](06-configuration.md#assist) table): a switch, the sentence *Raises this
+fan when other parts get hot (amdgpu, nvme:max).* and a value line with the sources and
+their thresholds — `now +0 — amdgpu 45.0 °C (starts at 50), nvme:max 43.0 °C (starts at
+46)`; while a boost is added only its source, `now +45 — amdgpu 59.0 °C (full at 58)`;
+`now +0 (manual wins) — …` outside mode auto, `off — …` when switched off,
+`unreadable` for a source without a reading. Below it *Compare without assist* (or
+*Compare with assist* while it is off) opens the [preview](#preview) with the switch
+inverted, *What is this?* this documentation. The switch
 is `PUT /api/assist/{channel}`; the daemon writes only `enabled` in `config.toml` and
 takes it on the next cycle (the switch shows the client's state until the snapshot
 agrees). Sources and values are edited in the file, there is no editor here. The same
@@ -242,24 +249,32 @@ from the shell: `n5-fangov assist hdd on|off`.
 
 Check a change against the recorded history before you apply it. Nothing is applied.
 
+- The header names what is compared: *Preview hdd: recorded vs. unsaved curve*, *…
+  vs. assist off* (or *on*), *Preview: recorded vs. preset "quiet"*. A legend above each
+  chart names its lines: *recorded* (grey, the duty the fan actually had), *with the
+  change* (the channel's colour) and, when the change adds a boost, *assist boost (duty
+  points)* (blue: the duty assist adds, at the bottom of the scale — not a share). Lines
+  only, no filled areas. *What is this?* opens this section.
 - **Preview 24 h** sits in the channel card header while that channel has unsaved
-  edits: the chart opens under the card, recorded duty grey, the preview in the
-  channel's colour, the assist share as a filled area. Further edits recompute it 1 s
+  edits: the preview opens under the card. Further edits recompute it 1 s
   later while it is open. One request runs at a time; a change made meanwhile is sent
   when it returns, an older answer is dropped.
 - The **chart icon** on a preset chip opens the preview of that preset for every
   channel, under the Presets card.
-- **Preview** next to the Assist switch shows the channel with the switch inverted:
+- **Compare without assist** / **Compare with assist** under the Assist switch shows
+  the channel with the switch inverted:
   what assist on (or off) would have added. The inversion follows the switch as it is
   when the preview is computed.
-- *24 h / 7 d* switches the span (1-min or 5-min means). Below the chart: `Ø 99 → 118,
-  P95 106 → 150, max 120 → 160, ≥ 200 …, assist … min` per channel (recorded → preview),
-  and the note what the preview cannot show — no feedback (more air would have lowered
+- *24 h / 7 d* switches the span (1-min or 5-min means). Below the chart a table per
+  channel, columns *recorded* and *with the change*, rows *mean duty*, *P95 / max*, *≥ 200*
+  (minutes) and *assist active* (minutes), then the note what the preview cannot show — no feedback (more air would have lowered
   the temperatures, so the preview shows rather too much duty), no ramp, past
   overrides only in the recorded line; for 7 d, that hysteresis and min_on barely act
   on 5-min means. Per channel the limits of its computation follow (an assist source
   missing from the history, a mixed composite sensor judged on its maximum). A channel
-  without a preview, or a failed request, greys its chart out.
+  without a preview, or a failed request, greys its chart out. The preview is a module
+  the page loads on the first open; if that fails, the panel shows *Preview unavailable*
+  and the next open tries again.
 - The [event markers](#event-markers) of the span sit in the chart, with the same
   filter as on the Overview.
 - With assist on for an HDD channel a line carries the measured effect of 16.11.2026
