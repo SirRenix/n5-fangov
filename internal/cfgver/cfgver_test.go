@@ -69,11 +69,15 @@ func TestRecordAndRing(t *testing.T) {
 	if got := chain(t, s); strings.Join(got, ",") != "a = 0|user:admin|editor,a = 2|cli|assist hdd on" {
 		t.Fatalf("chain %v", got)
 	}
-	// identical to the newest: nothing, id 0
+	// identical to the newest: nothing new, the newest's id (restoring it
+	// undoes the write)
 	_ = os.WriteFile(path, []byte("a = 2\n"), 0o600)
 	s.Wrote([]byte("a = 2\n"))
-	if id := s.Before(path, "cli", "again", false); id != 0 {
-		t.Errorf("identical text stored as %d", id)
+	if id := s.Before(path, "cli", "again", false); id != 2 {
+		t.Errorf("identical text: id %d, want the newest 2", id)
+	}
+	if l, _ := s.List(); len(l) != 2 {
+		t.Errorf("identical text stored again: %d", len(l))
 	}
 	for i := 4; i <= 14; i++ {
 		write(t, s, path, "a = "+strings.Repeat("x", i)+"\n", "cli", "editor", false)
@@ -258,6 +262,14 @@ func TestDiffLarge(t *testing.T) {
 	d = Diff(big+"a = 1\n"+big, big+"a = 2\n"+big)
 	if r, add := Count(d); r != 1 || add != 1 {
 		t.Errorf("one line in a large file: %d/%d", r, add)
+	}
+	// one side empty or one line against a million: no table at all
+	huge := strings.Repeat("x\n", 1_000_000)
+	if d := Diff("", huge); len(d) != 1_000_000 || d[0].Op != "+" {
+		t.Errorf("empty against huge: %d ops", len(d))
+	}
+	if d := Diff("y\n", huge); len(d) != 1_000_001 {
+		t.Errorf("one line against huge: %d ops", len(d))
 	}
 	if got := Sections("[web]\n"+a.String(), "[alert]\n"+b.String()); len(got) == 0 {
 		t.Error("sections of a replaced file")

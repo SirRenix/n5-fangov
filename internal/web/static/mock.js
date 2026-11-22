@@ -248,7 +248,7 @@ window.n5mock = (() => {
 				Object.assign(cfg, JSON.parse(v.c)); M.pw = v.h; const n = vadd(r0, c0, h0, 'restore ' + id); ev('restore', '', `config restored to version ${id}`);
 				return ok({ ok: true, restored: id, version: n, config_sha256: vh(vtx() + M.pw), restart_required: false, restart_keys: [], warnings: [] }); }
 			const vr = v.h === M.pw ? v.raw : v.raw.replace('<redacted>', '<redacted, changed>'), d = vdiff(cur, vr), n = o => d.filter(x => x.op === o).length;
-			return ok(Object.assign(meta(v), { raw: vr, diff: d, changes: vsec(cur, vr), removed: n('-'), added: n('+'), password_changed: v.h !== M.pw })); }
+			return ok(Object.assign(meta(v), { raw: vr, diff: d, changes: vsec(cur, vr), removed: n('-'), added: n('+'), password_changed: v.h !== M.pw, config_sha256: vh(cur + M.pw) })); }
 		if (p.startsWith('/api/assist/')) { const n = p.split('/')[3], a = cfg.assist.find(x => x.channel === n);
 			if (!a) return fail(`channel "${n}" has no valid [[assist]] table`, 404);
 			if (typeof (opt.json || {}).enabled !== 'boolean') return fail('"enabled" (true or false) required', 400);

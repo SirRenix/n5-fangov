@@ -71,15 +71,16 @@ func (s *Server) asCaller(r *http.Request, fn func() error) (WriteResult, error)
 	return s.asBy(ackSource(CallerFrom(r.Context())), fn)
 }
 
-// asBy is asCaller with an explicit author ("" = the daemon itself).
-func (s *Server) asBy(by string, fn func() error) (WriteResult, error) {
+// asBy is asCaller with an explicit author ("" = the daemon itself). done
+// runs deferred: a store call that panics (net/http recovers the handler)
+// must not leave the write turn taken.
+func (s *Server) asBy(by string, fn func() error) (res WriteResult, err error) {
 	if s.deps.ConfigActor == nil {
 		return WriteResult{}, fn()
 	}
 	done := s.deps.ConfigActor(by)
-	err := fn()
-	v, sha := done()
-	return WriteResult{Version: v, SHA: sha}, err
+	defer func() { res.Version, res.SHA = done() }()
+	return WriteResult{}, fn()
 }
 
 // Redacted is the placeholder of password_hash in a version text;
@@ -191,6 +192,7 @@ type versionView struct {
 	Added           *int        `json:"added,omitempty"`
 	PasswordChanged *bool       `json:"password_changed,omitempty"`
 	RestartKeys     []string    `json:"restart_keys,omitempty"`
+	CurrentSHA      string      `json:"config_sha256,omitempty"`
 	Warnings        []string    `json:"warnings,omitempty"`
 }
 
@@ -273,7 +275,7 @@ func (s *Server) getConfigVersion(w http.ResponseWriter, r *http.Request) {
 	}
 	vv := versionView{ID: v.ID, TS: v.TS, By: v.By, Reason: v.Reason, Sections: s.sectionsAfter(v, raw, cur),
 		Raw: vr, Diff: d, Changes: cfgver.Sections(string(cur), string(raw)), Removed: &rm, Added: &add, PasswordChanged: &changed,
-		RestartKeys: keys, Warnings: warns}
+		RestartKeys: keys, Warnings: warns, CurrentSHA: cfgver.Sum(cur)}
 	if vv.Changes == nil {
 		vv.Changes = []string{}
 	}

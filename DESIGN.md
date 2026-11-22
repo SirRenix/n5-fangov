@@ -822,7 +822,8 @@ backup.
   import, restore). Before it writes it hands the text on disk to
   `Store.Before(path, by, reason, quiet)`, which returns the id it stored (0: none); a
   write that leaves the text as it is stores nothing, a text equal to the newest
-  version neither. `Store.Wrote` keeps a copy of what was written
+  version neither (then `Before` returns that newest id: restoring it undoes the write
+  all the same). `Store.Wrote` keeps a copy of what was written
   (`config-versions/current.toml`). The scheduler's preset switch is quiet
   (`saveConfigQuiet`, `by` = `schedule`): no version (it recurs daily and would fill the
   ring), unless it is about to overwrite a hand edit.
@@ -830,14 +831,22 @@ backup.
   (`Store.Start`) and before the next write the daemon's last text is stored with the
   reason `external edit` (`by` empty: it was replaced by a hand edit); before a write
   the hand-edited text follows, named after that write (`by`, `reason`; also after a
-  quiet one). Both can thus be restored.
+  quiet one). Both can thus be restored. Known false positives (documented, not
+  fixed): when `current.toml` could not be written (state dir full or read-only) the
+  next write finds the file "changed" and stores an `external edit` of a text the daemon
+  wrote itself; a CLI that writes the file outside the daemon while it runs (`import`,
+  `passwd`, `setup`) appears as `external edit` too — correct as to who wrote it, but no
+  caller and no reason.
 - **Who:** a request's handler wraps only its store call (not the body read) in
   `Deps.ConfigActor(by)` (`asCaller`; the legacy-hash upgrade at login as the daemon):
-  cmd's `withActor` takes `actorMu` for that call and publishes the caller
+  cmd's `withActor` takes `actorMu` for that call (released deferred, also when the
+  store call panics; PBKDF2 of the login upgrade runs before it; the certificate manager's
+  `Regenerate` writes no config and runs outside) and publishes the caller
   (`user:<name>`, `token:<name>`, `cli`); the call reports back the version it stored
   and the hash of the text it wrote. Lock order `actorMu` → the certificate manager's
   `mu` → `configFileMu` → store mutexes and the manager's `pinMu` (`pinConfig` takes
-  only `pinMu`, so `writeMode` may take `configFileMu`). Writes outside a request name
+  only `pinMu`, so `writeMode` may take `configFileMu`; `writeMode` sets the pin fields
+  before it releases `configFileMu`, so a waiting writer pins the new mode). Writes outside a request name
   their author themselves (the scheduler `schedule`, the certificate manager at start
   none) and never read the actor.
 - **Undo:** `PUT /api/config`, preset apply and the assist switch answer `version`
@@ -865,7 +874,9 @@ backup.
   not swapped by a restore: a restored password applies after a restart. The detail
   (`Impact`) lists the restart keys and warnings ahead of a restore: sign-in switched
   off, the listener leaving loopback, another user; the dashboard and `n5-fangov config
-  restore` (y/N unless `--yes`) show them with the password note. During full cooling a
+  restore` (y/N unless `--yes`; refused without `--yes` when standard input is not a
+  terminal) show them with the password note. Both send the detail's `config_sha256` as
+  `if_current`: a file changed after the summary was shown is 409, nothing restored. During full cooling a
   restore is accepted and applies after it like any change. Event `restore` (Operation
   group) with the version number.
 - **Secret:** `password_hash` never leaves through the API or the CLI: version and
@@ -877,7 +888,8 @@ backup.
   multi-line string) leaks nothing. Error texts likewise (`redactErr`). The diff runs on
   the redacted texts.
 - **Diff:** `cfgver.Diff` cuts the common head and tail, then a plain LCS line diff
-  (no library); a middle larger than `MaxCells` (4 Mi cells — a 256 KiB file can have
+  (no library) on one flat int32 table; an empty side needs none, a middle whose
+  (n+1)×(m+1) table is larger than `MaxCells` (4 Mi cells — a 256 KiB file can have
   130 000 lines) counts as replaced (all `-`, then all `+`), so a large config cannot
   exhaust the daemon's memory. `cfgver.Sections` names the sections whose non-comment
   lines differ (`[alert]`, `[[channel]] hdd`, `[[assist]] hdd` with its sources,

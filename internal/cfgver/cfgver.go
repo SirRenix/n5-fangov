@@ -171,13 +171,14 @@ func (s *Store) save(ix index) error {
 	return s.writeIndex(filepath.Join(s.dir, "index.json"), append(b, '\n'), 0o600)
 }
 
-// add stores raw as a new version unless it equals the newest one; the
-// ids that leave the ring are returned (their files are removed only after
+// add stores raw as a new version unless it equals the newest one (then
+// that version's id is returned: restoring it undoes the write all the
+// same); the ids that leave the ring are returned (their files are removed only after
 // the index is saved). Called with s.mu held.
 func (s *Store) add(ix *index, raw []byte, by, reason string) (int, []int, error) {
 	h := Sum(raw)
 	if n := len(ix.Versions); n > 0 && ix.Versions[n-1].SHA == h {
-		return 0, nil, nil
+		return ix.Versions[n-1].ID, nil, nil
 	}
 	if err := os.MkdirAll(s.dir, 0o700); err != nil {
 		return 0, nil, err
@@ -248,8 +249,8 @@ func (s *Store) Start(path string) {
 }
 
 // Before stores the text at path before the daemon writes it and returns
-// the new version's id (0: none stored — the text equals the newest
-// version, quiet, or it could not be stored). A hand edit since the last
+// the id of the version holding that text (a new one, or the newest when
+// it already holds it; 0: quiet, or it could not be stored). A hand edit since the last
 // daemon write is stored first (see the package comment). quiet stores the
 // text only after a hand edit (the scheduler's preset switch: it recurs
 // daily and would fill the ring, but a hand edit must stay undoable).

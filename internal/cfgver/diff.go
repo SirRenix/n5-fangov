@@ -45,7 +45,7 @@ func Diff(a, b string) []Op {
 func middle(x, y []string) []Op {
 	n, m := len(x), len(y)
 	out := make([]Op, 0, n+m)
-	if n*m > MaxCells {
+	if n == 0 || m == 0 || (n+1)*(m+1) > MaxCells {
 		for _, l := range x {
 			out = append(out, Op{"-", l})
 		}
@@ -54,16 +54,16 @@ func middle(x, y []string) []Op {
 		}
 		return out
 	}
-	l := make([][]int32, n+1)
-	for i := range l {
-		l[i] = make([]int32, m+1)
-	}
+	// one flat table of (n+1)×(m+1), bounded by MaxCells above
+	w := m + 1
+	l := make([]int32, (n+1)*w)
+	at := func(i, j int) int32 { return l[i*w+j] }
 	for i := n - 1; i >= 0; i-- {
 		for j := m - 1; j >= 0; j-- {
 			if x[i] == y[j] {
-				l[i][j] = l[i+1][j+1] + 1
+				l[i*w+j] = at(i+1, j+1) + 1
 			} else {
-				l[i][j] = max(l[i+1][j], l[i][j+1])
+				l[i*w+j] = max(at(i+1, j), at(i, j+1))
 			}
 		}
 	}
@@ -74,7 +74,7 @@ func middle(x, y []string) []Op {
 			out = append(out, Op{" ", x[i]})
 			i++
 			j++
-		case i < n && (j == m || l[i+1][j] >= l[i][j+1]):
+		case i < n && (j == m || at(i+1, j) >= at(i, j+1)):
 			out = append(out, Op{"-", x[i]})
 			i++
 		default:

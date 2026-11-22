@@ -796,7 +796,8 @@ func (s *Server) upgradeLegacyHash(user, password string) {
 		return
 	}
 	var next AuthConfig
-	_, err := s.asBy("", func() (err error) { next, err = s.deps.Account.Update("", PasswordHash(user, password)); return err })
+	hash := PasswordHash(user, password) // PBKDF2 before the write turn
+	_, err := s.asBy("", func() (err error) { next, err = s.deps.Account.Update("", hash); return err })
 	if err != nil {
 		s.logf("web: legacy password hash not upgraded: %v", err)
 		return

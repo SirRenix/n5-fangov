@@ -225,7 +225,9 @@ hand edit), `reason` that write (`editor`, `preset quiet`, `assist hdd on`, `acc
 `alerts`, `dashboard`, `tls`, `import`, `restore 7`, `external edit`), `sections` what it
 changed. One version adds `raw` (the text), `diff[{op, line}]` current → version
 (`-` only in the current file, `+` only in the version), `changes` (its sections),
-`removed`, `added`, `password_changed`, `restart_keys` (written now, effective at the
+`removed`, `added`, `password_changed`, `config_sha256` (the current file's hash: pass it as
+`if_current` so the restore applies only to the state the diff was made against),
+`restart_keys` (written now, effective at the
 next start) and `warnings` (what a restore opens up: sign-in off, the listener off
 loopback, another user). `password_hash` is never included: it reads
 `"<redacted>"`, or `"<redacted, changed>"` in a version whose hash differs from the

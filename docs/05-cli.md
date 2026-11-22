@@ -132,7 +132,10 @@ would change, `-` from the current file, `+` from the version; `password_hash` i
 printed as `"<redacted>"` (`"<redacted, changed>"` plus a note when it differs).
 `restore ID` first prints what it changes (lines, sections), the keys that apply only
 after a restart and the warnings (sign-in off, the listener leaving loopback, another
-user, a password change) and asks `[y/N]`; `--yes` skips the question. It writes the
+user, a password change) and asks `[y/N]`; `--yes` (in any position) skips the question. Without `--yes` and with a standard
+input that is not a terminal (a script, a pipe) it refuses with exit 1 and restores
+nothing. The restore applies only to the file the summary described: when it changed
+meanwhile the daemon answers 409 and the command fails (exit 1), nothing restored. It writes the
 version through the daemon (validated first; the text before becomes a version, and the
 answer names it: `config restore` of that one undoes it — no hint when the text was
 identical and nothing was stored).

@@ -297,14 +297,24 @@ func TestActorConcurrency(t *testing.T) {
 func TestCLIConfigRestoreConfirm(t *testing.T) {
 	d := startFakeDaemon(t)
 	d.stop()
-	var posts, stored atomic.Int32
+	var posts, stored, conflict atomic.Int32
 	stored.Store(4)
+	var ifCur atomic.Value
 	d.extra = func(mux *http.ServeMux) {
 		mux.HandleFunc("GET /api/config/versions/{id}", func(w http.ResponseWriter, r *http.Request) {
-			_, _ = w.Write([]byte(`{"id":3,"ts":1790000000,"by":"cli","reason":"editor","removed":2,"added":1,"changes":["[web]"],"password_changed":true,"restart_keys":["web.auth"],"warnings":["web.auth basic → none: the dashboard needs no sign-in after a restart"]}`))
+			_, _ = w.Write([]byte(`{"id":3,"ts":1790000000,"by":"cli","reason":"editor","removed":2,"added":1,"changes":["[web]"],"password_changed":true,"restart_keys":["web.auth"],"warnings":["web.auth basic → none: the dashboard needs no sign-in after a restart"],"config_sha256":"abc"}`))
 		})
 		mux.HandleFunc("POST /api/config/versions/{id}/restore", func(w http.ResponseWriter, r *http.Request) {
 			posts.Add(1)
+			var b map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&b)
+			ifCur.Store(b["if_current"])
+			if conflict.Load() == 1 {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(409)
+				_, _ = w.Write([]byte(`{"error":"restore: the config changed meanwhile"}`))
+				return
+			}
 			_, _ = fmt.Fprintf(w, `{"ok":true,"restored":3,"version":%d,"restart_keys":["web.auth"],"warnings":[]}`, stored.Load())
 		})
 	}
@@ -322,9 +332,70 @@ func TestCLIConfigRestoreConfirm(t *testing.T) {
 	if err := configRestore(&out, strings.NewReader(""), d.dir, 3, true); err != nil || posts.Load() != 1 || strings.Contains(out.String(), "[y/N]") || !strings.Contains(out.String(), "config restore 4` undoes it") {
 		t.Errorf("--yes: %v %d\n%s", err, posts.Load(), out.String())
 	}
+	if ifCur.Load() != "abc" {
+		t.Errorf("if_current %v, want the summary's hash", ifCur.Load())
+	}
+	conflict.Store(1)
+	out.Reset()
+	if err := configRestore(&out, nil, d.dir, 3, true); err == nil || !strings.Contains(err.Error(), "changed after the summary") {
+		t.Errorf("409: %v", err)
+	}
+	conflict.Store(0)
 	stored.Store(0)
 	out.Reset()
 	if err := configRestore(&out, strings.NewReader("y\n"), d.dir, 3, false); err != nil || strings.Contains(out.String(), "undoes it") {
 		t.Errorf("nothing stored: %v\n%s", err, out.String())
+	}
+}
+
+// TestCLIConfigRestoreNoTTY: without --yes and with a standard input that
+// is not a terminal the restore is refused (exit 1, nothing asked, nothing
+// posted); --yes counts in any position; elsewhere it is a usage error.
+func TestCLIConfigRestoreNoTTY(t *testing.T) {
+	t.Setenv("N5FANGOV_RUN_DIR", t.TempDir())
+	old := stdinIsTerminal
+	stdinIsTerminal = func() bool { return false }
+	t.Cleanup(func() { stdinIsTerminal = old })
+	_, errOut, code := captureOutput(t, func() int { return cmdConfig([]string{"restore", "3"}) })
+	if code != exitFail || !strings.Contains(errOut, "not a terminal") || !strings.Contains(errOut, "--yes") {
+		t.Errorf("no tty: %d %q", code, errOut)
+	}
+	_, errOut, code = captureOutput(t, func() int { return cmdConfig([]string{"--yes", "restore", "3"}) })
+	if code != exitFail || strings.Contains(errOut, "not a terminal") || !strings.Contains(errOut, "not running") {
+		t.Errorf("--yes first: %d %q", code, errOut)
+	}
+	if _, _, code := captureOutput(t, func() int { return cmdConfig([]string{"versions", "--yes"}) }); code != exitUsage {
+		t.Errorf("--yes on versions: %d", code)
+	}
+}
+
+// TestTLSWriteModePinsBeforeUnlock: a writer waiting on the config file
+// lock while the certificate manager writes its mode (a scheduled preset
+// switch, say) pins the new mode, not the old one: writeMode commits the
+// pin fields before it releases configFileMu.
+func TestTLSWriteModePinsBeforeUnlock(t *testing.T) {
+	cfgPath := writeAssistConfig(t)
+	m := &tlsManager{cfgPath: cfgPath, mode: "auto", ownsConfig: true}
+	done := make(chan struct{})
+	tlsWroteHook = func() {
+		go func() { // blocks on configFileMu until writeMode returns
+			defer close(done)
+			configFileMu.Lock()
+			defer configFileMu.Unlock()
+			raw, _ := os.ReadFile(cfgPath)
+			_ = config.Save(cfgPath, m.pinConfig(append(raw, "# a later write\n"...)))
+		}()
+	}
+	t.Cleanup(func() { tlsWroteHook = nil })
+	if err := m.writeMode("file", "/etc/n5-fangov/tls/c.pem", "/etc/n5-fangov/tls/k.pem"); err != nil {
+		t.Fatal(err)
+	}
+	<-done
+	cfg, _, err := config.Load(cfgPath)
+	if err != nil || cfg.Web.TLS != "file" || cfg.Web.CertFile != "/etc/n5-fangov/tls/c.pem" {
+		t.Errorf("after the interleaved write: tls %q cert %q (%v)", cfg.Web.TLS, cfg.Web.CertFile, err)
+	}
+	if raw, _ := os.ReadFile(cfgPath); !strings.Contains(string(raw), "# a later write") {
+		t.Error("the interleaved write did not run")
 	}
 }

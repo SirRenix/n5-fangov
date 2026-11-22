@@ -208,3 +208,40 @@ func TestVersionDiffRedaction(t *testing.T) {
 		}
 	}
 }
+
+// TestWriteTurnSurvivesPanic: a store call that panics (net/http recovers
+// the handler) gives the write turn back; the next write gets it.
+func TestWriteTurnSurvivesPanic(t *testing.T) {
+	var mu sync.Mutex
+	srv := New(Deps{ConfigActor: func(string) func() (int, string) {
+		mu.Lock()
+		return func() (int, string) { mu.Unlock(); return 1, "x" }
+	}})
+	func() {
+		defer func() { _ = recover() }()
+		_, _ = srv.asBy("", func() error { panic("store broke") })
+	}()
+	got := make(chan WriteResult, 1)
+	go func() {
+		res, _ := srv.asBy("cli", func() error { return nil })
+		got <- res
+	}()
+	select {
+	case res := <-got:
+		if res.Version != 1 || res.SHA != "x" {
+			t.Errorf("result %+v", res)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the write turn stayed taken after a panic")
+	}
+}
+
+// TestVersionDetailCurrentSHA: the detail names the hash of the current
+// file (the if_current of a restore from the Settings card or the CLI).
+func TestVersionDetailCurrentSHA(t *testing.T) {
+	e, f, _, _ := versionsEnv(t)
+	r := e.do(t, "GET", "/api/config/versions/1", "", nil)
+	if !strings.Contains(r.body, `"config_sha256":"`+cfgver.Sum(f.cur)+`"`) {
+		t.Errorf("detail lacks the current hash: %s", r.body)
+	}
+}

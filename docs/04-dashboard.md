@@ -523,7 +523,14 @@ caller), the change that replaced it (*Replaced by*: `editor`, `preset quiet`,
   assist switch, the toast reads *… applied — Undo* for 10 s when the write stored a
   version; *Undo* restores exactly that version (no question unless there is something
   to warn about). If the file changed in between (another user, a scheduled switch),
-  nothing is undone and the toast says so — use the card then.
+  nothing is undone and the toast says so — use the card then. A restore from the card
+  likewise applies only to the file its summary described.
+
+An *external edit* is a text the daemon wrote that was then replaced outside it. Two
+cases look like one without being a change by hand: the state directory was full or
+read-only when the daemon wrote (it could not keep its copy of the text), and a CLI
+command that writes the file while the daemon runs (`n5-fangov import`, `passwd`,
+`setup`).
 
 The list and the restore need the `admin` scope (a session has it). The module behind
 the card (`cv.js`) is loaded on the first use. A restore appears as a *restore* marker

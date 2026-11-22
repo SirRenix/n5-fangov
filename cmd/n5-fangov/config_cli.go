@@ -33,6 +33,7 @@ type versionLine struct {
 	Added           int         `json:"added"`
 	PasswordChanged bool        `json:"password_changed"`
 	RestartKeys     []string    `json:"restart_keys"`
+	CurrentSHA      string      `json:"config_sha256"`
 	Warnings        []string    `json:"warnings"`
 }
 
@@ -54,8 +55,17 @@ func cmdConfig(args []string) int {
 		return exitUsage
 	}
 	id, yes := 0, false
-	if args[0] == "restore" && len(args) == 3 && args[2] == "--yes" {
-		args, yes = args[:2], true
+	rest := args[:0:0]
+	for _, a := range args {
+		if a == "--yes" {
+			yes = true
+			continue
+		}
+		rest = append(rest, a)
+	}
+	if args = rest; len(args) == 0 || yes && args[0] != "restore" {
+		fmt.Fprintln(os.Stderr, configUsage)
+		return exitUsage
 	}
 	if args[0] == "diff" || args[0] == "restore" {
 		if len(args) != 2 {
@@ -79,6 +89,12 @@ func cmdConfig(args []string) int {
 	case "diff":
 		err = configDiff(os.Stdout, runDir(), stateDir(), defaultConfigPath, id)
 	case "restore":
+		if !yes && !stdinIsTerminal() {
+			// a script without --yes: EOF would read as "no" and exit 0, an open
+			// pipe would block
+			fmt.Fprintln(os.Stderr, "config restore: standard input is not a terminal; pass --yes to restore without the question (nothing restored)")
+			return exitFail
+		}
 		err = configRestore(os.Stdout, os.Stdin, runDir(), id, yes)
 	default:
 		fmt.Fprintln(os.Stderr, configUsage)
@@ -89,6 +105,13 @@ func cmdConfig(args []string) int {
 		return exitFail
 	}
 	return exitOK
+}
+
+// stdinIsTerminal reports a character device on standard input (tests
+// replace it).
+var stdinIsTerminal = func() bool {
+	st, err := os.Stdin.Stat()
+	return err == nil && st.Mode()&os.ModeCharDevice != 0
 }
 
 func whoOf(by string) string {
@@ -229,7 +252,11 @@ func configRestore(w io.Writer, in io.Reader, run string, id int, yes bool) erro
 		RestartKeys     []string `json:"restart_keys"`
 		Warnings        []string `json:"warnings"`
 	}
-	if err := a.do(http.MethodPost, fmt.Sprintf("/api/config/versions/%d/restore", id), nil, &res); err != nil {
+	// if_current: the restore applies only to the file the summary above described
+	if err := a.do(http.MethodPost, fmt.Sprintf("/api/config/versions/%d/restore", id), map[string]any{"if_current": v.CurrentSHA}, &res); err != nil {
+		if strings.Contains(err.Error(), "409") {
+			return fmt.Errorf("the config changed after the summary above, nothing restored; run the command again: %w", err)
+		}
 		return err
 	}
 	fmt.Fprintf(w, "restored version %d", id)

@@ -181,9 +181,7 @@ func (s *Server) tlsRegenerate(w http.ResponseWriter, r *http.Request) {
 			keep = *b.KeepKey
 		}
 	}
-	var info tlscert.InfoData
-	var kept bool
-	_, err = s.asCaller(r, func() (err error) { info, kept, err = m.Regenerate(keep); return err })
+	info, kept, err := m.Regenerate(keep) // no config write: outside the write turn
 	if err != nil {
 		tlsFail(w, err, false)
 		return

@@ -47,7 +47,9 @@ apart from #63.
   blocks the config write. API (scope `admin`): `GET /api/config/versions`, `GET
   /api/config/versions/{id}`, `POST /api/config/versions/{id}/restore`; CLI `n5-fangov
   config versions | diff ID | restore ID` (list and diff also without the daemon); event
-  `restore` (group Operation); `config restore` asks y/N (`--yes`). Diff: a line diff in Go
+  `restore` (group Operation); `config restore` asks y/N (`--yes`; refused without it when
+  standard input is no terminal) and, like the Settings card, restores only the file its
+  summary described (409 otherwise). Diff: a line diff in Go
   with the common head and tail cut and a bounded table (a huge config counts as
   replaced instead of exhausting memory), no new dependency
   ([Dashboard](docs/04-dashboard.md#config-versions), [API](docs/12-api.md#config-versions)).

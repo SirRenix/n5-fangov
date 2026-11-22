@@ -12,14 +12,14 @@ const diffEl = d => { const lines = (d.diff || []).filter(o => o.op !== ' ');
 		lines.length ? h('pre', null, lines.map(o => h('span', { class: o.op === '+' ? 'add' : 'del' }, `${o.op} ${o.line}\n`))) : null); };
 // restore: confirm with the summary, the restart-only keys and the warnings (sign-in off, listener off loopback, another user, the
 // password), then the refresh an import does; quiet = the Undo toast (no question unless there is something to warn about); cur = the
-// hash the file must still have (409: someone wrote meanwhile, nothing is undone)
+// hash the file must still have (the Undo's write; else the one the confirmed diff was made against): 409 = it changed, nothing restored
 async function restore(id, quiet, cur) {
 	let d; try { d = (await api('/api/config/versions/' + id)).body; } catch (e) { return toast(e.message, 'err'); }
 	const ch = d.changes || [], k0 = d.restart_keys || [], ws = (d.warnings || []).concat(d.password_changed ? ['This also resets the password to the one of that version (after a restart).'] : []);
 	const sum = `${d.removed} line(s) go, ${d.added} come` + (ch.length ? ` (${ch.join(', ')})` : '') + '.' + (k0.length ? `\nApplies after a restart: ${k0.join(', ')}.` : '') + ws.map(w => '\nWarning: ' + w).join('');
 	if ((!quiet || ws.length) && !await ask(`Restore version ${id}`, sum + '\nThe current state is kept as a version.', { ok: 'Restore', danger: ws.length > 0 })) return;
-	let r; try { r = await api(`/api/config/versions/${id}/restore`, { method: 'POST', json: cur ? { if_current: cur } : {} }); }
-	catch (e) { return e.status === 409 ? toast('Not undone: the config changed meanwhile — see Settings → Config versions', 'warn', UI.timing.toastLong) : toast(e.message, 'err', UI.timing.toastLong); }
+	let r; try { r = await api(`/api/config/versions/${id}/restore`, { method: 'POST', json: { if_current: cur || d.config_sha256 || '' } }); }
+	catch (e) { return e.status === 409 ? toast('Not restored: the config changed meanwhile — see Settings → Config versions', 'warn', UI.timing.toastLong) : toast(e.message, 'err', UI.timing.toastLong); }
 	const b = r.body || {}, k = b.restart_keys || [], w = b.restart_required || k.length;
 	toast(`Version ${id} restored` + (b.restart_required ? ' — restart required (channel set or profile)' : '') + (k.length ? ` — applies after restart: ${k.join(', ')}` : ''), w ? 'warn' : 'ok', w ? UI.timing.toastLong : 0);
 	await X.cfgRefresh(); if (host && host.isConnected) show(host);
