@@ -12,12 +12,13 @@ drove the 0.3.1 work is `docs/AUDIT.md` (code) and `docs/DESIGN-AUDIT.md`
 (dashboard); the reviews of the 0.4.0 redesign are referenced as `C01`… (code) and
 `D01`… (design), the findings of its release gate as `G1`…`G12`, in the 0.4.0 section.
 
-## [Unreleased]
+## [0.7.0-rc2] — 2026-11-22
 
-Config versions with diff and undo (0.7.0 point 4), preview and assist explained on the page,
-the preview and the versions as modules loaded on demand, hover on the Overview tiles, and a
-hand-added `[[assist]]` table without a restart (BACKLOG #63). The regulation is unchanged
-apart from #63.
+All six 0.7.0 points: rc1 plus config versions with diff and undo (point 4), preview and
+assist explained on the page, the preview and the versions as modules loaded on demand, hover
+on the Overview tiles, and a hand-added `[[assist]]` table without a restart (BACKLOG #63).
+The regulation is unchanged apart from #63. Release candidate: 0.7.0 follows after the
+reference host ran it.
 
 ### Added
 
@@ -1701,7 +1702,8 @@ of `v0.2.0`.
   security review `H1`–`H3`, `M1`–`M4`, `L1`–`L6` (Host header, CSRF, socket mode 0750,
   body limits, …).
 
-[Unreleased]: https://github.com/SirRenix/n5-fangov/compare/v0.7.0-rc1...HEAD
+[Unreleased]: https://github.com/SirRenix/n5-fangov/compare/v0.7.0-rc2...HEAD
+[0.7.0-rc2]: https://github.com/SirRenix/n5-fangov/releases/tag/v0.7.0-rc2
 [0.7.0-rc1]: https://github.com/SirRenix/n5-fangov/releases/tag/v0.7.0-rc1
 [0.6.0]: https://github.com/SirRenix/n5-fangov/releases/tag/v0.6.0
 [0.6.0-rc1]: https://github.com/SirRenix/n5-fangov/releases/tag/v0.6.0-rc1
